@@ -24,12 +24,13 @@ from recall.generations import (
     InvalidGenerationTransition,
     NoActiveGeneration,
     UnsafePromotion,
+    manifest_relative_paths,
 )
 from recall.lineage import (
     IndexManifestV1,
     ManifestObjectV1,
 )
-from recall.manifest import ExtractingLocalObjectReader
+from recall.manifest import ExtractingLocalObjectReader, ObjectNotAllowed
 from recall.observability import get_logger as _get_logger
 from recall.security_policy import (
     AccessContext,
@@ -37,10 +38,12 @@ from recall.security_policy import (
 )
 from recall.store import PgVectorStore
 
+from recall_mcp.indexing import IndexPreflightError
 from recall_mcp.models import IndexResult
 from recall_mcp.settings import runtime_environment
 import hashlib
 import mimetypes
+import os
 import psycopg
 
 
@@ -48,6 +51,7 @@ _log = _get_logger("mcp.service")
 
 
 _DESKTOP_CORPUS_PREFIX = "desktop-"
+_POLICY_UPLOAD_PREFIX = "desktop-policy-v2-"
 
 #: Unattended calibration must not materialize an unbounded accumulated corpus.
 #: Both limits apply to the complete generation, including empty text rows. They
@@ -268,6 +272,7 @@ def generation_ingest(
                 {entry.uri: entry for entry in base.objects}
             )
         except NoActiveGeneration:
+            base = None
             active_objects, carried_roots, vanished, restamped = {}, (), 0, 0
 
         for path in job_files:
@@ -298,12 +303,35 @@ def generation_ingest(
                 unverified=artifact_digest is None,
             ),
         )
+        policy_root = None
+        prefix = _DESKTOP_CORPUS_PREFIX
+        if security_policy is not None:
+            # Staging fixes this layout before the request reaches the generation builder.
+            if tenant_root.name != store.tenant or tenant_root.parent.name.casefold() != "uploads":
+                raise IndexPreflightError("invalid policy-protected upload location")
+            policy_root = tenant_root.parent.parent.resolve()
+            root_id = hashlib.sha256(os.fsencode(policy_root)).hexdigest()[:16]
+            prefix = _POLICY_UPLOAD_PREFIX + root_id + "-"
         manifest = IndexManifestV1(
             tenant_id=store.tenant,
-            corpus_version=f"{_DESKTOP_CORPUS_PREFIX}"
-            f"{hashlib.sha256(job_root.name.encode()).hexdigest()[:12]}",
+            corpus_version=prefix + hashlib.sha256(job_root.name.encode()).hexdigest()[:12],
             objects=tuple(sorted(active_objects.values(), key=lambda entry: entry.uri)),
         )
+        if security_policy is not None:
+            try:
+                paths = manifest_relative_paths(manifest, local_root=policy_root)
+            except (OSError, ValueError, ObjectNotAllowed) as exc:
+                raise IndexPreflightError("upload requires a compatible source policy namespace") from exc
+            if base is not None and not base.corpus_version.startswith(prefix):
+                prior_paths = manifest_relative_paths(base)
+                if base.corpus_version.startswith(_POLICY_UPLOAD_PREFIX) or any(
+                    paths[uri] != prior_paths[uri] for uri in paths.keys() & prior_paths.keys()
+                ):
+                    raise IndexPreflightError("upload would change existing source identities")
+            if security_context is None or any(
+                not security_policy.decide(path, security_context).allowed for path in paths.values()
+            ):
+                raise IndexPreflightError("upload is outside the source security policy")
         generation = manager.create(manifest, pipeline, allow_unverified=not pipeline.verified)
         try:
             stats = manager.build(
@@ -313,6 +341,7 @@ def generation_ingest(
                 chunker,
                 security_policy=security_policy,
                 security_context=security_context,
+                policy_source_root=policy_root,
             )
             manager.validate(generation.generation_id)
             uncertified: str | None = None

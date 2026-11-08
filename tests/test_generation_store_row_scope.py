@@ -41,6 +41,7 @@ import pytest
 
 from recall import generation_store as generation_store_mod
 from recall.generation_store import GenerationStore
+from recall.scope import Scope
 from recall.store import PgVectorStore
 
 GENERATION = "gen_pinned_for_row_scope"
@@ -116,6 +117,10 @@ CALLS: dict[str, Callable[[GenerationStore], object]] = {
     "chunks_by_ids": lambda s: s.chunks_by_ids(["c1"]),
     "count": lambda s: s.count(),
     "iter_chunks": lambda s: list(s.iter_chunks(10)),
+    "iter_scoped_chunks": lambda s: list(s.iter_scoped_chunks(
+        Scope(source_prefixes=("docs",), security_policy_digest="policy"),
+        sources=["memo.md"], basenames=["memo.md"], include_text=False,
+    )),
     "scope_centroids": lambda s: s.scope_centroids("folder"),
     "scope_inventory": lambda s: s.scope_inventory("folder"),
     "scope_undeclared_count": lambda s: s.scope_undeclared_count("folder"),

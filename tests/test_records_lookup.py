@@ -257,6 +257,8 @@ def test_over_200_anchors_refused(store: LiteStore) -> None:
 class _DenyPolicy:
     """A source policy that refuses the named files and allows the rest."""
 
+    digest = "fixture-policy"
+
     def __init__(self, *denied: str) -> None:
         self.denied = set(denied)
 
@@ -265,12 +267,20 @@ class _DenyPolicy:
 
         return SimpleNamespace(allowed=Path(file).name not in self.denied)
 
+    def allows_stored_chunk(self, chunk: Chunk, context: object) -> bool:
+        return bool(self.decide(chunk.metadata["file"], context).allowed)
+
 
 def test_denied_sources_do_not_leak_through_edges(store: LiteStore) -> None:
     """K11."""
+    from recall.security_policy import AccessContext
+
     policy = _DenyPolicy("RE-call__abcdef012345__BUG-002.md", "RE-call__fp__run-20261021-9f8e7d__BUG-003~retract.md")
     found = _by_id(
-        lookup_records(store, all_records=True, security_policy=policy, access_context=object(), now=AFTER_ALL)
+        lookup_records(
+            store, all_records=True, security_policy=policy,
+            access_context=AccessContext("reader", store.tenant), now=AFTER_ALL,
+        )
     )
     assert BUG_002["id"] not in found, "a denied record was returned"
     assert found[BUG_001["id"]]["caused"] == [], "a denied record was named through `caused`"

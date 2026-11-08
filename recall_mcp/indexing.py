@@ -65,6 +65,28 @@ def _is_lite(store: object) -> bool:
     return isinstance(store, LiteStore)
 
 
+def _staged_upload_parts(uploads: Path, path: Path) -> tuple[str, ...] | None:
+    resolved = within(uploads, path)
+    if resolved is not None:
+        return resolved.relative_to(uploads).parts
+    # POSIX realpath can preserve alternate case on a case-insensitive volume.
+    prefix = uploads.parts
+    parts = path.parts
+    if tuple(part.casefold() for part in parts[:len(prefix)]) != tuple(part.casefold() for part in prefix):
+        return None
+    try:
+        if Path(*parts[:len(prefix)]).samefile(uploads):
+            return parts[len(prefix):]
+    except (FileNotFoundError, NotADirectoryError):
+        return None
+    return None
+
+
+def _foreign_upload(uploads: Path, path: Path, tenant: str | None) -> bool:
+    parts = _staged_upload_parts(uploads, path)
+    return bool(parts and parts[0] != tenant)
+
+
 def index_memory(
     store: PgVectorStore,
     embedder: Embedder,
@@ -105,6 +127,7 @@ def index_memory(
             return _index_memory_unlocked(
                 store, embedder, path, on_measured, shadow_store, shadow_embedder, control_plane, glob,
                 chunker, security_policy, security_context, env, candidate_files_fn,
+                lane_purpose=lane_purpose,
                 _publication_namespace=source_namespace,
             )
 
@@ -123,6 +146,8 @@ def _index_memory_unlocked(
     security_context: AccessContext | None = None,
     env: Mapping[str, str] | None = None,
     candidate_files_fn: CandidateFiles | None = None,
+    *,
+    lane_purpose: str = "index",
     _publication_namespace: str | None = None,
 ) -> IndexResult:
     """`index_memory` without the lite store's write lane; call `index_memory`."""
@@ -157,6 +182,18 @@ def _index_memory_unlocked(
             "an operator can widen it with RECALL_INDEX_ROOT."
         )
     target = confined_target
+    uploads = within(root, root / "uploads")
+    tenant = getattr(store, "tenant", None)
+    if uploads is not None and uploads.is_dir():
+        # Use the directory entry's spelling. A configured ID that only aliases another
+        # tenant's directory on this filesystem does not own that directory.
+        if not any(entry.name == tenant for entry in uploads.iterdir()):
+            tenant = None
+    reserve_uploads = security_policy is not None and lane_purpose == "index"
+    if reserve_uploads and uploads is not None and _staged_upload_parts(uploads, target) is not None:
+        raise IndexPreflightError("staged uploads must be indexed through recall_ingest")
+    if uploads is not None and _foreign_upload(uploads, target, tenant):
+        raise IndexPreflightError("cannot index uploads belonging to another tenant")
     if not target.exists():
         raise IndexPreflightError(f"path not found: {path!r}")
 
@@ -174,6 +211,12 @@ def _index_memory_unlocked(
         files = files_fn(target, glob) if glob is not None else files_fn(target)
     except (OSError, PermissionError) as exc:
         raise IndexPreflightError(str(exc)) from exc
+    if uploads is not None and uploads.is_dir():
+        # Ancestor walks may discover another tenant's files, including via file aliases.
+        files = [
+            file for file in files
+            if not (_staged_upload_parts(uploads, file) is not None if reserve_uploads else _foreign_upload(uploads, file, tenant))
+        ]
     subject = f"index request for {path!r}"
     if (refusal := budget_refusal(subject, len(files), 0, budget)) is not None:
         raise IndexPreflightError(refusal)
@@ -188,17 +231,17 @@ def _index_memory_unlocked(
         raise IndexPreflightError(str(exc)) from exc
     if (refusal := budget_refusal(subject, len(files), total_bytes, budget)) is not None:
         raise IndexPreflightError(refusal)
+    # A caller-selected filesystem target cannot define the policy namespace. A staged package
+    # has its own server-created root, so legacy ingest keeps its package-relative names.
+    key_root = root if _is_lite(store) or (security_policy is not None and lane_purpose == "index") else None
     if security_policy is not None:
         if security_context is None:
             raise IndexPreflightError(
                 "security_context is required when security_policy is configured"
             )
-        # The names the indexer will store and decide on: RECALL_INDEX_ROOT-relative on a lite
-        # store (`key_root` below), else relative to the indexed path. Deciding on other names
-        # here would let a request pass this check, be charged, and be denied in the indexer.
         relative_paths = (
-            [file.relative_to(root).as_posix() for file in files]
-            if _is_lite(store)
+            [file.relative_to(key_root).as_posix() for file in files]
+            if key_root is not None
             else [file.relative_to(target).as_posix() for file in files]
             if target.is_dir()
             else [file.name for file in files]
@@ -261,10 +304,7 @@ def _index_memory_unlocked(
             stats = index_path(
                 target,
                 files=files,
-                # A lite server names every file relative to RECALL_INDEX_ROOT, as its automatic
-                # refresh does, so the name does not depend on which of the two indexed it first
-                # (owner decision, 2026-10-13). Postgres servers keep the indexed path's names.
-                key_root=root if _is_lite(store) else None,
+                key_root=key_root,
             )
     except (RuntimeError, OSError, ValueError) as exc:
         _log.warning("index of %r failed: %s", path, exc)
@@ -301,7 +341,7 @@ def _index_memory_unlocked(
     # What search will resolve to no memo, said while the writer is still here to fix it. Advisory:
     # the index has committed by now, so a failure to check must not report the write as failed.
     try:
-        ambiguous = ambiguous_references(store, security_policy=security_policy, access_context=security_context)
+        ambiguous = ambiguous_references(store) if security_policy is None else []
     except Exception as exc:  # noqa: BLE001  # BROAD-CATCH: fail-open; the index has committed, only the receipt is missing
         ambiguous = []
         message += f" Supersedes references were not checked ({type(exc).__name__})."

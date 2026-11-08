@@ -98,6 +98,15 @@ def _review(scan: ModuleType) -> str:
     return scan._request_review("key", scan.DEFAULT_MODEL, "owner/repo", "1", "diff --git a b")
 
 
+def test_review_output_cannot_emit_runner_commands(scan: ModuleType, capsys: pytest.CaptureFixture[str]) -> None:
+    """At 65b7a791c the reporter emitted three runner command lines instead of one."""
+    finding = {**FINDING, "title": "Example\n::stop-commands::test", "file": "test.py\r\n::add-mask::hidden"}
+    scan._report(scan._parse_response(json.dumps({"findings": [finding]})), None)
+    commands = [line for line in capsys.readouterr().out.splitlines() if line.startswith("::")]
+    assert len(commands) == 1
+    assert commands[0].startswith("::warning ")
+
+
 def test_object_followed_by_a_stray_closing_fence_is_parsed(scan: ModuleType) -> None:
     findings = scan._parse_response(OBJECT + "\n```")
     assert [item["title"] for item in findings] == ["Example"]

@@ -232,11 +232,31 @@ class _RelativeOnly:
     def decide(self, file: str, context: object) -> Any:
         return types.SimpleNamespace(allowed=not file.startswith("/"))
 
+    def allows_stored_chunk(self, chunk: Chunk, context: object) -> bool:
+        return bool(self.decide(chunk.metadata["file"], context).allowed)
+
+
+def test_records_withhold_rows_and_successor_names_from_an_old_policy() -> None:
+    """At 65b7a791c lookup returned the second row despite its missing current policy digest."""
+    from recall.security_policy import AccessContext, SourceRule, SourceSecurityPolicy
+
+    store = _CollidedStore("/two/README.md")
+    policy = SourceSecurityPolicy((SourceRule("README.md", redactions=("email",)),))
+    store.chunks[0].metadata["security_policy_digest"] = policy.digest
+    result = lookup_records(
+        store, ids=["R1", "R2"], security_policy=policy, access_context=AccessContext("reader", "t"), now=NOW,
+    )
+    assert [record["id"] for record in result["records"]] == ["R1"]
+    assert result["records"][0]["superseded_by"] == "<withheld>"
+
 
 def test_d6_a_collided_successor_is_decided_as_its_file() -> None:
+    from recall.security_policy import AccessContext
+
     def successor(store: _CollidedStore) -> object:
         found = lookup_records(
-            store, ids=["R1"], security_policy=_RelativeOnly(), access_context=object(), now=NOW  # type: ignore[arg-type]
+            store, ids=["R1"], security_policy=_RelativeOnly(),  # type: ignore[arg-type]
+            access_context=AccessContext("reader", store.tenant), now=NOW,
         )
         return found["records"][0]["superseded_by"]
 
@@ -319,3 +339,34 @@ def test_d10_the_envelope_is_serialised_off_the_loop(
     out, loop_thread = _serve(lite_env, body)
     assert out == real_dumps(envelope, ensure_ascii=False, indent=2), f"the tool's output bytes changed: {out[:200]!r}"
     assert threads and loop_thread not in threads, "the envelope was serialised on the event loop thread"
+
+def test_record_lookup_names_an_allowed_ordinary_successor():
+    """FIX-007. A denied sibling rule previously hid an allowed ordinary successor."""
+    from recall.security_policy import AccessContext, SourceRule, SourceSecurityPolicy
+    from recall.supersession import ReferenceIndex
+
+    policy = SourceSecurityPolicy((
+        SourceRule("docs"), SourceRule("docs/private", principals=frozenset({"admin"})),
+    ))
+    old = Chunk("old", "/corpus/docs/old.md", "", {
+        "file": "docs/old.md", "security_policy_digest": policy.digest,
+        "recall_record": {**BUG, "id": "OLD"},
+    })
+    new = Chunk("new", "/corpus/docs/new.md", "", {
+        "file": "docs/new.md", "security_policy_digest": policy.digest,
+    })
+    graph = SupersessionGraph(
+        edges={"docs/old.md": "docs/new.md"},
+        references=ReferenceIndex([(row.metadata["file"], row.source) for row in (old, new)]),
+    )
+
+    def scoped_chunks(scope, *, sources, include_text):
+        if new.source in sources and scope.matches_source_policy(new.metadata["file"], policy.digest):
+            yield new
+
+    store = types.SimpleNamespace(
+        tenant="t", record_chunks=lambda **kwargs: [old],
+        supersession_graph=lambda: graph, iter_scoped_chunks=scoped_chunks,
+    )
+    result = lookup_records(store, ids=["OLD"], security_policy=policy, access_context=AccessContext("reader", "t"), now=NOW)
+    assert result["records"][0]["superseded_by"] == "docs/new.md"

@@ -973,19 +973,23 @@ class LiteStore:
         by, from their rows and, with `recorded`, from the records standing for them."""
         if not sources:
             return {}
-        rows = [
-            (source, _json_text(json.loads(metadata), "file"))
-            for source, metadata in self._metadata_values(
-                "SELECT DISTINCT source, metadata FROM chunks "
-                "WHERE source IN (SELECT value FROM json_each(?))",
-                (json.dumps(list(dict.fromkeys(sources))),),
-            )
-        ]
+        rows = [(source, file) for source, file, _digest in self._erasure_subject_rows(sources)]
         records: list[SupersessionRecord] = []
         if recorded:
             with self._lock:
                 records = sqlite_records(self._conn, self._table, sources)
         return erasure_subjects(rows, records)
+
+    def _erasure_subject_rows(self, sources: list[str]) -> list[tuple[str, str | None, str | None]]:
+        return [
+            (source, _json_text(metadata, "file"), _json_text(metadata, "security_policy_digest"))
+            for source, raw in self._metadata_values(
+                "SELECT DISTINCT source, metadata FROM chunks "
+                "WHERE source IN (SELECT value FROM json_each(?))",
+                (json.dumps(list(dict.fromkeys(sources))),),
+            )
+            for metadata in (json.loads(raw),)
+        ]
 
     def served_sources_for_identifiers(self, identifiers: list[str]) -> dict[str, list[str]]:
         """`sources_for_identifiers`: every row of this file is served, as `PgVectorStore`'s."""
@@ -1138,9 +1142,53 @@ class LiteStore:
         """
         if not isinstance(batch_size, int) or batch_size < 1:
             raise ValueError("batch_size must be a positive int")
+        yield from self._iter_chunk_rows("SELECT id, source, text, metadata FROM chunks ORDER BY id", (), batch_size)
+
+    def iter_scoped_chunks(
+        self, scope: Scope, *, sources: Sequence[str] | None = None,
+        basenames: Sequence[str] = (), include_text: bool = True,
+    ) -> Iterator[Chunk]:
+        """Stream eligible source rows without reading unrelated passage text."""
+        if scope.source is not None or scope.folder is not None or scope.facet is not None:
+            raise ValueError("scoped row reads accept only source policy predicates")
+        clauses: list[str] = []
+        params: list[str] = []
+        if sources is not None:
+            names = "source IN (SELECT value FROM json_each(?))"
+            params.append(json.dumps(list(sources)))
+            if basenames:
+                names += (
+                    " OR EXISTS (SELECT 1 FROM json_each(?) AS b "
+                    "WHERE substr(rtrim(replace(source, char(92), '/'), '/'), -length(b.value) - 1) = '/' || b.value)"
+                )
+                params.append(json.dumps(list(basenames)))
+            clauses.append(f"({names})")
+        if scope.security_policy_digest is not None:
+            clauses.append("json_extract(metadata, '$.security_policy_digest') = ?")
+            params.append(scope.security_policy_digest)
+        if scope.source_prefixes is not None:
+            file = (
+                "COALESCE(NULLIF(CASE WHEN json_type(metadata, '$.file') = 'text' "
+                "THEN json_extract(metadata, '$.file') END, ''), source)"
+            )
+            clauses.append(
+                "EXISTS (SELECT 1 FROM json_each(?) AS p WHERE "  # noqa: S608  # fixed file expression
+                f"{file} = p.value OR substr({file}, 1, length(p.value) + 1) = p.value || '/')"
+            )
+            params.append(json.dumps([prefix.replace(chr(92), "/").strip("/") for prefix in scope.source_prefixes]))
+        where = " WHERE " + " AND ".join(clauses) if clauses else ""
+        text_column = "text" if include_text else "''"
+        yield from self._iter_chunk_rows(
+            f"SELECT id, source, {text_column}, metadata FROM chunks{where} ORDER BY id",  # noqa: S608  # fixed clauses, bound data
+            params, 1000,
+        )
+
+    def _iter_chunk_rows(
+        self, statement: str, params: Sequence[str], batch_size: int,
+    ) -> Iterator[Chunk]:
         with self._lock:
             if self._conn.in_transaction:
-                cursor = self._conn.execute("SELECT id, source, text, metadata FROM chunks ORDER BY id")
+                cursor = self._conn.execute(statement, params)
                 try:
                     while rows := cursor.fetchmany(batch_size):
                         for cid, source, text, metadata in rows:
@@ -1150,7 +1198,7 @@ class LiteStore:
                 return
         reader = sqlite3.connect(self.path, timeout=_BUSY_TIMEOUT_S)
         try:
-            cursor = reader.execute("SELECT id, source, text, metadata FROM chunks ORDER BY id")
+            cursor = reader.execute(statement, params)
             while rows := cursor.fetchmany(batch_size):
                 for cid, source, text, metadata in rows:
                     yield Chunk(id=cid, source=source, text=text, metadata=json.loads(metadata))

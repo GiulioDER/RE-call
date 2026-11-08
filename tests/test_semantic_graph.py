@@ -702,6 +702,7 @@ def test_candidate_semantic_relations_are_not_traversed_or_trusted():
 
 
 def test_one_hop_expansion_applies_source_authorization_before_admission(monkeypatch):
+    """At 65b7a791c query diagnostics counted both the visible name and the denied-only name."""
     from recall_mcp import service
 
     chunks = (
@@ -715,7 +716,9 @@ def test_one_hop_expansion_applies_source_authorization_before_admission(monkeyp
                 "relations": [{"relation": "supports", "subject": "Seed", "object": "Secret"}],
             },
         ),
-        Chunk("secret", "secret/secret.md", "secret text", {"file": "secret.md", "project": "Secret"}),
+        Chunk("secret", "secret/secret.md", "secret text", {
+            "file": "secret/secret.md", "project": ["Secret", "PrivateAlias"],
+        }),
     )
     semantic = _graph(*chunks)
     policy = SourceSecurityPolicy(
@@ -725,6 +728,9 @@ def test_one_hop_expansion_applies_source_authorization_before_admission(monkeyp
         )
     )
     context = AccessContext("denied", "tenant-a", clearance="confidential")
+    chunks[0].metadata["file"] = "public/seed.md"
+    for chunk in chunks:
+        chunk.metadata["security_policy_digest"] = policy.digest
 
     class Store:
         tenant = "tenant-a"
@@ -779,7 +785,7 @@ def test_one_hop_expansion_applies_source_authorization_before_admission(monkeyp
     response = service.reasoning_query(
         Store(),
         type("Embedder", (), {"embed_query": lambda self, _: [1.0]})(),
-        "Seed",
+        "Seed PrivateAlias",
         mode="evidence_assembly",
         graph_expansion="one_hop",
         policy=TrustPolicy.development(),
@@ -788,6 +794,7 @@ def test_one_hop_expansion_applies_source_authorization_before_admission(monkeyp
     )
 
     assert [item.chunk_id for item in response.trusted_evidence.items] == ["seed"]
+    assert response.diagnostics.performance["counters"].get("query_entities_resolved", 0) == 1
 
 
 def test_explicit_markdown_references_create_deterministic_reference_edges():

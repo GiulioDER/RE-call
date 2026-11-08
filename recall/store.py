@@ -2412,15 +2412,15 @@ class PgVectorStore(SourceMutationMixin, SupersessionMixin, ReceiptsAuditMixin):
             if recorded
             else []
         )
-        return erasure_subjects(rows, records)
+        return erasure_subjects([(source, file) for source, file, _digest in rows], records)
 
     def _erasure_subject_rows(self, sources: list[str]) -> list[tuple[Any, ...]]:
-        """`(source, file)` for every row of `sources` in this tenant."""
+        """`(source, file, policy_digest)` for every row of `sources` in this tenant."""
         return list(
             self._with_retry(
                 lambda conn: conn.execute(
-                    f"SELECT DISTINCT source, metadata->>'file' FROM {self._table} "
-                    "WHERE tenant_id = %s AND source = ANY(%s)",
+                    f"SELECT DISTINCT source, metadata->>'file', metadata->>'security_policy_digest' "
+                    f"FROM {self._table} WHERE tenant_id = %s AND source = ANY(%s)",
                     (self._tenant, sources),
                 ).fetchall()
             )
@@ -2654,6 +2654,39 @@ class PgVectorStore(SourceMutationMixin, SupersessionMixin, ReceiptsAuditMixin):
                     )
                     for cid, source, text, metadata in cur:
                         yield Chunk(id=cid, source=source, text=text, metadata=metadata or {})
+
+    def iter_scoped_chunks(
+        self, scope: Scope, *, sources: Sequence[str] | None = None,
+        basenames: Sequence[str] = (), include_text: bool = True,
+    ) -> "Iterator[Chunk]":
+        """Stream only serving rows within a source scope, optionally for specific names."""
+        policy_sql, policy_args = scope.predicate("c", self._SOURCE_COL)
+        row_sql, row_args = self._row_scope("c.")
+        text_column = "c.text" if include_text else "''"
+        source_sql = ""
+        params: dict[str, object] = {"tenant": self._tenant, **policy_args, **row_args}
+        if sources is not None:
+            source_column = f"c.{self._SOURCE_COL}"
+            source_sql = f" AND ({source_column} = ANY(%(sources)s)"
+            params["sources"] = list(sources)
+            if basenames:
+                source_sql += (
+                    f" OR regexp_replace(rtrim(replace({source_column}, chr(92), '/'), '/'), '^.*/', '')"
+                    " = ANY(%(basenames)s)"
+                )
+                params["basenames"] = list(basenames)
+            source_sql += ")"
+        with self._borrowed() as conn, conn.transaction():
+            with conn.cursor(name=f"recall_scoped_{uuid4().hex[:12]}") as cur:
+                cur.itersize = 1000
+                cur.execute(
+                    f"SELECT c.{self._ID_COL}, c.{self._SOURCE_COL}, {text_column}, c.metadata "
+                    f"FROM {self._table} AS c WHERE c.tenant_id = %(tenant)s{row_sql} {policy_sql}{source_sql} "
+                    f"ORDER BY c.{self._ID_COL}",
+                    params,
+                )
+                for cid, source, text, metadata in cur:
+                    yield Chunk(id=cid, source=source, text=text, metadata=metadata or {})
 
     def iter_chunks_with_times(
         self, batch_size: int = 1000

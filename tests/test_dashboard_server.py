@@ -25,7 +25,7 @@ from urllib.parse import urlencode
 import pytest
 
 from recall.dashboard import review
-from recall.dashboard.server import COOKIE, DashboardApp, highlight, security_headers
+from recall.dashboard.server import DashboardApp, highlight, security_headers
 from recall.document import parse_document
 from recall.frontmatter import supersedes_targets
 from recall.stale_reports import StaleReportQueue, default_queue_path
@@ -61,7 +61,7 @@ def app(corpus: Path) -> DashboardApp:
 
 
 def _signed(**extra: str) -> dict[str, str]:
-    return {**HOST, "Cookie": f"{COOKIE}=tok123", **extra}
+    return {**HOST, "Authorization": "Bearer tok123", **extra}
 
 
 def _claim(corpus: Path) -> str:
@@ -82,9 +82,26 @@ def test_the_printed_link_starts_a_session_and_nothing_else_does(app: DashboardA
     start = app.handle("GET", "/?token=tok123", HOST)
     assert start.status == 303
     headers = dict(start.headers)
-    assert headers["Location"] == "/"
-    assert "HttpOnly" in headers["Set-Cookie"] and "SameSite=Strict" in headers["Set-Cookie"]
+    location = headers["Location"]
+    assert location.startswith("/_session/") and location.endswith("/")
+    assert "tok123" not in location
+    assert app.handle("GET", location, HOST).status == 200
     assert app.handle("GET", "/", _signed()).status == 200
+
+
+def test_dashboard_bootstrap_does_not_create_a_cross_port_bearer(app: DashboardApp) -> None:
+    """At 65b7a791c an unrelated service could replay the issued cookie and receive a 200."""
+    start = app.handle("GET", "/?token=tok123", HOST)
+    headers = dict(start.headers)
+    cookie = headers.get("Set-Cookie", "").split(";", 1)[0]
+    replay = app.handle("GET", "/", {**HOST, "Cookie": cookie})
+    assert replay.status == 403, "a sibling loopback service can replay the dashboard cookie"
+    assert "Set-Cookie" not in headers
+    location = headers["Location"]
+    home = app.handle("GET", location, HOST)
+    assert home.status == 200
+    assert f"href='{location}graph'".encode() in home.body
+    assert app.handle("GET", location + "api/graph.json", HOST).status == 200
 
 
 def test_a_post_without_the_form_token_writes_nothing(app: DashboardApp, corpus: Path) -> None:

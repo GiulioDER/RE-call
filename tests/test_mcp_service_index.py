@@ -1,6 +1,10 @@
+import os
+
 import pytest
 
 from recall.embeddings import HashingEmbedder
+from recall.security_policy import AccessContext, SourceRule, SourceSecurityPolicy
+from recall_mcp.indexing import IndexPreflightError
 from recall_mcp.service import index_memory
 
 from tests.conftest import dev_search_memory, requires_db
@@ -10,6 +14,75 @@ def test_production_refuses_local_filesystem_ingestion_before_reading(monkeypatc
     monkeypatch.setenv("RECALL_ENV", "production")
     with pytest.raises(ValueError, match="development-only"):
         index_memory(object(), object(), "private/local/path")  # type: ignore[arg-type]
+
+
+class _TenantIndexSink:
+    tenant = "reader"
+
+    def __init__(self):
+        self.texts = []
+
+    def source_content_hashes(self):
+        return {}
+
+    def replace_sources(self, sources, chunks, embeddings):
+        self.texts.extend(chunk.text for chunk in chunks)
+
+    def analyze_if_stale(self, modified):
+        return True
+
+
+@pytest.mark.parametrize("request_path", ["uploads/victim", "uploads/victim/private.md", "."])
+def test_index_cannot_copy_another_tenants_staged_upload(tmp_path, monkeypatch, request_path):
+    """At 65b7a791c the ancestor imported victim text and both direct requests failed to refuse."""
+    monkeypatch.setenv("RECALL_INDEX_ROOT", str(tmp_path))
+    private = tmp_path / "uploads" / "victim" / "private.md"
+    private.parent.mkdir(parents=True)
+    private.write_text("private material from the victim tenant", encoding="utf-8")
+    own = tmp_path / "uploads" / "reader" / "own.md"
+    own.parent.mkdir()
+    own.write_text("ordinary material from the reader tenant", encoding="utf-8")
+    store = _TenantIndexSink()
+    embedder = HashingEmbedder(dim=64)
+
+    if request_path == ".":
+        index_memory(store, embedder, str(tmp_path))  # type: ignore[arg-type]
+        assert store.texts == ["ordinary material from the reader tenant"]
+    else:
+        with pytest.raises(IndexPreflightError, match="another tenant"):
+            index_memory(store, embedder, str(tmp_path / request_path))  # type: ignore[arg-type]
+        assert not store.texts
+        index_memory(store, embedder, str(own))  # type: ignore[arg-type]
+        assert store.texts == ["ordinary material from the reader tenant"]
+
+
+@pytest.mark.parametrize("request_path", ["restricted", "restricted/public/memo.md"])
+def test_index_policy_uses_the_operator_root(tmp_path, monkeypatch, request_path):
+    """At 65b7a791c both paths stripped the denied prefix and indexed the restricted file."""
+    monkeypatch.setenv("RECALL_INDEX_ROOT", str(tmp_path))
+    restricted = tmp_path / "restricted" / "public"
+    restricted.mkdir(parents=True)
+    (restricted / "memo.md").write_text("private text", encoding="utf-8")
+    public = tmp_path / "public"
+    public.mkdir()
+    (public / "memo.md").write_text("public text", encoding="utf-8")
+    policy = SourceSecurityPolicy(
+        tuple(SourceRule(name, purposes=frozenset({"indexing"})) for name in ("public", "memo.md"))
+    )
+    store = _TenantIndexSink()
+    embedder = HashingEmbedder(dim=64)
+    context = AccessContext("reader", store.tenant, purpose="indexing")
+    with pytest.raises(IndexPreflightError, match="denied"):
+        index_memory(
+            store, embedder, str(tmp_path / request_path),  # type: ignore[arg-type]
+            security_policy=policy, security_context=context,
+        )
+    assert not store.texts
+    index_memory(
+        store, embedder, str(public),  # type: ignore[arg-type]
+        security_policy=policy, security_context=context,
+    )
+    assert store.texts == ["public text"]
 
 
 @requires_db
@@ -176,3 +249,122 @@ def test_budget_error_names_the_limit_the_measured_value_and_the_env_var(
     assert "limit 2" in msg  # the configured limit
     assert "RECALL_INDEX_MAX_FILES" in msg  # the variable to raise it
     assert store.count() == 0
+
+def test_protected_generation_ingest_refuses_relabeling_before_create(tmp_path, monkeypatch):
+    """CCA SEC-001. Before the fix the restricted carry-forward reached generation creation."""
+    import hashlib
+    from contextlib import nullcontext
+    from types import SimpleNamespace
+
+    from recall.embeddings import HashingEmbedder
+    from recall.lineage import IndexManifestV1, ManifestObjectV1
+    from recall.security_policy import AccessContext, SourceRule, SourceSecurityPolicy
+    from recall_mcp import desktop_ingest
+    from recall_mcp.indexing import IndexPreflightError
+
+    tenant_root = tmp_path / "uploads" / "team"
+    job = tenant_root / "new-job"
+    job.mkdir(parents=True)
+    (job / "new.md").write_bytes(b"new public information")
+    old_files = []
+    for name in ("keep.md", "private/secret.md"):
+        path = tenant_root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        content = b"previous document content"
+        path.write_bytes(content)
+        digest = hashlib.sha256(content).hexdigest()
+        old_files.append(ManifestObjectV1(
+            uri=path.as_uri(), media_type="text/markdown", version_id=digest,
+            size=len(content), sha256=digest,
+        ))
+    manifest = IndexManifestV1(tenant_id="team", corpus_version="operator-build", objects=tuple(old_files))
+
+    def create(*args, **kwargs):
+        raise AssertionError("restricted source reached generation creation")
+
+    manager = SimpleNamespace(
+        tenant_ingest_lock=nullcontext, servable_manifest=lambda: manifest, create=create,
+    )
+    monkeypatch.setattr(desktop_ingest, "GenerationManager", lambda *args, **kwargs: manager)
+    purposes = frozenset({"indexing"})
+    policy = SourceSecurityPolicy((
+        SourceRule("keep.md", purposes=purposes),
+        SourceRule("uploads/team", purposes=purposes),
+        SourceRule("private", purposes=purposes, principals=frozenset({"admin"})),
+    ))
+    with pytest.raises(IndexPreflightError):
+        desktop_ingest.generation_ingest(
+            SimpleNamespace(tenant="team", _dsn="unused"), HashingEmbedder(dim=64), str(job), "memory",
+            security_policy=policy, security_context=AccessContext("writer", "team", purpose="indexing"),
+            env={"RECALL_INDEX_ROOT": str(tmp_path)},
+        )
+
+
+@pytest.mark.parametrize("alias", [True, False])
+def test_index_refuses_case_alias_of_upload_namespace(tmp_path, monkeypatch, alias):
+    """CCA SEC-002. With POSIX lexical spelling a direct alternate-case target indexed the file."""
+    from pathlib import Path
+
+    from recall_mcp import indexing
+
+    monkeypatch.setenv("RECALL_INDEX_ROOT", str(tmp_path))
+    target = tmp_path / "Uploads" / "victim" / "private.md"
+    target.parent.mkdir(parents=True)
+    target.write_text("private material from another tenant", encoding="utf-8")
+    original = indexing.within
+
+    def lexical(root, path):
+        # On a case-insensitive POSIX volume the file opens but realpath retains "Uploads".
+        if Path(path).parts == target.parts:
+            return target if root == tmp_path else None
+        if Path(path).parts == (tmp_path / "uploads").parts:
+            return tmp_path / "uploads"
+        return original(root, path)
+
+    monkeypatch.setattr(indexing, "within", lexical)
+    monkeypatch.setattr(Path, "samefile", lambda self, other: alias)
+    store = _TenantIndexSink()
+    if not alias:
+        try:
+            index_memory(store, HashingEmbedder(dim=64), str(target))
+        except IndexPreflightError as exc:
+            pytest.fail(f"an ordinary directory was treated as an upload alias: {exc}")
+        assert store.texts == ["private material from another tenant"]
+        return
+    with pytest.raises(IndexPreflightError, match="another tenant"):
+        index_memory(store, HashingEmbedder(dim=64), str(target))
+    assert not store.texts
+
+
+def test_erase_legacy_single_component_upload_tenant(tmp_path, monkeypatch):
+    """CCA STAKES-001. The staging validator previously rejected legacy tenant cleanup."""
+    from recall.uploads import delete_staged_sources
+
+    monkeypatch.setenv("RECALL_INDEX_ROOT", str(tmp_path))
+    source = tmp_path / "uploads" / "research team" / "job" / "memo.md"
+    source.parent.mkdir(parents=True)
+    source.write_text("existing staged content", encoding="utf-8")
+    try:
+        removed = delete_staged_sources("research team", [str(source)])
+    except ValueError:
+        removed = 0
+    assert removed == 1
+    assert not source.exists()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="native POSIX tenant names")
+@pytest.mark.parametrize("tenant", ["research.", "research:team", r"research\team"])
+def test_erase_legacy_posix_upload_name(tmp_path, monkeypatch, tenant):
+    """FIX-003 L6: cleanup rejected an existing native POSIX tenant directory."""
+    from recall.uploads import delete_staged_sources
+
+    monkeypatch.setenv("RECALL_INDEX_ROOT", str(tmp_path))
+    source = tmp_path / "uploads" / tenant / "job" / "memo.md"
+    source.parent.mkdir(parents=True)
+    source.write_text("legacy staged data", encoding="utf-8")
+    try:
+        removed = delete_staged_sources(tenant, [str(source)])
+    except ValueError as exc:
+        pytest.fail(f"legacy cleanup rejected the native directory: {exc}")
+    assert removed == 1
+    assert not source.exists()

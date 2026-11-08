@@ -225,7 +225,7 @@ def trusted_related(
         store_tenant = getattr(store, "tenant", None)
         if isinstance(store_tenant, str) and store_tenant != access_context.tenant:
             raise PermissionError("access context tenant does not match the serving store")
-        if not security_policy.decide(seed_file, access_context).allowed:
+        if not security_policy.allows_stored_chunk(seed, access_context):
             raise PermissionError("related seed is outside the authorized source scope")
     seed_ord = _ordinal(seed)
     graph = store_supersession_graph(store)
@@ -269,7 +269,7 @@ def trusted_related(
         if matches[relation]:
             if security_policy is not None:
                 assert access_context is not None
-                if not security_policy.decide(file, access_context).allowed:
+                if not security_policy.allows_stored_chunk(chunk, access_context):
                     continue
             related.append(
                 ScoredChunk(

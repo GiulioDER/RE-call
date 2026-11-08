@@ -317,3 +317,19 @@ def test_a10_erasure_refuses_a_denied_json_file(
         with pytest.raises(PermissionError):
             remove(store, [source], security_policy=policy, security_context=_context("alice"))
         assert store.count() == 1, "the refused erasure deleted the row"
+
+def test_erase_refuses_untrusted_legacy_policy_file_label(tmp_path):
+    """CCA STAKES-002. The prior erasure gate deleted a restricted source using its old alias."""
+    path = tmp_path / "restricted" / "private.md"
+    with LiteStore(tmp_path / "memory.db", dim=HASHING_DIM) as store:
+        store.upsert([Chunk(
+            "old", str(path), "private material",
+            {"file": "public/private.md", "security_policy_digest": "pre-upgrade-digest"},
+        )], [[0.1] * HASHING_DIM])
+        policy = SourceSecurityPolicy((SourceRule("public", purposes=ERASURE),))
+        with pytest.raises(PermissionError, match="not authorized|reindex|source identity"):
+            forget_memory(
+                store, ["public/private.md"], security_policy=policy,
+                security_context=_context("alice", store.tenant),
+            )
+        assert store.sources_for_identifiers([str(path)])

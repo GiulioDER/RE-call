@@ -53,7 +53,7 @@ from tests.test_lite_mcp import _serve
 
 lite_env = test_lite_mcp.lite_env  # the MCP tests' fixture: a lite DSN and an offline embedder
 HOST = {"Host": "127.0.0.1:8765"}
-SIGNED = {**HOST, "Cookie": "recall_dashboard=tok"}
+SIGNED = {**HOST, "Authorization": "Bearer tok"}
 QUESTION = f"who services the {_word(7, 1)} {_NOUNS[7]}"
 #: Searched, and named by no agent report, so only the search ledger can put it on a page.
 SECOND = f"who services the {_word(3, 1)} {_NOUNS[3]}"

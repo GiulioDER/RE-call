@@ -144,7 +144,7 @@ def promote_uploads(tenant: str, work: Path, job_key: str) -> Path:
 
     The working directory is removed either way; see `_promote_staged`.
     """
-    stable = _tenant_uploads_root(tenant) / _safe_job_key(job_key)
+    stable = _tenant_uploads_root(tenant, create=True) / _safe_job_key(job_key)
     try:
         _promote_staged(work, stable)
     finally:
@@ -231,7 +231,7 @@ def stage_uploads(
     job_id = uuid.uuid4().hex
     # Always a fresh working directory, even when a stable destination was asked for: it is what
     # makes `discard_staging` on refusal safe, since it can never delete a live tree.
-    root = _tenant_uploads_root(tenant) / job_id
+    root = _tenant_uploads_root(tenant, create=True) / job_id
     total = 0
     seen: set[str] = set()
     root.mkdir(parents=True, exist_ok=True)

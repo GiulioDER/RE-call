@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import os
 import posixpath
+import re
 from collections.abc import Iterable, Sequence
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from urllib.parse import unquote, urlsplit
 
-from recall.confinement import within
+from recall.confinement import confined, within
 from recall.observability import get_logger
 
 _LOG = get_logger("desktop.uploads")
@@ -71,9 +72,30 @@ def in_upload_staging(source: str, tenant: str) -> bool:
     return _runs_through_uploads(Path(_location(source)).parts, tenant)
 
 
-def _tenant_uploads_root(tenant: str) -> Path:
-    """Return the confined staged upload root for one tenant."""
-    return Path(os.environ.get("RECALL_INDEX_ROOT", ".")).resolve() / "uploads" / tenant
+def _tenant_uploads_root(tenant: str, *, create: bool = False) -> Path:
+    """Locate an unambiguous tenant directory, including existing legacy names."""
+    if tenant in {"", ".", ".."} or "/" in tenant or "\x00" in tenant:
+        raise ValueError("tenant ID is not a safe upload directory name")
+    # Legacy POSIX staging could write native single components that are invalid on
+    # Windows. Keep those exact directories erasable while new staging stays portable.
+    if (create or os.name == "nt") and (
+        tenant.endswith((".", " "))
+        or re.search(r'[\\:*?"<>|\x00-\x1f]', tenant)
+        or PureWindowsPath(tenant).is_reserved()
+    ):
+        raise ValueError("tenant ID is not a safe upload directory name")
+    index_root = Path(os.environ.get("RECALL_INDEX_ROOT", ".")).resolve()
+    uploads = confined(index_root, "uploads")
+    if uploads is None or uploads.parent != index_root or uploads.name.casefold() != "uploads":
+        raise ValueError("invalid upload directory")
+    root = within(uploads, uploads / tenant)
+    if root is None or root.parts != (uploads / tenant).parts:
+        raise ValueError("tenant upload directory has a conflicting filesystem identity")
+    if create:
+        root.mkdir(parents=True, exist_ok=True)
+    if root.exists() and not any(entry.name == tenant for entry in uploads.iterdir()):
+        raise ValueError("tenant upload directory has a conflicting filesystem identity")
+    return root
 
 
 def delete_staged_sources(tenant: str, sources: Iterable[str]) -> int:

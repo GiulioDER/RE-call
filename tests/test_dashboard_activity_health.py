@@ -24,7 +24,7 @@ from recall.rewrite import RejectionLedger, claim_key, default_ledger_path
 from recall.stale_reports import StaleReportQueue, default_queue_path
 
 HOST = {"Host": "127.0.0.1:8765"}
-SIGNED = {**HOST, "Cookie": "recall_dashboard=tok"}
+SIGNED = {**HOST, "Authorization": "Bearer tok"}
 
 
 @pytest.fixture

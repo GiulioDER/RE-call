@@ -31,7 +31,7 @@ from tests.test_dashboard_corpus import _detail
 from tests.test_dashboard_db_pages import FakeCorpus
 
 HOST = {"Host": "127.0.0.1:8765"}
-SIGNED = {**HOST, "Cookie": "recall_dashboard=tok"}
+SIGNED = {**HOST, "Authorization": "Bearer tok"}
 NOW = datetime(2026, 11, 4, 12, 0, tzinfo=UTC)
 OLD_QUOTE = "it is still being prepared for PyPI"
 NEW_QUOTE = "was published to PyPI on 2 September"
@@ -97,7 +97,7 @@ def test_sec001_a_refusal_before_the_session_shows_no_root_and_no_tenants(root: 
 
     monkeypatch.setattr(dbq, "tenants", tenants)
     app = _app(root, db=DashboardDB("postgresql://fake"))
-    for headers in ({"Host": "evil.example:8765", "Cookie": "recall_dashboard=tok"}, HOST, {**HOST, "Cookie": "recall_dashboard=wrong"}):
+    for headers in ({"Host": "evil.example:8765", "Authorization": "Bearer tok"}, HOST, {**HOST, "Cookie": "recall_dashboard=wrong"}):
         response = app.handle("GET", "/", headers)
         body = response.body.decode()
         assert response.status == 403
@@ -120,17 +120,14 @@ def test_sec004_a_non_ascii_token_is_refused_not_raised(root: Path) -> None:
 
 
 def test_env001_a_dashboard_on_another_port_cannot_log_this_one_out(root: Path) -> None:
-    """ENV-001: cookies ignore the port, so a second dashboard's session cookie replaced this one's.
-
-    Pre-fix the session cookie is the fixed `recall_dashboard`: the Set-Cookie name assertion fails,
-    and a request carrying another port's token under that name is refused.
-    """
+    """ENV-001: another dashboard's session cannot replace this one's authorization."""
     app = _app(root)
     issued = app.handle("GET", "/?token=tok", HOST)
-    cookies = [value for name, value in issued.headers if name == "Set-Cookie"]
-    assert cookies and cookies[0].startswith("recall_dashboard_8765=tok"), f"ENV-001: session cookie not port-scoped: {cookies}"
-    both = {**HOST, "Cookie": "recall_dashboard=other-dashboards-token; recall_dashboard_8765=tok"}
-    assert app.handle("GET", "/", both).status == 200, "ENV-001: another port's cookie shadowed this dashboard's"
+    other = DashboardApp(root, port=8766, token="other-token")
+    other_start = other.handle("GET", "/?token=other-token", {"Host": "127.0.0.1:8766"})
+    path = dict(issued.headers)["Location"]
+    assert app.handle("GET", path, HOST).status == 200
+    assert app.handle("GET", dict(other_start.headers)["Location"], HOST).status == 403
 
 
 # ------------------------------------------------------------------ edits and their ledger

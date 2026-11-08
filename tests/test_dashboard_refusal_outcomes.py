@@ -13,7 +13,7 @@ from recall.dashboard import db as dbq
 from recall.dashboard.server import DashboardApp
 from tests.test_dashboard_db_pages import FakeCorpus, WHEN
 
-SIGNED = {"Host": "127.0.0.1:8765", "Cookie": "recall_dashboard=tok"}
+SIGNED = {"Host": "127.0.0.1:8765", "Authorization": "Bearer tok"}
 
 
 def test_retrieval_keeps_answer_abstention_and_refusal_distinct(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

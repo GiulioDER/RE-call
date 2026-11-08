@@ -4,6 +4,7 @@ import pytest
 
 from recall.calibration import Calibration
 from recall.related import trusted_related
+from recall.security_policy import AccessContext, SourceRule, SourceSecurityPolicy
 from recall.trust_policy import TrustPolicy
 from recall.types import Chunk
 
@@ -64,6 +65,22 @@ def test_related_evidence_uses_store_bounded_path() -> None:
     )
     assert [item.chunk.id for item in result.items] == ["neighbor"]
     assert calls == [("seed", "source", 1)]
+
+
+def test_related_evidence_does_not_return_stale_redaction_rows() -> None:
+    """At 65b7a791c the old neighbor and the current neighbor were both returned."""
+    policy = SourceSecurityPolicy((SourceRule("notes.md", redactions=("email",)),))
+    store = Store()
+    store.chunks[0].metadata["security_policy_digest"] = policy.digest
+    store.chunks.append(Chunk(
+        "current", "notes.md", "current redacted text",
+        {"file": "notes.md", "ord": 3, "security_policy_digest": policy.digest},
+    ))
+    result = trusted_related(
+        store, "seed", relation="source", calibration=Calibration(embedder="fixture", threshold=0.5),
+        security_policy=policy, access_context=AccessContext("reader", store.tenant),
+    )
+    assert [item.chunk.id for item in result.items] == ["current"]
 
 
 def test_related_evidence_rejects_unbounded_item_limit() -> None:

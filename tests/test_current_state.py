@@ -3,8 +3,10 @@ from datetime import UTC, datetime
 import pytest
 
 from recall.current_state import project_current_state
+from recall.security_policy import AccessContext, SourceRule, SourceSecurityPolicy
 from recall.store import resolve_supersession_candidates
 from recall.types import Chunk
+from recall_mcp.lifecycle import current_state_memory
 
 
 NOW = datetime(2026, 8, 24, tzinfo=UTC)
@@ -44,6 +46,22 @@ def test_current_state_is_deterministic_and_generation_bound() -> None:
     assert first.generation_id == "gen-1"
     states = {record.source: record.state for record in first.records}
     assert states == {"a.md": "superseded", "b.md": "current"}
+
+
+def test_current_state_does_not_expose_denied_source_membership() -> None:
+    """At 65b7a791c the two empty responses exposed different projection IDs."""
+    policy = SourceSecurityPolicy((SourceRule("public"),))
+    store = Store([
+        Chunk("visible", "public/note.md", "visible", {"file": "public/note.md"}),
+        Chunk("hidden", "private/note.md", "hidden", {"file": "private/note.md"}),
+    ])
+    options = {"as_of": NOW, "security_policy": policy, "access_context": AccessContext("reader", store.tenant)}
+    denied = current_state_memory(store, source="private/note.md", **options)
+    missing = current_state_memory(store, source="missing.md", **options)
+    assert denied.records == missing.records == []
+    assert denied.projection_id == missing.projection_id
+    listed = current_state_memory(store, max_records=1, **options)
+    assert [record.source for record in listed.records] == ["public/note.md"]
 
 
 def test_current_state_fails_closed_on_multiple_live_successors() -> None:

@@ -39,11 +39,14 @@ import logging
 import os
 import re
 from collections.abc import Mapping
+from contextlib import nullcontext
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from recall.rewrite import claim_key
+from recall.security_policy import AccessContext, SourceSecurityPolicy
+from recall.types import Chunk
 from recall.stale_reports import (
     MAX_QUOTE_CHARS,
     MIN_QUOTE_CHARS,
@@ -55,7 +58,7 @@ from recall.stale_reports import (
     quote_fingerprint,
     resolve_memo,
 )
-from recall_mcp.use_reports_api import UseReportRefused, resolve_sources
+from recall_mcp.use_reports_api import UseReportRefused, authorized_report_rows, resolve_sources
 
 logger = logging.getLogger(__name__)
 
@@ -94,18 +97,41 @@ def _record_served(
     task: str | None,
     checked_locally: bool,
     day: str,
+    security_policy: SourceSecurityPolicy | None = None,
+    access_context: AccessContext | None = None,
 ) -> tuple[str, str, str]:
     """Append one `stale_report` row, or refuse; returns the event id and the two served names."""
-    known = set(store.source_content_hashes())
-    try:
-        stale = resolve_sources([stale_source], known, "stale_source")[0]
-        replacing = resolve_sources([replacing_source], known, "replacing_source")[0]
-    except UseReportRefused as exc:
-        raise StaleReportRefused(str(exc)) from exc
+    rows = None
+    snapshot = getattr(store, "snapshot", None)
+    with snapshot() if security_policy is not None and callable(snapshot) else nullcontext():
+        try:
+            if security_policy is None:
+                known = set(store.source_content_hashes())
+            elif access_context is None:
+                raise StaleReportRefused("source policy requires an access context")
+            else:
+                known = set(authorized_report_rows(
+                    store, (stale_source, replacing_source), security_policy, access_context, include_text=False,
+                ))
+            stale = resolve_sources([stale_source], known, "stale_source")[0]
+            replacing = resolve_sources([replacing_source], known, "replacing_source")[0]
+            if security_policy is not None:
+                assert access_context is not None
+                rows = authorized_report_rows(
+                    store, (stale, replacing), security_policy, access_context, include_text=True, exact=True,
+                )
+                if stale not in rows or replacing not in rows:
+                    raise StaleReportRefused("reported sources are unavailable")
+        except UseReportRefused as exc:
+            raise StaleReportRefused(str(exc)) from exc
     if stale == replacing:
         raise StaleReportRefused("a memo cannot supersede itself")
     for field, quote, source in (("stale_quote", stale_quote, stale), ("current_quote", current_quote, replacing)):
-        text = served_text(store, source)
+        text = served_text(store, source) if rows is None else "\n".join(
+            chunk.text for chunk in sorted(
+                rows[source], key=_chunk_order
+            )
+        )
         if text is None:
             if checked_locally:
                 continue
@@ -135,6 +161,11 @@ def _record_served(
     return event_id, stale, replacing
 
 
+def _chunk_order(chunk: Chunk) -> tuple[int, str]:
+    ordinal = chunk.metadata.get("ord")
+    return (ordinal if isinstance(ordinal, int) else 0, chunk.id)
+
+
 def report_stale(
     store: Any,
     *,
@@ -146,6 +177,8 @@ def report_stale(
     env: Mapping[str, str] | None = None,
     now: datetime | None = None,
     sidecar: bool = True,
+    security_policy: SourceSecurityPolicy | None = None,
+    access_context: AccessContext | None = None,
 ) -> dict[str, Any]:
     """Record one report, or raise `StaleReportRefused` with the reason.
 
@@ -170,7 +203,7 @@ def report_stale(
     # Resolve before opening the queue: opening it creates `.recall/` under the root, and on a
     # server whose root holds no memos (a serving checkout) that would only leave litter behind.
     local_refusal: StaleReportRefused | None = None
-    if not sidecar:
+    if not sidecar or security_policy is not None:
         local_refusal = StaleReportRefused("this server records stale reports only in the tenant's audit ledger")
     else:
         try:
@@ -207,6 +240,8 @@ def report_stale(
                 task=task,
                 checked_locally=report is not None,
                 day=reported_at.astimezone(UTC).date().isoformat(),
+                security_policy=security_policy,
+                access_context=access_context,
             )
             served = (served_stale, served_replacing)
         except Exception as exc:  # BROAD-CATCH: fail-open

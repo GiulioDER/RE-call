@@ -151,6 +151,18 @@ each step, is under "Upgrade notes" in [CHANGELOG.md](../CHANGELOG.md).
   refuses, and deduplicate labelled query sets.
 * Start the servers and check `recall doctor` and `recall schema status`.
 
+**Source policy upgrade.** The new source identity stamp makes rows written under the old
+stamp ineligible. Reindex a legacy store or build a replacement generation with the updated
+binary before directing traffic to it. On certified deployments, validate and certify the new
+generation before promoting it. Check that an authenticated smoke query returns a known allowed
+source and that a denied source is withheld. Couple the binary and generation when switching
+traffic or rolling back. For a legacy store, preserve a matching pre-upgrade index for rollback.
+
+Review existing staged-upload rows for earlier cross-tenant copies. Rebuilding an affected
+tenant from its authorized source set removes those old copies from the serving index. Protected
+desktop ingest refuses carry-forward when it would relabel an existing source. An operator
+rebuild can establish the intended source labels before uploads resume.
+
 **→ 0.15.0: a ledger that already holds facts needs `recall provenance rebuild`.** The
 current-facts migration creates its tables empty and nothing fills them from existing events, so after
 `recall schema apply` every fact read and conflict check replays the tenant's ledger until it is

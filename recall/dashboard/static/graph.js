@@ -619,18 +619,18 @@
     if (corpus) {
       // A database file has no memo on this machine: its page is View 2.
       const open = el("a", "review-link", "Open this file's page →");
-      open.href = "/corpus/source?tenant=" + encodeURIComponent(corpus) + "&file=" + encodeURIComponent(n.id);
+      open.href = "corpus/source?tenant=" + encodeURIComponent(corpus) + "&file=" + encodeURIComponent(n.id);
       actions.append(open);
     } else {
       const read = el("a", "review-link", "Read this memo →");
-      read.href = "/read?path=" + encodeURIComponent(n.id);
+      read.href = "read?path=" + encodeURIComponent(n.id);
       const edit = el("a", "review-link", "Edit supersession, validity, status →");
-      edit.href = "/memo?path=" + encodeURIComponent(n.id);
+      edit.href = "memo?path=" + encodeURIComponent(n.id);
       actions.append(read, edit);
     }
     if (n.claim) {
       const review = el("a", "review-link", "Review the pending claim →");
-      review.href = "/review?claim=" + encodeURIComponent(n.claim);
+      review.href = "review?claim=" + encodeURIComponent(n.claim);
       actions.append(review);
     }
     parts.push(actions);
@@ -733,7 +733,7 @@
   window.addEventListener("resize", () => { resize(); needsDraw = true; });
   window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => { readPalette(); needsDraw = true; });
 
-  fetch("/api/graph.json" + (corpus ? "?corpus=" + encodeURIComponent(corpus) : ""), { credentials: "same-origin" })
+  fetch("api/graph.json" + (corpus ? "?corpus=" + encodeURIComponent(corpus) : ""), { credentials: "same-origin" })
     .then((r) => { if (!r.ok) throw new Error("status " + r.status); return r.json(); })
     .then((payload) => {
       data = payload;

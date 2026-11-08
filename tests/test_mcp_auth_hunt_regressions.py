@@ -24,6 +24,9 @@ from mcp.server.mcpserver.exceptions import ToolError
 
 import recall_mcp.server as server
 from recall.profiles import RetrievalOverloaded
+from recall.retrieval_plan import RetrievalPlan
+from recall.security_policy import SourceRule, SourceSecurityPolicy
+from recall.types import Chunk
 from recall_mcp.auth import SCOPE_FORGET, SCOPE_READ, SCOPE_WRITE, AuthConfigError
 from recall_mcp.indexing import IndexPreflightError
 from recall_mcp.oidc import IdentityProviderUnavailable, OidcConfig, OidcValidator, oidc_env_present
@@ -83,6 +86,101 @@ def _run(name: str, state: dict, monkeypatch, token: _Token | None, **kwargs):
     tool = _tools()[name]
     ctx = SimpleNamespace(request_context=SimpleNamespace(lifespan_context=state))
     return asyncio.run(tool.fn(ctx=ctx, **kwargs))
+
+
+@pytest.mark.parametrize(("tool", "service", "scope", "purpose", "arguments"), [
+    ("recall_forget", "forget_memory", SCOPE_FORGET, "erasure", {"sources": ["memo.md"]}),
+    ("recall_withdraw", "withdraw_memory", SCOPE_FORGET, "erasure", {"sources": ["memo.md"]}),
+    ("recall_index", "index_memory", SCOPE_WRITE, "indexing", {"path": "memo.md"}),
+    (
+        "recall_ingest", "ingest_into_serving_store", SCOPE_WRITE, "indexing",
+        {"files": [{"name": "memo.md", "content_b64": "bWVtb3J5"}]},
+    ),
+])
+def test_mutation_uses_its_own_source_policy_purpose(tmp_path, monkeypatch, tool, service, scope, purpose, arguments):
+    """At 65b7a791c all four tool routes inverted the two expected policy decisions."""
+    monkeypatch.setenv("RECALL_INDEX_ROOT", str(tmp_path))
+    state = _authenticated(_Registry())
+    decisions = []
+
+    def check(*args, **kwargs):
+        context = kwargs.get("security_context") or kwargs["access_context"]
+        decisions.append(state["source_security_policy"].decide("memo.md", context).allowed)
+        raise _Stop
+
+    monkeypatch.setattr(server, service, check)
+    for allowed_purpose in ("retrieval", purpose):
+        state["source_security_policy"] = SourceSecurityPolicy(
+            (SourceRule("memo.md", purposes=frozenset({allowed_purpose})),)
+        )
+        with pytest.raises(_Stop):
+            _run(tool, state, monkeypatch, _Token([scope]), **arguments)
+    assert decisions == [False, True]
+
+
+@pytest.mark.parametrize("tool", ["recall_report_use", "recall_report_stale"])
+def test_reports_cannot_resolve_a_source_denied_by_policy(monkeypatch, tool):
+    """At 65b7a791c both report tools accepted the denied source and wrote an event."""
+    state = _authenticated(_Registry())
+    policy = SourceSecurityPolicy((SourceRule("public"),))
+    state["source_security_policy"] = policy
+    quote = "The release is planned for next month."
+    rows = [
+        Chunk(name, f"/corpus/{path}", quote, {"file": path, "security_policy_digest": policy.digest})
+        for name, path in [
+            ("private", "private/private.md"), ("old", "public/old.md"), ("new", "public/new.md")
+        ]
+    ]
+    events = []
+    store = SimpleNamespace(
+        tenant="acme", iter_chunks=lambda: iter(rows),
+        source_content_hashes=lambda: {row.source: "hash" for row in rows},
+        source_chunk_texts=lambda source: [row.text for row in rows if row.source == source],
+        append_audit_event=lambda *args, **kwargs: events.append(args) or "recorded",
+    )
+    monkeypatch.setattr(state["stores"], "get", lambda _tenant: store)
+    token = _Token([SCOPE_READ, SCOPE_WRITE])
+
+    def report(source):
+        if tool == "recall_report_use":
+            return _run(tool, state, monkeypatch, token, task="read", effect="helped", used=[source])
+        return _run(
+            tool, state, monkeypatch, token, stale_source=source, replacing_source="new.md",
+            stale_quote=quote, current_quote=quote,
+        )
+
+    with pytest.raises(ToolError):
+        report("private.md")
+    assert not events, "the denied source must not be written to the ledger"
+    with pytest.raises(ToolError):
+        report("absent.md")
+    report("old.md")
+    assert len(events) == 1
+
+
+def test_search_serializes_only_authorized_route_tenants(monkeypatch):
+    """At 65b7a791c the single-tenant response named the dormant hidden tenant."""
+    state = _authenticated(_Registry())
+    plan = RetrievalPlan(
+        route_id="acme-route", primary_tenant="acme", allowed_tenants=frozenset({"acme", "hidden"}),
+    )
+    monkeypatch.setattr(server, "_retrieval_plan_for", lambda *args, **kwargs: plan)
+    monkeypatch.setattr(
+        server, "prepare_federated_execution",
+        lambda *args, **kwargs: SimpleNamespace(
+            store=kwargs["current_store"], embedder=None, retrieve_trusted=None,
+        ),
+    )
+    monkeypatch.setattr(server, "federation_diagnostics", lambda _: None)
+    monkeypatch.setattr(
+        server, "search_memory",
+        lambda **kwargs: SimpleNamespace(
+            model_copy=lambda update: SimpleNamespace(model_dump_json=lambda **opts: json.dumps(update)),
+        ),
+    )
+    result = json.loads(_run("recall_search", state, monkeypatch, _Token([SCOPE_READ]), query="memo"))
+    assert result["retrieval_plan"]["allowed_tenants"] == ["acme"]
+    assert plan.allowed_tenants == frozenset({"acme", "hidden"})
 
 
 # --- SEC-001 ---------------------------------------------------------------------------------
@@ -483,3 +581,55 @@ def test_the_documented_jwks_refresh_default_is_the_one_the_code_applies() -> No
 
     (spec,) = [s for s in ENVIRONMENT_SCHEMA if s.name == "RECALL_OIDC_JWKS_REFRESH_SECONDS"]
     assert spec.default == str(DEFAULT_JWKS_REFRESH_S)
+
+@pytest.mark.parametrize("tool", ["recall_report_use", "recall_report_stale"])
+def test_policy_report_preserves_unrecoverable_receipt_status(monkeypatch, tool):
+    """FIX-006. Both policy report retries raised KeyError before returning reconciliation."""
+    from recall_mcp.limits import IdempotencyResultMissing
+
+    class MissingReceipt:
+        requires_idempotency = True
+
+        async def check(self, tenant, key, **kwargs):
+            if not kwargs["read_only"]:
+                raise IdempotencyResultMissing(kwargs["idempotency_key"])
+
+    state = _authenticated(_Registry(), MissingReceipt())
+    state["source_security_policy"] = SourceSecurityPolicy((SourceRule("public"),))
+    arguments = {"task": "test", "effect": "no_difference"} if tool.endswith("use") else {
+        "stale_source": "old.md", "replacing_source": "new.md",
+        "stale_quote": "an obsolete passage in a memo", "current_quote": "the corrected passage in a memo",
+    }
+    try:
+        out = _run(tool, state, monkeypatch, _Token([SCOPE_READ, SCOPE_WRITE]), idempotency_key="pending", **arguments)
+    except KeyError as exc:
+        pytest.fail(f"report retry parsed reconciliation as a source receipt: {exc}")
+    assert json.loads(out)["status"] == "reconciliation_required"
+
+def test_policy_stale_report_uses_only_named_lite_rows(tmp_path, monkeypatch):
+    """FIX-006. The pre-fix Lite report attempted a full body scan before resolving names."""
+    from recall.lite import LiteStore
+    from recall.security_policy import AccessContext
+    from recall_mcp.stale_reports_api import report_stale
+
+    with LiteStore(tmp_path / "memory.db", dim=4) as store:
+        policy = SourceSecurityPolicy((SourceRule("public"),))
+        old = "The old memo names the earlier deadline."
+        new = "The replacement names the approved deadline."
+        store.upsert([
+            Chunk("old", "/one/old.md", old, {"file": "public/old.md", "security_policy_digest": policy.digest}),
+            Chunk("new", "/two/new.md", new, {"file": "public/new.md", "security_policy_digest": policy.digest}),
+            Chunk("hidden", "/three/old.md", "unrelated", {"file": "private/old.md", "security_policy_digest": policy.digest}),
+        ], [[0.1] * 4] * 3)
+
+        def whole_corpus():
+            pytest.fail("the report attempted to read the whole Lite corpus")
+
+        monkeypatch.setattr(store, "iter_chunks", whole_corpus)
+        result = report_stale(
+            store, stale_source="old.md", replacing_source="new.md", stale_quote=old,
+            current_quote=new, task=None, sidecar=False, security_policy=policy,
+            access_context=AccessContext("reader", store.tenant),
+        )
+        assert result["queued"]
+        assert result["stale_source"] == "/one/old.md"

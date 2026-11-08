@@ -45,6 +45,7 @@ from typing import Any, Literal, NamedTuple
 from recall.errors import RecallError
 from recall.frontmatter import RECORD_KEY, RECORD_LABEL_KEYS, supersedes_targets, validity_bounds
 from recall.observability import get_logger
+from recall.scope import Scope
 from recall.security_policy import AccessContext, SourceSecurityPolicy
 from recall.supersession import SupersessionGraph, place_graph_key, store_supersession_graph
 from recall.types import Chunk
@@ -407,6 +408,7 @@ def reported_successor(
     *,
     allowed: Callable[[str], bool] | None = None,
     file_of_source: Mapping[str, str] | None = None,
+    allowed_keys: Collection[str] | None = None,
 ) -> str | None:
     """What a records reader reports in `superseded_by` for the document at `file`/`source`.
 
@@ -423,6 +425,8 @@ def reported_successor(
     successor = graph.successor(key, now=now)
     if successor is None:
         return None
+    if allowed_keys is not None and successor not in allowed_keys:
+        return WITHHELD
     if allowed is None:
         return successor
     placed = place_graph_key(successor, file_of_source or {}, graph.collided)
@@ -655,6 +659,8 @@ def lookup_records(
     if security_policy is not None:
         if access_context is None:
             raise RecordsQueryError("access_context is required when security_policy is configured")
+        if getattr(store, "tenant", None) != access_context.tenant:
+            raise PermissionError("access context tenant does not match the serving store")
         policy = (security_policy, access_context)
     # Which code-anchor rows can match: none when `kinds` leaves code out, and only the asked
     # files' for an anchor query. Every chunk of a code tenant carries an anchor, so reading them
@@ -668,11 +674,40 @@ def lookup_records(
         code_files = sorted({query["file"] for query in query_anchors})
 
     snapshot = getattr(store, "snapshot", None)
+    instant = as_utc(now)
+    allowed_keys: set[str] | None = None
+    successor_files: dict[str, str] = {}
     with snapshot() if callable(snapshot) else contextlib.nullcontext():
         generation_id = _generation_id(store)
         chunks = _record_chunks(store, code_files=code_files)
         graph = store_supersession_graph(store)
-    instant = as_utc(now)
+        if policy is not None:
+            chunks = [chunk for chunk in chunks if policy[0].allows_stored_chunk(chunk, policy[1])]
+            allowed_keys = {graph.key(_file_of(chunk), chunk.source) for chunk in chunks}
+            needed = {
+                successor for key in allowed_keys if (successor := graph.successor(key, now=instant))
+                and successor not in allowed_keys
+            }
+            if needed:
+                references = graph.references.nodes if graph.references is not None else {}
+                sources = {
+                    str(node[2]) for key in needed if (node := references.get(key)) and node[2] is not None
+                }
+                scoped_reader = getattr(store, "iter_scoped_chunks", None)
+                iter_chunks = getattr(store, "iter_chunks", None)
+                extra = (
+                    scoped_reader(
+                        Scope(security_policy_digest=policy[0].digest),
+                        sources=sorted(sources), include_text=False,
+                    )
+                    if callable(scoped_reader) and sources else iter_chunks() if callable(iter_chunks) else ()
+                )
+                for chunk in extra:
+                    file = _file_of(chunk)
+                    graph_key = graph.key(file, chunk.source)
+                    if graph_key in needed and policy[0].allows_stored_chunk(chunk, policy[1]):
+                        allowed_keys.add(graph_key)
+                        successor_files[chunk.source] = file
 
     # One record per document: a memo's chunks all carry its record. In a code tenant several
     # chunks share one anchor (a split symbol, every module-level chunk of a file), so a code
@@ -694,7 +729,6 @@ def lookup_records(
     def allowed(file: str) -> bool:
         return policy is None or policy[0].decide(file, policy[1]).allowed
 
-    groups = {key: members for key, members in groups.items() if allowed(_file_of(members[0][0]))}
     by_source = {key: members[0] for key, members in groups.items()}
     chunk_ids = {key: [member.id for member, _parsed in members] for key, members in groups.items()}
 
@@ -713,9 +747,8 @@ def lookup_records(
         for group, (chunk, parsed) in by_source.items()
     ]
 
-    # A path two roots hold is keyed in the graph by its absolute source, which no source policy
-    # is written against. Read before the policy filter, so a denied successor still maps.
-    file_of_source = {chunk.source: _file_of(chunk) for chunk in chunks}
+    # Collided graph keys use absolute sources. Map them only through currently eligible rows.
+    file_of_source = {**successor_files, **{chunk.source: _file_of(chunk) for chunk in chunks}}
     records = match_candidates(
         candidates,
         query_anchors=query_anchors,
@@ -729,6 +762,7 @@ def lookup_records(
             instant,
             allowed=allowed if policy is not None else None,
             file_of_source=file_of_source,
+            allowed_keys=allowed_keys,
         ),
         now=instant,
     )

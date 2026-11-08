@@ -138,13 +138,18 @@ def test_the_source_policy_applies_as_it_does_to_the_mcp_tool(
     base = _indexed(tmp_path)  # indexed before the policy exists, so every memo is stored
     denied = "RE-call__abcdef012345__BUG-002.md"
     rules = [
-        {"prefix": name, "purposes": ["retrieval"], "principals": [], "redactions": []}
+        {"prefix": name, "purposes": ["indexing", "retrieval"], "principals": [], "redactions": []}
         for name in EXPECTED
         if name != denied
     ]
     policy = tmp_path / "policy.json"
     policy.write_text(json.dumps({"default_deny": True, "rules": rules}), encoding="utf-8")
     monkeypatch.setenv("RECALL_SOURCE_POLICY_FILE", str(policy))
+    assert json.loads(run_cli([*base, "records", "--all", "--json"]))["records"] == []
+    for name in EXPECTED:
+        if name != denied:
+            out = run_cli([*base, "index", str(tmp_path / "memos" / name)])
+            assert "indexed" in out, out
     for argv in (["--all", "--json"], ["--id", EXPECTED[denied]["id"], "--json"]):
         envelope = json.loads(run_cli([*base, "records", *argv]))
         found = {r["recall_record"]["id"]: r for r in envelope["records"]}

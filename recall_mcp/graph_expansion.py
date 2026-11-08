@@ -42,6 +42,7 @@ class GraphExpansionDependencies:
     """
 
     cached_semantic_graph: Callable[..., Any]
+    scoped_semantic_graph: Callable[..., Any]
     combined_graph_policy_fingerprint: Callable[..., Any]
     generation_scope: Callable[..., Any]
     graph_precision_feature_flags: Callable[..., Any]
@@ -745,16 +746,12 @@ def _fetch_candidate_chunks(
             if chunk is None:
                 stats.reject("missing_chunk")
                 continue
-            decision = security_policy.decide(chunk.source, access_context)
-            if not decision.allowed:
+            if not security_policy.allows_stored_chunk(chunk, access_context):
                 # Counted as missing, so neither the reason label nor the byte counters say
                 # that the policy refused it. That a neighbour went missing is still visible.
                 stats.reject("missing_chunk")
                 continue
-            redacted_text, _ = security_policy.redact_with_decision(chunk.text, decision)
-            authorized_chunks[chunk_id] = (
-                chunk if redacted_text == chunk.text else replace(chunk, text=redacted_text)
-            )
+            authorized_chunks[chunk_id] = chunk
         chunks_by_id = authorized_chunks
     else:
         for chunk_id in candidate_ids:
@@ -1188,7 +1185,6 @@ def expand_semantic_graph(
             readiness="GRAPH_NOT_READY",
             gate_reason="graph_not_ready",
         )
-    stats.semantic_diagnostic_count = len(semantic.diagnostics)
     if semantic.tenant_id != request.tenant_id:
         refuse("tenant_mismatch")
         return finish(
@@ -1227,6 +1223,13 @@ def expand_semantic_graph(
             readiness="GRAPH_NOT_READY",
             gate_reason="corpus_mismatch",
         )
+    if security_policy is not None:
+        assert access_context is not None
+        semantic = dependencies.scoped_semantic_graph(store, semantic, security_policy, access_context)
+        if semantic is None:
+            refuse("scoped_graph_unavailable")
+            return finish(result=retrieval, readiness="GRAPH_NOT_READY", gate_reason="scoped_graph_unavailable")
+    stats.semantic_diagnostic_count = len(semantic.diagnostics)
     semantic = _controlled_semantic_graph(semantic, relation_control, relation_control_seed)
     indexes = _semantic_graph_indexes(semantic)
     mentions_by_chunk = indexes.mentions_by_chunk
