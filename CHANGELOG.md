@@ -8,7 +8,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ## [Unreleased]
 
-## [0.15.0] (unreleased)
+## [0.15.0] (2026-11-08)
 
 RE-call 0.15.0 adds Lite, a local store in one SQLite file that needs no Docker and no database
 server, and ships it in the PyPI wheel for the first time. It also adds the local memory dashboard,
@@ -35,6 +35,13 @@ list as an ordered upgrade procedure.
   downloaded once more, into `%LOCALAPPDATA%\recall\fastembed` on Windows or
   `~/.cache/recall/fastembed` elsewhere (`$XDG_CACHE_HOME` is honoured). An offline machine should
   set `FASTEMBED_CACHE_PATH` to its existing cache, which still takes precedence.
+* **A store with a source policy needs a rebuild (#1278).** Rows carry a new source identity stamp,
+  and rows written under the old one are no longer served. Reindex a legacy store, or build a
+  replacement generation (certified and promoted, on a certified deployment), before directing
+  traffic to the updated server, and keep the binary and the generation together when switching
+  or rolling back. Review staged-upload rows for copies made across tenants before the upload fix;
+  rebuilding an affected tenant from its authorized sources removes them. `docs/PRODUCTION.md`,
+  "Source policy upgrade", has the procedure.
 * **Run `recall schema apply` before starting a server.** A non-enterprise multi-tenant server and
   `recall quickstart --existing-dsn` no longer migrate a table on first use.
 * **Packaging:** `recall_aml`, the `hosted` extra and `recall-hosted` are gone from the wheel and
@@ -1380,6 +1387,26 @@ list as an ordered upgrade procedure.
   it.
 
 ### Security
+
+* **Thirteen findings from a repository security scan are fixed (#1278).**
+  * Indexing cannot copy another tenant's staged upload: a direct path, or a walk up from a
+    nested one, used to reach a foreign staged file. Indexing also applies the source policy of
+    the operator's root to nested targets.
+  * Source policy is applied the same way across indexing, retrieval, reports and erasure. Each
+    MCP mutation is checked under its own purpose, and a report cannot name a source the policy
+    denies.
+  * Related-evidence and exact record lookups no longer return rows stamped under an older
+    policy. A search response lists only the tenants the caller may see. A current-state answer
+    no longer reveals, by its identifier, whether a denied source is present. Semantic graph
+    expansion applies source authorization before it admits a neighbour.
+  * The dashboard's bootstrap no longer gives a bearer session that works on another port.
+  * Office documents are size-checked after decompression and before parsing.
+  * The hook relay answers a healthy client while another connection stalls before
+    authenticating.
+  * The desktop MCP gateway refuses to send a bearer token to a remote endpoint over plain HTTP.
+  * The CI security review cannot emit runner commands from model output.
+
+  Deploying it needs the rebuild described under Upgrade notes.
 
 * **Dependency floors no longer admit versions with published advisories, where a fixed release
   exists on the supported line.** Core `pydantic>=2.4`; `mcp` extra `PyJWT[crypto]>=2.15.0`,
