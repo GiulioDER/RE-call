@@ -137,6 +137,24 @@ every session searched instead of half, and the governing memo reached the agent
 sessions against 0.319 (p = 0.0006), at roughly double the token overhead. What it did not fix is
 query vocabulary itself, which is retrieval-side work, and the record says so.
 
+## Privacy: what it sends, and where
+
+By default no memo text leaves your machine. Memos are embedded locally with fastembed and stored
+in the database you configured: a local SQLite file, or your own PostgreSQL. Four things can reach
+the network:
+
+- **The embedding model.** On first use, fastembed downloads `BAAI/bge-small-en-v1.5` from Hugging
+  Face into your platform cache directory. Nothing from your memos is sent.
+- **A hosted embedder, if you configure one.** With `RECALL_EMBEDDER` naming a hosted embedder
+  (Voyage, OpenAI), the text of every memo indexed and of every search is sent to that provider
+  under your own API key. The same holds for an OpenRouter or OpenAI model you configure for fact
+  extraction or reasoning queries.
+- **Hosted memory sync, if you configure it.** When `~/.claude/recall-hook.json` names a hosted
+  endpoint, the session hooks upload the project's memo files to that RE-call server, over HTTPS
+  or to a loopback address only.
+- **Your database.** Everything indexed goes to the database the DSN names, which is on another
+  machine only if you point it at one.
+
 ## What it measurably does, and honest limits
 
 The measured claim first: **adding this memory to a good `CLAUDE.md` reliably stops a known
@@ -166,3 +184,4 @@ better.** Both are published, including the one that did not work.
 - [Setup guide](https://giulioder.github.io/RE-call/)
 - [Repository](https://github.com/GiulioDER/RE-call)
 - [Using RE-call with Claude](https://github.com/GiulioDER/RE-call/blob/master/docs/USING_WITH_CLAUDE.md)
+- [Privacy](https://github.com/GiulioDER/RE-call/blob/master/plugin/README.md#privacy-what-it-sends-and-where)
