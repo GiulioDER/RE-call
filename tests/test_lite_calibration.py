@@ -350,3 +350,37 @@ def test_carry_forward_refuses_a_fit_with_no_usable_width_instead_of_raising(tmp
     except (TypeError, ValueError) as exc:
         pytest.fail(f"carry_forward raised {type(exc).__name__} on a fit with no usable width")
     assert carried.artifact is None and "usable embedding width" in carried.reason, carried.reason
+
+
+def test_the_fitted_question_set_does_not_depend_on_the_store_directory(tmp_path: Path) -> None:
+    """Invariant: two stores holding the same memos fit the same labelled questions and the same
+    threshold, wherever their memo folders are. Failure caught: the fit sampled its questions in
+    chunk id order, and a chunk id hashes the file's path (`recall/index.py`, `md5(f"{f}:{i}")`), so
+    the same memos in another folder were asked different questions and fitted another threshold.
+    Measured 2026-11-11 with bge-small: seven stores of one 39 memo corpus fitted 0.628 to 0.660, so
+    a verdict near the threshold flipped between installs.
+
+    39 memos, so the sample is a strict subset: 40 questions per class need 40 chunks, and the fit
+    falls back to 20 of the 39.
+
+    Red proof, 2026-11-11, this test against `_query_set` in `recall/lite/calibration.py` as it stood
+    before the fix (`generate_offline(texts, ...)`, chunk id order): failed at the digest assertion
+    ("the same memos in two folders were asked different questions"). With `sorted(texts)`, passed."""
+    from recall.lite.calibration import artifact_from_json
+
+    fits = []
+    for folder in ("first", "second"):
+        root = tmp_path / folder
+        root.mkdir()
+        store = LiteStore(root / "memory.db", dim=DIM)
+        _write_memos(root / "memos", 39)
+        Indexer(store, ContentWordEmbedder(), env={}).index_path(root / "memos")
+        auto_calibrate(store, ContentWordEmbedder())
+        raw = store.latest_calibration_json()
+        assert raw is not None, "no fit was stored"
+        fits.append(artifact_from_json(raw))
+        store.close()
+    first, second = fits
+    assert first.n_answerable == 20, first.n_answerable
+    assert first.query_set_digest == second.query_set_digest, "the same memos in two folders were asked different questions"
+    assert first.threshold == second.threshold, "the same memos in two folders fitted different thresholds"

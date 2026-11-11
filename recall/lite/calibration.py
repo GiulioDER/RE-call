@@ -208,9 +208,12 @@ def _query_set(texts: list[str]) -> tuple[list[dict[str, Any]] | None, str]:
     from recall.wizard.queryset import DEFAULT_PER_CLASS, MIN_PER_CLASS, QuerySetError, canonicalize, generate_offline
 
     last = ""
+    # Sorted by content: `texts` come in chunk id order, and a chunk id hashes the file's path, so
+    # the sample (and the threshold) would otherwise depend on where the memos live.
+    ordered = sorted(texts)
     for per_class in (DEFAULT_PER_CLASS, MIN_PER_CLASS):
         try:
-            return canonicalize(generate_offline(texts, per_class=per_class)), ""
+            return canonicalize(generate_offline(ordered, per_class=per_class)), ""
         except QuerySetError as exc:
             last = str(exc)
     return None, last
