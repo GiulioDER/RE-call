@@ -253,8 +253,9 @@ def test_authenticated_http_request_preserves_the_whole_security_contract(
     assert _tool_text(forbidden_write) == "Error executing tool recall_ingest"
     assert "denied for scope recall:write" in log_path.read_text(encoding="utf-8")
     # Every authorization decision names the principal and, when the client sent one, the session.
-    # Red proof 2026-11-12: with the `outcome="allowed"` record_access call removed from `_require`,
-    # this test failed on the first assert below (see the pull request).
+    # Red proof 2026-11-13: with the `outcome="allowed"` record_access call removed from `_require`,
+    # this test failed on the first assert below; with the `outcome="denied"` call in its
+    # PermissionError branch removed, it failed on the second.
     log_text = log_path.read_text(encoding="utf-8")
     assert (
         "access outcome=allowed principal='writer' tenant='tenant-a' scope=recall:write "
