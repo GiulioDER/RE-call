@@ -198,6 +198,9 @@ jobs:
     if: vars.SIGNPATH_ORGANIZATION_ID != ''
     runs-on: windows-latest
     permissions:
+      # The same three grants the signing step had when it lived in `build`; SignPath has never run
+      # here (no credentials yet), so none of them has been shown to be unneeded.
+      contents: read
       # SignPath's action reads the workflow run and the uploaded artifact to bind the signature to
       # a specific, reproducible build rather than to whatever bytes were handed to it.
       actions: read
