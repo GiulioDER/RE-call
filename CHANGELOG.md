@@ -8,6 +8,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ## [Unreleased]
 
+### Added
+
+- `recall_remember`'s `supersedes` accepts another assistant's memo of the same index root by the
+  id search names it by (`agent-b/note-0001`), so agents with memo folders of their own can retire
+  each other's memos. Its folder's ledger decides authorship; `recall_forget_memo` is unchanged.
+
+### Fixed
+
+- A correction through `recall_remember` wrote its target as a bare file name, which matched every
+  memo folder's memo of that id under the index root: with two agent folders numbering from
+  `note-0001`, the corrected memo and the other folder's memo both read `ambiguous_supersession`.
+  It now writes the target's path under the index root. Memos written before keep the bare form.
+
 ## [0.15.0] (2026-11-08)
 
 RE-call 0.15.0 adds Lite, a local store in one SQLite file that needs no Docker and no database
