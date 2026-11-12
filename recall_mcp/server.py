@@ -66,6 +66,7 @@ from recall.store import DEFAULT_TABLE, PgVectorStore, redacted_dsn
 from recall.declared_keys import subject_view
 from recall.lineage import canonical_sha256
 from recall.trust_policy import TrustPolicy, TrustRefusal
+from recall_mcp.access_log import caller_identity, record_access
 from recall_mcp.auth import (
     CLEARANCE_LEVELS,
     SCOPE_ADMIN,
@@ -3725,16 +3726,23 @@ def build_server(settings: Settings | None = None) -> MCPServer:
             # that middleware into a silent full-corpus read.
             raise PermissionError("this server requires authentication")
         idempotency_fingerprint = _principal_bound_fingerprint(idempotency_fingerprint)
+        principal = str((token.claims or {}).get("principal", token.client_id))
+        session, client, tool = caller_identity(ctx)
         try:
             tenant = authorize(token.scopes, token.claims, scope)
         except PermissionError:
-            principal = (token.claims or {}).get("principal", token.client_id)
             _log.warning("principal %r denied for scope %s", principal, scope)
+            record_access(principal=principal, tenant=None, scope=scope, tool=tool,
+                          session=session, client=client, outcome="denied")
             raise
         if requested_tenant is not None and requested_tenant != tenant:
+            record_access(principal=principal, tenant=tenant, scope=scope, tool=tool,
+                          session=session, client=client, outcome="denied")
             raise PermissionError(
                 f"the authenticated token is scoped to tenant {tenant!r}, not {requested_tenant!r}"
             )
+        record_access(principal=principal, tenant=tenant, scope=scope, tool=tool,
+                      session=session, client=client, outcome="allowed")
         # After authorisation, so an unauthorised caller cannot burn the tenant's budget by
         # hammering a scope it does not hold.
         limiter = state.get("limiter")

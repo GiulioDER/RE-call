@@ -522,6 +522,7 @@ id = "mcp-modules-do-not-reach-the-service-facade"
 name = "No recall_mcp module but the server imports the service facade"
 type = "forbidden"
 source_modules = [
+    "recall_mcp.access_log",
     "recall_mcp.assistant", "recall_mcp.auth", "recall_mcp.codex_server", "recall_mcp.compat",
     "recall_mcp.config_report", "recall_mcp.desktop_ingest", "recall_mcp.evidence_cards",
     "recall_mcp.factories", "recall_mcp.federation_adapter", "recall_mcp.generation_admin",
