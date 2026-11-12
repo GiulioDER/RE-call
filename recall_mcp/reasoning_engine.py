@@ -115,7 +115,7 @@ from recall_mcp.semantic_graph_cache import (
     _resolve_graph_calibration,
     _retrieval_graph,
 )
-from recall_mcp.settings import runtime_environment
+from recall_mcp.settings import runtime_environment, tenant_retrieval_environment
 
 _log = _get_logger("mcp.service")
 
@@ -263,7 +263,11 @@ def _execute_reasoning_query(
     def retrieve(request: ReasoningRequest) -> TrustedResult:
         if "result" not in retrieval_cache:
             performance = request._context.performance
-            shadow_values = dict(runtime_environment()) if performance is not None else {}
+            shadow_values = (
+                tenant_retrieval_environment(runtime_environment(), getattr(store, "tenant", None))
+                if performance is not None
+                else {}
+            )
             # One policy for the reused payload and its duplicate, or the reuse audit compares
             # two policies and reports a false mismatch.
             shadow_policy = (
