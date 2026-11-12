@@ -61,13 +61,13 @@ def test_a_test_signed_bundle_can_never_reach_a_public_release() -> None:
     assert "github.event_name == 'push'" in gate, (
         "the attach must be gated on the same fact the signing policy is chosen by"
     )
-    assert "needs.build.outputs.signed == 'true'" in gate, (
+    assert "needs.sign.result == 'success'" in gate, (
         "and an unsigned or failed build must never publish an asset"
     )
 
     signing = [
         step
-        for step in workflow["jobs"]["build"]["steps"]
+        for step in workflow["jobs"]["sign"]["steps"]
         if "signpath" in str(step.get("uses", "")).lower()
     ]
     assert signing, "the build must still sign"
@@ -113,6 +113,66 @@ def test_a_tag_without_signpath_warns_and_still_attaches_nothing() -> None:
     assert "vars.SIGNPATH_ORGANIZATION_ID == ''" in warn["if"] and "github.event_name == 'push'" in warn["if"]
     assert "exit 1" not in warn["run"]
     refuse = steps["Refuse an unsigned release"]["if"]
-    assert "!(github.event_name == 'push' && vars.SIGNPATH_ORGANIZATION_ID == '')" in refuse
+    assert "github.event_name == 'workflow_dispatch'" in refuse, "a tag push is refused again"
     assert "inputs.allow_unsigned != true" in refuse, "a manual unsigned run is no longer refused"
-    assert "needs.build.outputs.signed == 'true'" in _workflow()["jobs"]["attach"]["if"]
+    assert "needs.sign.result == 'success'" in _workflow()["jobs"]["attach"]["if"]
+
+
+def _runs(job: dict) -> list[str]:
+    return [str(step["run"]) for step in job["steps"] if "run" in step]
+
+
+def test_the_signing_credential_never_shares_a_job_with_an_install() -> None:
+    """⛔ **The job that installs packages holds no signing credential, and the job that signs
+    installs nothing.**
+
+    Invariant: `SIGNPATH_API_TOKEN` and `id-token: write` appear only in a job with no checkout and
+    no `run:` step that installs or executes Python. Failure caught: both sat in `build`, after a
+    `pip install` of the newest packages on PyPI and a PyInstaller run, so code from a compromised
+    release could rewrite the bundle before it was uploaded for signing and ship under the project's
+    signature (the bee-js and lwd-uri-util reports of 2026-11-09 and 2026-11-10 are that shape).
+    Red proof, 2026-11-12: `tests/test_installer_workflow.py::
+    test_the_signing_credential_never_shares_a_job_with_an_install` against origin/master's
+    windows-installer.yml (528d662a3) fails at the first assertion naming `build`.
+    """
+    for name, job in _workflow()["jobs"].items():
+        text = yaml.safe_dump(job)
+        # The `secrets.` reference, not the bare name: build's warning steps name the secret in text.
+        holds = (
+            "secrets.SIGNPATH_API_TOKEN" in text
+            or job.get("permissions", {}).get("id-token") == "write"
+        )
+        if not holds:
+            continue
+        uses = [str(step.get("uses", "")) for step in job["steps"]]
+        assert not any(u.startswith("actions/checkout@") for u in uses), (
+            f"{name} holds the signing credential and checks out the repository"
+        )
+        for script in _runs(job):
+            assert not any(word in script for word in ("pip", "uv ", "python", "PyInstaller")), (
+                f"{name} holds the signing credential and installs or runs Python: {script[:80]}"
+            )
+
+
+def test_the_installer_is_built_only_from_hashed_packages() -> None:
+    """⛔ **Every package frozen into the installer is pinned by hash.**
+
+    Invariant: each `pip install` in `build` is `--require-hashes`, or is
+    `.github/scripts/locked_install.sh`, which exports uv.lock with hashes. Failure caught: the job
+    ran `pip install ".[desktop,mcp,fastembed,documents]"` and `pip install "pyinstaller>=6.10"`,
+    resolving whatever PyPI served that minute, with no lock and no cooldown. Red proof,
+    2026-11-12: `tests/test_installer_workflow.py::test_the_installer_is_built_only_from_hashed_packages`
+    against origin/master's windows-installer.yml (528d662a3) fails on the unhashed install.
+    """
+    scripts = _runs(_workflow()["jobs"]["build"])
+    installs = [
+        line.strip()
+        for script in scripts
+        for line in script.splitlines()
+        if "pip install" in line or "locked_install.sh" in line
+    ]
+    assert installs, "the build installs nothing, so this test would observe nothing"
+    for line in installs:
+        assert "--require-hashes" in line or "locked_install.sh" in line, (
+            f"unhashed install in the installer build: {line}"
+        )
