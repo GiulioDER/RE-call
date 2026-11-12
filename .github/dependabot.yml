@@ -115,3 +115,29 @@ updates:
     labels:
       - "dependencies"
       - "ci"
+
+  # Base and service images are pinned by DIGEST (tag@sha256:...), so a re-pushed or hijacked tag
+  # cannot change what is pulled. A digest never moves on its own, so without these two entries the
+  # pins would also freeze out upstream security rebuilds; Dependabot reads the tag next to each
+  # digest and proposes the new digest for it. Added 2026-11-12. Files matched, read from
+  # dependabot-core that day: `docker` takes Dockerfile/Containerfile names, `docker-compose`
+  # takes `(docker-)?compose(-\w+)?(\.[\w-]+)?\.ya?ml`, which includes docker-compose.desktop.yml.
+  # infra/agent_guestbook pins a digest with no tag, which leaves Dependabot nothing to compare
+  # against, so it is not listed.
+  - package-ecosystem: "docker"
+    directory: "/docker/desktop"
+    schedule:
+      interval: "weekly"
+    cooldown:
+      default-days: 7
+    labels:
+      - "dependencies"
+
+  - package-ecosystem: "docker-compose"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    cooldown:
+      default-days: 7
+    labels:
+      - "dependencies"

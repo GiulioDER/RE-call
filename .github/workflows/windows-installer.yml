@@ -39,8 +39,8 @@ jobs:
   build:
     runs-on: windows-latest
     outputs:
-      # Consumed by `attach`, so the two jobs cannot disagree about whether a signed bundle exists.
-      signed: ${{ steps.outcome.outputs.signed }}
+      # Consumed by `sign`: SignPath fetches the bundle by this id.
+      unsigned-artifact-id: ${{ steps.unsigned.outputs.artifact-id }}
     permissions:
       # ⛔ **`read`, and the attach lives in its own job below.** This was briefly `write`, with a
       # comment claiming the grant was "scoped to this step". It is not: a job-level `permissions:`
@@ -49,10 +49,6 @@ jobs:
       # repository code all ran with a repo-writable token, on same-repo pull requests too — the
       # fork-PR argument in that comment does not cover them. Three auditors said so.
       contents: read
-      # SignPath's action reads the workflow run and the uploaded artifact to bind the signature to
-      # a specific, reproducible build rather than to whatever bytes were handed to it.
-      actions: read
-      id-token: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -62,11 +58,19 @@ jobs:
         with:
           python-version: "3.13"
 
+      - name: Install uv
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
+
+      # ⛔ **From the lockfile with hashes, and PyInstaller from a hashed pin.** This step used to
+      # resolve the newest of everything from PyPI (`pip install ".[...]"`, `pyinstaller>=6.10`), so
+      # a package published an hour earlier ran here and its code was frozen into the installer that
+      # the `sign` job then signs. A release now reaches this bundle only through a reviewed lock or
+      # pin change. Added 2026-11-12, after the bee-js and lwd-uri-util supply-chain reports.
       - name: Install the package and the build tool
+        shell: bash
         run: |
-          python -m pip install --upgrade pip
-          python -m pip install ".[desktop,mcp,fastembed,documents]"
-          python -m pip install "pyinstaller>=6.10"
+          bash .github/scripts/locked_install.sh desktop mcp fastembed documents
+          pip install --require-hashes -r .github/requirements/pyinstaller.txt
 
       - name: Build
         working-directory: packaging
@@ -106,42 +110,10 @@ jobs:
           path: dist/recall-install
           if-no-files-found: error
 
-      # ── Signing ──────────────────────────────────────────────────────────────────────────────
+      # The three steps below decide what happens when there is NO signing, which is exactly when
+      # the `sign` job is skipped: it runs iff `SIGNPATH_ORGANIZATION_ID` is set. So they test that
+      # variable, the same fact the `sign` job's `if:` tests.
       #
-      # ⛔ **Signing is what makes the binary RUNNABLE, not what makes it look professional.**
-      # Microsoft's documentation settles what Smart App Control requires:
-      # https://learn.microsoft.com/en-us/windows/apps/develop/smart-app-control/overview
-      #
-      #   "If the app intelligence service is unable to make a prediction, then Smart App Control
-      #    will still allow an app to run if it is signed with a certificate issued by a
-      #    certificate authority (CA) within the Trusted Root Program."
-      #
-      # So a signature from a Trusted Root Program CA is SUFFICIENT — reputation is not additionally
-      # required, which means a first release runs rather than waiting to accumulate downloads. An
-      # OV certificate does it; EV is not needed for this.
-      #
-      # The private key never reaches this runner. SignPath holds it in an HSM and signs server
-      # side, which is also how the free programme for open source projects can offer an OV
-      # certificate at all.
-      #
-      # ⚠️ Gated on a VARIABLE rather than the secret, because `secrets` is not available in an
-      # `if:` at step level on a fork PR and would silently evaluate empty — turning "we have no
-      # credentials" and "this is a fork" into the same skip, which the release guard below then
-      # cannot tell apart.
-      - name: Sign the bundle
-        id: sign
-        if: vars.SIGNPATH_ORGANIZATION_ID != ''
-        uses: signpath/github-action-submit-signing-request@f6d04783b4569d051e0c80105fe66e82819d0092  # v3.0
-        with:
-          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
-          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
-          project-slug: recall
-          signing-policy-slug: ${{ github.event_name == 'push' && 'release-signing' || 'test-signing' }}
-          artifact-configuration-slug: windows-installer
-          github-artifact-id: ${{ steps.unsigned.outputs.artifact-id }}
-          wait-for-completion: true
-          output-artifact-directory: dist-signed
-
       # ⛔ **A tag build that produced an UNSIGNED artifact must fail, loudly.** Shipping one is
       # worse than shipping nothing: it works for whoever built it and is blocked on the machines
       # this bundle exists to serve, and nothing in the release says which the downloader got. A
@@ -163,9 +135,8 @@ jobs:
       # was skipped cannot happen, and a manual run without `allow_unsigned` still fails.
       - name: Note that this release carries no Windows installer
         if: >-
-          steps.sign.outcome == 'skipped'
+          vars.SIGNPATH_ORGANIZATION_ID == ''
           && github.event_name == 'push'
-          && vars.SIGNPATH_ORGANIZATION_ID == ''
         run: |
           echo "::warning::SignPath is not configured (SIGNPATH_ORGANIZATION_ID variable and"
           echo "::warning::SIGNPATH_API_TOKEN secret), so this release carries no Windows installer."
@@ -173,10 +144,9 @@ jobs:
 
       - name: Refuse an unsigned release
         if: >-
-          steps.sign.outcome == 'skipped'
-          && (github.event_name == 'push' || inputs.allow_unsigned != true)
-          && github.event_name != 'pull_request'
-          && !(github.event_name == 'push' && vars.SIGNPATH_ORGANIZATION_ID == '')
+          vars.SIGNPATH_ORGANIZATION_ID == ''
+          && github.event_name == 'workflow_dispatch'
+          && inputs.allow_unsigned != true
         run: |
           echo "::error::no signing credentials configured, so the artifact would be blocked by"
           echo "::error::Smart App Control on the machines it targets. Set the"
@@ -188,18 +158,70 @@ jobs:
       # at a release page cannot inspect a signature before downloading, so the filename is the only
       # warning they get, and it has to be one they cannot miss.
       - name: Publish the unsigned bootstrap artifact
-        if: steps.sign.outcome == 'skipped' && inputs.allow_unsigned == true
+        if: vars.SIGNPATH_ORGANIZATION_ID == '' && inputs.allow_unsigned == true
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: recall-install-windows-UNSIGNED-will-be-blocked-by-smart-app-control
           path: dist/recall-install
           if-no-files-found: error
 
+  # ── Signing ──────────────────────────────────────────────────────────────────────────────────
+  #
+  # ⛔ **Its own job, which installs nothing and runs no repository code.** The SignPath token and
+  # the OIDC grant used to sit in `build`, beside `pip install` and a PyInstaller run that executes
+  # whatever the installed packages contain. A step-level `secrets.` reference keeps the token out
+  # of other steps' environments, not out of reach of code that ran earlier on the same runner and
+  # can rewrite the bundle before it is uploaded for signing. Here the only inputs are the uploaded
+  # artifact and two pinned actions. Split out 2026-11-12.
+  #
+  # ⛔ **Signing is what makes the binary RUNNABLE, not what makes it look professional.**
+  # Microsoft's documentation settles what Smart App Control requires:
+  # https://learn.microsoft.com/en-us/windows/apps/develop/smart-app-control/overview
+  #
+  #   "If the app intelligence service is unable to make a prediction, then Smart App Control
+  #    will still allow an app to run if it is signed with a certificate issued by a
+  #    certificate authority (CA) within the Trusted Root Program."
+  #
+  # So a signature from a Trusted Root Program CA is SUFFICIENT — reputation is not additionally
+  # required, which means a first release runs rather than waiting to accumulate downloads. An
+  # OV certificate does it; EV is not needed for this.
+  #
+  # The private key never reaches this runner. SignPath holds it in an HSM and signs server
+  # side, which is also how the free programme for open source projects can offer an OV
+  # certificate at all.
+  #
+  # ⚠️ Gated on a VARIABLE rather than the secret, because `secrets` is not available in an
+  # `if:` and would silently evaluate empty on a fork PR — turning "we have no credentials" and
+  # "this is a fork" into the same skip, which the release guard in `build` then cannot tell apart.
+  sign:
+    needs: build
+    if: vars.SIGNPATH_ORGANIZATION_ID != ''
+    runs-on: windows-latest
+    permissions:
+      # The same three grants the signing step had when it lived in `build`; SignPath has never run
+      # here (no credentials yet), so none of them has been shown to be unneeded.
+      contents: read
+      # SignPath's action reads the workflow run and the uploaded artifact to bind the signature to
+      # a specific, reproducible build rather than to whatever bytes were handed to it.
+      actions: read
+      id-token: write
+    steps:
+      - name: Sign the bundle
+        uses: signpath/github-action-submit-signing-request@f6d04783b4569d051e0c80105fe66e82819d0092  # v3.0
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: recall
+          signing-policy-slug: ${{ github.event_name == 'push' && 'release-signing' || 'test-signing' }}
+          artifact-configuration-slug: windows-installer
+          github-artifact-id: ${{ needs.build.outputs.unsigned-artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: dist-signed
+
       - name: Verify the signature is real
         # ⚠️ The signing step's exit code says the SERVICE accepted the request. `signtool verify
         # /pa` asks Windows whether the file on disk now carries a chain it will actually honour,
         # which is the question the user's machine asks and the only one that matters here.
-        if: steps.sign.outcome == 'success'
         shell: pwsh
         run: |
           $tool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin" -Recurse -Filter signtool.exe |
@@ -219,7 +241,6 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "the signature does not verify" }
 
       - name: Upload the signed bundle
-        if: steps.sign.outcome == 'success'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: recall-install-windows
@@ -228,25 +249,20 @@ jobs:
           path: dist-signed
           if-no-files-found: error
 
-      - name: Record whether a signed bundle exists
-        id: outcome
-        shell: pwsh
-        run: |
-          "signed=$('${{ steps.sign.outcome }}' -eq 'success')".ToLower() >> $env:GITHUB_OUTPUT
-
   # ⛔ **A separate job, so the write grant is not held while third-party actions and
   # repository-authored build code run.** Without this the whole build ran with a repo-writable
   # token on every trigger including same-repo pull requests.
   attach:
-    needs: build
+    needs: [build, sign]
     env:
       GH_REPO: ${{ github.repository }}
     # ⛔ **`event_name == 'push'`, not just a tag ref.** The signing policy one job up selects
     # `release-signing` on a push and `test-signing` otherwise. A `workflow_dispatch` aimed at a tag
     # therefore signs with the TEST policy while `startsWith(github.ref, 'refs/tags/v')` is still
     # true, so gating on the ref alone would attach a test-signed bundle to a public release. One
-    # predicate for both decisions.
-    if: github.event_name == 'push' && needs.build.outputs.signed == 'true'
+    # predicate for both decisions. `needs.sign.result == 'success'` means the signature was made,
+    # verified by signtool and uploaded; a skipped or failed `sign` attaches nothing.
+    if: github.event_name == 'push' && needs.sign.result == 'success'
     runs-on: ubuntu-latest
     permissions:
       contents: write
