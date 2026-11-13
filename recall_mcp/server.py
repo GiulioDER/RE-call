@@ -13,7 +13,7 @@ from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
-from typing import Annotated, Any, Protocol, TypedDict, TypeVar, cast
+from typing import Annotated, Any, Literal, Protocol, TypedDict, TypeVar, cast
 from urllib.parse import urlsplit
 
 import anyio.to_thread
@@ -1411,6 +1411,23 @@ def _tool_error_for_overload(overload: RetrievalOverloaded) -> ToolError:
     )
 
 
+def _token_principal(token: Any) -> str:
+    """The principal an access line names: the token's `principal` claim, else its client id."""
+    return str((token.claims or {}).get("principal", token.client_id))
+
+
+def _record_federation(
+    token: Any, ctx: object, tenants: tuple[str, ...], outcome: Literal["allowed", "denied"]
+) -> None:
+    if token is None:
+        # Unreachable over HTTP (the bearer middleware refuses first); there is no principal.
+        return
+    session, client, tool = caller_identity(ctx)
+    record_access(principal=_token_principal(token), tenant=",".join(tenants),
+                  scope=SCOPE_FEDERATE, tool=tool, session=session, client=client,
+                  outcome=outcome)
+
+
 def _retrieval_plan_for(
     state: Mapping[str, object],
     store: PgVectorStore,
@@ -1420,6 +1437,7 @@ def _retrieval_plan_for(
     source: str | None,
     modality: str | None,
     route_id: str | None,
+    ctx: object = None,
 ) -> RetrievalPlan:
     resolver = state.get("retrieval_plan_resolver")
     if not isinstance(resolver, RetrievalPlanResolver):
@@ -1438,13 +1456,15 @@ def _retrieval_plan_for(
     registry = state.get("stores")
     if isinstance(registry, StoreRegistry):
         token = get_access_token()
-        if plan.selected_tenants != (tenant,) and (
-            token is None or SCOPE_FEDERATE not in (token.scopes or ())
-        ):
-            raise PermissionError(
-                "federated retrieval requires the recall:federate scope"
-            )
-        if plan.selected_tenants != (tenant,):
+        if plan.selected_tenants == (tenant,):
+            return registry.validate_retrieval_plan(plan)
+        # `_require` recorded only the caller's own-tenant read; reaching other tenants is a
+        # second authorization decision, made here, so it writes its own access line.
+        try:
+            if token is None or SCOPE_FEDERATE not in (token.scopes or ()):
+                raise PermissionError(
+                    "federated retrieval requires the recall:federate scope"
+                )
             # recall:federate widens a search to the caller's ROUTES, not to every route: the
             # caller's own tenant must be on the route, and with a subject binding every leg must
             # be a tenant the subject is bound to (owner decision 2026-11-04).
@@ -1452,13 +1472,18 @@ def _retrieval_plan_for(
                 raise PermissionError(
                     f"retrieval route {plan.route_id!r} does not include the caller's tenant"
                 )
-            bound = ((token.claims if token is not None else None) or {}).get("bound_tenants")
+            bound = (token.claims or {}).get("bound_tenants")
             if bound is not None and not set(plan.selected_tenants) <= set(bound):
                 raise PermissionError(
                     f"retrieval route {plan.route_id!r} selects a tenant this subject is not "
                     "bound to"
                 )
-        return registry.validate_retrieval_plan(plan)
+            validated = registry.validate_retrieval_plan(plan)
+        except PermissionError:
+            _record_federation(token, ctx, plan.selected_tenants, "denied")
+            raise
+        _record_federation(token, ctx, plan.selected_tenants, "allowed")
+        return validated
     if plan.selected_tenants != (tenant,):
         raise PermissionError(
             "an unauthenticated single tenant server cannot select another retrieval tenant"
@@ -1506,6 +1531,7 @@ def _register_search_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
                 source=source,
                 modality=modality,
                 route_id=route_id,
+                ctx=ctx,
             )
         )
         with METRICS.timer("recall_tool_latency_ms", tool=tool):
@@ -3726,7 +3752,7 @@ def build_server(settings: Settings | None = None) -> MCPServer:
             # that middleware into a silent full-corpus read.
             raise PermissionError("this server requires authentication")
         idempotency_fingerprint = _principal_bound_fingerprint(idempotency_fingerprint)
-        principal = str((token.claims or {}).get("principal", token.client_id))
+        principal = _token_principal(token)
         session, client, tool = caller_identity(ctx)
         try:
             tenant = authorize(token.scopes, token.claims, scope)

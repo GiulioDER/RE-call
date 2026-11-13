@@ -1,4 +1,5 @@
-"""One access line per authorization decision: who called, from which session, for which tool.
+"""One access line per scope, tenant or federation decision: who called, from which session, for
+which tool. The rate limiter, the idempotency key requirement and the clearance check write none.
 
 A shared HTTP server sees every session of every client, and the bearer token already tells it
 the principal and tenant; until this module nothing recorded either for a call that succeeded,

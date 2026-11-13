@@ -145,12 +145,19 @@ hop in between.
 
 ## Attributing calls to a session
 
-Every authorization decision on an HTTP transport writes one line to the `recall.mcp.access`
-logger, whether the call is allowed or denied:
+On an HTTP transport, the scope and tenant check every tool call passes writes one line to the
+`recall.mcp.access` logger, at INFO, whether the call is allowed or denied:
 
 ```
 access outcome=allowed principal='research-agent' tenant='team-research' scope=recall:read tool=recall_search session=5f0c... client=claude-code
 ```
+
+A search that reaches other tenants writes a second line for that decision, with
+`scope=recall:federate` and `tenant` listing every tenant the route selected, comma separated;
+a federation the token may not make is `denied` there. `allowed` means these checks passed, not
+that the call ran: the rate limiter and the idempotency key requirement run after the scope and
+tenant check, the clearance check can refuse the call after either line, and none of them writes
+an access line of its own.
 
 The principal and tenant come from the verified token. The session and client are what the client
 says: the session is the `threadId` in a tool call's `_meta` when there is one (Codex sends its
