@@ -6,7 +6,15 @@ next (results recorded in the pull request):
 - `_safe` returns the text without the charset check;
 - `caller_identity` prefers the header over `_meta.threadId`;
 - `caller_identity` ignores the header;
-- `record_access` writes the principal with `%s` instead of `%r`.
+- `record_access` writes the principal with `%s` instead of `%r`;
+- `caller_identity` reads `ctx.headers` without a default (fails
+  `test_a_context_without_request_fields_still_authorizes`).
+
+Red proof, 2026-11-13, CCA deferred run 20261113T115607Z: `python -m cca_checks tautology verify`
+ran `test_a_denial_is_written_at_warning` (FIX-002 for PERF-001) and
+`test_the_fields_reach_a_structured_log_as_keys` (FIX-003 for CODE-001) against the pre-fix
+`record_access`, which logged every outcome at INFO with no `extra=`; the first failed on the
+level assert, the second on the fields assert (every field `<missing>`).
 """
 
 from __future__ import annotations
@@ -80,6 +88,32 @@ def test_the_access_line_names_every_field(caplog: pytest.LogCaptureFixture) -> 
         "access outcome=allowed principal='writer' tenant='tenant-a' scope=recall:read "
         "tool=recall_search session=s1 client=-"
     ]
+
+
+def test_a_denial_is_written_at_warning(caplog: pytest.LogCaptureFixture) -> None:
+    """Invariant: a denial survives `RECALL_LOG_LEVEL=WARNING`; an allowed line is INFO.
+
+    Failure mode caught: with the older `denied for scope` warning gone, an INFO-only denial
+    would vanish at WARNING, leaving no record of a refused call.
+    """
+    with caplog.at_level(logging.INFO, logger="recall.mcp.access"):
+        record_access(principal="p", tenant="t", scope="recall:read", tool=None,
+                      session=None, client=None, outcome="allowed")
+        record_access(principal="p", tenant="t", scope="recall:read", tool=None,
+                      session=None, client=None, outcome="denied")
+    assert [record.levelno for record in caplog.records] == [logging.INFO, logging.WARNING]
+
+
+def test_the_fields_reach_a_structured_log_as_keys(caplog: pytest.LogCaptureFixture) -> None:
+    """Invariant: the JSON log format can read each field without parsing the message."""
+    with caplog.at_level(logging.INFO, logger="recall.mcp.access"):
+        record_access(principal="writer", tenant="tenant-a", scope="recall:read",
+                      tool="recall_search", session="s1", client=None, outcome="allowed")
+    (record,) = caplog.records
+    fields = tuple(
+        getattr(record, name, "<missing>") for name in ("principal", "tenant", "tool", "session", "client")
+    )
+    assert fields == ("writer", "tenant-a", "recall_search", "s1", None)
 
 
 def test_a_principal_with_a_newline_cannot_forge_a_second_line(

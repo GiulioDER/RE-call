@@ -53,11 +53,32 @@ def test_every_run_mints_a_new_session(tmp_path: Path) -> None:
     assert first["X-Recall-Client"] == "mcp-client"
 
 
-@pytest.mark.parametrize("case", ["unset", "missing", "empty"])
+@pytest.mark.parametrize("case", ["unset", "missing", "empty", "utf16"])
 def test_an_unusable_token_file_exits_2_and_prints_nothing(tmp_path: Path, case: str) -> None:
     token_file = tmp_path / "token"
     if case == "empty":
         token_file.write_text("  \n", encoding="utf-8")
+    if case == "utf16":
+        # What Windows PowerShell 5.1's `>` writes.
+        token_file.write_text(TOKEN, encoding="utf-16")
     result = _run(_env(None if case == "unset" else token_file))
     assert result.returncode == 2
     assert result.stdout == ""
+
+
+def test_a_byte_order_mark_is_not_sent_inside_the_bearer(tmp_path: Path) -> None:
+    """Invariant: a token file saved with a UTF-8 BOM yields the bare token.
+
+    Failure mode caught: `read_text(encoding="utf-8").strip()` keeps U+FEFF, so the helper exits
+    0 with `Bearer \\ufeff<token>` and the server answers 401 with nothing pointing at the file.
+
+    Red proof, 2026-11-13, CCA deferred run 20261113T115607Z (FIX-001 for BUG-002):
+    `python -m cca_checks tautology verify` ran this test, and the `utf16` case above, against
+    the pre-fix helper; this one failed on the Authorization assert, the `utf16` case on the exit
+    code (an uncaught UnicodeDecodeError exits 1).
+    """
+    token_file = tmp_path / "token"
+    token_file.write_bytes(b"\xef\xbb\xbf" + TOKEN.encode() + b"\r\n")
+    result = _run(_env(token_file))
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["Authorization"] == f"Bearer {TOKEN}"

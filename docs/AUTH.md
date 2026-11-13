@@ -146,7 +146,8 @@ hop in between.
 ## Attributing calls to a session
 
 On an HTTP transport, the scope and tenant check every tool call passes writes one line to the
-`recall.mcp.access` logger, at INFO, whether the call is allowed or denied:
+`recall.mcp.access` logger, at INFO when the call is allowed and at WARNING when it is denied
+(with `RECALL_LOG_FORMAT=json` each field is also a key of its own):
 
 ```
 access outcome=allowed principal='research-agent' tenant='team-research' scope=recall:read tool=recall_search session=5f0c... client=claude-code
@@ -169,6 +170,8 @@ and `._:@-`, or longer than 128 characters, is logged as `invalid`. stdio writes
 `scripts/mcp_headers_helper.py` prints the three headers as JSON with a fresh session per run, for
 a client that asks a command for its headers. It reads the token from the file named by
 `RECALL_MCP_TOKEN_FILE` (keep it mode 600) and the client label from `RECALL_MCP_CLIENT_NAME`.
+It uses only the standard library and is not in the wheel or the sdist: copy it from the
+repository to the client machine, which does not need RE-call installed.
 
 Claude Code runs a server's `headersHelper` at session start and on reconnect. Declare the server
 at user or local scope: a helper of a project `.mcp.json` server does not receive credential

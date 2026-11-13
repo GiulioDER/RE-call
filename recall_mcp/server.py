@@ -3723,6 +3723,10 @@ def build_server(settings: Settings | None = None) -> MCPServer:
 
         This is also where the per-tenant call budget is debited, for the same reason: one choke
         point that a new tool cannot forget to call, because it cannot get a store without it.
+
+        On HTTP it also writes the access line (`recall_mcp.access_log`): `denied` on a scope or
+        tenant refusal, `allowed` once both pass and before the budget and idempotency checks,
+        which write none.
         """
         state = _state(ctx)
         registry: StoreRegistry | None = state.get("stores")
@@ -3757,7 +3761,6 @@ def build_server(settings: Settings | None = None) -> MCPServer:
         try:
             tenant = authorize(token.scopes, token.claims, scope)
         except PermissionError:
-            _log.warning("principal %r denied for scope %s", principal, scope)
             record_access(principal=principal, tenant=None, scope=scope, tool=tool,
                           session=session, client=client, outcome="denied")
             raise

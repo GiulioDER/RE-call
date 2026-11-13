@@ -13,6 +13,7 @@ claims by whoever holds the token: they attribute a call, they never authorize o
 
 from __future__ import annotations
 
+import logging
 import re
 from collections.abc import Mapping
 from typing import Any, Literal
@@ -77,8 +78,12 @@ def record_access(
     `invalid`; `None` logs as `-`. The principal and tenant are the server's own, from the verified
     token, and may legitimately hold any character an identity provider issues (a URL-shaped
     subject), so they are written with `%r`, which escapes a newline instead of refusing the name.
+
+    A denial is written at WARNING, so it survives `RECALL_LOG_LEVEL=WARNING`; the fields also go
+    out as `extra=`, so the JSON log format carries them as keys.
     """
-    _log.info(
+    _log.log(
+        logging.WARNING if outcome == "denied" else logging.INFO,
         "access outcome=%s principal=%r tenant=%r scope=%s tool=%s session=%s client=%s",
         outcome,
         principal,
@@ -87,4 +92,6 @@ def record_access(
         tool or "-",
         session or "-",
         client or "-",
+        extra={"outcome": outcome, "principal": principal, "tenant": tenant, "scope": scope,
+               "tool": tool, "session": session, "client": client},
     )

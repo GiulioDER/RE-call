@@ -27,9 +27,14 @@ def main() -> int:
         print("RECALL_MCP_TOKEN_FILE is not set", file=sys.stderr)
         return 2
     try:
-        token = Path(path).read_text(encoding="utf-8").strip()
+        # utf-8-sig drops the BOM a Windows editor writes, which `strip()` would keep inside the
+        # bearer; expanduser matches the server's own token-file reader.
+        token = Path(path).expanduser().read_text(encoding="utf-8-sig").strip()
     except OSError as exc:
         print(f"cannot read RECALL_MCP_TOKEN_FILE: {exc.strerror}", file=sys.stderr)
+        return 2
+    except UnicodeDecodeError:
+        print("RECALL_MCP_TOKEN_FILE is not UTF-8 text", file=sys.stderr)
         return 2
     if not token:
         print("RECALL_MCP_TOKEN_FILE is empty", file=sys.stderr)

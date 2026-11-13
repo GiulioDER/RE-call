@@ -248,10 +248,10 @@ def test_authenticated_http_request_preserves_the_whole_security_contract(
     )
     assert forbidden_write["result"]["isError"] is True
     # The SDK deliberately redacts PermissionError details from the client-facing result. The
-    # generic error envelope proves the tool was stopped, while the server audit line proves it was
-    # stopped by the missing write scope rather than by a later filesystem or database failure.
+    # generic error envelope proves the tool was stopped, while the `denied` access line below
+    # proves it was stopped by the missing write scope rather than by a later filesystem or
+    # database failure.
     assert _tool_text(forbidden_write) == "Error executing tool recall_ingest"
-    assert "denied for scope recall:write" in log_path.read_text(encoding="utf-8")
     # Every authorization decision names the principal and, when the client sent one, the session.
     # Red proof 2026-11-13: with the `outcome="allowed"` record_access call removed from `_require`,
     # this test failed on the first assert below; with the `outcome="denied"` call in its
