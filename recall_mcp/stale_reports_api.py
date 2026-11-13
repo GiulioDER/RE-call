@@ -99,8 +99,11 @@ def _record_served(
     day: str,
     security_policy: SourceSecurityPolicy | None = None,
     access_context: AccessContext | None = None,
+    aliases: Mapping[str, str] | None = None,
 ) -> tuple[str, str, str]:
-    """Append one `stale_report` row, or refuse; returns the event id and the two served names."""
+    """Append one `stale_report` row, or refuse; returns the event id and the two served names.
+    `aliases` as in `recall_mcp.use_reports_api.resolve_sources`."""
+    aliases = aliases or {}
     rows = None
     snapshot = getattr(store, "snapshot", None)
     with snapshot() if security_policy is not None and callable(snapshot) else nullcontext():
@@ -110,11 +113,12 @@ def _record_served(
             elif access_context is None:
                 raise StaleReportRefused("source policy requires an access context")
             else:
+                named = tuple(aliases.get(str(n).strip(), n) for n in (stale_source, replacing_source))
                 known = set(authorized_report_rows(
-                    store, (stale_source, replacing_source), security_policy, access_context, include_text=False,
+                    store, named, security_policy, access_context, include_text=False,
                 ))
-            stale = resolve_sources([stale_source], known, "stale_source")[0]
-            replacing = resolve_sources([replacing_source], known, "replacing_source")[0]
+            stale = resolve_sources([stale_source], known, "stale_source", aliases)[0]
+            replacing = resolve_sources([replacing_source], known, "replacing_source", aliases)[0]
             if security_policy is not None:
                 assert access_context is not None
                 rows = authorized_report_rows(
@@ -179,8 +183,10 @@ def report_stale(
     sidecar: bool = True,
     security_policy: SourceSecurityPolicy | None = None,
     access_context: AccessContext | None = None,
+    aliases: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
-    """Record one report, or raise `StaleReportRefused` with the reason.
+    """Record one report, or raise `StaleReportRefused` with the reason. `aliases` maps a name to
+    the stored source the ledger records it under (`_record_served`); the queue reads the name.
 
     `store` is the one `_require` authorised. It names the reporting tenant, and when it is
     database-backed it is also where the ledger row goes.
@@ -242,6 +248,7 @@ def report_stale(
                 day=reported_at.astimezone(UTC).date().isoformat(),
                 security_policy=security_policy,
                 access_context=access_context,
+                aliases=aliases,
             )
             served = (served_stale, served_replacing)
         except Exception as exc:  # BROAD-CATCH: fail-open

@@ -15,7 +15,7 @@ name, which is how search results usually show it.
 from __future__ import annotations
 
 import re
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from contextlib import nullcontext
 from typing import Any
 
@@ -48,7 +48,13 @@ def _basename(source: str) -> str:
     return source.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
 
 
-def resolve_sources(names: Sequence[str], known: set[str], field: str) -> list[str]:
+def resolve_sources(
+    names: Sequence[str], known: set[str], field: str, aliases: Mapping[str, str] | None = None,
+) -> list[str]:
+    """Each name's stored source. `aliases` maps a name the caller's view showed (the assistant
+    surface's memo id) to its source; a refusal still names what the caller wrote, so a source
+    the caller may not read is as absent as one that does not exist."""
+    aliases = aliases or {}
     if isinstance(names, str) or not isinstance(names, Sequence):
         raise UseReportRefused(f"{field} must be a list of source names")
     if len(names) > MAX_SOURCES:
@@ -61,11 +67,12 @@ def resolve_sources(names: Sequence[str], known: set[str], field: str) -> list[s
         name = str(raw).strip()
         if not name:
             raise UseReportRefused(f"{field} contains an empty name")
-        if name in known:
-            source = name
+        target = aliases.get(name, name)
+        if target in known:
+            source = target
         else:
             # A filename alias must be bare; an unknown path is a different source.
-            matches = by_name.get(name, []) if name == _basename(name) else []
+            matches = by_name.get(target, []) if target == _basename(target) else []
             if not matches:
                 raise UseReportRefused(f"{name!r} in {field} is not a memory in this corpus; name it as search returned it")
             if len(matches) > 1:
@@ -129,8 +136,10 @@ def report_use(
     note: str | None = None,
     security_policy: SourceSecurityPolicy | None = None,
     access_context: AccessContext | None = None,
+    aliases: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
-    """Record one report, or raise `UseReportRefused` with the reason."""
+    """Record one report, or raise `UseReportRefused` with the reason. `aliases` as in `resolve_sources`."""
+    aliases = aliases or {}
     task = _context(task, MAX_TASK_CHARS)
     if not task:
         raise UseReportRefused("task is required: say in a sentence what you were doing")
@@ -141,9 +150,10 @@ def report_use(
     elif access_context is None:
         raise UseReportRefused("source policy requires an access context")
     else:
-        known = set(authorized_report_rows(store, (*used, *wrong), security_policy, access_context, include_text=False))
-    used_sources = resolve_sources(used, known, "used")
-    wrong_sources = resolve_sources(wrong, known, "wrong")
+        named = tuple(aliases.get(str(n).strip(), n) for n in (*used, *wrong))
+        known = set(authorized_report_rows(store, named, security_policy, access_context, include_text=False))
+    used_sources = resolve_sources(used, known, "used", aliases)
+    wrong_sources = resolve_sources(wrong, known, "wrong", aliases)
     both = sorted(set(used_sources) & set(wrong_sources))
     if both:
         raise UseReportRefused(f"{both[0]!r} is listed as both used and wrong; pick one")

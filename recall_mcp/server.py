@@ -56,6 +56,8 @@ from recall_mcp.assistant import (
     ASSISTANT_TOOLS,
     FORGET_DESCRIPTION,
     REMEMBER_DESCRIPTION,
+    REPORT_STALE_DESCRIPTION,
+    REPORT_USE_DESCRIPTION,
     STATED_FACT_SCHEMA,
     AssistantMemos,
     assistant_memos_from_env,
@@ -110,7 +112,7 @@ from recall_mcp.related_api import records_memory, related_memory
 from recall.records import RecordsQueryError
 from recall_mcp.stale_reports_api import report_stale
 from recall.stale_reports import StaleReportRefused
-from recall_mcp.use_reports_api import EFFECTS, UseReportRefused, authorized_report_rows, report_use
+from recall_mcp.use_reports_api import EFFECTS, MAX_SOURCES, UseReportRefused, authorized_report_rows, report_use
 # Through the service facade on purpose: this wrapper injects the service-level retrieval seams.
 from recall_mcp.service import query_construction_challenge, tenant_scopes
 from recall_mcp.status import JobLedger, calibration_status, job_status
@@ -2477,6 +2479,8 @@ def _register_reasoning_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
 
     @mcp.tool(
         name="recall_report_stale",
+        # Beside the assistant surface, search names a hit by its memo_id and shows no source.
+        description=None if deps.assistant is None else REPORT_STALE_DESCRIPTION,
         annotations=ToolAnnotations(
             title="Report a memory that another replaces",
             read_only_hint=False,
@@ -2530,21 +2534,35 @@ def _register_reasoning_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         # An authenticated server serves many tenants from one process root, so it records
         # reports only in the caller's own ledger (SEC-001).
         sidecar = state.get("stores") is None
+        assistant = deps.assistant
+
+        def run() -> dict[str, Any]:
+            names = (stale_source, replacing_source)
+            named = {} if assistant is None else assistant.files_named(cast(LiteStore, store), list(names))
+            # The queue reads a memo's file under the root, and runs only with no source policy,
+            # where nothing is hidden from the caller. Under a policy the caller's names go to the
+            # ledger as written, so a refusal names them and an unreadable memo reads as absent.
+            queued = sidecar and not report_access
+
+            def name(given: str) -> str:
+                return named[given.strip()][0] if queued and given.strip() in named else given
+
+            return report_stale(
+                store,
+                stale_source=name(stale_source),
+                replacing_source=name(replacing_source),
+                stale_quote=stale_quote,
+                current_quote=current_quote,
+                task=task,
+                env=_runtime_env_for(state),
+                sidecar=sidecar,
+                aliases={name(n).strip(): named[n.strip()][1] for n in names if n.strip() in named},
+                **report_access,
+            )
+
         with METRICS.timer("recall_tool_latency_ms", tool="report_stale"):
             try:
-                result = await _to_thread(
-                    lambda: report_stale(
-                        store,
-                        stale_source=stale_source,
-                        replacing_source=replacing_source,
-                        stale_quote=stale_quote,
-                        current_quote=current_quote,
-                        task=task,
-                        env=_runtime_env_for(state),
-                        sidecar=sidecar,
-                        **report_access,
-                    )
-                )
+                result = await _to_thread(run)
             except StaleReportRefused as exc:
                 await _release_mutation_reservation(state, store.tenant, idempotency_key)
                 raise ToolError(
@@ -2563,6 +2581,8 @@ def _register_reasoning_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
 
     @mcp.tool(
         name="recall_report_use",
+        # Beside the assistant surface, search names a hit by its memo_id and shows no source.
+        description=None if deps.assistant is None else REPORT_USE_DESCRIPTION,
         annotations=ToolAnnotations(
             title="Report what memory did for a task",
             read_only_hint=False,
@@ -2618,6 +2638,8 @@ def _register_reasoning_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         if replay is not None:
             return await report_replay(reader_store, report_access, replay)
         assert store is not None
+        assistant = deps.assistant
+        names: list[object] = [*(used or []), *(wrong or [])]
         with METRICS.timer("recall_tool_latency_ms", tool="report_use"):
             try:
                 result = await _to_thread(
@@ -2630,6 +2652,11 @@ def _register_reasoning_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
                         task_succeeded=task_succeeded,
                         query=query,
                         note=note,
+                        # A list past the cap is refused by report_use; it is not resolved first.
+                        aliases=(
+                            {n: s for n, (_, s) in assistant.files_named(cast(LiteStore, store), names).items()}
+                            if assistant is not None and len(names) <= 2 * MAX_SOURCES else None
+                        ),
                         **report_access,
                     )
                 )

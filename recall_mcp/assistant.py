@@ -51,6 +51,8 @@ __all__ = [
     "ASSISTANT_TOOLS",
     "FORGET_DESCRIPTION",
     "REMEMBER_DESCRIPTION",
+    "REPORT_STALE_DESCRIPTION",
+    "REPORT_USE_DESCRIPTION",
     "STATED_FACT_SCHEMA",
     "AssistantMemos",
     "AssistantSurfaceError",
@@ -83,6 +85,27 @@ REMEMBER_DESCRIPTION = (
 FORGET_DESCRIPTION = (
     "Delete one memo from long-term memory by memo_id. A fact it alone supported is retracted "
     "and its value erased from the fact ledger."
+)
+#: `recall_report_use`'s text when served beside this surface, where search names hits by memo_id.
+REPORT_USE_DESCRIPTION = (
+    "After a task that searched memory, say what the memories did for it. effect is one of "
+    "helped, no_difference or misled. List in used the memories you actually relied on, and in "
+    "wrong any that were retrieved but wrong, outdated or misleading; name each by the memo_id "
+    "search returned it by. Set task_succeeded when you know whether the task itself succeeded, "
+    "and query to the search you made. Report once per task, honestly, including when memory did "
+    "not help: the counts are only useful if the no-difference cases are in them. Nothing in "
+    "memory or search changes. A server with a shared rate limiter requires idempotency_key, as "
+    "for every write."
+)
+#: `recall_report_stale`'s text when served beside this surface, where search names hits by memo_id.
+REPORT_STALE_DESCRIPTION = (
+    "Report that one memory you used is replaced by another, newer one you also saw. Use it only "
+    "when two memories state different versions of the same fact, decision or status and one "
+    "clearly replaces the other. Not for a memory that is merely old, partial or off topic. Name "
+    "both by the memo_id search returned them by, and copy at least 20 characters exactly from "
+    "each: the outdated statement and the one that replaces it. The report is queued for a person "
+    "to review; nothing in memory changes until they accept it. A server with a shared rate "
+    "limiter requires idempotency_key, as for every write."
 )
 _STRING = {"type": "string"}
 #: The published schema of `recall_remember`'s `fact`: an inline object, not a `$ref`.
@@ -401,6 +424,33 @@ class AssistantMemos(MemoFolder):
         if path.is_absolute() and path.is_relative_to(self.index_root):
             return path.relative_to(self.index_root).as_posix().removesuffix(".md")
         return path.stem
+
+    def files_named(self, store: LiteStore, names: list[object]) -> dict[str, tuple[str, str]]:
+        """`{name: (file, source)}` for each name that `memo_id` gives exactly one stored source:
+        its file under the index root, as the stale-report queue names it, and the source, as the
+        ledger does. Read as `memo_id` writes it (own folder or under the index root, `.md`
+        dropped or not); a name naming no row, or several, is absent and left to the tool to judge
+        as written."""
+        keys: dict[str, list[str]] = {}
+        for raw in names:
+            name = str(raw).strip()
+            ref = memo_ref(name)
+            if not ref:
+                continue
+            path = within(self.index_root, (self.index_root if "/" in ref else self.folder) / ref)
+            if path is None:
+                continue
+            # Computes a memo key under the index root; no file is read.
+            # ast-grep-ignore: containment-via-confined
+            rel = path.relative_to(self.index_root).as_posix()
+            keys[name] = [f"{rel}.md", rel]
+        found = store.sources_for_identifiers([key for pair in keys.values() for key in pair])
+        named: dict[str, tuple[str, str]] = {}
+        for name, pair in keys.items():
+            file = next((key for key in pair if key in found), None)
+            if file is not None and len(found[file]) == 1:
+                named[name] = (file, found[file][0])
+        return named
 
     def render_search(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         """`recall_search`'s answer in the compact view."""
