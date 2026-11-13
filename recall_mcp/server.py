@@ -56,6 +56,7 @@ from recall_mcp.assistant import (
     ASSISTANT_TOOLS,
     FORGET_DESCRIPTION,
     REMEMBER_DESCRIPTION,
+    REPORT_STALE_DESCRIPTION,
     REPORT_USE_DESCRIPTION,
     STATED_FACT_SCHEMA,
     AssistantMemos,
@@ -2478,6 +2479,8 @@ def _register_reasoning_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
 
     @mcp.tool(
         name="recall_report_stale",
+        # Beside the assistant surface, search names a hit by its memo_id and shows no source.
+        description=None if deps.assistant is None else REPORT_STALE_DESCRIPTION,
         annotations=ToolAnnotations(
             title="Report a memory that another replaces",
             read_only_hint=False,
@@ -2531,21 +2534,35 @@ def _register_reasoning_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         # An authenticated server serves many tenants from one process root, so it records
         # reports only in the caller's own ledger (SEC-001).
         sidecar = state.get("stores") is None
+        assistant = deps.assistant
+
+        def run() -> dict[str, Any]:
+            names = (stale_source, replacing_source)
+            named = {} if assistant is None else assistant.files_named(cast(LiteStore, store), list(names))
+            # The queue reads a memo's file under the root, and runs only with no source policy,
+            # where nothing is hidden from the caller. Under a policy the caller's names go to the
+            # ledger as written, so a refusal names them and an unreadable memo reads as absent.
+            queued = sidecar and not report_access
+
+            def name(given: str) -> str:
+                return named[given.strip()][0] if queued and given.strip() in named else given
+
+            return report_stale(
+                store,
+                stale_source=name(stale_source),
+                replacing_source=name(replacing_source),
+                stale_quote=stale_quote,
+                current_quote=current_quote,
+                task=task,
+                env=_runtime_env_for(state),
+                sidecar=sidecar,
+                aliases={name(n).strip(): named[n.strip()][1] for n in names if n.strip() in named},
+                **report_access,
+            )
+
         with METRICS.timer("recall_tool_latency_ms", tool="report_stale"):
             try:
-                result = await _to_thread(
-                    lambda: report_stale(
-                        store,
-                        stale_source=stale_source,
-                        replacing_source=replacing_source,
-                        stale_quote=stale_quote,
-                        current_quote=current_quote,
-                        task=task,
-                        env=_runtime_env_for(state),
-                        sidecar=sidecar,
-                        **report_access,
-                    )
-                )
+                result = await _to_thread(run)
             except StaleReportRefused as exc:
                 await _release_mutation_reservation(state, store.tenant, idempotency_key)
                 raise ToolError(
@@ -2637,7 +2654,7 @@ def _register_reasoning_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
                         note=note,
                         # A list past the cap is refused by report_use; it is not resolved first.
                         aliases=(
-                            assistant.sources_named(cast(LiteStore, store), names)
+                            {n: s for n, (_, s) in assistant.files_named(cast(LiteStore, store), names).items()}
                             if assistant is not None and len(names) <= 2 * MAX_SOURCES else None
                         ),
                         **report_access,

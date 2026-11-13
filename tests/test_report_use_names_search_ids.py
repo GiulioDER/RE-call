@@ -17,23 +17,26 @@ Invariant and the failure it catches:
   the refusal printing the translated source (so a memo the caller may not read reads differently
   from one that does not exist).
 - R3 an id whose stored file name two sources share is left unresolved rather than credited to
-  either: `sources_named` taking the first source.
+  either: `files_named` taking the first source.
 
 Red proof, 2026-11-13, on this workstation (single file, light check). At the baseline b724962f0
 R1 fails in its intended assertion: "search's own ids were refused: ... 'note-0001' in used is not
 a memory in this corpus; name it as search returned it", the refusal an agent met in use.
-R2 and R3 call symbols the baseline lacks (`aliases`, `sources_named`), so they are proved by
+R2 and R3 call symbols the baseline lacks (`aliases`, `files_named`), so they are proved by
 mutating the fix instead. Each mutation alone, its test run alone, the file restored byte for byte
 (sha256 checked), then the file green:
 - M1 (R1) the server passing no aliases: the same refusal of `note-0001`.
 - M2 (R1) the server keeping the plain description: the description assertion (no `memo_id`).
-- M3 (R1) `AssistantMemos.sources_named` resolving every id in the own folder: `agent-b/note-0001`
+- M3 (R1) `AssistantMemos.files_named` resolving every id in the own folder: `agent-b/note-0001`
   in wrong refused.
 - M4 (R2) `report_use` asking the policy about the ids, not their sources: `note-0001` refused.
 - M5 (R2) `resolve_sources` refusing by the translated source: the reason names
   `/root/agent-b/note-0001.md`.
 - M6 (R2) `resolve_sources` ignoring aliases: `note-0001` refused.
-- M7 (R3) `sources_named` taking the first of two sources: `agent-b/note-0001` resolved.
+- M7 (R3) `files_named` taking the first of two sources: `agent-b/note-0001` resolved.
+M3 and M7 were first proved against this method as `sources_named`; it was renamed `files_named`
+and made to return the file beside the source for `recall_report_stale`, and both were run again
+on it the same day, red in the same assertions.
 """
 
 from __future__ import annotations
@@ -137,5 +140,5 @@ class _Rows:
 def test_an_id_naming_two_sources_is_left_unresolved(tmp_path: Path) -> None:
     """R3."""
     memos = AssistantMemos(tmp_path / "agent-a", index_root=tmp_path)
-    named = memos.sources_named(cast(Any, _Rows()), ["note-0001.md", "agent-b/note-0001", "note-0099"])
-    assert named == {"note-0001.md": "/one/agent-a/note-0001.md"}, named
+    named = memos.files_named(cast(Any, _Rows()), ["note-0001.md", "agent-b/note-0001", "note-0099"])
+    assert named == {"note-0001.md": ("agent-a/note-0001.md", "/one/agent-a/note-0001.md")}, named

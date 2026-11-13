@@ -51,6 +51,7 @@ __all__ = [
     "ASSISTANT_TOOLS",
     "FORGET_DESCRIPTION",
     "REMEMBER_DESCRIPTION",
+    "REPORT_STALE_DESCRIPTION",
     "REPORT_USE_DESCRIPTION",
     "STATED_FACT_SCHEMA",
     "AssistantMemos",
@@ -95,6 +96,16 @@ REPORT_USE_DESCRIPTION = (
     "not help: the counts are only useful if the no-difference cases are in them. Nothing in "
     "memory or search changes. A server with a shared rate limiter requires idempotency_key, as "
     "for every write."
+)
+#: `recall_report_stale`'s text when served beside this surface, where search names hits by memo_id.
+REPORT_STALE_DESCRIPTION = (
+    "Report that one memory you used is replaced by another, newer one you also saw. Use it only "
+    "when two memories state different versions of the same fact, decision or status and one "
+    "clearly replaces the other. Not for a memory that is merely old, partial or off topic. Name "
+    "both by the memo_id search returned them by, and copy at least 20 characters exactly from "
+    "each: the outdated statement and the one that replaces it. The report is queued for a person "
+    "to review; nothing in memory changes until they accept it. A server with a shared rate "
+    "limiter requires idempotency_key, as for every write."
 )
 _STRING = {"type": "string"}
 #: The published schema of `recall_remember`'s `fact`: an inline object, not a `$ref`.
@@ -414,10 +425,12 @@ class AssistantMemos(MemoFolder):
             return path.relative_to(self.index_root).as_posix().removesuffix(".md")
         return path.stem
 
-    def sources_named(self, store: LiteStore, names: list[object]) -> dict[str, str]:
-        """`{name: source}` for each name that `memo_id` gives exactly one stored source, read as
-        `memo_id` writes it (own folder or under the index root, `.md` dropped or not); a name
-        naming no row, or several, is absent and left for `report_use` to judge as written."""
+    def files_named(self, store: LiteStore, names: list[object]) -> dict[str, tuple[str, str]]:
+        """`{name: (file, source)}` for each name that `memo_id` gives exactly one stored source:
+        its file under the index root, as the stale-report queue names it, and the source, as the
+        ledger does. Read as `memo_id` writes it (own folder or under the index root, `.md`
+        dropped or not); a name naming no row, or several, is absent and left to the tool to judge
+        as written."""
         keys: dict[str, list[str]] = {}
         for raw in names:
             name = str(raw).strip()
@@ -432,11 +445,11 @@ class AssistantMemos(MemoFolder):
             rel = path.relative_to(self.index_root).as_posix()
             keys[name] = [f"{rel}.md", rel]
         found = store.sources_for_identifiers([key for pair in keys.values() for key in pair])
-        named: dict[str, str] = {}
+        named: dict[str, tuple[str, str]] = {}
         for name, pair in keys.items():
-            sources = next((found[key] for key in pair if key in found), [])
-            if len(sources) == 1:
-                named[name] = sources[0]
+            file = next((key for key in pair if key in found), None)
+            if file is not None and len(found[file]) == 1:
+                named[name] = (file, found[file][0])
         return named
 
     def render_search(self, payload: Mapping[str, Any]) -> dict[str, Any]:
