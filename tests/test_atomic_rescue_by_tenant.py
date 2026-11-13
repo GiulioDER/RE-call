@@ -21,8 +21,9 @@ Red proof, 2026-11-12, one mutation at a time, each restored before the next:
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager, nullcontext
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -104,3 +105,51 @@ def _mode_seen_by_trust_layer(tenant: str) -> str:
 def test_retrieval_hands_the_trust_layer_the_callers_tenant_mode() -> None:
     assert _mode_seen_by_trust_layer("beta") == "off"
     assert _mode_seen_by_trust_layer("alpha") == "active"
+
+
+class _EnvSeen(Exception):
+    def __init__(self, env: Mapping[str, str]) -> None:
+        self.env = env
+
+
+@pytest.mark.parametrize(
+    "audit",
+    ["_source_admission_benchmark_audit_payload", "_document_expansion_benchmark_audit_payload"],
+)
+def test_the_benchmark_audits_search_in_the_callers_tenant_mode(
+    monkeypatch: pytest.MonkeyPatch, audit: str
+) -> None:
+    """Invariant: a benchmark audit searches under the same rescue mode as the served retrieval.
+
+    Failure mode caught: the audit builds its env from the process mode, so with process `active`
+    and `beta:off` a pinned audit on beta runs active rescue against a generation with no
+    manifest, and the uncaught artifact error fails the query the served search answered.
+
+    Red proof, 2026-11-13, CCA run 20261113T103052Z (FIX-002 for BUG-001):
+    `python -m cca_checks tautology verify` ran both cases against the pre-fix
+    `recall_mcp/reasoning_diagnostics.py`, where each audit used `dict(runtime_environment())`;
+    both failed on the mode assert (`'active' == 'off'`).
+    """
+    import recall_mcp.reasoning_diagnostics as diagnostics
+
+    def seen(*_args: object, **kwargs: Any) -> None:
+        raise _EnvSeen(kwargs["env"])
+
+    monkeypatch.setattr(
+        diagnostics,
+        "runtime_environment",
+        lambda: {"RECALL_ATOMIC_RESCUE_MODE": "active", NAME: "beta:off"},
+    )
+    monkeypatch.setattr(diagnostics, "trusted_search", seen)
+    monkeypatch.setattr(diagnostics._factories, "_build_reranker", lambda *_a, **_k: None)
+    store = SimpleNamespace(tenant="beta", generation_id="gen-1")
+    profile = SimpleNamespace(candidate_k=4, name="profile")
+    arguments: dict[str, Any] = {
+        "store": store, "embedder": object(), "query": "q", "query_vector": [0.0],
+        "source": None, "calibration": object(), "policy": None, "profile": profile,
+    }
+    if audit.startswith("_document"):
+        arguments["k"] = 5
+    with pytest.raises(_EnvSeen) as raised:
+        getattr(diagnostics, audit)(**arguments)
+    assert raised.value.env["RECALL_ATOMIC_RESCUE_MODE"] == "off"
