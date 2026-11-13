@@ -81,9 +81,14 @@ it, so a later retry of a request it dropped can publish a second memo, or recre
 forgotten. Keep one release writing a memo folder. A ledger newer than this release reads is
 refused rather than rewritten.
 
-Only an existing assistant-authored memo can be a correction target. A memo that already has a
-successor is refused as `stale_target`, including on legacy calls: any memo of the folder that names
-it in `supersedes`, whoever wrote it, and any indexed document under the index root that the store
+Only an existing assistant-authored memo can be a correction target: one of the writer's folder,
+by its memo id, or one of another assistant's memo folder under the same index root (each agent
+with a folder of its own), by the id search names it by (`agent-b/note-0001`), whose authorship
+that folder's ledger decides. The memo names its target by the target's path under the index root,
+since a bare `note-0001.md` matches every folder's `note-0001`. `recall_forget_memo` still forgets
+only the writer's own folder's memos. A memo that already has a successor is refused as
+`stale_target`, including on legacy calls: any memo of the writer's folder or the target's that
+names it in `supersedes`, whoever wrote it, and any indexed document under the index root that the store
 resolves as its successor (case and markdown extension aside, a forgotten successor included).
 `expected_revision` needs the read scope: from a caller without it, comparing it with the target
 would confirm guesses of a memo the caller may not read, so it is refused as

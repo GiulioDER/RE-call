@@ -13,8 +13,10 @@ Invariants and the failure each one catches:
 - A3 a remembered fact is found by the very next search, and the compact answer is byte for byte
   `json.dumps` of the contract's projection of the plain server's answer on the same store: a
   dropped, added, reordered or renamed field. A hit is named by its file stem when it lies in the
-  memo folder, and by its path under the index root otherwise (`mem/memo-003`), which no tool of
-  the surface accepts, so a forget by id can never reach a file outside the folder.
+  memo folder, and by its path under the index root otherwise (`mem/memo-003`), which only
+  `recall_remember`'s `supersedes` accepts, and only for another assistant folder's memo
+  (`tests/test_assistant_cross_folder_supersession.py`), so a forget by id can never reach a file
+  outside the folder.
 - A4 the same for `recall_evidence` (items and cards), `recall_apply_fact` and
   `recall_current_facts`.
 - A5 `supersedes` is refused for a memo the assistant did not write and for an unknown id, a text
@@ -260,7 +262,8 @@ def test_only_the_assistants_own_memo_can_be_superseded(
         )
         assert replaced == {"memo_id": "pref-0003"}, replaced
         written = (tmp_path / "memos" / "pref-0003.md").read_text(encoding="utf-8")
-        assert written == "---\nsupersedes: pref-0001.md\n---\nThe user drink coffee now.\n", written
+        # The target's path under the index root: a bare name matches every folder's pref-0001.
+        assert written == "---\nsupersedes: memos/pref-0001.md\n---\nThe user drink coffee now.\n", written
         hits = {h["memo_id"]: h for h in json.loads(await a("recall_search", query="user drink tea", k=10))["hits"]}
         assert "pref-0001" in hits, sorted(hits)
         assert hits["pref-0001"]["verdict"] != "ok" and hits["pref-0001"]["superseded_by"], hits["pref-0001"]

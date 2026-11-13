@@ -79,11 +79,14 @@ def _write_pair(folder: MemoFolder, first_code: str) -> tuple[dict[str, Any], di
     return first, second
 
 
-def _derived(folder: Path, tmp_path: Path) -> set[str]:
+def _derived(folder: MemoFolder, tmp_path: Path) -> set[str]:
     """The journal tokens derived from the forgotten value: the twin writes the same requests with it
-    changed."""
-    _write_pair(MemoFolder(tmp_path / "twin"), TWIN)
-    derived = _hashes(folder) - _hashes(tmp_path / "twin")
+    changed. It lies at the folder's own path under its own root, since a correction names its
+    target by that path, so nothing but the value differs."""
+    twin_root = tmp_path / "twin"
+    twin = MemoFolder(twin_root / folder.folder.relative_to(folder.index_root), index_root=twin_root)
+    _write_pair(twin, TWIN)
+    derived = _hashes(folder.folder) - _hashes(twin.folder)
     assert derived, "the scenario must journal hashes derived from the value it forgets"
     return derived
 
@@ -101,7 +104,7 @@ def _assert_erased(folder: MemoFolder, derived: set[str], first: dict[str, Any])
 def test_p1_the_mcp_forget_tool_erases_the_journal(envs, tmp_path: Path) -> None:  # noqa: F811
     folder = MemoFolder(tmp_path / "memos", index_root=tmp_path)
     first, _ = _write_pair(folder, GONE)
-    derived = _derived(folder.folder, tmp_path)
+    derived = _derived(folder, tmp_path)
     path = str(folder.path_of(first["memo_id"]))
 
     async def body(a: Any, p: Any, state: dict[str, Any]) -> None:
@@ -116,7 +119,7 @@ def test_p1_the_mcp_forget_tool_erases_the_journal(envs, tmp_path: Path) -> None
 def test_p2_the_cli_forget_erases_the_journal(tmp_path: Path) -> None:
     folder = MemoFolder(tmp_path / "memos")
     first, _ = _write_pair(folder, GONE)
-    derived = _derived(folder.folder, tmp_path)
+    derived = _derived(folder, tmp_path)
     base = ["--embedder", "hashing", "--dsn", _dsn(tmp_path)]
     run_cli([*base, "index", str(folder.folder)])
     path = str(folder.path_of(first["memo_id"]))
@@ -128,7 +131,7 @@ def test_p2_the_cli_forget_erases_the_journal(tmp_path: Path) -> None:
 def test_p3_a_hand_deletion_pruned_by_recall_index_erases_the_journal(tmp_path: Path) -> None:
     folder = MemoFolder(tmp_path / "memos")
     first, _ = _write_pair(folder, GONE)
-    derived = _derived(folder.folder, tmp_path)
+    derived = _derived(folder, tmp_path)
     base = ["--embedder", "hashing", "--dsn", _dsn(tmp_path)]
     run_cli([*base, "index", str(folder.folder)])
     folder.path_of(first["memo_id"]).unlink()
@@ -142,7 +145,7 @@ def test_p4_a_hand_deletion_pruned_by_the_lite_refresh_erases_the_journal(servin
     first = remember(store, memos, _text(GONE), fact=_door(GONE), request_id="first")
     remember(store, memos, _text(KEPT), fact=_door(KEPT), supersedes=first["memo_id"],
              expected_revision=first["receipt"]["revision"], request_id="second")
-    derived = _derived(memos.folder, tmp_path)
+    derived = _derived(memos, tmp_path)
     path = memos.path_of(first["memo_id"])
     path.unlink()
     report = memos.refresh(store, ContentWordEmbedder())
@@ -231,7 +234,7 @@ def test_p7_a_forget_re_run_completes_a_failed_journal_erasure(tmp_path: Path, m
 
     folder = MemoFolder(tmp_path / "memos")
     first, _ = _write_pair(folder, GONE)
-    derived = _derived(folder.folder, tmp_path)
+    derived = _derived(folder, tmp_path)
     path = folder.path_of(first["memo_id"])
     store = LiteStore(tmp_path / "memory.db", dim=4, tenant="mine")
     try:

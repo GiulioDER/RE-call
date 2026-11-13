@@ -28,6 +28,7 @@ from datetime import date
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from recall.confinement import within
 from recall.frontmatter import validity_bounds
 from recall.lite.memo_requests import (
     MEMO_ID, cancel_requests, load_ledger, restore_requests, sweep_staged, write_memo,
@@ -157,27 +158,53 @@ class MemoFolder:
                 graph = {"facts": [AtomicFact.from_payload(fact).to_payload()]}
             except (TypeError, ValueError, KeyError) as exc:
                 return {"refused": f"fact is not a valid structured fact: {exc}"}
-        authors = self.authors()
+        target = None
         if supersedes is not None:
-            if supersedes not in authors:
+            located = self.target_of(supersedes)
+            if located is None:
                 return {"refused": f"no memo {supersedes!r}"}
-            if authors[supersedes] != ASSISTANT_AUTHOR:
+            folder, memo_id = located
+            authors = load_ledger(folder / LEDGER_NAME)["authors"]
+            if memo_id not in authors:
+                return {"refused": f"no memo {supersedes!r}"}
+            if authors[memo_id] != ASSISTANT_AUTHOR:
                 return {"refused": f"{supersedes} was not written by the assistant; it cannot be superseded"}
+            if folder == self.folder:
+                supersedes = memo_id  # this folder's memo, journalled by its id as a forget here names it
+            path = folder / f"{memo_id}.md"
+            # Its path under the index root: a bare name matches every folder's memo of that id.
+            target = (path, path.relative_to(self.index_root).as_posix())
         front = []
         if valid_from:
             front.append(f"valid_from: {valid_from}")
         if valid_until:
             front.append(f"valid_until: {valid_until}")
-        if supersedes:
-            front.append(f"supersedes: {supersedes}.md")
+        if target:
+            front.append(f"supersedes: {target[1]}")
         if graph:
             front.append("recall_graph: " + json.dumps(graph, ensure_ascii=False))
         body = ("---\n" + "\n".join(front) + "\n---\n" if front else "") + text.strip() + "\n"
         return write_memo(
             self.folder, self.ledger_path, body, kind=kind, author=author, supersedes=supersedes,
             request_id=request_id, expected_revision=expected_revision, include_receipt=include_receipt,
-            has_successor=has_successor,
+            has_successor=has_successor, target=target,
         )
+
+    def target_of(self, ref: str) -> tuple[Path, str] | None:
+        """The folder and memo id a `supersedes` reference names, or None.
+
+        A memo id names a memo of this folder. A qualified id, the path under the index root that
+        `recall_search` names another folder's memo by (`agent-b/note-0001`), names a memo of
+        that folder, resolved, which must lie under the index root. Whether it is an assistant's
+        memo is that folder's ledger's to say (`write`): a folder without one has no authors.
+        """
+        parent, _, memo_id = ref.rpartition("/")
+        if not MEMO_ID.fullmatch(memo_id):
+            return None
+        if not parent:
+            return self.folder, memo_id
+        folder = within(self.index_root, self.index_root / parent)
+        return None if folder is None else (folder, memo_id)
 
     def refresh(self, store: LiteStore, embedder: Embedder, **kwargs: Any) -> RefreshReport:
         """Index the folder now, through the lite refresh the server itself runs, keyed to the index root.

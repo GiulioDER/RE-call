@@ -667,11 +667,11 @@ They are observations, not automatic failures.
 | `recall.lineage` | 2 | 12 |
 | `recall.lint` | 5 | 27 |
 | `recall.lite` | 2 | 111 |
-| `recall.lite.assistant_memos` | 6 | 111 |
+| `recall.lite.assistant_memos` | 7 | 111 |
 | `recall.lite.calibration` | 11 | 111 |
 | `recall.lite.facts` | 9 | 111 |
 | `recall.lite.inspect` | 3 | 111 |
-| `recall.lite.memo_requests` | 3 | 17 |
+| `recall.lite.memo_requests` | 4 | 23 |
 | `recall.lite.receipts` | 3 | 111 |
 | `recall.lite.refresh` | 13 | 111 |
 | `recall.lite.setup` | 7 | 160 |
