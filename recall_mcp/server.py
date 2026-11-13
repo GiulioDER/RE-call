@@ -56,6 +56,7 @@ from recall_mcp.assistant import (
     ASSISTANT_TOOLS,
     FORGET_DESCRIPTION,
     REMEMBER_DESCRIPTION,
+    REPORT_USE_DESCRIPTION,
     STATED_FACT_SCHEMA,
     AssistantMemos,
     assistant_memos_from_env,
@@ -110,7 +111,7 @@ from recall_mcp.related_api import records_memory, related_memory
 from recall.records import RecordsQueryError
 from recall_mcp.stale_reports_api import report_stale
 from recall.stale_reports import StaleReportRefused
-from recall_mcp.use_reports_api import EFFECTS, UseReportRefused, authorized_report_rows, report_use
+from recall_mcp.use_reports_api import EFFECTS, MAX_SOURCES, UseReportRefused, authorized_report_rows, report_use
 # Through the service facade on purpose: this wrapper injects the service-level retrieval seams.
 from recall_mcp.service import query_construction_challenge, tenant_scopes
 from recall_mcp.status import JobLedger, calibration_status, job_status
@@ -2563,6 +2564,8 @@ def _register_reasoning_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
 
     @mcp.tool(
         name="recall_report_use",
+        # Beside the assistant surface, search names a hit by its memo_id and shows no source.
+        description=None if deps.assistant is None else REPORT_USE_DESCRIPTION,
         annotations=ToolAnnotations(
             title="Report what memory did for a task",
             read_only_hint=False,
@@ -2618,6 +2621,8 @@ def _register_reasoning_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         if replay is not None:
             return await report_replay(reader_store, report_access, replay)
         assert store is not None
+        assistant = deps.assistant
+        names: list[object] = [*(used or []), *(wrong or [])]
         with METRICS.timer("recall_tool_latency_ms", tool="report_use"):
             try:
                 result = await _to_thread(
@@ -2630,6 +2635,11 @@ def _register_reasoning_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
                         task_succeeded=task_succeeded,
                         query=query,
                         note=note,
+                        # A list past the cap is refused by report_use; it is not resolved first.
+                        aliases=(
+                            assistant.sources_named(cast(LiteStore, store), names)
+                            if assistant is not None and len(names) <= 2 * MAX_SOURCES else None
+                        ),
                         **report_access,
                     )
                 )

@@ -51,6 +51,7 @@ __all__ = [
     "ASSISTANT_TOOLS",
     "FORGET_DESCRIPTION",
     "REMEMBER_DESCRIPTION",
+    "REPORT_USE_DESCRIPTION",
     "STATED_FACT_SCHEMA",
     "AssistantMemos",
     "AssistantSurfaceError",
@@ -83,6 +84,17 @@ REMEMBER_DESCRIPTION = (
 FORGET_DESCRIPTION = (
     "Delete one memo from long-term memory by memo_id. A fact it alone supported is retracted "
     "and its value erased from the fact ledger."
+)
+#: `recall_report_use`'s text when served beside this surface, where search names hits by memo_id.
+REPORT_USE_DESCRIPTION = (
+    "After a task that searched memory, say what the memories did for it. effect is one of "
+    "helped, no_difference or misled. List in used the memories you actually relied on, and in "
+    "wrong any that were retrieved but wrong, outdated or misleading; name each by the memo_id "
+    "search returned it by. Set task_succeeded when you know whether the task itself succeeded, "
+    "and query to the search you made. Report once per task, honestly, including when memory did "
+    "not help: the counts are only useful if the no-difference cases are in them. Nothing in "
+    "memory or search changes. A server with a shared rate limiter requires idempotency_key, as "
+    "for every write."
 )
 _STRING = {"type": "string"}
 #: The published schema of `recall_remember`'s `fact`: an inline object, not a `$ref`.
@@ -401,6 +413,31 @@ class AssistantMemos(MemoFolder):
         if path.is_absolute() and path.is_relative_to(self.index_root):
             return path.relative_to(self.index_root).as_posix().removesuffix(".md")
         return path.stem
+
+    def sources_named(self, store: LiteStore, names: list[object]) -> dict[str, str]:
+        """`{name: source}` for each name that `memo_id` gives exactly one stored source, read as
+        `memo_id` writes it (own folder or under the index root, `.md` dropped or not); a name
+        naming no row, or several, is absent and left for `report_use` to judge as written."""
+        keys: dict[str, list[str]] = {}
+        for raw in names:
+            name = str(raw).strip()
+            ref = memo_ref(name)
+            if not ref:
+                continue
+            path = within(self.index_root, (self.index_root if "/" in ref else self.folder) / ref)
+            if path is None:
+                continue
+            # Computes a memo key under the index root; no file is read.
+            # ast-grep-ignore: containment-via-confined
+            rel = path.relative_to(self.index_root).as_posix()
+            keys[name] = [f"{rel}.md", rel]
+        found = store.sources_for_identifiers([key for pair in keys.values() for key in pair])
+        named: dict[str, str] = {}
+        for name, pair in keys.items():
+            sources = next((found[key] for key in pair if key in found), [])
+            if len(sources) == 1:
+                named[name] = sources[0]
+        return named
 
     def render_search(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         """`recall_search`'s answer in the compact view."""
