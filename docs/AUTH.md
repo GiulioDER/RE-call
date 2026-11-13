@@ -143,6 +143,56 @@ Authorization: Bearer <token>
 **Terminate TLS in front of this server.** A bearer token over plaintext HTTP is readable by every
 hop in between.
 
+## Attributing calls to a session
+
+On an HTTP transport, the scope and tenant check every tool call passes writes one line to the
+`recall.mcp.access` logger, at INFO when the call is allowed and at WARNING when it is denied
+(with `RECALL_LOG_FORMAT=json` each field is also a key of its own):
+
+```
+access outcome=allowed principal='research-agent' tenant='team-research' scope=recall:read tool=recall_search session=5f0c... client=claude-code
+```
+
+A search that reaches other tenants writes a second line for that decision, with
+`scope=recall:federate` and `tenant` listing every tenant the route selected, comma separated;
+a federation the token may not make is `denied` there. `allowed` means these checks passed, not
+that the call ran: the rate limiter and the idempotency key requirement run after the scope and
+tenant check, the clearance check can refuse the call after either line, and none of them writes
+an access line of its own.
+
+The principal and tenant come from the verified token. The session and client are what the client
+says: the session is the `threadId` in a tool call's `_meta` when there is one (Codex sends its
+chat id there), else the `X-Recall-Session` header; the client is the `X-Recall-Client` header.
+They attribute a call to a session; they never
+authorize one, because any holder of the token can send any value. A value outside letters, digits
+and `._:@-`, or longer than 128 characters, is logged as `invalid`. stdio writes no access line.
+
+`scripts/mcp_headers_helper.py` prints the three headers as JSON with a fresh session per run, for
+a client that asks a command for its headers. It reads the token from the file named by
+`RECALL_MCP_TOKEN_FILE` (keep it mode 600) and the client label from `RECALL_MCP_CLIENT_NAME`.
+It uses only the standard library and is not in the wheel or the sdist: copy it from the
+repository to the client machine, which does not need RE-call installed.
+
+Claude Code runs a server's `headersHelper` at session start and on reconnect. Declare the server
+at user or local scope: a helper of a project `.mcp.json` server does not receive credential
+environment variables.
+
+```json
+{
+  "mcpServers": {
+    "recall": {
+      "type": "http",
+      "url": "https://recall.example.com/mcp",
+      "headersHelper": "python /path/to/scripts/mcp_headers_helper.py"
+    }
+  }
+}
+```
+
+Codex caches the output of its `http_headers_helper` per process, so its session header is one
+per process; the chat id it sends as `threadId` with each tool call is what separates its chats,
+and it takes precedence. Measured on Codex 0.166; check it on the version you run.
+
 ## Taking identity from an OIDC provider
 
 The token file is a development affordance, and `load_token_registry` **refuses to load it when

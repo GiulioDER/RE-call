@@ -12,6 +12,7 @@ recorded in the pull request that adds this file.
 from __future__ import annotations
 
 import json
+import logging
 from types import SimpleNamespace
 
 import pytest
@@ -50,13 +51,13 @@ def _resolver() -> RetrievalPlanResolver:
     )
 
 
-def _plan(monkeypatch, route_id: str, claims: dict):
-    token = SimpleNamespace(scopes=[SCOPE_READ, SCOPE_FEDERATE], claims=claims, client_id="agent-1")
+def _plan(monkeypatch, route_id: str, claims: dict, scopes=(SCOPE_READ, SCOPE_FEDERATE), tenant="acme"):
+    token = SimpleNamespace(scopes=list(scopes), claims=claims, client_id="agent-1")
     monkeypatch.setattr(server, "get_access_token", lambda: token)
     state = {"retrieval_plan_resolver": _resolver(), "stores": _Registry()}
     return server._retrieval_plan_for(
         state,
-        SimpleNamespace(tenant="acme"),
+        SimpleNamespace(tenant=tenant),
         "a question",
         scope=None,
         source=None,
@@ -95,6 +96,31 @@ def test_a_route_inside_the_callers_bound_tenants_is_served(monkeypatch) -> None
     assert bound.selected_tenants == ("globex",)
     unbound = _plan(monkeypatch, "shared", {"tenant": "acme"})
     assert unbound.selected_tenants == ("globex",)
+
+
+def test_a_federation_decision_writes_its_own_access_line(monkeypatch, caplog) -> None:
+    """Invariant: a search that reaches other tenants records that decision, allowed or denied.
+
+    Failure mode caught: `_require` logs `allowed` for the caller's own-tenant read, then this
+    gate refuses the federation (or reaches globex) and writes nothing, so the access log shows a
+    refused cross-tenant attempt as allowed and a permitted one under the caller's tenant only.
+    An own-tenant plan writes no second line.
+
+    Red proof, 2026-11-13, CCA run 20261113T103055Z (FIX-001 for SEC-001):
+    `python -m cca_checks tautology verify` ran this test against the pre-fix
+    `recall_mcp/server.py`, where `_retrieval_plan_for` records nothing; it failed on the
+    `caplog.messages` assert (`[] == [...]`).
+    """
+    caplog.set_level(logging.INFO, logger="recall.mcp.access")
+    acme = {"tenant": "acme", "principal": "agent"}
+    _plan(monkeypatch, "globex-only", {"tenant": "globex", "principal": "agent"}, tenant="globex")
+    _plan(monkeypatch, "shared", acme)
+    with pytest.raises(PermissionError, match="does not include the caller's tenant"):
+        _plan(monkeypatch, "globex-only", acme)
+    with pytest.raises(PermissionError, match="requires the recall:federate scope"):
+        _plan(monkeypatch, "shared", acme, scopes=(SCOPE_READ,))
+    line = "access outcome={} principal='agent' tenant='globex' scope=recall:federate tool=- session=- client=-"
+    assert caplog.messages == [line.format("allowed"), line.format("denied"), line.format("denied")]
 
 
 def test_the_oidc_verifier_carries_the_subjects_bound_tenants(monkeypatch) -> None:

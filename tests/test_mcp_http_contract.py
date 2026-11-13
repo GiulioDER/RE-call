@@ -221,6 +221,8 @@ def test_authenticated_http_request_preserves_the_whole_security_contract(
     assert unknown.status_code == 401
 
     writer = _session(url, tokens["writer"], "writer")
+    # What a client's headers helper sends per session; the server attributes, never authorizes.
+    writer.update({"X-Recall-Session": "contract-session-1", "X-Recall-Client": "contract-test"})
     reader = _session(url, tokens["reader"], "reader")
     private_body = "tenant-a-only-7f8e2c1d"
     encoded = base64.b64encode(private_body.encode("utf-8")).decode("ascii")
@@ -246,10 +248,23 @@ def test_authenticated_http_request_preserves_the_whole_security_contract(
     )
     assert forbidden_write["result"]["isError"] is True
     # The SDK deliberately redacts PermissionError details from the client-facing result. The
-    # generic error envelope proves the tool was stopped, while the server audit line proves it was
-    # stopped by the missing write scope rather than by a later filesystem or database failure.
+    # generic error envelope proves the tool was stopped, while the `denied` access line below
+    # proves it was stopped by the missing write scope rather than by a later filesystem or
+    # database failure.
     assert _tool_text(forbidden_write) == "Error executing tool recall_ingest"
-    assert "denied for scope recall:write" in log_path.read_text(encoding="utf-8")
+    # Every authorization decision names the principal and, when the client sent one, the session.
+    # Red proof 2026-11-13: with the `outcome="allowed"` record_access call removed from `_require`,
+    # this test failed on the first assert below; with the `outcome="denied"` call in its
+    # PermissionError branch removed, it failed on the second.
+    log_text = log_path.read_text(encoding="utf-8")
+    assert (
+        "access outcome=allowed principal='writer' tenant='tenant-a' scope=recall:write "
+        "tool=recall_ingest session=contract-session-1 client=contract-test"
+    ) in log_text
+    assert (
+        "access outcome=denied principal='reader' tenant=None scope=recall:write "
+        "tool=recall_ingest session=- client=-"
+    ) in log_text
 
     reader_inventory = _call(url, reader, "recall_inventory", {})
     assert json.loads(_tool_text(reader_inventory))["entries"] == []
