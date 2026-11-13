@@ -212,10 +212,15 @@ rewrite existing chunks or calibration artifacts.
 
 Atomic fact rescue is also opt in. Leave `RECALL_ATOMIC_RESCUE_MODE=off` unless every generation
 that may serve, including the immediate rollback generation, has a validated manifest at
-`<RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT>/<generation_id>/manifest.json`. Active mode applies only to
+`<RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT>/<generation_id>/manifest.json`. A process serving several
+tenants can set a tenant's mode with `RECALL_ATOMIC_RESCUE_MODE_BY_TENANT=tenant:mode,...`, which
+overrides the process mode for that tenant in either direction; the manifest rule then applies to
+the generations of each tenant whose resolved mode is `active`. Active mode applies only to
 unscoped requests without a source security policy. Artifact or lineage failures refuse the request
 instead of silently falling back to baseline retrieval. Application rollback is
-`RECALL_ATOMIC_RESCUE_MODE=off` followed by a process restart; no database route change is needed.
+`RECALL_ATOMIC_RESCUE_MODE=off`, with every `active` entry removed from
+`RECALL_ATOMIC_RESCUE_MODE_BY_TENANT` (or set to `off`), followed by a process restart; no database
+route change is needed.
 When active mode is part of a generation refresh, build and validate the matching artifact after
 the generation receives a published certified calibration and before promotion. Refuse promotion
 if artifact construction or validation fails. The production memory refresh follows this order and

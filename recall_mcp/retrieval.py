@@ -58,7 +58,7 @@ from recall_mcp.factories import (
     _validate_quality_reranker_config,
     resolve_reranker,
 )
-from recall_mcp.settings import runtime_environment
+from recall_mcp.settings import runtime_environment, tenant_retrieval_environment
 
 _log = get_logger("mcp.service")
 
@@ -201,7 +201,9 @@ def _retrieve_trusted(
             "Search cost scales with query length while the rate budget does not, so an "
             "unbounded query is a shared-database denial of service. Ask a shorter question."
         )
-    values = dict(runtime_environment() if env is None else env)
+    values = tenant_retrieval_environment(
+        runtime_environment() if env is None else env, getattr(store, "tenant", None)
+    )
     profile = resolve_retrieval_profile(values)
     selected_mode = routing_mode(values.get("RECALL_ROUTING_MODE", "shadow"))
     if selected_mode == "active" and profile.name == "legacy":

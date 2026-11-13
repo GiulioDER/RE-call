@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import math
 import os
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
 from types import MappingProxyType
@@ -255,6 +255,7 @@ ENVIRONMENT_SCHEMA: tuple[EnvironmentSpec, ...] = (
     EnvironmentSpec("RECALL_SOURCE_CONDITIONING_SHADOW_SAMPLE_RATE", "Retrieval", "deterministic shadow sampling fraction", "0"),
     EnvironmentSpec("RECALL_SOURCE_CONDITIONING_SHADOW_POLICY", "Retrieval", "alpha008 or guarded spare slot shadow policy", "alpha008"),
     EnvironmentSpec("RECALL_ATOMIC_RESCUE_MODE", "Retrieval", "off, sampled shadow, or active atomic rescue", "off"),
+    EnvironmentSpec("RECALL_ATOMIC_RESCUE_MODE_BY_TENANT", "Retrieval", "per-tenant atomic rescue mode, tenant:mode comma separated; overrides RECALL_ATOMIC_RESCUE_MODE for that tenant"),
     EnvironmentSpec("RECALL_SEARCH_EVIDENCE", "Retrieval", "on, or off (also 0, false or no) to drop recall_search's evidence and historical fields and their citation advice", "on"),
     EnvironmentSpec("RECALL_PAGED_EVIDENCE", "Retrieval", "off, or on to return the profile's paged evidence depth for PDF and PPTX results when k is unset", "off"),
     EnvironmentSpec("RECALL_ATOMIC_RESCUE_ARTIFACT", "Retrieval", "generation bound atomic rescue artifact manifest"),
@@ -319,6 +320,55 @@ def _number_or_off(source: Mapping[str, str], name: str, default: float) -> None
     _number({name: raw}, name, default, minimum=0.0)
 
 
+_ATOMIC_RESCUE_MODES = frozenset({"off", "shadow", "active"})
+
+
+def atomic_rescue_modes_by_tenant(source: Mapping[str, str]) -> dict[str, str]:
+    """Parse `RECALL_ATOMIC_RESCUE_MODE_BY_TENANT` (`tenant:mode,...`) into a tenant to mode map.
+
+    The rescue mode is otherwise process-wide, so one process could not serve a tenant whose
+    generation has a rescue artifact beside one whose generation has none: the second tenant's
+    every search fails on the missing manifest. Each entry splits on its LAST colon, as
+    `RECALL_OIDC_SUBJECT_TENANTS` does; a malformed or repeated entry refuses at startup. A tenant
+    the server does not serve is not refused, because one host `.env` can feed several
+    single-tenant servers; the server warns about it at startup instead
+    (`unserved_atomic_rescue_tenants`).
+    """
+    name = "RECALL_ATOMIC_RESCUE_MODE_BY_TENANT"
+    modes: dict[str, str] = {}
+    for entry in (item.strip() for item in source.get(name, "").split(",")):
+        if not entry:
+            continue
+        tenant, _, mode = entry.rpartition(":")
+        tenant, mode = tenant.strip(), mode.strip().lower()
+        if not tenant or mode not in _ATOMIC_RESCUE_MODES:
+            raise ValueError(
+                f"{name} entry {entry!r} is malformed; expected tenant:off|shadow|active"
+            )
+        if tenant in modes:
+            raise ValueError(f"{name} names tenant {tenant!r} twice")
+        modes[tenant] = mode
+    return modes
+
+
+def unserved_atomic_rescue_tenants(values: Mapping[str, str], served: Iterable[str]) -> list[str]:
+    """The tenants `RECALL_ATOMIC_RESCUE_MODE_BY_TENANT` names that `served` does not, sorted.
+
+    The override is an exact, case-sensitive match on the store's tenant, so a misspelt key
+    leaves its tenant on the process mode with nothing else to say so.
+    """
+    return sorted(set(atomic_rescue_modes_by_tenant(values)) - set(served))
+
+
+def tenant_retrieval_environment(values: Mapping[str, str], tenant: str | None) -> dict[str, str]:
+    """`values` with the atomic rescue mode replaced by `tenant`'s override, when it has one."""
+    resolved = dict(values)
+    override = atomic_rescue_modes_by_tenant(values).get(tenant) if tenant is not None else None
+    if override is not None:
+        resolved["RECALL_ATOMIC_RESCUE_MODE"] = override
+    return resolved
+
+
 def _validate_runtime_options(source: Mapping[str, str]) -> None:
     """Validate scalar MCP options before any stores, providers, or listeners are created."""
     from recall.retrieval_plan import RetrievalPlanResolver
@@ -375,12 +425,16 @@ def _validate_runtime_options(source: Mapping[str, str]) -> None:
     # fail every search, which federation's default `omit` records only as a failed leg.
     parse_generation_dense_search(source.get("RECALL_GENERATION_DENSE_SEARCH"))
     atomic_mode = source.get("RECALL_ATOMIC_RESCUE_MODE", "off").strip().lower()
-    if atomic_mode not in {"off", "shadow", "active"}:
+    if atomic_mode not in _ATOMIC_RESCUE_MODES:
         raise ValueError("RECALL_ATOMIC_RESCUE_MODE must be off, shadow, or active")
-    if atomic_mode == "active" and not source.get(
+    tenant_modes = atomic_rescue_modes_by_tenant(source)
+    if "active" in {atomic_mode, *tenant_modes.values()} and not source.get(
         "RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT", ""
     ).strip():
-        raise ValueError("RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT is required in active mode")
+        raise ValueError(
+            "RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT is required when RECALL_ATOMIC_RESCUE_MODE or an "
+            "entry of RECALL_ATOMIC_RESCUE_MODE_BY_TENANT is active"
+        )
     if source.get("RECALL_ATOMIC_RESCUE_PLACEMENT", "dense").strip().lower() not in {
         "dense",
         "fused",

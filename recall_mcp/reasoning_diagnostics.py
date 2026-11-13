@@ -58,7 +58,7 @@ from recall.types import (
     TrustedResult,
 )
 from recall_mcp import factories as _factories
-from recall_mcp.settings import runtime_environment
+from recall_mcp.settings import runtime_environment, tenant_retrieval_environment
 
 _log = _get_logger("mcp.service")
 
@@ -452,7 +452,7 @@ def _source_admission_benchmark_audit_payload(
     if active_calibration is None:
         raise RuntimeError("source admission benchmark requires the pinned calibration")
     pinned = _PinnedBenchmarkQueryEmbedder(embedder, query, query_vector)
-    values = dict(runtime_environment())
+    values = tenant_retrieval_environment(runtime_environment(), getattr(store, "tenant", None))
     captured: list[ScoredChunk] = []
 
     def capture_pool(result: RetrievalResult) -> RetrievalResult:
@@ -550,7 +550,7 @@ def _document_expansion_benchmark_audit_payload(
 ) -> dict[str, object]:
     """Run paired source-scoped expansion arms without changing the served baseline."""
     pinned = _PinnedBenchmarkQueryEmbedder(embedder, query, query_vector)
-    values = dict(runtime_environment())
+    values = tenant_retrieval_environment(runtime_environment(), getattr(store, "tenant", None))
     common: _BenchmarkSearchArguments = {
         "store": store,
         "embedder": pinned,
