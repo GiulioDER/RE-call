@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import math
 import os
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
 from types import MappingProxyType
@@ -329,8 +329,10 @@ def atomic_rescue_modes_by_tenant(source: Mapping[str, str]) -> dict[str, str]:
     The rescue mode is otherwise process-wide, so one process could not serve a tenant whose
     generation has a rescue artifact beside one whose generation has none: the second tenant's
     every search fails on the missing manifest. Each entry splits on its LAST colon, as
-    `RECALL_OIDC_SUBJECT_TENANTS` does; a malformed or repeated entry refuses at startup rather
-    than leaving a tenant silently on the process mode.
+    `RECALL_OIDC_SUBJECT_TENANTS` does; a malformed or repeated entry refuses at startup. A tenant
+    the server does not serve is not refused, because one host `.env` can feed several
+    single-tenant servers; the server warns about it at startup instead
+    (`unserved_atomic_rescue_tenants`).
     """
     name = "RECALL_ATOMIC_RESCUE_MODE_BY_TENANT"
     modes: dict[str, str] = {}
@@ -340,11 +342,22 @@ def atomic_rescue_modes_by_tenant(source: Mapping[str, str]) -> dict[str, str]:
         tenant, _, mode = entry.rpartition(":")
         tenant, mode = tenant.strip(), mode.strip().lower()
         if not tenant or mode not in _ATOMIC_RESCUE_MODES:
-            raise ValueError(f"{name} entry {entry!r} is malformed; expected tenant:off|shadow|active")
+            raise ValueError(
+                f"{name} entry {entry!r} is malformed; expected tenant:off|shadow|active"
+            )
         if tenant in modes:
             raise ValueError(f"{name} names tenant {tenant!r} twice")
         modes[tenant] = mode
     return modes
+
+
+def unserved_atomic_rescue_tenants(values: Mapping[str, str], served: Iterable[str]) -> list[str]:
+    """The tenants `RECALL_ATOMIC_RESCUE_MODE_BY_TENANT` names that `served` does not, sorted.
+
+    The override is an exact, case-sensitive match on the store's tenant, so a misspelt key
+    leaves its tenant on the process mode with nothing else to say so.
+    """
+    return sorted(set(atomic_rescue_modes_by_tenant(values)) - set(served))
 
 
 def tenant_retrieval_environment(values: Mapping[str, str], tenant: str | None) -> dict[str, str]:
@@ -412,13 +425,16 @@ def _validate_runtime_options(source: Mapping[str, str]) -> None:
     # fail every search, which federation's default `omit` records only as a failed leg.
     parse_generation_dense_search(source.get("RECALL_GENERATION_DENSE_SEARCH"))
     atomic_mode = source.get("RECALL_ATOMIC_RESCUE_MODE", "off").strip().lower()
-    if atomic_mode not in {"off", "shadow", "active"}:
+    if atomic_mode not in _ATOMIC_RESCUE_MODES:
         raise ValueError("RECALL_ATOMIC_RESCUE_MODE must be off, shadow, or active")
     tenant_modes = atomic_rescue_modes_by_tenant(source)
     if "active" in {atomic_mode, *tenant_modes.values()} and not source.get(
         "RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT", ""
     ).strip():
-        raise ValueError("RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT is required in active mode")
+        raise ValueError(
+            "RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT is required when RECALL_ATOMIC_RESCUE_MODE or an "
+            "entry of RECALL_ATOMIC_RESCUE_MODE_BY_TENANT is active"
+        )
     if source.get("RECALL_ATOMIC_RESCUE_PLACEMENT", "dense").strip().lower() not in {
         "dense",
         "fused",

@@ -90,6 +90,7 @@ from recall_mcp.settings import (
     activate_runtime_settings,
     bootstrap_settings,
     reset_runtime_settings,
+    unserved_atomic_rescue_tenants,
 )
 from recall_mcp.graph_projection import reasoning_projection
 from recall_mcp.indexing import IndexPreflightError, index_memory
@@ -782,6 +783,15 @@ def _make_lifespan(
                 )
             if enterprise and token_registry is None:
                 raise RuntimeError("enterprise control plane requires authenticated tenant routing")
+            unserved = unserved_atomic_rescue_tenants(
+                runtime_env, (tenant,) if token_registry is None else token_registry.tenants
+            )
+            if unserved:
+                _log.warning(
+                    "RECALL_ATOMIC_RESCUE_MODE_BY_TENANT names tenant(s) this server does not "
+                    "serve, which keep no override: %s",
+                    ", ".join(unserved),
+                )
             if token_registry is None:
                 # Pooled + timed out: a server shares this store across concurrent tool calls,
                 # and one connection would serialise them however many threads are available.
