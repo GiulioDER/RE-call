@@ -33,6 +33,7 @@ from typing import Any
 from recall.atomic_write import _flush_directory, atomic_write_bytes
 from recall.document import parse_document
 from recall.frontmatter import supersedes_key, supersedes_targets
+from recall.supersession import reference_path_key
 
 MEMO_ID = re.compile(r"^[a-z]+-\d{4,}$")
 _REVISION = re.compile(r"[0-9a-f]{64}")
@@ -185,18 +186,33 @@ def _conflict(code: str, reason: str) -> dict[str, Any]:
     return {"refused": reason, "conflict": code}
 
 
+def _names_target(reference: str, name: str, memo_id: str) -> bool:
+    """Whether a `supersedes` reference names the memo stored as `name` under the index root.
+
+    A reference with a folder is compared by path, as the store matches it; a bare one by stem,
+    which over-reports for a memo of another folder, so a correction is refused rather than raced.
+    """
+    path = reference_path_key(reference)
+    return path == reference_path_key(name) if "/" in path else supersedes_key(reference) == memo_id
+
+
 def _target_conflict(
     folder: Path, target: str | None, expected: str | None,
     has_successor: Callable[[str, str | None], bool] | None = None, own: str | None = None,
+    located: tuple[Path, str] | None = None,
 ) -> dict[str, Any] | None:
-    """The refusal a correction of `target` meets, or None. `has_successor(target, own)` asks the
-    store whether an indexed document other than memo `own` (the retried request's own memo)
-    already supersedes the target, as the store resolves references; the folder scan below also
-    sees successors written but not indexed yet."""
+    """The refusal a correction of `target` meets, or None. `located` is the target's file and its
+    name under the index root, as the caller resolved `target` (a memo of `folder`, or of another
+    assistant folder under the same root). `has_successor(target, own)` asks the store whether an
+    indexed document other than memo `own` (the retried request's own memo) already supersedes the
+    target, as the store resolves references; the folder scan below (the writer's folder and the
+    target's) also sees successors written but not indexed yet."""
     if target is None:
         return _conflict("revision_without_target", "expected_revision requires supersedes") if expected else None
-    path = folder / f"{target}.md"
-    if not MEMO_ID.fullmatch(target) or path.is_symlink() or not path.is_file():
+    if located is None:
+        return _conflict("target_missing", "the replacement target is not an existing memo")
+    path, name = located
+    if path.is_symlink() or not path.is_file():
         return _conflict("target_missing", "the replacement target is not an existing memo")
     if expected is not None:
         try:
@@ -207,7 +223,7 @@ def _target_conflict(
             current = None
         if current != expected:
             return _conflict("revision_mismatch", "the replacement target changed since it was read")
-    for other in folder.glob("*.md"):
+    for other in (p for scanned in dict.fromkeys((folder, path.parent)) for p in scanned.glob("*.md")):
         if other.is_symlink():
             continue
         try:
@@ -217,7 +233,7 @@ def _target_conflict(
         if b"supersedes" not in raw:
             continue  # parse only the files that can declare a successor
         meta = parse_document(raw.decode("utf-8", errors="replace")).meta
-        if any(supersedes_key(ref) == target for ref in supersedes_targets(meta.get("supersedes"))):
+        if any(_names_target(ref, name, path.stem) for ref in supersedes_targets(meta.get("supersedes"))):
             return _conflict("stale_target", "the replacement target already has a successor")
     if has_successor is not None and has_successor(target, own):
         return _conflict("stale_target", "the replacement target already has a successor")
@@ -364,8 +380,11 @@ def write_memo(
     folder: Path, ledger_path: Path, body: str, *, kind: str, author: str,
     supersedes: str | None, request_id: str | None, expected_revision: str | None,
     include_receipt: bool, has_successor: Callable[[str, str | None], bool] | None = None,
+    target: tuple[Path, str] | None = None,
 ) -> dict[str, Any]:
     """Write `body` as a memo. Call while holding the store's write lane.
+
+    `target` locates `supersedes` (`_target_conflict`); a correction without it is `target_missing`.
 
     Replies `{memo_id}` (legacy calls), `{memo_id, receipt}` when a receipt is asked for or a
     `request_id` or `expected_revision` is given, `{refused}` for a malformed `request_id` or
@@ -430,7 +449,7 @@ def write_memo(
                 folder, supersedes, expected_revision, has_successor,
                 # Rows under the reserved name are the request's own memo only while no file
                 # holds that name; a file there is somebody else's, and so is any claim it makes.
-                own=memo_id if current is None and not path.is_symlink() else None,
+                own=memo_id if current is None and not path.is_symlink() else None, located=target,
             )
             if conflict:
                 return conflict
@@ -447,14 +466,16 @@ def write_memo(
             number = _memo_number(memo_id) if free else _next_number(folder, ledger)
             memo_id = _publish(folder, ledger_path, ledger, data, kind=kind, number=number, entry=entry)
     else:
-        conflict = _target_conflict(folder, supersedes, expected_revision, has_successor)
+        conflict = _target_conflict(folder, supersedes, expected_revision, has_successor, located=target)
         if conflict:
             return conflict
         folder.mkdir(parents=True, exist_ok=True)
         if request_id is not None:
             entry = {"identity": identity, "content": content, "state": _PREPARED}
             if supersedes is not None:
-                entry["supersedes"] = supersedes  # a memo id: which correction a forget must re-key
+                # A memo id of this folder, or another folder's qualified id, which no forget here
+                # names: which correction a forget must re-key.
+                entry["supersedes"] = supersedes
             requests[request_id] = entry
         memo_id = _publish(folder, ledger_path, ledger, data, kind=kind, number=_next_number(folder, ledger), entry=entry)
     if changed:

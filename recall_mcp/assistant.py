@@ -6,10 +6,13 @@ replaces it, and forgets it when asked. This module is that surface, for a lite 
 (`sqlite:///`) whose operator names a memo folder in `RECALL_ASSISTANT_MEMOS`:
 
 - `recall_remember` writes ONE fact as one memo file in that folder, with RE-call frontmatter
-  (`valid_from` and `valid_until` as dates, `supersedes` as a file name, an optional structured fact
-  as `recall_graph`), and indexes it before it returns, so the next search finds it.
-- `supersedes` may name only a memo this surface wrote with the author `assistant`. A memo the person
-  wrote, or one seeded from elsewhere, is not the assistant's to replace.
+  (`valid_from` and `valid_until` as dates, `supersedes` as the target's path under the index root,
+  an optional structured fact as `recall_graph`), and indexes it before it returns, so the next
+  search finds it.
+- `supersedes` may name only a memo this surface wrote with the author `assistant`: of this folder
+  by its memo id, or of another assistant's memo folder under the same index root by the id search
+  names it by (`agent-b/note-0001`). A memo the person wrote, or one seeded from elsewhere, is not
+  the assistant's to replace.
 - `recall_forget_memo` forgets one memo of that folder by its id: `forget_memory` on its source
   first (which retracts every ledger fact whose only evidence it was), then the file, so the next
   refresh does not index it again.
@@ -338,15 +341,15 @@ class AssistantMemos(MemoFolder):
         return {"deleted": 1, "memo_id": memo_id, "facts_retracted": result.facts_retracted}
 
     def _indexed_successor(self, store: LiteStore, target: str, own: str | None = None) -> bool:
-        """Whether an indexed document other than memo `own` claims to supersede memo `target`, as
-        the store resolves `supersedes` (folded case, any markdown extension, anywhere under the
-        index root, and forgotten claimants kept as ghosts)."""
+        """Whether an indexed document other than memo `own` claims to supersede memo `target` (a
+        memo id here, or another folder's qualified id, `target_of`), as the store resolves
+        `supersedes` (folded case, any markdown extension, anywhere under the index root, and
+        forgotten claimants kept as ghosts)."""
         from recall.supersession import store_supersession_graph
 
         graph = store_supersession_graph(store)
 
-        def key(memo_id: str) -> str | None:
-            path = self.path_of(memo_id)
+        def key(path: Path | None) -> str | None:
             if path is None:
                 return None
             # Computes a memo key under the index root; no file is read.
@@ -354,10 +357,11 @@ class AssistantMemos(MemoFolder):
             rel = path.relative_to(self.index_root) if path.is_relative_to(self.index_root) else None
             return graph.key(rel.as_posix() if rel is not None else path.name, str(path))
 
-        target_key = key(target)
+        located = self.target_of(target)
+        target_key = key(None if located is None else located[0] / f"{located[1]}.md")
         if target_key is None:
             return False
-        own_key = key(own) if own is not None else None
+        own_key = key(self.path_of(own)) if own is not None else None
         return any(claimant != own_key for claimant in graph.live_claimants(target_key))
 
     def _indexed_under_another_name(self, store: LiteStore, path: Path) -> bool:

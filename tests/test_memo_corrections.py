@@ -782,7 +782,8 @@ def test_forget_leaves_no_hash_of_the_memo_in_the_journal(serving, tmp_path, for
     """
     from recall.lite.assistant_memos import MemoFolder
     store, memos = serving
-    twin = MemoFolder(tmp_path / "twin")
+    # At the memo folder's own path under its root: a correction names its target by that path.
+    twin = MemoFolder(tmp_path / "twin" / "memos", index_root=tmp_path / "twin")
     codes = {"corrected": ("4512", "4513"), "correction": ("9031", "9032")}[forgotten]
     first_code = codes[0] if forgotten == "corrected" else "4512"
     second_code = codes[0] if forgotten == "correction" else "9031"
