@@ -703,6 +703,10 @@ def _run_refit(store: LiteStore, embedder: Embedder, job: _RefitJob) -> None:
                 if ticket is None or not _refit_wanted(store):
                     return
                 job.outcome = auto_calibrate(store, embedder)
+                from recall.lite.atomic import ensure_rescue_artifact
+
+                # The fit just stored is a new calibration id, which the artifact's key names.
+                ensure_rescue_artifact(store, embedder)
             with _REFIT_LOCK:
                 job.again = False
             if not _refit_wanted(store):

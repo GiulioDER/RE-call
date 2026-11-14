@@ -314,6 +314,8 @@ class RefreshReport:
     chunks_total: int = 0
     calibration: str = ""
     calibration_reason: str = ""
+    #: The atomic rescue artifact this run left (`recall.lite.atomic`); empty while the rescue is off.
+    atomic: str = ""
     facts_stated: int = 0
     facts_malformed: int = 0
     stated: str = ""
@@ -337,6 +339,8 @@ class RefreshReport:
                 lines.append(f"denied       {self.denied} file(s) refused by the source policy, not indexed")
         if self.calibration:
             lines.append(f"calibration  {self.calibration}: {self.calibration_reason}")
+        if self.atomic:
+            lines.append(f"atomic       {self.atomic}")
         if self.stated:
             lines.append(self.stated)
         return "\n".join(lines)
@@ -601,6 +605,10 @@ def _refresh_locked(
                 report.skipped += stats.skipped
                 report.deleted += stats.deleted
         calibration = _calibrate(store, embedder, background_calibration)
+        from recall.lite.atomic import ensure_rescue_artifact
+
+        # After the calibration it names; None while the rescue is off (`recall.lite.atomic`).
+        atomic = ensure_rescue_artifact(store, embedder)
     except Exception as exc:  # BROAD-CATCH: fail-open  # recorded in the state file and returned
         _log.warning("lite refresh of %s failed: %s", db, exc)
         report.outcome, report.reason = Outcome.FAILED, f"{type(exc).__name__}: {exc}"
@@ -629,6 +637,7 @@ def _refresh_locked(
     report.outcome = Outcome.REFRESHED
     report.reason = f"{current.count} file(s) checked in {time.monotonic() - started:.1f}s"
     report.calibration, report.calibration_reason = calibration.status.value, calibration.reason
+    report.atomic = "" if atomic is None else atomic.reason
     report.chunks_total = store.count()
     if current.racy:
         # A memo may have been edited after it was read, inside the same coarse mtime tick. Record

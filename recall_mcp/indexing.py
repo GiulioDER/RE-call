@@ -326,6 +326,11 @@ def _index_memory_unlocked(
 
         outcome = ensure_calibrated(store, embedder, background=True)
         message += f" Calibration: {outcome.status.value}. {outcome.reason}"
+        from recall.lite.atomic import ensure_rescue_artifact
+
+        atomic = ensure_rescue_artifact(store, embedder, env=values)
+        if atomic is not None:
+            message += f" Atomic rescue: {atomic.reason}."
     # The facts the indexed memos state, on a lite store or the legacy table (a generation store
     # records them when its generation is promoted). The rule is read from the process
     # environment, not `values`: it is applied again whenever facts are read, there, and a private

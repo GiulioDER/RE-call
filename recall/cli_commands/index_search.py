@@ -465,6 +465,11 @@ def _cmd_index(args: argparse.Namespace) -> None:
                         store.record_embedder_spec(
                             name, profile=profile, model=str(embedder.name), dimension=int(embedder.dim)
                         )
+                    from recall.lite.atomic import ensure_rescue_artifact
+
+                    atomic = ensure_rescue_artifact(store, embedder)
+                    if atomic is not None:
+                        print(atomic.render())
                 from recall.stated_facts import reconcile_stated_facts
 
                 stated = reconcile_stated_facts(store)
