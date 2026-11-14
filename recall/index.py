@@ -12,7 +12,7 @@ from typing import Any, Literal
 from uuid import uuid4
 
 from recall.anchors import code_sha, normalize, resolve_symbols
-from recall.cache import EmbeddingCache, embed_with_cache
+from recall.cache import EMBEDDING_TEXT_DIGEST_KEY, EmbeddingCache, embed_with_cache, text_digest
 from recall.confinement import within
 from recall.context import ContextPolicy, StructuredChunk, contextual_passages
 from recall.embedding_registry import context_version_for
@@ -1436,6 +1436,7 @@ class Indexer:
             def piece_metadata(
                 i: int, extra_metadata: Mapping[str, object], fingerprint: str,
                 embedder: Embedder, policy: ContextPolicy, piece: StructuredChunk | None,
+                embedding_text: str,
             ) -> dict[str, object]:
                 # One key list for the active and the shadow rows; only the identity terms
                 # differ. They were two hand-kept copies, so a key added to one would have
@@ -1453,6 +1454,10 @@ class Indexer:
                     "text_start": piece.start if piece is not None else None,
                     "text_end": piece.end if piece is not None else None,
                     "heading_hierarchy": list(piece.headings) if piece is not None else [],
+                    # What a forget erases this chunk's cache entry by, when the vector was not
+                    # embedded from the chunk text itself (`recall.cache.EMBEDDING_TEXT_DIGEST_KEY`).
+                    **({EMBEDDING_TEXT_DIGEST_KEY: text_digest(embedding_text)}
+                       if embedding_text != raw_chunks[i] else {}),
                     **extra_metadata,
                     **self.apply_provenance(meta),
                     **({"file": rel[f], "security_policy_digest": self._security_policy.digest}
@@ -1471,7 +1476,7 @@ class Indexer:
                         text=ct,
                         metadata=piece_metadata(
                             i, extra_metadata, index_fingerprint, self._embedder,
-                            self._context_policy, structured_chunk,
+                            self._context_policy, structured_chunk, embedding_text,
                         ),
                     )
                 )
@@ -1487,6 +1492,7 @@ class Indexer:
                             metadata=piece_metadata(
                                 i, extra_metadata, shadow_fingerprint, self._shadow.embedder,
                                 self._shadow.context_policy, shadow_piece,
+                                shadow_embedding_texts[i],
                             ),
                         )
                     )

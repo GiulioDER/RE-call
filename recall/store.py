@@ -1076,6 +1076,19 @@ class PgVectorStore(SourceMutationMixin, SupersessionMixin, ReceiptsAuditMixin):
         )
         return [Chunk(id=row[0], source=row[1], text=row[2], metadata=row[3] or {}) for row in rows]
 
+    def texts_for_sources(self, sources: Sequence[str]) -> list[tuple[str, dict[str, Any]]]:
+        """`(text, metadata)` of every chunk of these exact sources in this tenant, in one read:
+        what a forget digests to erase their vectors from the embedding cache."""
+        if not sources:
+            return []
+        rows = self._with_retry(
+            lambda conn: conn.execute(
+                f"SELECT text, metadata FROM {self._table} WHERE tenant_id = %s AND source = ANY(%s)",
+                (self._tenant, list(sources)),
+            ).fetchall()
+        )
+        return [(str(row[0]), row[1] or {}) for row in rows]
+
     def chunk_ids_for_sources(self, sources: Sequence[str]) -> dict[str, list[str]]:
         """`{source: [chunk id, ...]}` of these exact sources in this tenant, ids only, in one
         read: what the indexer's prune records (CCA PERF-001 of run 20261106T212835Z)."""

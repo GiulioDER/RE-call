@@ -20,7 +20,12 @@ from psycopg.types.json import Jsonb
 
 from recall.context import ContextMode, ContextPolicy, StructuredChunk, contextual_passages
 from recall.build_progress import BuildCounters, BuildPlan, BuildProgressSink
-from recall.cache import embed_with_cache, open_default_cache
+from recall.cache import (
+    EMBEDDING_TEXT_DIGEST_KEY,
+    embed_with_cache,
+    open_default_cache,
+    text_digest,
+)
 from recall.document import parse_document
 from recall.derived_block import has_legacy_derived_block
 from recall.dependency_invalidation import build_dependency_projection, write_dependency_projection, dependency_key
@@ -1211,6 +1216,13 @@ class GenerationManager:
                             list(structured_chunk.headings)
                             if structured_chunk is not None
                             else []
+                        ),
+                        # What a forget erases the cache entry by, when the vector was not
+                        # embedded from the chunk text (`recall.cache.EMBEDDING_TEXT_DIGEST_KEY`).
+                        **(
+                            {EMBEDDING_TEXT_DIGEST_KEY: text_digest(embedding_texts[ordinal])}
+                            if embedding_texts[ordinal] != piece
+                            else {}
                         ),
                         **(
                             {"embedding_profile": pipeline.embedder.profile_id}
