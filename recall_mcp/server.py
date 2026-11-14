@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import re
 import threading
-from collections.abc import AsyncIterator, Callable, Mapping
+from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
@@ -112,7 +112,7 @@ from recall_mcp.related_api import records_memory, related_memory
 from recall.records import RecordsQueryError
 from recall_mcp.stale_reports_api import report_stale
 from recall.stale_reports import StaleReportRefused
-from recall_mcp.use_reports_api import EFFECTS, MAX_SOURCES, UseReportRefused, authorized_report_rows, report_use
+from recall_mcp.use_reports_api import EFFECTS, MAX_SOURCES, UseReportRefused, _basename, authorized_report_rows, report_use
 # Through the service facade on purpose: this wrapper injects the service-level retrieval seams.
 from recall_mcp.service import query_construction_challenge, tenant_scopes
 from recall_mcp.status import JobLedger, calibration_status, job_status
@@ -1993,6 +1993,25 @@ def _register_fact_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         return payload
 
 
+def _paths_named(store: Any, names: Sequence[object]) -> dict[str, str]:
+    """`{name: stored source}` for each name that search shows (a memo's file under the index
+    root) and that names exactly one served memo; the ledger knows a memo only by its stored
+    source (an absolute path, or a generation's URI). The lookup reaches every generation, so
+    only the matches the served set holds count. A bare name is left out, since the ledger
+    already matches it among the memos the caller may read; resolving it here, unscoped, would
+    let a hidden namesake change the answer."""
+    lookup, present = getattr(store, "sources_for_identifiers", None), getattr(store, "sources_present", None)
+    paths = [n for n in (str(raw).strip() for raw in names) if n != _basename(n)]
+    # The ledger recognises a store by its methods (`stale_reports_api._database_backed`); one
+    # without this lookup has nothing to resolve, and the ledger judges the names as written.
+    if not paths or not callable(lookup) or not callable(present):
+        return {}
+    found = lookup(paths)
+    served = present(sorted({s for n in paths for s in found.get(n, ())}))
+    matches = {n: [s for s in found.get(n, ()) if s in served] for n in paths}
+    return {n: hits[0] for n, hits in matches.items() if len(hits) == 1}
+
+
 def _register_reasoning_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
     _require = deps.require
     _require_mutation = deps.require_mutation
@@ -2538,7 +2557,12 @@ def _register_reasoning_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
 
         def run() -> dict[str, Any]:
             names = (stale_source, replacing_source)
-            named = {} if assistant is None else assistant.files_named(cast(LiteStore, store), list(names))
+            named = (
+                assistant.files_named(cast(LiteStore, store), list(names))
+                if assistant is not None
+                # The queue reads plain search's name as it is; the ledger gets its stored source.
+                else {n: (n, s) for n, s in _paths_named(store, names).items()}
+            )
             # The queue reads a memo's file under the root, and runs only with no source policy,
             # where nothing is hidden from the caller. Under a policy the caller's names go to the
             # ledger as written, so a refusal names them and an unreadable memo reads as absent.
@@ -2654,8 +2678,9 @@ def _register_reasoning_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
                         note=note,
                         # A list past the cap is refused by report_use; it is not resolved first.
                         aliases=(
-                            {n: s for n, (_, s) in assistant.files_named(cast(LiteStore, store), names).items()}
-                            if assistant is not None and len(names) <= 2 * MAX_SOURCES else None
+                            None if len(names) > 2 * MAX_SOURCES
+                            else _paths_named(store, names) if assistant is None
+                            else {n: s for n, (_, s) in assistant.files_named(cast(LiteStore, store), names).items()}
                         ),
                         **report_access,
                     )
