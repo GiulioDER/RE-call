@@ -2,7 +2,7 @@
   "$schema": "https://glama.ai/mcp/schemas/server.json",
   "maintainers": ["GiulioDER"],
   "name": "RE-call",
-  "description": "Agent memory on SQLite or Postgres that flags superseded facts and abstains instead of guessing.",
+  "description": "Agent memory on SQLite or Postgres that flags superseded facts and abstains below its threshold.",
   "homepage": "https://giulioder.github.io/RE-call/",
   "keywords": ["agent-memory", "rag", "sqlite", "pgvector", "postgresql", "abstention", "mcp"]
 }
