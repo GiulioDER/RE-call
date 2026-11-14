@@ -32,6 +32,8 @@ file restored byte for byte (sha256 checked), then the file green:
   refuses the absolute path.
 - N2 (P3) the bare-name exclusion dropped (every name resolved): the bare `old.md` resolves to the
   hidden root memo and is refused, "'old.md' in stale_source is not a memory in this corpus".
+Both were run again the same day after the resolution moved into
+`recall_mcp.server._lite_paths_named`, shared with `recall_report_use`, with the same failures.
 """
 
 from __future__ import annotations

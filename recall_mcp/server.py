@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import re
 import threading
-from collections.abc import AsyncIterator, Callable, Mapping
+from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
@@ -1993,6 +1993,18 @@ def _register_fact_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         return payload
 
 
+def _lite_paths_named(store: object, names: Sequence[object]) -> dict[str, str]:
+    """`{name: stored source}` for each name that plain lite search shows (a memo's file under the
+    index root) and that names exactly one stored memo; the ledger knows a memo only by its
+    stored source. A bare name is left out, since the ledger already matches it among the memos
+    the caller may read; resolving it here, unscoped, would let a hidden namesake change the answer."""
+    if not isinstance(store, LiteStore):
+        return {}
+    paths = [n for n in (str(raw).strip() for raw in names) if n != _basename(n)]
+    found = store.sources_for_identifiers(paths)
+    return {n: found[n][0] for n in paths if len(found.get(n, ())) == 1}
+
+
 def _register_reasoning_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
     _require = deps.require
     _require_mutation = deps.require_mutation
@@ -2538,18 +2550,12 @@ def _register_reasoning_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
 
         def run() -> dict[str, Any]:
             names = (stale_source, replacing_source)
-            if assistant is not None:
-                named = assistant.files_named(cast(LiteStore, store), list(names))
-            elif isinstance(store, LiteStore):
-                # Plain search shows a memo by its file under the index root: the queue reads that
-                # name as it is, the ledger knows the memo only by its stored source. A bare name
-                # is left out, since the ledger already matches it among the memos the caller may
-                # read; resolving it here, unscoped, would let a hidden namesake change the answer.
-                paths = [n.strip() for n in names if n.strip() != _basename(n.strip())]
-                found = store.sources_for_identifiers(paths)
-                named = {n: (n, found[n][0]) for n in paths if len(found.get(n, ())) == 1}
-            else:
-                named = {}
+            named = (
+                assistant.files_named(cast(LiteStore, store), list(names))
+                if assistant is not None
+                # The queue reads plain search's name as it is; the ledger gets its stored source.
+                else {n: (n, s) for n, s in _lite_paths_named(store, names).items()}
+            )
             # The queue reads a memo's file under the root, and runs only with no source policy,
             # where nothing is hidden from the caller. Under a policy the caller's names go to the
             # ledger as written, so a refusal names them and an unreadable memo reads as absent.
@@ -2665,8 +2671,9 @@ def _register_reasoning_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
                         note=note,
                         # A list past the cap is refused by report_use; it is not resolved first.
                         aliases=(
-                            {n: s for n, (_, s) in assistant.files_named(cast(LiteStore, store), names).items()}
-                            if assistant is not None and len(names) <= 2 * MAX_SOURCES else None
+                            None if len(names) > 2 * MAX_SOURCES
+                            else _lite_paths_named(store, names) if assistant is None
+                            else {n: s for n, (_, s) in assistant.files_named(cast(LiteStore, store), names).items()}
                         ),
                         **report_access,
                     )
