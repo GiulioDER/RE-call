@@ -9,7 +9,7 @@ write that keeps a calibration in force: a refresh, an index, and a background r
 
 Off by default. It builds only when RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT is set and the store's
 tenant resolves to the active mode exactly as the server's search resolves it
-(`recall_mcp.settings.tenant_retrieval_environment`), so the builder and the search agree.
+(`recall._env.tenant_retrieval_environment`), so the builder and the search agree.
 
 An artifact is keyed by the generation AND the calibration. A lite store's calibration can change
 while its corpus does not (a background refit lands), and an artifact is immutable once written:
@@ -76,7 +76,7 @@ def manifest_path(root: str | Path, generation_id: str, calibration_id: str | No
 
 def configured_root(tenant: str, env: Mapping[str, str] | None = None) -> Path | None:
     """The artifact root when the rescue is active for `tenant`, else None."""
-    from recall_mcp.settings import tenant_retrieval_environment
+    from recall._env import tenant_retrieval_environment
 
     values = tenant_retrieval_environment(os.environ if env is None else env, tenant)
     root = values.get(ROOT_ENV, "").strip()
@@ -138,19 +138,24 @@ def ensure_rescue_artifact(
     if store.corpus_fingerprint() != corpus_fingerprint:
         # A write landed while the views were read; that write builds its own artifact.
         return BuildReport(None, "not built: the memory changed during the build", counts, time.perf_counter() - started)
-    written = write_atomic_rescue_artifact(
-        manifest.parent,
-        matrix=matrix,
-        views=metadata,
-        generation_id=generation_id,
-        calibration_id=calibration_id,
-        pipeline_fingerprint=str(lineage["pipeline_fingerprint"]),
-        corpus_fingerprint=corpus_fingerprint,
-        embedding_profile=embedding_profile_id(embedder),
-        embedding_fingerprint=profile,
-        ordinary_chunk_count=len(parents),
-        source_commit=f"recall-rag {__version__}",
-    )
+    try:
+        written = write_atomic_rescue_artifact(
+            manifest.parent,
+            matrix=matrix,
+            views=metadata,
+            generation_id=generation_id,
+            calibration_id=calibration_id,
+            pipeline_fingerprint=str(lineage["pipeline_fingerprint"]),
+            corpus_fingerprint=corpus_fingerprint,
+            embedding_profile=embedding_profile_id(embedder),
+            embedding_fingerprint=profile,
+            ordinary_chunk_count=len(parents),
+            source_commit=f"recall-rag {__version__}",
+        )
+    except FileExistsError:
+        # A concurrent build of the same key (a refresh beside a background refit) published
+        # first; its artifact is verified below like this one would have been.
+        written = manifest
     load_atomic_rescue_artifact(written).assert_lineage(**lineage, embedder=embedder)
     _remove_others(root, keep=manifest.parent.name)
     return BuildReport(
