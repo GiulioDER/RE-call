@@ -1993,16 +1993,23 @@ def _register_fact_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         return payload
 
 
-def _lite_paths_named(store: object, names: Sequence[object]) -> dict[str, str]:
-    """`{name: stored source}` for each name that plain lite search shows (a memo's file under the
-    index root) and that names exactly one stored memo; the ledger knows a memo only by its
-    stored source. A bare name is left out, since the ledger already matches it among the memos
-    the caller may read; resolving it here, unscoped, would let a hidden namesake change the answer."""
-    if not isinstance(store, LiteStore):
-        return {}
+def _paths_named(store: Any, names: Sequence[object]) -> dict[str, str]:
+    """`{name: stored source}` for each name that search shows (a memo's file under the index
+    root) and that names exactly one served memo; the ledger knows a memo only by its stored
+    source (an absolute path, or a generation's URI). The lookup reaches every generation, so
+    only the matches the served set holds count. A bare name is left out, since the ledger
+    already matches it among the memos the caller may read; resolving it here, unscoped, would
+    let a hidden namesake change the answer."""
+    lookup, present = getattr(store, "sources_for_identifiers", None), getattr(store, "sources_present", None)
     paths = [n for n in (str(raw).strip() for raw in names) if n != _basename(n)]
-    found = store.sources_for_identifiers(paths)
-    return {n: found[n][0] for n in paths if len(found.get(n, ())) == 1}
+    # The ledger recognises a store by its methods (`stale_reports_api._database_backed`); one
+    # without this lookup has nothing to resolve, and the ledger judges the names as written.
+    if not paths or not callable(lookup) or not callable(present):
+        return {}
+    found = lookup(paths)
+    served = present(sorted({s for n in paths for s in found.get(n, ())}))
+    matches = {n: [s for s in found.get(n, ()) if s in served] for n in paths}
+    return {n: hits[0] for n, hits in matches.items() if len(hits) == 1}
 
 
 def _register_reasoning_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
@@ -2554,7 +2561,7 @@ def _register_reasoning_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
                 assistant.files_named(cast(LiteStore, store), list(names))
                 if assistant is not None
                 # The queue reads plain search's name as it is; the ledger gets its stored source.
-                else {n: (n, s) for n, s in _lite_paths_named(store, names).items()}
+                else {n: (n, s) for n, s in _paths_named(store, names).items()}
             )
             # The queue reads a memo's file under the root, and runs only with no source policy,
             # where nothing is hidden from the caller. Under a policy the caller's names go to the
@@ -2672,7 +2679,7 @@ def _register_reasoning_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
                         # A list past the cap is refused by report_use; it is not resolved first.
                         aliases=(
                             None if len(names) > 2 * MAX_SOURCES
-                            else _lite_paths_named(store, names) if assistant is None
+                            else _paths_named(store, names) if assistant is None
                             else {n: s for n, (_, s) in assistant.files_named(cast(LiteStore, store), names).items()}
                         ),
                         **report_access,
