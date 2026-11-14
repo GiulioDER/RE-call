@@ -112,7 +112,7 @@ from recall_mcp.related_api import records_memory, related_memory
 from recall.records import RecordsQueryError
 from recall_mcp.stale_reports_api import report_stale
 from recall.stale_reports import StaleReportRefused
-from recall_mcp.use_reports_api import EFFECTS, MAX_SOURCES, UseReportRefused, authorized_report_rows, report_use
+from recall_mcp.use_reports_api import EFFECTS, MAX_SOURCES, UseReportRefused, _basename, authorized_report_rows, report_use
 # Through the service facade on purpose: this wrapper injects the service-level retrieval seams.
 from recall_mcp.service import query_construction_challenge, tenant_scopes
 from recall_mcp.status import JobLedger, calibration_status, job_status
@@ -2538,7 +2538,18 @@ def _register_reasoning_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
 
         def run() -> dict[str, Any]:
             names = (stale_source, replacing_source)
-            named = {} if assistant is None else assistant.files_named(cast(LiteStore, store), list(names))
+            if assistant is not None:
+                named = assistant.files_named(cast(LiteStore, store), list(names))
+            elif isinstance(store, LiteStore):
+                # Plain search shows a memo by its file under the index root: the queue reads that
+                # name as it is, the ledger knows the memo only by its stored source. A bare name
+                # is left out, since the ledger already matches it among the memos the caller may
+                # read; resolving it here, unscoped, would let a hidden namesake change the answer.
+                paths = [n.strip() for n in names if n.strip() != _basename(n.strip())]
+                found = store.sources_for_identifiers(paths)
+                named = {n: (n, found[n][0]) for n in paths if len(found.get(n, ())) == 1}
+            else:
+                named = {}
             # The queue reads a memo's file under the root, and runs only with no source policy,
             # where nothing is hidden from the caller. Under a policy the caller's names go to the
             # ledger as written, so a refusal names them and an unreadable memo reads as absent.
