@@ -14,7 +14,7 @@
   "mcpServers": "./.mcp.json",
   "interface": {
     "displayName": "RE-call",
-    "shortDescription": "Project memory that abstains instead of guessing",
+    "shortDescription": "Project memory that abstains below its threshold",
     "longDescription": "Search project memory before acting, preserve shared memo front matter, and refresh the corpus across Codex sessions.",
     "developerName": "Giulio D'Erme",
     "category": "Productivity",

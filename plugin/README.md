@@ -1,6 +1,6 @@
 # RE-call for Claude Code and Codex
 
-Memory that abstains instead of guessing. This plugin gives Claude Code a searchable store of your
+Memory that abstains when nothing clears its threshold. This plugin gives Claude Code a searchable store of your
 project's own notes and decisions, where a retracted claim comes back marked `superseded` and a
 question the corpus cannot answer is refused rather than answered from the nearest neighbour.
 
