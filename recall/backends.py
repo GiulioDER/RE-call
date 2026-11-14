@@ -55,6 +55,9 @@ LITE_SERVED: frozenset[str] = frozenset(
         "withdraw",
         # Exact lookup of audit records by key: metadata only, the same query on both stores.
         "records",
+        # `rebuild` and `status` of the file's one corpus graph (`recall.lite.graph`); a
+        # `--generation` naming anything else is refused by name in its own handler.
+        "graph",
         # Never open the store a DSN names: files, manifests, backups, secrets, client config.
         "check", "extract", "rewrite", "manifest", "backup", "secret", "uninstall",
         # Takes its database from its own config file, not from the global DSN.
@@ -71,7 +74,6 @@ _SETUP_LITE = "`recall setup --lite`"
 #: is opened, rather than reaching PostgreSQL with a `sqlite:///` string.
 LITE_REFUSED: dict[str, str] = {
     "generation": f"Generations, manifests and blue-green promotion need {_FULL_INSTALL}.",
-    "graph": f"The semantic graph is built per generation and needs {_FULL_INSTALL}.",
     "reasoning": f"The reasoning projection and proposals need {_FULL_INSTALL}.",
     "idempotency": "Reconciliation repairs the PostgreSQL receipt and Redis replay pair, which a lite store does not have; "
     f"it needs {_FULL_INSTALL}.",

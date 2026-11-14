@@ -56,7 +56,6 @@ def _ns(cmd: str, **extra: object) -> argparse.Namespace:
     "args",
     [
         _ns("generation", generation_cmd="list"),
-        _ns("graph", graph_cmd="rebuild"),
         _ns("reasoning", reasoning_cmd="audit"),
         _ns("idempotency", idempotency_cmd="reconcile"),
         _ns("schema", schema_cmd="status"),
@@ -84,6 +83,7 @@ def test_r2_refused_forms_name_the_command(args: argparse.Namespace) -> None:
         argparse.Namespace(cmd="quickstart", dsn=LITE, existing_dsn=None),
         _ns("index"),
         _ns("search"),
+        _ns("graph", graph_cmd="rebuild"),
         argparse.Namespace(cmd="generation", dsn="postgresql://u:p@db/recall", generation_cmd="list"),
     ],
     ids=lambda a: f"{a.cmd}-{a.dsn.split(':')[0] if a.dsn else 'none'}",

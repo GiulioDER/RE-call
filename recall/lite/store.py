@@ -61,6 +61,8 @@ from recall.db_constants import DEFAULT_TABLE
 from recall import eval_clock
 from recall.errors import RecallError
 from recall.idempotency_receipts import ANY_OPERATION
+from recall.lite.graph import GRAPH_SCHEMA, clear_graph
+from recall.semantic_graph._model import GraphReadiness, SemanticGraphProjection
 from recall.observability import get_logger
 from recall.scope import FACET_METADATA_KEY, Scope, _source_prefix_regex_pattern, coerce_scope, group_expression
 from recall.state_dir import make_parent
@@ -611,6 +613,7 @@ class LiteStore:
                 END;
                 """
             )
+            self._conn.executescript(GRAPH_SCHEMA)
             wanted = {"schema_version": SCHEMA_VERSION, "tenant": self._tenant, "dim": str(self._dim)}
             # Claim, then compare what the file holds: checking first and inserting after lets two
             # first opens with different identities both pass, and the loser write into the other's.
@@ -735,6 +738,9 @@ class LiteStore:
         """Move the corpus version, inside the caller's write transaction, so every cache reloads."""
         self._matrix = None
         self._conn.execute("UPDATE meta SET value = CAST(value AS INTEGER) + 1 WHERE key = 'corpus_version'")
+        # The graph quotes the corpus it was built from, so it goes in the same transaction: a
+        # forgotten memo's names never outlive it, and a stored graph is always the current one.
+        clear_graph(self._conn)
 
     def upsert(self, chunks: list[Chunk], embeddings: list[list[float]]) -> int:
         self._check_batch(chunks, embeddings)
@@ -1786,3 +1792,69 @@ class LiteStore:
             cached = (matrix.version, resolve_supersession_graph(rows, records, self._tenant))
             self._supersession_cache = cached
         return cached[1].copy()
+
+    # ------------------------------------------------------------------ semantic graph and related reads
+
+    def rebuild_semantic_graph(self) -> SemanticGraphProjection:
+        """Build the semantic graph (`recall.lite.graph`) from the chunks and store it, unless the
+        corpus moved while it was built (another process wrote), in which case it is returned and
+        not stored: it would describe a corpus the file no longer holds.
+
+        Deliberately not `load_semantic_graph`, the generation store's method, which the shared
+        graph expansion probes for: search never reads this graph."""
+        from recall.lite.graph import build_graph, write_graph
+
+        with self._lock:
+            with self.snapshot():
+                version = self._version()
+                graph = build_graph(list(self.iter_chunks()), tenant=self._tenant, corpus_fingerprint=self.corpus_fingerprint())
+            with self._write():
+                if self._version() == version:
+                    write_graph(self._conn, graph, version)
+        return graph
+
+    def graph_readiness(self) -> GraphReadiness:
+        """Whether a graph is stored for the corpus as it is now, from its marker alone."""
+        from recall.lite.graph import readiness
+
+        with self._lock:
+            return readiness(self._conn, self._tenant, self.lite_generation_id())
+
+    def related_chunks(
+        self, seed_chunk_id: str, relation: str, max_items: int
+    ) -> tuple[Chunk, list[Chunk]] | None:
+        """`PgVectorStore.related_chunks`: the seed and at most `max_items` source or ordinal
+        neighbours, read from the source's rows rather than by scanning the corpus.
+
+        None for the other relations, which the shared resolver answers (`recall.related`).
+        Ordered as the Postgres query orders them: by ordinal, unnumbered rows last, for `source`;
+        by distance from the seed's ordinal for `ordinal`; then by id.
+        """
+        if relation not in {"source", "ordinal"}:
+            return None
+        if isinstance(max_items, bool) or not isinstance(max_items, int) or max_items < 1:
+            raise ValueError("max_items must be a positive int")
+        seed = self.chunk_by_id(seed_chunk_id)
+        if seed is None:
+            raise ValueError(f"seed chunk not found: {seed_chunk_id!r}")
+        # Postgres reads `metadata->>'ord' ~ '^[0-9]+$'`: a non-negative integer, never a boolean.
+        ordinal = (
+            "(CASE WHEN json_type(metadata, '$.ord') = 'integer' AND json_extract(metadata, '$.ord') >= 0 "
+            "THEN json_extract(metadata, '$.ord') END)"
+        )
+        params: tuple[object, ...]
+        if relation == "source":
+            where, order = "", f"{ordinal} IS NULL, {ordinal}, id"
+            params = (seed.source, seed.id, max_items)
+        else:
+            seed_ord = seed.metadata.get("ord")
+            if not isinstance(seed_ord, int) or isinstance(seed_ord, bool):
+                return seed, []
+            where, order = f" AND abs({ordinal} - ?) <= 2", f"abs({ordinal} - ?), id"
+            params = (seed.source, seed_ord, seed.id, seed_ord, max_items)
+        rows = self._metadata_values(
+            f"SELECT id, source, text, metadata FROM chunks WHERE source = ?{where} AND id <> ? "  # noqa: S608  # fixed clauses, bound data
+            f"ORDER BY {order} LIMIT ?",
+            params,
+        )
+        return seed, [Chunk(id=cid, source=src, text=text, metadata=json.loads(metadata)) for cid, src, text, metadata in rows]

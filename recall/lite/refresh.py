@@ -12,6 +12,7 @@ the same ideas map onto less machinery:
 | `embed.lock` queue | the store's write lane, `lite_lane(..., purpose=refresh_purpose(roots), coalesce=True)` |
 | build | `Indexer.index_path`, which already skips unchanged content and prunes vanished files |
 | calibrate | `ensure_calibrated` (carry forward, refit when needed) |
+| semantic graph | `LiteStore.rebuild_semantic_graph`, when a write cleared it (`recall.lite.graph`) |
 | promote, gc | nothing: one corpus, no generations |
 | `last-memory-refresh.json` | `<db stem>.refresh.json` beside the store |
 
@@ -601,6 +602,10 @@ def _refresh_locked(
                 report.skipped += stats.skipped
                 report.deleted += stats.deleted
         calibration = _calibrate(store, embedder, background_calibration)
+        # The navigation graph (`recall.lite.graph`): any write above cleared it, so it is built
+        # here, where a refresh already pays for reading the corpus, rather than on the next read.
+        if not store.graph_readiness().ready:
+            store.rebuild_semantic_graph()
     except Exception as exc:  # BROAD-CATCH: fail-open  # recorded in the state file and returned
         _log.warning("lite refresh of %s failed: %s", db, exc)
         report.outcome, report.reason = Outcome.FAILED, f"{type(exc).__name__}: {exc}"
