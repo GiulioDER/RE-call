@@ -40,7 +40,8 @@ role there is the database owner, so row-level security is not exercised by D1; 
   `from pkg import (` ending its line still links to `pkg` (CCA on #904, DAT-001 and DAT-002).
 - G5 a path several roots hold is one node per copy, and a mention joins the copy that holds it
   (CODE-001); a file superseded by a forgotten memo is noted, and a file not yet valid says so.
-- P4 on a lite store the corpus pages answer that they need PostgreSQL, never "did not answer".
+- P4 on a lite store the corpus pages are answered by the lite reader, never handed to psycopg; with
+  no store file yet both say so. (Until 2026-11-15 they answered that they need PostgreSQL.)
 - P5 concurrent misses on one corpus build its graph once; the cache is per tenant and expires.
 - P6 View 2 names a forgotten successor without linking it, and says an ambiguous claim matches
   several files.
@@ -543,15 +544,17 @@ def test_a_forgotten_successor_is_noted_and_a_future_file_is_not_yet_valid() -> 
     assert any("forgotten memo" in note for note in built["notes"]), "a file hidden by a forgotten memo went unexplained"
 
 
-def test_a_lite_store_says_the_corpus_pages_need_postgres(root: Path) -> None:
-    """P4. Red proof, recorded 2026-10-27 on branch claude/cca-pr910-descending: deleting the lite
-    checks in `_graph_json` and `_corpus_source_page` failed at "a lite store was told its database
-    did not answer". Restored, passes."""
+def test_a_lite_store_answers_the_corpus_pages_itself(root: Path) -> None:
+    """P4, rewritten 2026-11-15 when the corpus pages began serving a lite store (drawn in
+    `tests/test_lite_semantic_graph.py`, G6). Red proof, 2026-11-15 on the deployment host: the lite
+    delegation removed from `corpus.corpus_graph` and `corpus.source_detail` failed at "a lite DSN
+    reached psycopg". Restored, passes."""
     app = DashboardApp(root, port=8765, token="tok", db=DashboardDB(f"sqlite:///{root / 'lite.db'}"))
     graph = app.handle("GET", "/api/graph.json?corpus=memory", SIGNED)
     page = app.handle("GET", "/corpus/source?file=a.md", SIGNED)
-    assert graph.status == page.status == 501, "a lite store was told its database did not answer"
-    assert b"lite" in graph.body and b"did not answer" not in page.body
+    assert graph.status == page.status == 503, (graph.status, page.status)
+    assert b"connection info string" not in graph.body + page.body, "a lite DSN reached psycopg"
+    assert b"no lite store" in graph.body and b"no lite store" in page.body, "the missing store was not named"
 
 
 def test_concurrent_misses_build_one_graph_and_the_cache_is_per_tenant(

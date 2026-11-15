@@ -60,12 +60,6 @@ TENANT_CACHE_SECONDS = 60
 CORPUS_GRAPH_CACHE_SECONDS = 300
 #: At most this many corpus graphs are kept at once.
 MAX_CACHED_CORPUS_GRAPHS = 8
-#: Said instead of "the database did not answer": the corpus graph and View 2 read PostgreSQL
-#: tables (chunks, graph entities and relations) that a `sqlite:///` store does not have.
-LITE_CORPUS_MESSAGE = (
-    "The corpus graph and the corpus source pages read PostgreSQL tables, which a lite "
-    "(sqlite:///) store does not have. The memo pages and the memo graph work as usual."
-)
 # A tenant id as RE-call writes them; anything else in a query or cookie is ignored, never echoed.
 TENANT_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")
 # Labels for tenant names RE-call itself defines; a user's own tenants show by name unless pinned.
@@ -1816,8 +1810,6 @@ class DashboardApp:
             return Response(HTTPStatus.OK, json.dumps(payload, ensure_ascii=False).encode("utf-8"), headers)
         if self.db is None:
             return Response(HTTPStatus.SERVICE_UNAVAILABLE, b'{"error": "no corpus database is configured"}', headers)
-        if self.db.lite:
-            return Response(HTTPStatus.NOT_IMPLEMENTED, json.dumps({"error": LITE_CORPUS_MESSAGE}).encode("utf-8"), headers)
         from recall.dashboard import corpus as corpus_db
 
         def fresh() -> bytes | None:
@@ -1853,9 +1845,7 @@ class DashboardApp:
         return Response(HTTPStatus.OK, body, headers)
 
     def _corpus_source_link(self, file: str, label: str | None = None) -> str:
-        """A link to View 2 for `file` in the current corpus, or "" on a lite store, which has none."""
-        if self.db is not None and self.db.lite:
-            return ""
+        """A link to View 2 for `file` in the current corpus."""
         return f"<a href='/corpus/source?{_e(urlencode({'file': file}))}'>{_e(label or file)}</a>"
 
     def _corpus_source_page(self, file: str) -> Response:
@@ -1865,8 +1855,6 @@ class DashboardApp:
         title = "RE-call · a source in the corpus"
         if self.db is None:
             return self._not_connected(title, "graph", "A source in the corpus")
-        if self.db.lite:
-            return self._error(HTTPStatus.NOT_IMPLEMENTED, LITE_CORPUS_MESSAGE)
         tenant = self._current_tenant()
         if not file:
             return self._error(HTTPStatus.NOT_FOUND, "Which file? Open one from the corpus graph or a search.")
@@ -1965,8 +1953,6 @@ class DashboardApp:
     def _corpus_switch(self, corpus: str) -> str:
         """Links between the memo files' graph and each database corpus's graph."""
         names: list[str] = []
-        if self.db is not None and self.db.lite:
-            return ""
         if self.db is not None:
             try:
                 names = [t["tenant"] for t in self._tenants() if t["generation"]]
@@ -1989,8 +1975,6 @@ class DashboardApp:
     def _graph_page(self, corpus: str = "") -> Response:
         if corpus and self.db is None:
             return self._not_connected("RE-call · corpus graph", "graph", "Corpus graph")
-        if corpus and self.db is not None and self.db.lite:
-            return self._error(HTTPStatus.NOT_IMPLEMENTED, LITE_CORPUS_MESSAGE)
         kinds = [
             ("link", "imports and links" if corpus else "links", "<span class='sw link'></span>", True),
             ("supersedes", "supersedes", "<span class='sw supersedes'></span>", True),

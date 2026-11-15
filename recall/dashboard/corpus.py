@@ -40,7 +40,7 @@ from recall.frontmatter import supersedes_targets, validity_bounds
 from recall.supersession import SupersessionGraph, resolve_supersession_graph, supersession_rows_sql
 from recall.supersession_records import pg_records
 
-__all__ = ["HUB_LINKS", "SHARE_MAX_FILES", "SHARE_PER_FILE", "assemble_graph", "corpus_graph", "resolve_imports", "source_detail"]
+__all__ = ["HUB_LINKS", "SHARE_MAX_FILES", "SHARE_PER_FILE", "assemble_detail", "assemble_graph", "corpus_graph", "resolve_imports", "source_detail"]
 
 #: An entity named in more files than this is too common to link them (a project name, `self`).
 SHARE_MAX_FILES = 8
@@ -229,6 +229,10 @@ def _state(file: str, graph: SupersessionGraph, valid_from: str | None, valid_un
 def corpus_graph(db: DashboardDB, tenant: str, *, today: date | None = None) -> dict[str, Any]:
     """Every file of `tenant`'s active generation as a node; supersession, relations, Python
     imports and shared entities as edges. The shape of `build_graph`, see the module docstring."""
+    if db.lite:
+        from recall.dashboard import lite_db
+
+        return lite_db.corpus_graph(db.dsn, tenant, today=today)
     now = (today or datetime.now(UTC).date()).isoformat()
     with db.connect(tenant=tenant) as c:
         generation = _generation(c, tenant)
@@ -408,6 +412,10 @@ def source_detail(db: DashboardDB, tenant: str, file: str, *, today: date | None
     entities they mention and the relations its file entity takes part in. A root-relative name
     shared by several sources is ambiguous; its source URI selects one copy explicitly.
     """
+    if db.lite:
+        from recall.dashboard import lite_db
+
+        return lite_db.source_detail(db.dsn, tenant, file, today=today)
     now = (today or datetime.now(UTC).date()).isoformat()
     with db.connect(tenant=tenant) as c:
         generation = _generation(c, tenant)
@@ -489,6 +497,44 @@ def source_detail(db: DashboardDB, tenant: str, file: str, *, today: date | None
                 ).fetchall()
             }
 
+    return assemble_detail(
+        tenant=tenant, generation=generation, key=key, source=source, canonical=canonical, chunks=chunks,
+        total=total, first_indexed=first_indexed, last_indexed=last_indexed, graph=graph, successor=successor,
+        replaced=replaced, indexed=indexed, entities=entities, relations=relations, collided=collided,
+        imports=imports, imported_by=imported_by, today=now,
+    )
+
+
+def assemble_detail(
+    *,
+    tenant: str,
+    generation: str,
+    key: str,
+    source: str,
+    canonical: str,
+    chunks: Any,
+    total: int,
+    first_indexed: Any,
+    last_indexed: Any,
+    graph: SupersessionGraph,
+    successor: str | None,
+    replaced: list[str],
+    indexed: set[str],
+    entities: Any,
+    relations: Any,
+    collided: bool,
+    imports: list[tuple[str, str]],
+    imported_by: list[tuple[str, str]],
+    today: str,
+) -> dict[str, Any]:
+    """`source_detail`'s answer from its queries' values, pure, so the lite store's reader
+    (`recall.dashboard.lite_db.source_detail`) answers in exactly this shape.
+
+    `chunks`: `(chunk_id, ordinal, source_uri, text, metadata, indexed_at, first indexed, file)` in
+    order, at most `MAX_CHUNKS + 1`; `entities`: `(name, kind, mentions)`; `relations`:
+    `(relation, status, subject, subject kind, object, object kind)`.
+    """
+    now = today
     first_meta = chunks[0][4] if isinstance(chunks[0][4], dict) else {}
     valid_from, valid_until = first_meta.get("valid_from"), first_meta.get("valid_until")
     declared_list = list(supersedes_targets(first_meta.get("supersedes")))

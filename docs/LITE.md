@@ -174,6 +174,35 @@ Apply setup's printed environment to CLI searches as well:
 recall search "what did I decide about caching?"
 ```
 
+## See how memos link
+
+Lite keeps the same semantic graph as the PostgreSQL install, inside the store file. It is built
+only from what memos state: Markdown and wiki links, `supersedes`, `depends_on`, `recall_graph`
+front matter and headings. No model is involved, so building it embeds nothing and calls no API.
+Every write to the store clears the graph in the same transaction, so a forgotten memo never stays
+in it. A refresh builds it again, `recall graph rebuild` builds it on demand, and the dashboard
+builds one in memory, without writing it, when none is stored.
+
+With setup's printed environment applied, so that `RECALL_DSN` names the store:
+
+```bash
+recall graph status
+recall graph rebuild
+```
+
+`status` reports whether the graph is built for the store's current corpus and how many entities,
+mentions and relations it holds; `rebuild` builds it now. A lite store has one corpus, so
+`--generation` is optional, and when given it must be the `generation_id` that `status` prints.
+
+In the dashboard, the memory graph's corpus switch lists the store's corpus beside the memo files.
+That view draws every indexed file as a node, joined by supersession, authored references and
+dependencies, Python imports, and uncommon names two files share; opening a node shows its chunks,
+the entities they mention and the relations it takes part in.
+
+The graph is for navigation. Search does not read it: graph expansion is a feature of the
+PostgreSQL generation route, and it is off by default there too. `recall_related` answers the same
+structural relations (`source`, `ordinal`, `supersession`, `caused_by`) on both backends.
+
 ## Atomic rescue (optional)
 
 Atomic rescue finds a memo whose answer is one sentence inside a long chunk. Each chunk is split

@@ -361,6 +361,35 @@ def _diagnostic(
     )
 
 
+def semantic_graph_marker(graph: SemanticGraphProjection) -> dict[str, Any]:
+    """The readiness marker a store records beside a built graph (`read_graph_readiness` reads it).
+
+    Here rather than in `recall.generations`, so the lite store records the same marker without
+    importing the Postgres generation code.
+    """
+    return {
+        "schema_version": graph.schema_version,
+        "graph_id": graph.graph_id,
+        "graph_fingerprint": graph.fingerprint,
+        "entity_count": len(graph.entities),
+        "mention_count": len(graph.mentions),
+        "relation_count": len(graph.relations),
+        "diagnostic_count": len(graph.diagnostics),
+        "diagnostics": [
+            {
+                "id": diagnostic.id,
+                "kind": diagnostic.kind,
+                "reference": diagnostic.reference,
+                "message": diagnostic.message,
+                "entity_ids": list(diagnostic.entity_ids),
+                "relation_ids": list(diagnostic.relation_ids),
+            }
+            for diagnostic in graph.diagnostics
+        ],
+        "ready": True,
+    }
+
+
 def marker_schema_version(marker: Mapping[str, Any]) -> int:
     """The builder version a graph marker records; a marker from before the field is legacy."""
     value = marker.get("schema_version")
