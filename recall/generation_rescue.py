@@ -125,7 +125,9 @@ def build_artifact(dsn: str, tenant: str, generation_id: str, embedder: Embedder
             f"generation {generation_id} has no certified published calibration "
             f"({resolution.status.value}), so its atomic rescue cannot be built"
         )
-    with GenerationStore(dsn, embedder.dim, tenant=tenant) as store:
+    # Entered as a name, not bound by `as`: `__enter__` is typed on the base store.
+    store = GenerationStore(dsn, embedder.dim, tenant=tenant)
+    with store:
         store.set_fixed_generation(generation_id)
         binding = store.generation_binding()
         model, dimension = binding.get("embedder_model"), binding.get("embedder_dimension")
