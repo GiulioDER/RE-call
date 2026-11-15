@@ -38,6 +38,7 @@ from recall.store import (
     EdgeCandidates,
     PgVectorStore,
     SupersessionGraph,
+    _SOURCE_RANK_SQL,
     _first_write_sql,
     _lexical_tie_order,
     resolve_supersession_graph,
@@ -1085,6 +1086,8 @@ class GenerationStore(PgVectorStore):
         Production uses ``recall_chunks_v1`` where the corresponding columns are ``chunk_id`` and
         ``source_uri`` and every read must also be pinned to the active generation.
         Supersession remains on the generic path because it resolves authored lineage separately.
+        ``source`` ranks as the resolver does; ``PgVectorStore.related_chunks`` says how, and
+        where the tie order can differ.
         """
         if relation not in {"source", "ordinal"}:
             return None
@@ -1108,17 +1111,16 @@ class GenerationStore(PgVectorStore):
         source_match = "source_uri = %s"
         if relation == "source":
             where = source_match
+            centre = seed_ord if isinstance(seed_ord, int) and not isinstance(seed_ord, bool) else 0
             params: tuple[object, ...] = (
                 self._tenant,
                 generation_id,
                 seed_source,
                 seed_id,
+                centre,
                 max_items,
             )
-            order = (
-                "CASE WHEN metadata->>'ord' ~ '^[0-9]+$' "
-                "THEN (metadata->>'ord')::int END NULLS LAST, chunk_id"
-            )
+            order = f"abs({_SOURCE_RANK_SQL} - %s), chunk_id COLLATE \"C\""
         else:
             if not isinstance(seed_ord, int) or isinstance(seed_ord, bool):
                 return (
