@@ -18,6 +18,12 @@ matrix mapped, which Windows refuses. `LiteStore.atomic_rescue_manifest` names t
 the trust gate. Nothing is built without a certified calibration: strict search refuses before it
 reaches the rescue, and an artifact's lineage names the calibration it serves beside.
 
+Each store keeps its artifacts in a folder of its own under the root, `store-<digest>`, named by
+its tenant and resolved file path, and a build removes old artifacts from that folder only. Two
+stores sharing a root (two projects, or two MCP servers) therefore never remove each other's.
+Artifacts built before this layout sit at the top of the root: a search still serves one whose key
+is in force, after the same lineage check, and no build removes them, since their owner is unknown.
+
 The views of each chunk text are embedded once and kept in `<root>/micro-views.sqlite`
 (`recall.atomic_view_store`), keyed by embedder profile and text, so a build embeds only the
 views of texts no earlier build saw. The first build is the expensive one: a chunk of `w` words
@@ -26,6 +32,8 @@ has about `w / 12` views, each embedded like a passage.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import re
 import shutil
@@ -48,11 +56,13 @@ if TYPE_CHECKING:
     from recall.embeddings import Embedder
     from recall.lite.store import LiteStore
 
-__all__ = ["BuildReport", "configured_root", "ensure_rescue_artifact", "erase_forgotten", "manifest_path"]
+__all__ = [
+    "BuildReport", "configured_root", "ensure_rescue_artifact", "erase_forgotten", "manifest_path", "serving_manifest"
+]
 
 ROOT_ENV = "RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT"
 VIEW_STORE_NAME = "micro-views.sqlite"
-#: The directories this module writes under the root, and so the only ones it removes.
+#: The directories this module writes in a store's folder, and so the only ones it removes there.
 _ARTIFACT_NAME = re.compile(r"lite-[0-9a-f]{16}\.cal_[0-9a-f]+")
 #: The files `write_atomic_rescue_artifact` publishes in an artifact's directory.
 _MEMBERS = ("manifest.json", "views.json", "matrix.npy")
@@ -71,15 +81,34 @@ class BuildReport:
         return f"atomic       {self.reason}"
 
 
-def manifest_path(root: str | Path, generation_id: str, calibration_id: str | None) -> Path:
-    """The manifest of the artifact serving `generation_id` beside `calibration_id`."""
+def manifest_path(root: str | Path, store: LiteStore, generation_id: str, calibration_id: str | None) -> Path:
+    """The manifest of `store`'s artifact serving `generation_id` beside `calibration_id`."""
     if calibration_id is None:
         raise AtomicRescueArtifactError("atomic rescue on a lite store requires a certified calibration")
     if not Path(root).expanduser().is_absolute():
         # Each process would resolve it against its own working directory, so a CLI build and an
         # MCP server started elsewhere would write and read different roots.
         raise AtomicRescueArtifactError(f"{ROOT_ENV} must be an absolute path, not {str(root)!r}")
-    return resolve_atomic_rescue_manifest(root, f"{generation_id}.{calibration_id}")
+    return resolve_atomic_rescue_manifest(_store_folder(root, store), f"{generation_id}.{calibration_id}")
+
+
+def _store_folder(root: str | Path, store: LiteStore) -> Path:
+    """`store`'s own folder under the root, named by its tenant and resolved file path."""
+    identity = f"{store.tenant}\0{os.path.normcase(store.path.resolve())}"
+    return Path(root).expanduser() / f"store-{hashlib.sha256(identity.encode('utf-8')).hexdigest()[:16]}"
+
+
+def serving_manifest(root: str | Path, store: LiteStore, generation_id: str, calibration_id: str | None) -> Path:
+    """The manifest a search loads: `store`'s own, else one of the same key left by the flat layout.
+
+    So a root built before per-store folders keeps serving until the next build writes its own.
+    The trust gate checks the lineage of either before serving it.
+    """
+    manifest = manifest_path(root, store, generation_id, calibration_id)
+    if manifest.is_file():
+        return manifest
+    flat = resolve_atomic_rescue_manifest(root, manifest.parent.name)
+    return flat if flat.is_file() else manifest
 
 
 def configured_root(tenant: str, env: Mapping[str, str] | None = None) -> Path | None:
@@ -116,7 +145,7 @@ def ensure_rescue_artifact(
     calibration_id = resolution.artifact.calibration_id
     binding = store.generation_binding()
     generation_id, corpus_fingerprint = binding["generation_id"], binding["corpus_fingerprint"]
-    manifest = manifest_path(root, generation_id, calibration_id)
+    manifest = manifest_path(root, store, generation_id, calibration_id)
     lineage = {
         "generation_id": generation_id,
         "calibration_id": calibration_id,
@@ -195,26 +224,35 @@ def ensure_rescue_artifact(
             raise
         written = manifest
     load_atomic_rescue_artifact(written).assert_lineage(**lineage, embedder=embedder)
-    _remove_others(root, keep={manifest.parent.name, _key_in_force(store)})
+    _remove_others(manifest.parent.parent, keep={manifest.parent.name, _key_in_force(store)})
+    # Their owner is unknown, so they are reported rather than removed (docs/LITE.md).
+    flat = sum(1 for entry in root.iterdir() if entry.is_dir() and _ARTIFACT_NAME.fullmatch(entry.name))
+    left = f"; {flat} artifact folder(s) from before per-store folders remain in {root}" if flat else ""
     return BuildReport(
         written,
         f"built for {generation_id}: {counts['views']} view(s) of {counts['parents']} chunk(s), "
-        f"{counts['embedded_views']} newly embedded",
+        f"{counts['embedded_views']} newly embedded{left}",
         counts,
         time.perf_counter() - started,
     )
 
 
 def erase_forgotten(
-    store: LiteStore, texts: Sequence[str], *, env: Mapping[str, str] | None = None
+    store: LiteStore,
+    texts: Sequence[str],
+    sources: Sequence[str],
+    *,
+    env: Mapping[str, str] | None = None,
 ) -> tuple[int, int]:
     """Erase what the rescue keeps of forgotten chunks: ``(view rows erased, artifacts removed)``.
 
     Run by a forget after the chunks are deleted, with their texts read before. The views are
-    erased by text digest from `<root>/micro-views.sqlite`, and every artifact this module wrote
-    is removed except the one the store resolves now: each other one was built from a corpus that
-    held the forgotten chunks, and keeps their view vectors and sources. The root is read whatever
-    the rescue mode, since a rescue turned off keeps what it built. Raises when something is left.
+    erased by text digest from `<root>/micro-views.sqlite`, and every artifact in the store's own
+    folder is removed except the one the store resolves now: each other one was built from a
+    corpus that held the forgotten chunks, and keeps their view vectors and sources. An artifact
+    left at the top of the root by the layout before per-store folders has no known owner, so it is
+    removed only when its `views.json` names one of `sources`. The root is read whatever the rescue
+    mode, since a rescue turned off keeps what it built. Raises when something is left.
     """
     from recall.atomic_view_store import AtomicViewStore, chunk_view_digest
 
@@ -229,9 +267,15 @@ def erase_forgotten(
         with AtomicViewStore(views_path) as views:
             erased = views.erase_digests({chunk_view_digest(text) for text in texts})
     keep = _key_in_force(store)
+    own = _store_folder(root, store)
     doomed = [
+        entry for entry in (own.iterdir() if own.is_dir() else ())
+        if entry.name != keep and entry.is_dir() and _ARTIFACT_NAME.fullmatch(entry.name)
+    ]
+    doomed += [
         entry for entry in root.iterdir()
         if entry.name != keep and entry.is_dir() and _ARTIFACT_NAME.fullmatch(entry.name)
+        and _names_any(entry, set(sources))
     ]
     if doomed:
         # This process's cache maps the matrix it last loaded, and Windows refuses to delete it.
@@ -247,6 +291,15 @@ def erase_forgotten(
     return erased, len(doomed)
 
 
+def _names_any(artifact: Path, sources: set[str]) -> bool:
+    """Whether the artifact's `views.json` names one of `sources`; False when it cannot be read."""
+    try:
+        views = json.loads((artifact / "views.json").read_text(encoding="utf-8"))["views"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
+    return any(isinstance(view, dict) and view.get("source") in sources for view in views)
+
+
 def _key_in_force(store: LiteStore) -> str | None:
     """The artifact key the store resolves now (`manifest_path`); None without a certified calibration."""
     from recall.calibration_v2 import CalibrationStatus
@@ -257,8 +310,8 @@ def _key_in_force(store: LiteStore) -> str | None:
     return f"{store.generation_binding()['generation_id']}.{resolution.artifact.calibration_id}"
 
 
-def _remove_others(root: Path, *, keep: Container[str | None]) -> None:
-    """Remove the artifacts this module wrote for other corpora or calibrations.
+def _remove_others(folder: Path, *, keep: Container[str | None]) -> None:
+    """Remove the artifacts this module wrote in one store's `folder` for other corpora or calibrations.
 
     `keep` names this build's key and the key in force when it finished: a background refit
     builds under its own lane, so the other build may have published the one a search now needs.
@@ -266,6 +319,6 @@ def _remove_others(root: Path, *, keep: Container[str | None]) -> None:
     has mapped, and that artifact is then removed by the next build. A part left behind is never
     served: a build of its key checks every member on disk before reusing it.
     """
-    for entry in root.iterdir():
+    for entry in folder.iterdir():
         if entry.name not in keep and entry.is_dir() and _ARTIFACT_NAME.fullmatch(entry.name):
             shutil.rmtree(entry, ignore_errors=True)

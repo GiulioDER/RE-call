@@ -532,7 +532,7 @@ def _forget_memory_unlocked(
 
         try:
             rescue_views_erased, rescue_artifacts_removed = erase_forgotten(
-                store, rescue_texts, env=runtime_environment()
+                store, rescue_texts, to_delete, env=runtime_environment()
             )
         except Exception:  # BROAD-CATCH: error-translation
             _log.exception(
@@ -611,7 +611,8 @@ def _forget_memory_unlocked(
             " WARNING: the chunk deletion succeeded but erasing them from the atomic rescue failed, "
             "so its view store or an artifact under RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT still holds "
             "their vectors, and a re-run finds no rows to erase them by; delete micro-views.sqlite "
-            "and the lite-* directories there, which costs only a rebuild at the next write."
+            "and the artifact folders there (store-* and lite-*), which costs only a rebuild at "
+            "the next write."
         )
     elif rescue_views_erased or rescue_artifacts_removed:
         message += (

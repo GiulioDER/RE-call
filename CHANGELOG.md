@@ -13,6 +13,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 - `recall_remember`'s `supersedes` accepts another assistant's memo of the same index root by the
   id search names it by (`agent-b/note-0001`), so agents with memo folders of their own can retire
   each other's memos. Its folder's ledger decides authorship; `recall_forget_memo` is unchanged.
+- Lite keeps the semantic graph in its store file, built from what memos state (links,
+  `supersedes`, `depends_on`, `recall_graph` front matter, headings) with no model. A refresh builds
+  it, every write clears it in the same transaction, and `recall graph status` and
+  `recall graph rebuild` now work on a lite store. The dashboard draws the store's corpus graph and
+  opens each file's page from it. Search does not read the graph.
+- `recall graph status` reports whether a generation's graph is built, and its counts.
 
 ### Fixed
 

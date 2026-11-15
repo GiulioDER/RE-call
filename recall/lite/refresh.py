@@ -12,6 +12,7 @@ the same ideas map onto less machinery:
 | `embed.lock` queue | the store's write lane, `lite_lane(..., purpose=refresh_purpose(roots), coalesce=True)` |
 | build | `Indexer.index_path`, which already skips unchanged content and prunes vanished files |
 | calibrate | `ensure_calibrated` (carry forward, refit when needed) |
+| semantic graph | `LiteStore.rebuild_semantic_graph`, when a write cleared it (`recall.lite.graph`) |
 | promote, gc | nothing: one corpus, no generations |
 | `last-memory-refresh.json` | `<db stem>.refresh.json` beside the store |
 
@@ -483,6 +484,9 @@ def refresh(
         # although no memo changed (`recall.stated_facts.stated_marker`).
         and (marker := _stated_marker(store, resolved)) is not None
         and last.get("stated") == marker
+        # A store upgraded from a release before the graph, or a rebuild a write raced, has no
+        # graph although no memo changed (CCA BUG-007).
+        and store.graph_current()
     ):
         # Nothing is written: this path holds no lane, and rewriting the file here could put back
         # a `last_success` that a concurrent refresh has just replaced.
@@ -640,6 +644,19 @@ def _refresh_locked(
         _log.warning("atomic rescue build for %s failed: %s", db, exc)
         report.outcome, report.reason = Outcome.FAILED, f"atomic rescue: {type(exc).__name__}: {exc}"
         # The failure may be the store's own, as above (CCA BUG-002).
+        with suppress(Exception):
+            report.chunks_total = store.count()
+        return _finish(db, roots, report, key_root=key_root)
+    try:
+        # The navigation graph (`recall.lite.graph`): any write above cleared it, so it is built
+        # here, where a refresh already pays for reading the corpus, rather than on the next read.
+        # Last, so a failed build skips none of the facts, the embedder binding or the rescue
+        # artifact above (CCA STAKES-001, the owner's decision of 2026-11-15).
+        if not store.graph_readiness().ready:
+            store.rebuild_semantic_graph()
+    except Exception as exc:  # BROAD-CATCH: fail-closed  # FAILED is not a success, so the next refresh builds again
+        _log.warning("semantic graph build for %s failed: %s", db, exc)
+        report.outcome, report.reason = Outcome.FAILED, f"semantic graph: {type(exc).__name__}: {exc}"
         with suppress(Exception):
             report.chunks_total = store.count()
         return _finish(db, roots, report, key_root=key_root)

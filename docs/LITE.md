@@ -174,6 +174,35 @@ Apply setup's printed environment to CLI searches as well:
 recall search "what did I decide about caching?"
 ```
 
+## See how memos link
+
+Lite keeps the same semantic graph as the PostgreSQL install, inside the store file. It is built
+only from what memos state: Markdown and wiki links, `supersedes`, `depends_on`, `recall_graph`
+front matter and headings. No model is involved, so building it embeds nothing and calls no API.
+Every write to the store clears the graph in the same transaction, so a forgotten memo never stays
+in it. A refresh builds it again, `recall graph rebuild` builds it on demand, and the dashboard
+builds one in memory, without writing it, when none is stored.
+
+With setup's printed environment applied, so that `RECALL_DSN` names the store:
+
+```bash
+recall graph status
+recall graph rebuild
+```
+
+`status` reports whether the graph is built for the store's current corpus and how many entities,
+mentions and relations it holds; `rebuild` builds it now. A lite store has one corpus, so
+`--generation` is optional, and when given it must be the `generation_id` that `status` prints.
+
+In the dashboard, the memory graph's corpus switch lists the store's corpus beside the memo files.
+That view draws every indexed file as a node, joined by supersession, authored references and
+dependencies, Python imports, and uncommon names two files share; opening a node shows its chunks,
+the entities they mention and the relations it takes part in.
+
+The graph is for navigation. Search does not read it: graph expansion is a feature of the
+PostgreSQL generation route, and it is off by default there too. `recall_related` answers the same
+structural relations (`source`, `ordinal`, `supersession`, `caused_by`) on both backends.
+
 ## Atomic rescue (optional)
 
 Atomic rescue finds a memo whose answer is one sentence inside a long chunk. Each chunk is split
@@ -194,7 +223,19 @@ The root must be absolute, and a relative one is refused: the MCP server and the
 their own working directory, so a relative root would name two different folders.
 
 `RECALL_ATOMIC_RESCUE_PLACEMENT=fused` places the rescued chunk after fusion, so the final top five
-never change; the default `dense` places it before. Use one artifact root per store.
+never change; the default `dense` places it before.
+
+Several stores (two projects, or two MCP servers) may share one root. Each store keeps its
+artifacts in a folder of its own under it, `store-<digest>`, named by the store's tenant and file
+path, and a build removes old artifacts from that folder only. Moving a store file starts a new
+folder; delete the old one by hand. The stores share `micro-views.sqlite`.
+
+Before per-store folders, a build put its artifacts at the top of the root, as `lite-*` folders,
+and removed every other such folder, including another store's. A search still serves the one for
+the memory and calibration in force, after the same lineage check, so a root built that way keeps
+working without a rebuild. The next build writes the store's own folder, and its `atomic` line says
+how many `lite-*` folders remain at the top. No build removes them, because nothing records which
+store built them: delete them by hand once every store using the root has built once.
 
 With the rescue on, every write that keeps a calibration in force (a refresh, `recall index`,
 `recall_index`, a background refit landing) builds an artifact for the memory and calibration then
@@ -211,20 +252,19 @@ until a forget erases from it; delete it to reclaim space, at the cost of one fu
 Search refuses while the artifact for the memory as it is now is missing: a search that lands
 between a write and the end of its build fails with an artifact error and succeeds once the build
 finishes. `recall forget` and `recall withdraw` build nothing, so after one of them an active search
-fails on the missing artifact until the next refresh or index builds again. Older artifacts are
-removed after each build; on Windows one a running server still has open stays until a later build.
+fails on the missing artifact until the next refresh or index builds again. A store's older
+artifacts are removed after each build; on Windows one a running server still has open stays until
+a later build.
 
 `recall forget` and `recall withdraw` also erase what the rescue keeps of the memo: its views in
 `micro-views.sqlite`, with SQLite `secure_delete` and a truncating checkpoint, and every artifact
-under the root but one built for the memory as it is after the forget. They do so whenever
-`RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT` is set, even with the rescue since turned off, and report an
-erasure that failed (on Windows, an artifact a running server still has open). With the variable
-unset a forget does not look there, so delete the root when you stop using the rescue.
-
-A forget does not reach the root. The forgotten memo's chunk ids and source name stay in the
-previous artifact until the next build removes it, and its view vectors stay in
-`micro-views.sqlite`, which nothing deletes. After a forget that must erase everything, delete
-`micro-views.sqlite` and the artifact folders under the root, then run `recall lite refresh --force`.
+in the store's own folder but one built for the memory as it is after the forget. A `lite-*`
+folder at the top of the root, from before per-store folders, is removed when it names the memo.
+Views are shared by text, so another store holding the same text re-embeds it at its next build.
+They do so whenever `RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT` is set, even with the rescue since turned
+off, and report an erasure that failed (on Windows, an artifact a running server still has open).
+With the variable unset a forget does not look there, so delete the root when you stop using the
+rescue.
 
 ## Update the software
 

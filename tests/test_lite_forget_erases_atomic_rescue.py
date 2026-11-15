@@ -36,10 +36,20 @@ assertion, since the left-behind check then raises; `rescue_views_erased = -1` i
 (from an automated review): with the `erase_digests(stale)` block of
 `recall.lite.atomic.ensure_rescue_artifact` removed it fails at "the forgotten memo's views are
 still in the view store", its negative control having passed.
+
+After #1313 moved each store's artifacts into `store-<digest>/`, `erase_forgotten` scans that
+folder, and a flat `lite-*` folder at the top of the root only when its `views.json` names a
+forgotten source. Mutations, each red: the store folder not scanned fails the parametrized and
+turned-off cases at "an artifact built with the memo is left" and
+`::test_a_flat_artifact_naming_the_memo_is_removed_and_another_stays` at "the store's own
+artifact"; the `_names_any` filter dropped fails that test at "a flat artifact of another memory
+was removed"; the top of the root not scanned fails it at "a flat artifact naming the forgotten
+memo is left".
 """
 
 from __future__ import annotations
 
+import shutil
 import sqlite3
 from contextlib import closing
 from pathlib import Path
@@ -123,7 +133,8 @@ def _mark(root: Path, digests: set[str]) -> list[bytes]:
 
 
 def _artifacts(root: Path) -> list[Path]:
-    return [entry for entry in root.iterdir() if entry.is_dir() and entry.name.startswith("lite-")]
+    """Artifact folders in either layout: a store's own `store-*` folder, or the flat one before it."""
+    return [entry for entry in [*root.glob("store-*/lite-*"), *root.glob("lite-*")] if entry.is_dir()]
 
 
 @pytest.mark.parametrize("erase", [forget_memory, withdraw_memory], ids=["forget", "withdraw"])
@@ -218,4 +229,30 @@ def test_a_build_overtaken_by_a_forget_does_not_keep_the_forgotten_views(
     assert report is not None and report.manifest is None, report
     assert stored and gone <= stored[0], "negative control: the overtaken build stored no views of the memo"
     assert gone & set(_views(root)) == set(), "the forgotten memo's views are still in the view store"
+    store.close()
+
+
+def test_a_flat_artifact_naming_the_memo_is_removed_and_another_stays(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Folders at the top of the root, from before per-store folders, have no recorded owner: a
+    forget removes the one that names the forgotten memo and leaves one that does not."""
+    store, root, source, _texts = _built(tmp_path)
+    monkeypatch.setenv(ROOT_ENV, str(root))
+    [own] = list(root.glob("store-*/lite-*"))
+    naming = root / own.name
+    shutil.copytree(own, naming)
+    other = root / "lite-0123456789abcdef.cal_ab"
+    shutil.copytree(own, other)
+    views = other / "views.json"
+    views.write_text(views.read_text(encoding="utf-8").replace("ops-log.md", "someone-else.md"), encoding="utf-8")
+    assert "ops-log.md" in (naming / "views.json").read_text(encoding="utf-8"), "negative control"
+    assert "ops-log.md" not in views.read_text(encoding="utf-8"), "negative control"
+
+    result = forget_memory(store, [source])
+
+    assert "WARNING" not in result.message, result.message
+    assert not own.exists(), "the store's own artifact built with the memo is left"
+    assert not naming.exists(), "a flat artifact naming the forgotten memo is left"
+    assert other.exists(), "a flat artifact of another memory was removed"
     store.close()
