@@ -125,6 +125,20 @@ class Chunk:
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
+#: How far, in ordinals, an `ordinal` neighbour may sit from the seed: the resolver
+#: (`recall.related.trusted_related`) and every store's bounded `related_chunks` read it. It lives
+#: here, not in `recall.related`, so the stores can import it without the resolver's dependencies
+#: (the `aml-depends-only-on-the-core` import contract).
+ORDINAL_WINDOW = 2
+
+
+def metadata_ordinal(metadata: dict[str, Any]) -> int | None:
+    """A chunk's ordinal from its metadata: an integer `ord`, never a boolean; the one reader of it
+    for the related reads and the lite dashboard (CCA CODE-006)."""
+    value = metadata.get("ord")
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
 @dataclass(frozen=True)
 class AtomicFact:
     """A structured, single claim that a deterministic controller can authorize."""

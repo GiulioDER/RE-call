@@ -1107,29 +1107,31 @@ class GenerationStore(PgVectorStore):
             raise ValueError(f"seed chunk not found: {seed_chunk_id!r}")
         seed_id, seed_source, seed_text, seed_metadata = seed_row
         seed_metadata = seed_metadata if isinstance(seed_metadata, dict) else json.loads(seed_metadata)
-        seed_ord = seed_metadata.get("ord")
+        from recall.types import ORDINAL_WINDOW, metadata_ordinal
+
+        seed_ord = metadata_ordinal(seed_metadata)
 
         source_match = "source_uri = %s"
         if relation == "source":
             where = source_match
-            centre = seed_ord if isinstance(seed_ord, int) and not isinstance(seed_ord, bool) else 0
             params: tuple[object, ...] = (
                 self._tenant,
                 generation_id,
                 seed_source,
                 seed_id,
-                centre,
+                seed_ord or 0,
                 max_items,
             )
             order = f"abs({_ord_rank_sql()} - %s), chunk_id COLLATE \"C\""
         else:
-            if not isinstance(seed_ord, int) or isinstance(seed_ord, bool):
+            if seed_ord is None:
                 return (
                     Chunk(str(seed_id), str(seed_source), str(seed_text), seed_metadata),
                     [],
                 )
+            # The resolver's window, not a copy of it, so the LIMIT cannot drift from it (CCA CODE-001).
             where = (
-                f"{source_match} AND {_integer_ord_sql()} AND abs({_ord_rank_sql()} - %s) <= 2"
+                f"{source_match} AND {_integer_ord_sql()} AND abs({_ord_rank_sql()} - %s) <= {ORDINAL_WINDOW}"
             )
             order = f"abs({_ord_rank_sql()} - %s), chunk_id COLLATE \"C\""
             params = (

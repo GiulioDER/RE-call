@@ -49,7 +49,7 @@ def marker_diagnostics(marker: object, *, tenant_id: str, generation_id: str) ->
             entity_ids=tuple(str(value) for value in item.get("entity_ids", ())),
             relation_ids=tuple(str(value) for value in item.get("relation_ids", ())),
         )
-        for item in (marker.get("diagnostics", ()) if isinstance(marker, dict) else ())
+        for item in (marker.get("diagnostics", ()) if isinstance(marker, Mapping) else ())
         if isinstance(item, Mapping)
         and isinstance(item.get("id"), str)
         and isinstance(item.get("kind"), str)
