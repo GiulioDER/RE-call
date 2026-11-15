@@ -45,6 +45,14 @@ Invariants and the failure each one catches:
   - M23 (G15, STAKES-001, the owner's decision of 2026-11-15) the graph rebuild put back inside
     the refresh's main try, before the bookkeeping: "the failed graph build skipped recording the
     embedder spec".
+  - From the deferred pass (run 20261115T134633Z): G16 `recall graph rebuild --generation` checks
+    under the write lane (BUG-004), G17 PostgreSQL `graph status` without an active generation is
+    a message (BUG-005), G18 a stored graph's readiness loads no corpus (PERF-004), G19 a marker
+    missing its graph id is no graph (CODE-002). M24 the check moved back before the lane: G16
+    printed `"ready": true`. M25 the `NoActiveGeneration` handler removed: G17 got
+    `NoActiveGeneration`, not SystemExit. M26 the generation always hashed: G18 "1 corpus load(s)
+    for a stored graph's readiness". M27 `marker_is_whole` dropped from `read_marker`: G19 got
+    `KeyError('graph_id')`.
   - M4 re-run on the changed G3 (`corpus_version` comparison removed from `read_marker`): "a
     stale graph read as ready".
 
@@ -384,9 +392,9 @@ def test_g13_a_file_page_keeps_the_graph_until_the_corpus_moves(numbered: LiteSt
     monkeypatch.setattr(lite_db, "_GRAPHS", {})
     real, calls = lite_graph.graph_of, []
 
-    def counted(conn: sqlite3.Connection, tenant: str) -> object:
+    def counted(conn: sqlite3.Connection, tenant: str, chunks: list[Chunk]) -> object:
         calls.append(tenant)
-        return real(conn, tenant)
+        return real(conn, tenant, chunks)
 
     monkeypatch.setattr(lite_graph, "graph_of", counted)
     dsn = "sqlite:///" + numbered.path.as_posix()
@@ -459,3 +467,89 @@ def test_g15_a_failed_graph_build_skips_nothing_the_refresh_owes(
         spec = c.execute("SELECT value FROM meta WHERE key = 'embedder_spec'").fetchone()
     assert spec == ("hashing",), "the failed graph build skipped recording the embedder spec"
     assert report.outcome is Outcome.FAILED and report.reason.startswith("semantic graph: OSError"), report.to_dict()
+
+
+def test_g16_a_rebuild_checks_its_generation_under_the_write_lane(store: LiteStore, monkeypatch: pytest.MonkeyPatch) -> None:
+    """G16. A write lands while `recall graph rebuild --generation G` waits for the lane: the
+    command refuses, as G no longer names the corpus. Catches the check made before the lane
+    (CCA BUG-004), which rebuilt another corpus and exited 0."""
+    import contextlib
+
+    import recall.backends as backends
+
+    dsn = "sqlite:///" + store.path.as_posix()
+    named, gamma = store.lite_generation_id(), _source(store, "gamma.md")
+
+    @contextlib.contextmanager
+    def lane_after_a_write(*_args: object, **_kwargs: object) -> Iterator[None]:
+        with LiteStore(store.path, dim=DIM) as other:  # another writer held the lane first
+            other.delete_sources([gamma])
+        yield
+
+    monkeypatch.setattr(backends, "write_session", lane_after_a_write)
+    out = run_cli(["--dsn", dsn, "graph", "rebuild", "--generation", named])
+    assert "EXIT" in out and "is not it" in out, out
+
+
+def test_g17_graph_status_without_an_active_generation_is_a_message(monkeypatch: pytest.MonkeyPatch) -> None:
+    """G17. `recall graph status` on a PostgreSQL tenant with no active generation exits with a
+    message. Catches `NoActiveGeneration` left to end in a traceback (CCA BUG-005)."""
+    import argparse
+
+    import recall.generation_store as generation_store
+    from recall.cli_commands.graph_cmd import _cmd_graph
+    from recall.generation_types import NoActiveGeneration
+
+    class NoGeneration:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
+        def graph_readiness(self, _generation: object) -> None:
+            raise NoActiveGeneration("tenant t has no active generation")
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(generation_store, "GenerationStore", NoGeneration)
+    raised: BaseException | None = None
+    try:
+        _cmd_graph(argparse.Namespace(dsn="postgresql://unused/db", graph_cmd="status", generation=None, tenant="t"))
+    except BaseException as exc:  # noqa: BLE001  # the assertion below names what came out
+        raised = exc
+    assert isinstance(raised, SystemExit) and "recall graph status" in str(raised.code), repr(raised)
+
+
+def test_g18_status_of_a_stored_graph_hashes_no_corpus(store: LiteStore, monkeypatch: pytest.MonkeyPatch) -> None:
+    """G18. With a graph stored for the corpus as it is now, its readiness comes from the marker:
+    the search matrix is not loaded. Catches the corpus hashed on every `recall graph status`
+    (CCA PERF-004)."""
+    real, loads = LiteStore._load, []
+
+    def counted(self: LiteStore) -> object:
+        loads.append(1)
+        return real(self)
+
+    monkeypatch.setattr(LiteStore, "_load", counted)
+    ready = store.graph_readiness()
+    assert ready.ready and not loads, f"{len(loads)} corpus load(s) for a stored graph's readiness"
+
+
+def test_g19_a_marker_missing_its_graph_id_is_no_graph(store: LiteStore) -> None:
+    """G19. A marker that says ready but lacks its graph id reads as no graph, as PostgreSQL reads
+    it, rather than raising. Catches the lite decoder without PostgreSQL's guards (CCA CODE-002)."""
+    with sqlite3.connect(store.path) as c:
+        marker = json.loads(c.execute("SELECT value FROM meta WHERE key = 'semantic_graph'").fetchone()[0])
+        del marker["graph_id"]
+        c.execute("UPDATE meta SET value = ? WHERE key = 'semantic_graph'", (json.dumps(marker),))
+
+    def outcome(call: object) -> object:
+        try:
+            return call()  # type: ignore[operator]
+        except Exception as exc:  # noqa: BLE001  # the assertions below name what came out
+            return exc
+
+    ready = outcome(store.graph_readiness)
+    assert getattr(ready, "reason", None) == "GRAPH_NOT_READY", repr(ready)
+    with store._lock:
+        loaded = outcome(lambda: load_graph(store._conn, store.tenant))
+    assert loaded is None, repr(loaded)

@@ -13,7 +13,8 @@ release's write moves that version (CCA SEC-001). The marker also records the ve
 at, so a marker from another version reads as no graph.
 
 It serves navigation (`recall graph`, the dashboard's corpus graph). Search never reads it: graph
-expansion is a generation feature of the PostgreSQL install, off by default there too.
+expansion is a generation feature of the PostgreSQL install, where `recall_reasoning_query`
+expands one hop by default; on a lite store it expands nothing.
 """
 
 from __future__ import annotations
@@ -24,18 +25,19 @@ from collections import defaultdict
 from collections.abc import Sequence
 from typing import Any
 
-from recall.semantic_graph._build import build_semantic_graph
-from recall.semantic_graph._model import (
+from recall.semantic_graph import (
     SEMANTIC_GRAPH_SCHEMA_VERSION,
     GraphReadiness,
     SemanticEntity,
-    SemanticGraphDiagnostic,
     SemanticGraphProjection,
     SemanticMention,
-    _thaw,
+    build_semantic_graph,
+    marker_diagnostics,
+    marker_is_whole,
     marker_schema_version,
     semantic_graph_marker,
 )
+from recall.semantic_graph._model import _thaw
 from recall.types import Chunk
 
 __all__ = ["GRAPH_SCHEMA", "build_graph", "clear_graph", "graph_of", "load_graph", "read_marker", "readiness", "write_graph"]
@@ -174,8 +176,9 @@ def read_marker(conn: sqlite3.Connection) -> dict[str, Any] | None:
     except ValueError:
         return None
     if (
-        not isinstance(marker, dict)
-        or marker.get("ready") is not True
+        # Ready, with its graph id, fingerprint and counts, as PostgreSQL reads it (CCA CODE-002).
+        not marker_is_whole(marker)
+        or not isinstance(marker, dict)
         or not isinstance(marker.get("generation_id"), str)
         or str(marker.get("corpus_version")) != values.get("corpus_version")
         or marker_schema_version(marker) != SEMANTIC_GRAPH_SCHEMA_VERSION
@@ -255,16 +258,7 @@ def load_graph(conn: sqlite3.Connection, tenant: str) -> SemanticGraphProjection
     )
     if problems:
         return None
-    diagnostics = tuple(
-        SemanticGraphDiagnostic(
-            id=str(item["id"]), tenant_id=tenant, generation_id=generation, kind=item["kind"],
-            reference=str(item["reference"]) if item.get("reference") is not None else None,
-            message=str(item["message"]), entity_ids=tuple(str(v) for v in item.get("entity_ids", ())),
-            relation_ids=tuple(str(v) for v in item.get("relation_ids", ())),
-        )
-        for item in marker.get("diagnostics", ())
-        if isinstance(item, dict)
-    )
+    diagnostics = marker_diagnostics(marker, tenant_id=tenant, generation_id=generation)
     graph = SemanticGraphProjection(
         schema_version=SEMANTIC_GRAPH_SCHEMA_VERSION,
         graph_id=str(marker["graph_id"]),
@@ -280,17 +274,19 @@ def load_graph(conn: sqlite3.Connection, tenant: str) -> SemanticGraphProjection
     return graph if graph.fingerprint == marker.get("graph_fingerprint") else None
 
 
-def graph_of(conn: sqlite3.Connection, tenant: str) -> SemanticGraphProjection:
-    """The stored graph, else one built in memory from the file's chunks and not stored.
+def graph_of(conn: sqlite3.Connection, tenant: str, chunks: Sequence[Chunk]) -> SemanticGraphProjection:
+    """The stored graph, else one built in memory from `chunks`, every chunk of the file as the
+    caller read it on `conn`, and not stored.
 
     For a reader holding a read-only connection (the dashboard), which cannot write the graph but
-    must not draw a missing one as an empty corpus.
+    must not draw a missing one as an empty corpus. Only the vectors are read again, for the
+    fingerprint: the caller has the text already (CCA PERF-003).
     """
     loaded = load_graph(conn, tenant)
     if loaded is not None:
         return loaded
-    from recall.lite.calibration import corpus_digest
+    from recall.lite.store import corpus_fingerprint_of
 
-    rows = conn.execute("SELECT id, source, text, metadata, embedding FROM chunks").fetchall()
-    chunks = [Chunk(id=row[0], source=row[1], text=row[2], metadata=json.loads(row[3]) or {}) for row in rows]
-    return build_graph(chunks, tenant=tenant, corpus_fingerprint=corpus_digest([(r[0], r[2], r[4]) for r in rows]))
+    vectors = dict(conn.execute("SELECT id, embedding FROM chunks").fetchall())
+    fingerprint = corpus_fingerprint_of((c.id, c.text, vectors[c.id]) for c in chunks)
+    return build_graph(chunks, tenant=tenant, corpus_fingerprint=fingerprint)
