@@ -180,14 +180,14 @@ class LiteAutoRefresher:
                 # A switch made while no memo changed starts no refresh, so it is asked here, a
                 # meta read (CCA ENV-002).
                 refusal = embedder_refusal(self._store, self._embedder, self._env)
-                with self._lock:
-                    self._failure = refusal
-                if refusal is not None or not self._rescue_stale():
-                    return
                 # The memory changed without its folder (a forget, or a person's `recall index`)
                 # and no artifact was built for it, so every unscoped search refuses until a
-                # refresh builds one.
+                # refresh builds one. While that refresh is failing, its failure is kept.
+                stale = refusal is None and self._rescue_stale()
                 with self._lock:
+                    if not stale:
+                        self._failure = refusal
+                        return
                     if now < self._retry_at:
                         return
                     self._pending = current

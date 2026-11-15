@@ -10,6 +10,12 @@ Invariants and the failure each one catches:
   PYTHONSAFEPATH=1, and never PATH.
 - E3 a memory folder that does not exist is refused by name, before any store is created.
 - E4 setup says to add `.recall/` to .gitignore unless it is already there.
+- E5 setup turns the atomic rescue on (owner decision 2026-11-15): the server is registered with
+  `RECALL_ATOMIC_RESCUE_MODE=active` and a root beside the store, and the artifact its first search
+  needs exists when setup returns.
+- E6 a mode set in setup's shell (`off`) is registered as it is, and nothing is built.
+- E7 without the `atomic` packages the rescue is not registered, and the report says how to add it.
+- E8 a mode setup's shell sets that the server would refuse to start on is refused before any write.
 
 Red proof, 2026-10-08, each mutation alone, failing in its intended assertion (JUnit XML), then
 restored byte for byte and green:
@@ -20,6 +26,13 @@ restored byte for byte and green:
 The handshake behind E2 (the registered server, started with exactly its registered env, listing
 21 tools) was run by hand on Windows the same day; CI cannot repeat it meaningfully, because an
 editable install there does not live in a user site directory.
+
+E5 to E7, run on VPS2 on 2026-11-15, each mutation alone of `recall/lite/setup.py`, red in its own
+assertion, then restored and green: `local_env.update(atomic_env)` removed (E5: "setup did not
+register the atomic rescue as active"); `rescue_env=` not passed to the setup refresh (E5: "setup
+built no artifact"); the shell's mode ignored (E6: "setup overrode the mode the shell set"); the
+package check made `if False:` (E7: "setup turned the rescue on without its packages"). E8 is red
+with the mode check removed: setup builds the store and raises nothing, "DID NOT RAISE ValueError".
 """
 
 from __future__ import annotations
@@ -163,3 +176,12 @@ def test_without_the_atomic_packages_setup_leaves_the_rescue_off(tmp_path: Path,
     assert isinstance(env, dict)
     assert "RECALL_ATOMIC_RESCUE_MODE" not in env, "setup turned the rescue on without its packages"
     assert 'recall-rag[atomic]' in report.atomic, report.atomic
+
+
+def test_an_unknown_mode_in_the_shell_is_refused_before_anything_is_written(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """E8: registered, it would stop the server from starting, which a client shows as no tools."""
+    _blank_rescue_environment(monkeypatch)
+    monkeypatch.setenv("RECALL_ATOMIC_RESCUE_MODE", "activ")
+    with pytest.raises(ValueError, match="RECALL_ATOMIC_RESCUE_MODE"):
+        _setup(tmp_path)
+    assert not (tmp_path / "project" / ".recall").exists(), "setup wrote a store before refusing the mode"

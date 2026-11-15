@@ -42,6 +42,13 @@ Added by the deferred pass:
 - A22 a build does not reload the artifact it has just published (CCA PERF-004).
 - A23 a loaded parent scores bit for bit as dense search does (CCA NUM-001).
 
+Added when `recall setup --lite` turned the rescue on by default (owner decision 2026-11-15):
+- A25 a refresh run without the rescue's settings (a person's `recall lite refresh`) does not let a
+  later refresh with them skip the unchanged folder, and one that built does.
+- A26 the MCP server refreshes when the memory changed without its folder (a person's `recall
+  index`, a forget), so the artifact for the memory as it is gets built.
+- A27 while that refresh fails, its warning survives the next check inside the retry backoff.
+
 Red proof: A1 to A6 in the pull request that added this file (mutations, test node ids and the
 failing assertion of each). A7 to A14 in the commit that added them: each run against that
 commit's parent, `5a10e6e03`, and failing in its own assertion, except the two below, recorded
@@ -66,6 +73,16 @@ build or from `recall_mcp.generation_admin.run_calibration`'s call to it. The se
 A24, that `recall_calibration_run` passes the server's environment, is
 `tests/test_mcp_tool_authorization.py::test_recall_calibration_run_hands_the_server_environment_to_the_build`,
 which fails against `6c866ade7` in its own assertion.
+
+A25 to A27, run on VPS2 on 2026-11-15, each red in its own assertion and green restored. A25
+(`test_an_unchanged_refresh_with_the_rescue_on_builds_what_one_without_it_did_not`) with the
+`last.get("rescued")` clause removed from `refresh`'s unchanged check: "an unchanged refresh with
+the rescue on skipped a store with no artifact". A26
+(`test_the_server_rebuilds_when_the_memory_changes_without_its_folder`) with
+`LiteAutoRefresher._rescue_stale` returning False: "the server did not rebuild the artifact after
+the memory changed without its folder". A27 (`test_a_failing_rebuild_keeps_its_warning_until_the_retry`)
+against `7ac431ece`, whose check cleared `_failure` before the retry: "the next check cleared the
+warning of a failing rebuild".
 """
 
 from __future__ import annotations
@@ -697,5 +714,41 @@ def test_the_server_rebuilds_when_the_memory_changes_without_its_folder(tmp_path
         assert _in_force(store, root).is_file(), (
             "the server did not rebuild the artifact after the memory changed without its folder"
         )
+    finally:
+        refresher.stop()
+
+
+def test_a_failing_rebuild_keeps_its_warning_until_the_retry(tmp_path: Path, monkeypatch) -> None:
+    """A27: the warning that tells the agent search is refusing must outlive the next check."""
+    from recall.lite.calibration import wait_for_refit
+    from recall_mcp.lite_refresh import LiteAutoRefresher
+
+    _blank_rescue_environment(monkeypatch)
+    root = tmp_path / "atomic"
+    memos = _corpus(tmp_path)
+    store = LiteStore(tmp_path / "memory.db", dim=DIM)
+    embedder = ContentWordEmbedder()
+    now = [1000.0]
+    refresher = LiteAutoRefresher(
+        store, embedder, [memos], interval_s=30, wait_s=120, clock=lambda: now[0], env=_env(root)
+    )
+    try:
+        refresher.before_retrieval()
+        wait_for_refit(store)
+        other = tmp_path / "other"
+        other.mkdir()
+        (other / "elsewhere.md").write_text(" ".join(f"else{k:02d}" for k in range(40)) + "\n", encoding="utf-8")
+        Indexer(store, embedder, env={}).index_path(other)
+
+        def broken(*_args, **_kwargs):  # noqa: ANN002, ANN003, ANN202
+            raise AtomicRescueArtifactError("disk full")
+
+        monkeypatch.setattr(atomic, "ensure_rescue_artifact", broken)
+        now[0] += 31
+        refresher.before_retrieval()
+        assert refresher.warning() is not None and "disk full" in refresher.warning(), refresher.warning()
+        now[0] += 31  # inside the retry backoff
+        refresher.before_retrieval()
+        assert refresher.warning() is not None, "the next check cleared the warning of a failing rebuild"
     finally:
         refresher.stop()

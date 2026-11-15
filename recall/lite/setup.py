@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from recall._env import _ATOMIC_RESCUE_MODES
 from recall.lite import LITE_DSN_PREFIX, LiteStore
 
 if TYPE_CHECKING:
@@ -100,6 +101,9 @@ def _atomic_environment(path: Path) -> tuple[dict[str, str], str | None]:
         if any(importlib.util.find_spec(name) is None for name in ("numpy", "threadpoolctl")):
             return {}, 'atomic rescue is off: pip install "recall-rag[atomic]" and run setup again to turn it on'
         mode = "active"
+    if mode.lower() not in _ATOMIC_RESCUE_MODES:
+        # The server refuses to start on it, which a client shows as a server with no tools.
+        raise ValueError(f"RECALL_ATOMIC_RESCUE_MODE must be off, shadow, or active, not {mode!r}")
     values = {"RECALL_ATOMIC_RESCUE_MODE": mode}
     if mode.lower() == "active":
         values["RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT"] = root or str(path.with_name(path.name + ".atomic"))
