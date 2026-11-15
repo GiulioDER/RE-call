@@ -340,6 +340,24 @@ def test_lexical_ties_survive_an_ord_past_bigint(make_store, with_vector: bool) 
     assert got == ["m0", "w-big"]
 
 
+@requires_db
+@pytest.mark.parametrize("with_vector", [False, True], ids=["lexical", "lexical-with-vector"])
+def test_lexical_ties_with_one_file_and_ord_order_by_id_in_code_point_order(
+    make_store, with_vector: bool
+) -> None:
+    """The id, the last tie-break, sorts as Python sorts strings, not by the database collation.
+
+    The file term already orders `COLLATE "C"`; the id term did not, so under a linguistic
+    collation (the CI service's en_US.utf8 sorts case-insensitively first) the rows that tie on
+    file and ord came back in an order no Python comparison of their ids produces.
+
+    Red proof: recorded once CI has run this against the id term without `COLLATE "C"`.
+    """
+    ids = ["B-two", "a-one", "C-three", "b-four"]
+    assert sorted(ids) == ["B-two", "C-three", "a-one", "b-four"]
+    assert _tied_lexical_ids(make_store, dict.fromkeys(ids, 0), with_vector) == sorted(ids)
+
+
 # --- DEF-32 (DEPLOY-002): an unmigrated database says so, with the command that fixes it ----
 
 
