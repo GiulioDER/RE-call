@@ -605,10 +605,6 @@ def _refresh_locked(
                 report.skipped += stats.skipped
                 report.deleted += stats.deleted
         calibration = _calibrate(store, embedder, background_calibration)
-        from recall.lite.atomic import ensure_rescue_artifact
-
-        # After the calibration it names; None while the rescue is off (`recall.lite.atomic`).
-        atomic = ensure_rescue_artifact(store, embedder)
     except Exception as exc:  # BROAD-CATCH: fail-open  # recorded in the state file and returned
         _log.warning("lite refresh of %s failed: %s", db, exc)
         report.outcome, report.reason = Outcome.FAILED, f"{type(exc).__name__}: {exc}"
@@ -634,6 +630,19 @@ def _refresh_locked(
         store.record_embedder_spec(
             record_spec, profile=record_profile, model=str(embedder.name), dimension=int(embedder.dim)
         )
+    from recall.lite.atomic import ensure_rescue_artifact
+
+    try:
+        # After the calibration it names and the bookkeeping of the write it describes, so a
+        # failed build cannot skip either; None while the rescue is off (`recall.lite.atomic`).
+        atomic = ensure_rescue_artifact(store, embedder)
+    except Exception as exc:  # BROAD-CATCH: fail-closed  # FAILED is not a success, so the next refresh builds again
+        _log.warning("atomic rescue build for %s failed: %s", db, exc)
+        report.outcome, report.reason = Outcome.FAILED, f"atomic rescue: {type(exc).__name__}: {exc}"
+        # The failure may be the store's own, as above (CCA BUG-002).
+        with suppress(Exception):
+            report.chunks_total = store.count()
+        return _finish(db, roots, report, key_root=key_root)
     report.outcome = Outcome.REFRESHED
     report.reason = f"{current.count} file(s) checked in {time.monotonic() - started:.1f}s"
     report.calibration, report.calibration_reason = calibration.status.value, calibration.reason

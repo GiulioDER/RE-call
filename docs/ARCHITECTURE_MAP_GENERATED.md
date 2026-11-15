@@ -62,7 +62,7 @@ Cross package edges: 397
 |---:|---|
 | 61 | `recall_mcp.server` |
 | 59 | `recall_mcp.service` |
-| 29 | `recall.cli_commands.index_search` |
+| 30 | `recall.cli_commands.index_search` |
 | 27 | `recall.generations` |
 | 23 | `recall.index` |
 | 23 | `recall_mcp.indexing` |
@@ -544,7 +544,7 @@ They are observations, not automatic failures.
 | `recall.cli_commands.generation_cmd` | 11 | 143 |
 | `recall.cli_commands.graph_cmd` | 1 | 138 |
 | `recall.cli_commands.idempotency_cmd` | 2 | 40 |
-| `recall.cli_commands.index_search` | 29 | 152 |
+| `recall.cli_commands.index_search` | 30 | 152 |
 | `recall.cli_commands.lint_check` | 7 | 143 |
 | `recall.cli_commands.lite_cmd` | 9 | 167 |
 | `recall.cli_commands.manifest_cmd` | 4 | 139 |
@@ -669,7 +669,7 @@ They are observations, not automatic failures.
 | `recall.lint` | 5 | 27 |
 | `recall.lite` | 2 | 137 |
 | `recall.lite.assistant_memos` | 7 | 137 |
-| `recall.lite.atomic` | 7 | 137 |
+| `recall.lite.atomic` | 8 | 137 |
 | `recall.lite.calibration` | 12 | 137 |
 | `recall.lite.facts` | 9 | 137 |
 | `recall.lite.inspect` | 3 | 137 |

@@ -10,18 +10,40 @@
   gives it, and nothing for an id the store lacks.
 - A6 a build that loses the race to publish the same artifact (a refresh beside a background refit)
   accepts the winner's instead of failing its write.
+- A7 a build overtaken by a background refit (its own lane) leaves the refit's artifact, the one
+  the store now resolves, in place, and publishes nothing (CCA STAKES-001).
+- A8 a build that loses the race at the rename (not at the up-front check) accepts the winner;
+  A8b, a control: a publish that fails with no winner still fails (CCA STAKES-002).
+- A9 a refresh whose build fails still reconciles the stated facts of the write it follows, and
+  reports the failure (CCA STAKES-003).
+- A10 an artifact directory a removal left partly behind is rebuilt, not reported in force from
+  the process cache (CCA STAKES-004).
+- A10b the rebuild is not blocked by this process's own cached mapping of that matrix, which
+  Windows refuses to delete (CCA STAKES-004).
+- A11 a relative artifact root is refused by the builder and the search path (CCA STAKES-005).
+- A12 the artifact root carries a `.gitignore` of `*` (CCA SEC-001).
+- A13 `recall search` on a lite store resolves the tenant's rescue mode as the builder does (CCA
+  ENV-001).
+- A14 `recall_calibration_run` on a lite store builds the artifact its new fit names (CCA CODE-001).
 
-Red proof: recorded in the pull request that added this file (mutations, test node ids and the
-failing assertion of each).
+Red proof: A1 to A6 in the pull request that added this file (mutations, test node ids and the
+failing assertion of each). A7 to A14 in the commit that added them: each run against that
+commit's parent, `5a10e6e03`, and failing in its own assertion, except the two below, recorded
+there too. A8b is a control that passes on the parent by design; it is red with
+`if not manifest.is_file(): raise` removed from `ensure_rescue_artifact`. A10b is red with the
+`clear_atomic_rescue_artifact_cache()` call before the removal deleted.
 """
 
 from __future__ import annotations
 
+import errno
+import os
 from pathlib import Path
 
 import pytest
 
 from recall.atomic_rescue import (
+    AtomicRescueArtifactError,
     clear_atomic_rescue_artifact_cache,
     load_atomic_rescue_artifact,
     select_atomic_rescue,
@@ -209,3 +231,205 @@ def test_a_build_that_loses_the_race_to_publish_accepts_the_winner(tmp_path: Pat
     except FileExistsError:
         pytest.fail("a build that lost the race to publish failed its write")
     assert report is not None and report.manifest is not None and report.manifest.exists(), report
+
+
+def _certified(tmp_path: Path) -> tuple[LiteStore, ContentWordEmbedder]:
+    store = LiteStore(tmp_path / "memory.db", dim=DIM)
+    embedder = ContentWordEmbedder()
+    Indexer(store, embedder, env={}).index_path(_corpus(tmp_path))
+    assert ensure_calibrated(store, embedder).status is CalibrationStatus.CERTIFIED
+    return store, embedder
+
+
+def _in_force(store: LiteStore, root: Path) -> Path:
+    resolution = store.resolve_calibration()
+    assert resolution.artifact is not None
+    return manifest_path(root, store.lite_generation_id(), resolution.artifact.calibration_id)
+
+
+def test_a_build_overtaken_by_a_refit_leaves_the_refit_artifact_in_force(tmp_path: Path, monkeypatch) -> None:
+    import recall.atomic_view_store as view_store
+    from recall.lite.calibration import auto_calibrate
+
+    root = tmp_path / "atomic"
+    env = _env(root)
+    store, embedder = _certified(tmp_path)
+    real = view_store.assemble
+    raced: list[bool] = []
+
+    def overtaken(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+        built = real(*args, **kwargs)
+        if not raced:
+            raced.append(True)
+            # A background refit stores a new fit and publishes its artifact meanwhile.
+            auto_calibrate(store, embedder)
+            refit = ensure_rescue_artifact(store, embedder, env=env)
+            assert refit is not None and refit.manifest is not None, refit
+        return built
+
+    monkeypatch.setattr(view_store, "assemble", overtaken)
+    report = ensure_rescue_artifact(store, embedder, env=env)
+    assert _in_force(store, root).is_file(), "a build overtaken by a refit removed the artifact the store now needs"
+    assert report is not None and report.manifest is None, report
+
+
+def test_a_build_that_loses_the_race_at_the_rename_accepts_the_winner(tmp_path: Path, monkeypatch) -> None:
+    store, embedder = _certified(tmp_path)
+    real = atomic.write_atomic_rescue_artifact
+
+    def collides(directory, **fields):  # noqa: ANN001, ANN003, ANN202
+        real(directory, **fields)  # the other build renamed its directory into place first
+        raise OSError(errno.ENOTEMPTY, "Directory not empty", str(directory))
+
+    monkeypatch.setattr(atomic, "write_atomic_rescue_artifact", collides)
+    try:
+        report = ensure_rescue_artifact(store, embedder, env=_env(tmp_path / "atomic"))
+    except OSError:
+        pytest.fail("a build that lost the race at the rename failed its write")
+    assert report is not None and report.manifest is not None and report.manifest.is_file(), report
+
+
+def test_a_publish_that_fails_with_no_winner_still_fails(tmp_path: Path, monkeypatch) -> None:
+    store, embedder = _certified(tmp_path)
+
+    def full(directory, **fields):  # noqa: ANN001, ANN003, ANN202
+        raise OSError(errno.ENOSPC, "No space left on device", str(directory))
+
+    monkeypatch.setattr(atomic, "write_atomic_rescue_artifact", full)
+    with pytest.raises(OSError, match="No space left"):
+        ensure_rescue_artifact(store, embedder, env=_env(tmp_path / "atomic"))
+
+
+def test_a_failed_build_still_records_the_write_it_follows(tmp_path: Path, monkeypatch) -> None:
+    import recall.stated_facts as stated_facts
+
+    for name, value in _env(tmp_path / "atomic").items():
+        monkeypatch.setenv(name, value)
+    store = LiteStore(tmp_path / "memory.db", dim=DIM)
+    reconciled: list[bool] = []
+    real = stated_facts.reconcile_stated_facts
+
+    def counted(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+        reconciled.append(True)
+        return real(*args, **kwargs)
+
+    def broken(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+        raise RuntimeError("view embedding failed")
+
+    monkeypatch.setattr(stated_facts, "reconcile_stated_facts", counted)
+    monkeypatch.setattr(atomic, "ensure_rescue_artifact", broken)
+    report = refresh(store, [_corpus(tmp_path)], ContentWordEmbedder())
+    assert reconciled, "a failed atomic rescue build skipped the stated facts of the write it follows"
+    assert report.outcome is Outcome.FAILED and "atomic rescue" in report.reason, report.to_dict()
+
+
+def test_a_partly_removed_artifact_is_rebuilt_not_reported_in_force(tmp_path: Path) -> None:
+    root = tmp_path / "atomic"
+    store, embedder = _certified(tmp_path)
+    first = ensure_rescue_artifact(store, embedder, env=_env(root))
+    assert first is not None and first.manifest is not None, first
+    # What a removal leaves on Windows while a server has the matrix mapped; this process's
+    # artifact cache still holds the key.
+    first.manifest.unlink()
+    (first.manifest.parent / "views.json").unlink()
+    again = ensure_rescue_artifact(store, embedder, env=_env(root))
+    assert again is not None
+    assert first.manifest.is_file(), f"a partly removed artifact was reported {again.reason!r} without its manifest"
+
+
+def test_a_relative_artifact_root_is_refused(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    store, embedder = _certified(tmp_path)
+    with pytest.raises(AtomicRescueArtifactError, match="absolute"):
+        ensure_rescue_artifact(store, embedder, env=_env(Path("relative-root")))
+    assert not (tmp_path / "relative-root").exists(), "a relative root was built under the working directory"
+    with pytest.raises(AtomicRescueArtifactError, match="absolute"):
+        store.atomic_rescue_manifest("relative-root", store.lite_generation_id(), "cal_0")
+
+
+def test_the_artifact_root_ignores_itself(tmp_path: Path) -> None:
+    root = tmp_path / "atomic"
+    store, embedder = _certified(tmp_path)
+    ensure_rescue_artifact(store, embedder, env=_env(root))
+    ignore = root / ".gitignore"
+    assert ignore.is_file() and ignore.read_text(encoding="utf-8").splitlines()[-1] == "*", (
+        "the artifact root, which holds memo-derived vectors and sources, is not ignored by git"
+    )
+
+
+def test_the_cli_search_resolves_the_tenant_rescue_mode_as_the_builder_does(tmp_path: Path, monkeypatch) -> None:
+    from recall.cli_commands import index_search
+    from tests.lite_cli_support import run_cli
+
+    for name in ("RECALL_ENV", "RECALL_INDEX_MODE", "RECALL_SERVING_DSN", "RECALL_DSN", "RECALL_TRUST_MODE"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("RECALL_EMBED_CACHE", "off")
+    memos = tmp_path / "mem"
+    memos.mkdir()
+    (memos / "rate.md").write_text("# Rate limit\n\nThe public API rate limit is 100 per second.\n", encoding="utf-8")
+    base = ["--embedder", "hashing", "--dsn", "sqlite:///" + (tmp_path / "store" / "memory.db").as_posix()]
+    indexed = run_cli([*base, "index", str(memos)])
+    assert "indexed" in indexed, indexed
+    monkeypatch.setenv("RECALL_ATOMIC_RESCUE_MODE", "active")
+    monkeypatch.setenv("RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT", str(tmp_path / "atomic"))
+    monkeypatch.setenv("RECALL_ATOMIC_RESCUE_MODE_BY_TENANT", "default:off")
+    seen: dict[str, object] = {}
+
+    def captured(store, embedder, query, **kwargs):  # noqa: ANN001, ANN003, ANN202
+        seen["env"] = kwargs.get("env")
+        raise SystemExit("search captured")
+
+    monkeypatch.setattr(index_search, "trusted_search", captured)
+    out = run_cli([*base, "search", "rate limit"])
+    assert "search captured" in out, out
+    assert atomic.configured_root("default") is None, "the fixture no longer turns the tenant off for the builder"
+    searched = seen["env"] if seen["env"] is not None else os.environ
+    assert searched.get("RECALL_ATOMIC_RESCUE_MODE") == "off", (  # type: ignore[union-attr]
+        "the CLI search ignored the tenant's rescue mode the builder applies"
+    )
+
+
+def test_a_calibration_run_builds_the_artifact_its_fit_names(tmp_path: Path, monkeypatch) -> None:
+    from recall.lite.calibration import run_report
+
+    root = tmp_path / "atomic"
+    for name, value in _env(root).items():
+        monkeypatch.setenv(name, value)
+    store, embedder = _certified(tmp_path)
+    before = store.resolve_calibration().artifact
+    run_report(store, embedder)
+    after = store.resolve_calibration().artifact
+    assert before is not None and after is not None and after.calibration_id != before.calibration_id
+    assert _in_force(store, root).is_file(), "a calibration run stored a fit with no atomic rescue artifact"
+
+
+def test_the_rebuild_is_not_blocked_by_this_process_own_cached_mapping(tmp_path: Path, monkeypatch) -> None:
+    import shutil
+
+    import recall.atomic_rescue as rescue
+
+    root = tmp_path / "atomic"
+    store, embedder = _certified(tmp_path)
+    first = ensure_rescue_artifact(store, embedder, env=_env(root))
+    assert first is not None and first.manifest is not None, first
+    manifest = first.manifest
+    real = shutil.rmtree
+
+    def windows(path, ignore_errors=False, *args, **kwargs):  # noqa: ANN001, ANN002, ANN003, ANN202
+        # Windows refuses to delete a matrix a cached artifact of this process still maps.
+        if (Path(path) / "manifest.json").resolve() in rescue._ARTIFACT_CACHE:
+            for entry in Path(path).iterdir():
+                if entry.name != "matrix.npy":
+                    entry.unlink()
+            if not ignore_errors:
+                raise PermissionError(f"{path}/matrix.npy is mapped")
+            return None
+        return real(path, ignore_errors, *args, **kwargs)
+
+    monkeypatch.setattr(atomic.shutil, "rmtree", windows)
+    manifest.unlink()  # what an earlier removal left of this key, which now comes back into force
+    try:
+        again = ensure_rescue_artifact(store, embedder, env=_env(root))
+    except AtomicRescueArtifactError as exc:
+        pytest.fail(f"the rebuild was blocked by this process's own cached mapping: {exc}")
+    assert again is not None and manifest.is_file(), f"no artifact was rebuilt: {again}"
