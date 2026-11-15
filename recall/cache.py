@@ -43,6 +43,15 @@ _SWEEP_COUNTER = "bytes_since_sweep"
 #: its first write rather than after another sweep interval of growth. Any value at or above
 #: every possible interval does it.
 _SWEEP_DUE = 1 << 62
+#: Chunk metadata key for the digest of the text a chunk was EMBEDDED from, written only when that
+#: text differs from the chunk's own (a contextual profile prefixes a title or section). A forget
+#: sees the chunk rows, never the embedding text, so this is how it finds those cache entries.
+EMBEDDING_TEXT_DIGEST_KEY = "embedding_text_sha256"
+
+
+def text_digest(text: str) -> str:
+    """The digest an entry's `text_sha256` column holds: what a forget erases cache entries by."""
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
 def cache_key(
@@ -247,10 +256,8 @@ class EmbeddingCache:
                 return None
         return None
 
-    def _has_used_at(self) -> bool:
-        return any(
-            row[1] == "used_at" for row in self._conn.execute("PRAGMA table_info(embeddings)")
-        )
+    def _has_column(self, name: str) -> bool:
+        return any(row[1] == name for row in self._conn.execute("PRAGMA table_info(embeddings)"))
 
     def _migrate(self) -> None:
         """Add `used_at` and its index to a file that lacks them, safely under concurrent opens.
@@ -265,10 +272,10 @@ class EmbeddingCache:
         call (`recall_aml.embedding_lock.CachedEmbedder`) open on every hit, and a read-only file
         must still open to serve its reads.
         """
-        if not self._has_used_at():
+        if not self._has_column("used_at"):
             self._conn.execute("BEGIN IMMEDIATE")
             try:
-                if not self._has_used_at():
+                if not self._has_column("used_at"):
                     self._conn.execute("ALTER TABLE embeddings ADD COLUMN used_at REAL")
                 self._conn.commit()
             except BaseException:
@@ -276,6 +283,24 @@ class EmbeddingCache:
                     self._conn.rollback()
                 raise
         self._conn.execute("CREATE INDEX IF NOT EXISTS embeddings_used_at ON embeddings (used_at)")
+        if self._has_column("text_sha256"):
+            return
+        # The digest of the embedded text, so a forget can erase a text's entries under every
+        # embedder identity (`erase_digests`); the key alone is a one-way hash that names no text.
+        # A file that cannot take it (a read-only cache from an older recall) still serves reads,
+        # and is not written: a row without the digest is one no forget could find.
+        try:
+            self._conn.execute("BEGIN IMMEDIATE")
+            if not self._has_column("text_sha256"):
+                self._conn.execute("ALTER TABLE embeddings ADD COLUMN text_sha256 TEXT")
+            self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS embeddings_text_sha256 ON embeddings (text_sha256)"
+            )
+            self._conn.commit()
+        except sqlite3.Error as exc:
+            with suppress(sqlite3.Error):
+                self._conn.rollback()
+            self._stop_writing(exc)
 
     def _ensure_sweep_counter(self) -> None:
         """Create the file's bytes-since-sweep counter, which is what makes the cap bind.
@@ -398,8 +423,14 @@ class EmbeddingCache:
     def put(self, key: str, vec: list[float]) -> None:
         self.put_many([(key, vec)])
 
-    def put_many(self, items: list[tuple[str, list[float]]]) -> None:
+    def put_many(
+        self, items: list[tuple[str, list[float]]], *, texts: list[str] | None = None
+    ) -> None:
         """Write many vectors in ONE transaction, then enforce the size cap.
+
+        ``texts`` are the texts the vectors were embedded from, aligned with ``items``; their
+        digests are what `erase_digests` finds them by. A row written without one is never erased
+        by a forget, only by eviction.
 
         One commit per vector was the previous behaviour, and that is an fsync per vector: on a
         corpus of any size a cache written that way can cost more than the local embedding it
@@ -412,12 +443,18 @@ class EmbeddingCache:
         if self._degraded or self._writes_disabled or not items:
             return
         now = time.time()
-        rows = [(key, self._encode(vec), now) for key, vec in items]
+        digests = [text_digest(text) for text in texts] if texts is not None else [None] * len(items)
+        rows = [
+            (key, self._encode(vec), now, digest)
+            for (key, vec), digest in zip(items, digests, strict=True)
+        ]
         written = sum(len(row[1]) for row in rows)
         sweep_due = False
         try:
             self._conn.executemany(
-                "INSERT OR REPLACE INTO embeddings (key, vec, used_at) VALUES (?, ?, ?)", rows
+                "INSERT OR REPLACE INTO embeddings (key, vec, used_at, text_sha256) "
+                "VALUES (?, ?, ?, ?)",
+                rows,
             )
             if self._max_bytes > 0:
                 self._conn.execute(
@@ -494,6 +531,35 @@ class EmbeddingCache:
         self._conn.commit()
         _log.info("embedding cache evicted %d entries to stay under its size cap", len(victims))
 
+    def erase_digests(self, digests: set[str]) -> int:
+        """Delete every entry embedded from a text with one of these digests, and return how many.
+
+        Every embedder identity, purpose and width at once, since the digest is of the text alone.
+        `secure_delete` zeroes the freed cells, and a TRUNCATE checkpoint copies those pages over
+        the old ones and empties the write-ahead log, as `LiteStore.erasing` does for the store:
+        a plain DELETE leaves the vector's bytes in a free page until something reuses it.
+
+        Raises on failure, rather than degrading as a read does: the caller is a forget, which
+        must report that the vectors are still here.
+        """
+        if not digests:
+            return 0
+        prior = int(self._conn.execute("PRAGMA secure_delete").fetchone()[0])
+        self._conn.execute("PRAGMA secure_delete = ON")
+        try:
+            removed = self._conn.executemany(
+                "DELETE FROM embeddings WHERE text_sha256 = ?", [(d,) for d in sorted(digests)]
+            ).rowcount
+            self._conn.commit()
+        except BaseException:
+            with suppress(sqlite3.Error):
+                self._conn.rollback()
+            raise
+        finally:
+            self._conn.execute(f"PRAGMA secure_delete = {prior}")
+        self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        return removed
+
     def close(self) -> None:
         self._conn.close()
 
@@ -502,6 +568,19 @@ class EmbeddingCache:
 
     def __exit__(self, *exc: object) -> None:
         self.close()
+
+
+def erase_cached_digests(digests: set[str]) -> int:
+    """Erase these texts' entries from the shared cache; how many went, 0 when it is off or absent.
+
+    The cache `RECALL_EMBED_CACHE` names in THIS process, which is the one this process's indexing
+    wrote. An absent file is not created, and a failure raises (`EmbeddingCache.erase_digests`).
+    """
+    path = default_cache_path()
+    if not digests or path is None or not path.exists():
+        return 0
+    with EmbeddingCache(path) as cache:
+        return cache.erase_digests(digests)
 
 
 def embed_with_cache(
@@ -558,7 +637,7 @@ def embed_with_cache(
                 f"embedder {embedder.name!r} returned {len(fresh)} vectors for "
                 f"{len(miss_keys)} texts; the Embedder contract is one vector per input"
             )
-        cache.put_many(list(zip(miss_keys, fresh)))
+        cache.put_many(list(zip(miss_keys, fresh)), texts=[missing[key] for key in miss_keys])
         cached.update(zip(miss_keys, fresh))
     results = [cached.get(key) for key in keys]
     filled = [r for r in results if r is not None]

@@ -26,6 +26,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   memo folder's memo of that id under the index root: with two agent folders numbering from
   `note-0001`, the corrected memo and the other folder's memo both read `ambiguous_supersession`.
   It now writes the target's path under the index root. Memos written before keep the bare form.
+- `recall forget` and `recall withdraw`, on Lite and PostgreSQL and through the MCP `recall_forget`
+  and `recall_withdraw` tools, left the forgotten text's vectors in the content-addressed embedding
+  cache, which is on by default, until least recently used eviction. They now erase them under every
+  embedder identity, with SQLite `secure_delete` and a truncating checkpoint, and report a cache
+  that could not be erased. Entries written by 0.15.0 and earlier record no digest of their text
+  and are not found; delete the cache file once to clear them.
 
 ## [0.15.0] (2026-11-08)
 
