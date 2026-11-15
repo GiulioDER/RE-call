@@ -278,12 +278,13 @@ def _lexical_tie_order(alias: str, source_col: str = "source", id_col: str = "id
     chunk ordinal are the same wherever the corpus lives; the id stays last for rows without them.
     The ordinal is `_ord_rank_sql`'s, the integer Python reads: a string "1" ranked 1 and -1
     ranked 0 under the old `'^[0-9]+$'` test, and its `::bigint` cast failed the whole search on
-    one ord past 2**63. `GenerationStore` passes its own column names: its chunk id also hashes the `source_uri`.
+    one ord past 2**63. The id orders `COLLATE "C"` like the file, so the last tie-break is
+    Python's code point order rather than the database's collation. `GenerationStore` passes its own column names: its chunk id also hashes the `source_uri`.
     """
     return (
         f"COALESCE({alias}metadata->>'file', {alias}{source_col}) COLLATE \"C\", "
         f"{_ord_rank_sql(alias)}, "
-        f"{alias}{id_col}"
+        f"{alias}{id_col} COLLATE \"C\""
     )
 
 
