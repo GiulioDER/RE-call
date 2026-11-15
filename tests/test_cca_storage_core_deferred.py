@@ -351,7 +351,9 @@ def test_lexical_ties_with_one_file_and_ord_order_by_id_in_code_point_order(
     collation (the CI service's en_US.utf8 sorts case-insensitively first) the rows that tie on
     file and ord came back in an order no Python comparison of their ids produces.
 
-    Red proof: recorded once CI has run this against the id term without `COLLATE "C"`.
+    Red proof, CI on PR 1311 (pgvector/pgvector:pg18, 2026-11-15): at ef139ad2f, the id term
+    without `COLLATE "C"`, both nodes failed this assertion with `['a-one', 'b-...o', 'C-three']`
+    (as pytest truncated it), the case-insensitive order. Green on the fix, 70e80d78b.
     """
     ids = ["B-two", "a-one", "C-three", "b-four"]
     assert sorted(ids) == ["B-two", "C-three", "a-one", "b-four"]
