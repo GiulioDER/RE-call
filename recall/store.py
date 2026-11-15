@@ -204,8 +204,7 @@ def _numeric_query_terms(text: str) -> list[str]:
 #: `-?[0-9]+` on a number's text is exactly that literal. numeric, not int, because Python ints
 #: are unbounded and `::int` raises past 2**31.
 _SOURCE_RANK_SQL = (
-    "(CASE WHEN jsonb_typeof(metadata->'ord') = 'number' "
-    "AND metadata->>'ord' ~ '^-?[0-9]+$' "
+    "(CASE WHEN metadata->>'ord' ~ '^-?[0-9]+$' "
     "THEN (metadata->>'ord')::numeric ELSE 0 END)"
 )
 
