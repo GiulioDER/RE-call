@@ -1077,6 +1077,26 @@ def test_no_base_ref_is_logged(env: Path, tmp_path: Path) -> None:
     assert "no base ref" in _log_text(env), "the scope shrank to the named files in silence"
 
 
+def test_no_origin_remote_is_skipped_with_its_reason(
+    repo: Path, env: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A repository with no `origin` (a private local-only clone, such as one merged locally) has no
+    `owner/name`, and every record is scoped to one, so none can apply. The hook leaves the prompt
+    unchanged and logs that reason, not the `git config --get` exit status.
+
+    Red proof (2026-11-15): against `195435c19`, where `_collect` let `git config --get
+    remote.origin.url`'s exit 1 escape as `CalledProcessError`, this fails on the reason assertion;
+    the log line read `bug-auditor: CalledProcessError: Command '[...'config', '--get',
+    'remote.origin.url']' returned non-zero exit status 1.; prompt left unchanged`. Seen 29 times in
+    a real local-only repository's log by 2026-11-13.
+    """
+    _git(repo, "remote", "remove", "origin")
+    assert _run(_payload(repo), monkeypatch, capsys) is None, "a brief was added with no repository"
+    log = _log_text(env)
+    assert "no origin remote, so no prior records can apply" in log, log
+    assert "CalledProcessError" not in log, log
+
+
 def test_memo_directory_precedence(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """D5 (CCA ENV-009): RECALL_AUDITOR_MEMOS, then CCA_BUGS_DIR read raw as CCA reads it, then
     the default."""
