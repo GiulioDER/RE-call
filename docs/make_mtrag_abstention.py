@@ -392,7 +392,7 @@ def build() -> str:
 
     Everything with an effect lives in here rather than at module scope, so that
     importing this file does not reach the network and does not write to the tracked
-    badge cache. docs/make_banner_graph.py keeps the same boundary.
+    badge cache.
     """
     return f"""<!doctype html>
 <!--

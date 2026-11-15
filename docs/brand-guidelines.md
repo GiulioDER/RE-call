@@ -22,9 +22,11 @@ The palette is intentionally restrained. The warm gold is the product signal. Gr
 
 ## Logo
 
-Use `docs/assets/re_call_logo.png` as the canonical transparent logo. The same asset is mirrored at `site/assets/re_call_logo.png` for GitHub Pages. Keep the logo on the `canvas` or `surface` colors, preserve its aspect ratio, and leave clear space around it. Do not recreate the wordmark with a different font or place it on a white rectangle.
+The standard RE-call logo is the gold circuit brain with the integrated RE-call wordmark. Use the transparent PNG at `docs/assets/re_call_logo.png` as the source for all sizes. Keep the full silhouette and leave clear space around it. Use the `canvas` or `surface` color behind the mark in RE-call interfaces. For profile pictures, keep the logo centered on a square so the full silhouette fits a circular crop.
 
 The README banner and GitHub social preview are both 1280 × 640. The logo is the visual anchor; copy stays short and readable at thumbnail size.
+
+The banner uses the homepage palette of near black (`#100D0F`), warm rose, ivory text, and muted gold circuitry. Use [banner.gif](banner.gif) where animation is supported. Use [banner.png](banner.png), the same first card, for forums, reduced motion, and social uploads. [social_card.png](social_card.png) is an identical compatibility copy for existing links. These files are the only approved banner artwork.
 
 ## Type and composition
 
@@ -36,4 +38,6 @@ Primary text must remain high contrast against `canvas` and `surface`. Gold is a
 
 ## Source files
 
-The generated graphics are written by `docs/make_brand_assets.py`. Run it after changing the logo or palette to rebuild `docs/banner.png` and `docs/social_card.png`.
+Run `python docs/make_brand_assets.py` after changing the canonical logo. It updates the GitHub Pages logo, desktop watermark, Claude plugin icon, README banner, and GitHub social preview.
+
+Run `python docs/make_readme_banner.py` to rebuild the GIF, static PNG, and identical social preview after changing the banner copy or design.
