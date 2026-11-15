@@ -163,3 +163,29 @@ def test_a_fit_for_the_bound_model_with_another_width_does_not_name_it_twice(tmp
     status, detail = _checks("sqlite:///" + db.as_posix())["calibration"]
     assert status == "warn", detail
     assert "does not match the store's" in detail and "bound to test-content-words" not in detail, detail
+
+
+def test_the_doctor_hashes_the_corpus_as_the_store_does(tmp_path: Path, monkeypatch) -> None:
+    """Invariant: `inspect_lite_file` computes the corpus fingerprint through
+    `recall.lite.store.corpus_fingerprint_of`, the store's own definition.
+
+    Failure mode: the doctor kept its own `corpus_digest` call, so a change to what the store
+    hashes would leave `recall doctor` comparing every calibration against a fingerprint search
+    never computes (CCA CODE-002, run 20261115T155439Z).
+
+    Red proof: this node against `recall/lite/inspect.py` as of 98ae7efba (`corpus_digest([...])`
+    inline) fails its "the doctor hashes the corpus its own way" assertion; green with the fix.
+    """
+    import recall.lite.store as lite_store
+    from recall.lite.calibration import corpus_digest
+    from recall.lite.inspect import inspect_lite_file
+
+    db = tmp_path / "store" / "memory.db"
+    with LiteStore(db, dim=DIM) as store:
+        _write_memos(tmp_path / "m", 3)
+        Indexer(store, ContentWordEmbedder(), env={}).index_path(tmp_path / "m")
+    monkeypatch.setattr(lite_store, "corpus_fingerprint_of", lambda rows: "changed-" + corpus_digest(list(rows)))
+    with LiteStore(db, dim=DIM) as store:
+        expected = store.corpus_fingerprint()
+    assert expected.startswith("changed-"), "the store does not hash through corpus_fingerprint_of"
+    assert inspect_lite_file(db).fingerprint == expected, "the doctor hashes the corpus its own way"

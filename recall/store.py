@@ -2778,8 +2778,8 @@ class PgVectorStore(SourceMutationMixin, SupersessionMixin, ReceiptsAuditMixin):
         ``_ord_rank_sql()`` and centre the seed's integer ord, else 0. Ordering by ordinal
         ascending before the LIMIT returned a long memo's first chunks for a seed deep inside it.
         ``ordinal`` keeps only what the resolver calls adjacent, an integer ord (``_integer_ord_sql``)
-        within 2 of the seed's, by the same key: a string ``"2"`` used to take a LIMIT slot the
-        resolver then dropped. Ties order by ``id COLLATE "C"``, which is Python's code point order for a UTF-8 database
+        within ``recall.types.ORDINAL_WINDOW`` of the seed's, by the same key: a string ``"2"``
+        used to take a LIMIT slot the resolver then dropped. Ties order by ``id COLLATE "C"``, which is Python's code point order for a UTF-8 database
         only; under another server encoding a tie at the cut can keep a different chunk.
         """
         if relation not in {"source", "ordinal"}:
@@ -2798,22 +2798,24 @@ class PgVectorStore(SourceMutationMixin, SupersessionMixin, ReceiptsAuditMixin):
             raise ValueError(f"seed chunk not found: {seed_chunk_id!r}")
         seed_id, seed_source, seed_text, seed_metadata = seed_row
         seed_metadata = seed_metadata or {}
-        seed_ord = seed_metadata.get("ord")
+        from recall.types import ORDINAL_WINDOW, metadata_ordinal
+
+        seed_ord = metadata_ordinal(seed_metadata)
 
         source_match = "source = %s"
         if relation == "source":
             where = source_match
-            centre = seed_ord if isinstance(seed_ord, int) and not isinstance(seed_ord, bool) else 0
-            params: tuple[object, ...] = (self._tenant, seed_source, seed_id, centre, max_items)
+            params: tuple[object, ...] = (self._tenant, seed_source, seed_id, seed_ord or 0, max_items)
             order = f"abs({_ord_rank_sql()} - %s), id COLLATE \"C\""
         else:
-            if not isinstance(seed_ord, int) or isinstance(seed_ord, bool):
+            if seed_ord is None:
                 return (
                     Chunk(seed_id, seed_source, seed_text, seed_metadata),
                     [],
                 )
+            # The resolver's window, not a copy of it, so the LIMIT cannot drift from it (CCA CODE-001).
             where = (
-                f"{source_match} AND {_integer_ord_sql()} AND abs({_ord_rank_sql()} - %s) <= 2"
+                f"{source_match} AND {_integer_ord_sql()} AND abs({_ord_rank_sql()} - %s) <= {ORDINAL_WINDOW}"
             )
             order = f"abs({_ord_rank_sql()} - %s), id COLLATE \"C\""
             params = (

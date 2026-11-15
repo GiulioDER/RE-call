@@ -1894,7 +1894,8 @@ class LiteStore:
         None for the other relations, which the shared resolver answers (`recall.related`).
         Ordered by the resolver's own key, distance from the seed's ordinal with an unnumbered row
         at 0, then id, so the LIMIT keeps the rows it would keep from a scan; for `ordinal` the
-        Postgres window, two either side. `PgVectorStore` ranks both relations by the same key.
+        Postgres window, `recall.related.ORDINAL_WINDOW` either
+        side. `PgVectorStore` ranks both relations by the same key.
         """
         if relation not in {"source", "ordinal"}:
             return None

@@ -134,9 +134,9 @@ def inspect_lite_file(path: str | Path) -> LiteFileReport:
         artifact_from_json,
         bound_from_meta,
         carry_forward,
-        corpus_digest,
         fitted_for_another_model,
     )
+    from recall.lite.store import corpus_fingerprint_of
 
     target = Path(path)
     if not target.exists():
@@ -166,8 +166,9 @@ def inspect_lite_file(path: str | Path) -> LiteFileReport:
     status, threshold, separability, calibrated_at, carried_delta = CalibrationStatus.MISSING, None, None, None, None
     stale_for_model: str | None = None
     # The store's identity since PR 896's audit: ids, texts AND stored vectors (restack fix; a
-    # pair digest here would never equal `LiteStore.corpus_fingerprint` and read as stale).
-    fingerprint = corpus_digest([(str(r[0]), str(r[1]), bytes(r[3])) for r in rows])
+    # pair digest here would never equal `LiteStore.corpus_fingerprint` and read as stale). The
+    # store's own definition, so the two cannot drift apart (CCA CODE-002).
+    fingerprint = corpus_fingerprint_of((str(r[0]), str(r[1]), bytes(r[3])) for r in rows)
     try:
         if latest is not None:
             try:

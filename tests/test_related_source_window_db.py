@@ -51,7 +51,7 @@ from pgvector.psycopg import register_vector
 from psycopg.types.json import Jsonb
 
 from recall.generation_store import GenerationStore
-from recall.related import _ordinal
+from recall.related import ORDINAL_WINDOW, _ordinal
 from recall.types import Chunk
 from tests.conftest import TEST_DSN, requires_db
 from tests.test_semantic_graph_db import graph_rows as graph_rows
@@ -175,7 +175,7 @@ def _resolver_adjacent(seed: Chunk, chunks: list[Chunk], k: int) -> list[str]:
     near = [
         c for c in chunks
         if c.source == seed.source and c.id != seed.id
-        and (ord_ := _ordinal(c)) is not None and abs(ord_ - centre) <= 2
+        and (ord_ := _ordinal(c)) is not None and abs(ord_ - centre) <= ORDINAL_WINDOW
     ]
     near.sort(key=lambda c: (abs((_ordinal(c) or 0) - centre), c.id))
     return [c.id for c in near[:k]]
