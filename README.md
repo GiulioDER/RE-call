@@ -5,10 +5,7 @@
 <!-- mcp-name: io.github.GiulioDER/re-call -->
 
 <p align="center">
-  <b>Memory that abstains when nothing clears its threshold.</b><br>
-  RE-call is agent memory in a local SQLite file or your own PostgreSQL with pgvector. Each result carries a verdict,
-  confidence, and provenance, while unsupported questions are refused instead of answered by the
-  nearest match.
+  <b>Memory that abstains when nothing clears its threshold.</b>
 </p>
 
 <p align="center">
@@ -17,405 +14,70 @@
   <a href="https://github.com/GiulioDER/RE-call/blob/master/LICENSE"><img src="https://img.shields.io/badge/License-AGPL--3.0-blue.svg" alt="License: AGPL-3.0"></a>
   <img src="https://img.shields.io/badge/python-3.11%2B-blue" alt="Python 3.11+">
   <a href="docs/LITE.md"><img src="https://img.shields.io/badge/Lite-SQLite%2C%20no%20server-003B57" alt="Lite: SQLite, no server"></a>
-  <img src="docs/postgresql-badge.svg" alt="PostgreSQL + pgvector">
-  <a href="https://mcprush.com/to/re-call-mcp-memory-server?ref=badge"><img src="https://mcprush.com/badge/re-call-mcp-memory-server/score.svg" alt="RE-call MCP Memory Server on mcprush"></a>
-  <a href="https://glama.ai/mcp/servers/GiulioDER/RE-call"><img src="https://glama.ai/mcp/servers/GiulioDER/RE-call/badges/score.svg" alt="RE-call MCP server"></a>
 </p>
 
-<p align="center">
-  <a href="#what-is-re-call">What it is</a>
-  &nbsp;·&nbsp;
-  <a href="docs/FOR_AGENTS.md">For agents</a>
-  &nbsp;·&nbsp;
-  <a href="#how-it-works">How it works</a>
-  &nbsp;·&nbsp;
-  <a href="#quickstart">Start with Lite</a>
-  &nbsp;·&nbsp;
-  <a href="#install-and-integrate">Install and integrate</a>
-</p>
-
-## What is RE-call
-
-RE-call is agent memory in a local SQLite file or your own PostgreSQL database. It indexes source
-documents and keeps validity, lineage, confidence, and provenance attached to every result.
-
-Vector search returns nearby text. RE-call also checks whether that text is current, supported, and
-trustworthy enough for the query. A superseded claim is marked `superseded`; a result that does not
-clear the calibrated trust gate becomes `ABSTAIN` with a reason. Declared supersession makes the current memory win
-over stale but similar memory.
-
-The default path uses local embeddings plus hybrid dense and keyword retrieval. PostgreSQL uses
-its full text search; Lite uses SQLite `FTS5`. It needs no memory-layer LLM call. Additional retrieval,
-reasoning, and structured-fact modules are optional.
-
-For the agent reading this, [RE-call for agents](docs/FOR_AGENTS.md) explains the experience loop
-and how to use persistent memory as a trustworthy past rather than an unverified scratchpad.
-
-## How it works
-
-On PostgreSQL, RE-call builds an immutable, calibrated generation and serves queries against that
-pinned generation. Lite binds calibration to its single-file corpus. Every search, including the
-reasoning and fact paths, goes through trusted search and the trust gate.
-
-<p align="center">
-  <a href="https://giulioder.github.io/RE-call/how-it-works.html">
-    <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/GiulioDER/RE-call/master/docs/diagrams/recall-overview-dark.png">
-      <img src="https://raw.githubusercontent.com/GiulioDER/RE-call/master/docs/diagrams/recall-overview-light.png" alt="RE-call architecture: entry points, the generation build, trusted retrieval against a pinned generation, and the trust gate">
-    </picture>
-  </a>
-</p>
-
-The diagram is interactive on the [project site](https://giulioder.github.io/RE-call/how-it-works.html):
-click any box to see the source lines it describes. A
-[step by step view of one `recall_search` call](https://giulioder.github.io/RE-call/diagrams/recall-search.html)
-follows a single search through its refusal, abstention and answer paths. Both are generated from
-the sources in [docs/diagrams](docs/diagrams/README.md).
-
-<details>
-<summary>Text version of the diagram, with each box linked to its file</summary>
-
-Solid arrows are the default path. Dashed arrows are opt in or reasoning only: the reranker, graph
-expansion, and the answer provider. Each box links to the file that implements it.
-
-```mermaid
-flowchart LR
-
-subgraph group_entry["Entry points"]
-  node_cli["recall CLI<br/>commands"]
-  node_mcp["MCP server<br/>tool handlers"]
-  node_sdk["Agent SDK<br/>in process"]
-end
-
-subgraph group_build["Generation build"]
-  node_manifest["Source manifest<br/>immutable input"]
-  node_generations["Generation manager<br/>build, validate, promote"]
-  node_parser["Parse and chunk<br/>documents to chunks"]
-  node_embedder["Embedder<br/>local or hosted API"]
-  node_graph_build["Semantic graph<br/>entities, relations"]
-  node_calibration["Calibration<br/>certified threshold"]
-end
-
-subgraph group_serve["Trusted retrieval"]
-  node_trusted_search["Trusted search<br/>query orchestrator"]
-  node_gen_store["Generation store<br/>pinned generation"]
-  node_retriever["Hybrid retriever<br/>dense, full text, RRF"]
-  node_reranker["Reranker<br/>opt in"]
-  node_trust_gate{{"Trust gate<br/>verdict or ABSTAIN"}}
-end
-
-subgraph group_reason["Reasoning"]
-  node_reasoner["Reasoning query<br/>evidence bundle, plan"]
-  node_graph_expansion["Graph expansion<br/>one hop, before trust"]
-  node_answer["Answer provider<br/>opt in LLM"]
-end
-
-subgraph group_facts["Provenance and facts"]
-  node_provenance["Provenance controller<br/>fact review"]
-  node_ledger["Fact ledger<br/>append only"]
-end
-
-node_caller(("Agent or user<br/>caller"))
-node_postgres[("PostgreSQL + pgvector<br/>generations, chunks, graph")]
-
-node_caller -->|"runs"| node_cli
-node_caller -->|"tool calls"| node_mcp
-node_caller -->|"imports"| node_sdk
-node_sdk -->|"reuses handlers"| node_mcp
-node_cli -->|"generation build"| node_generations
-node_mcp -->|"ingest uploads"| node_generations
-node_generations -->|"reads sources"| node_manifest
-node_generations -->|"parses, chunks"| node_parser
-node_generations -->|"embeds chunks"| node_embedder
-node_generations -->|"builds graph"| node_graph_build
-node_generations -->|"requires certified"| node_calibration
-node_generations -->|"writes generation"| node_postgres
-node_graph_build -->|"writes graph"| node_postgres
-node_cli -->|"calibrate, publish"| node_calibration
-node_calibration -->|"stores threshold"| node_postgres
-node_cli -->|"search"| node_trusted_search
-node_mcp -->|"search, evidence"| node_trusted_search
-node_trusted_search -->|"pins generation"| node_gen_store
-node_gen_store -->|"reads active"| node_postgres
-node_trusted_search -->|"retrieves"| node_retriever
-node_retriever -->|"embeds query"| node_embedder
-node_retriever -->|"dense, full text"| node_gen_store
-node_retriever -.->|"reorders"| node_reranker
-node_trusted_search -->|"evaluates"| node_trust_gate
-node_mcp -->|"reasoning query"| node_reasoner
-node_reasoner -->|"retrieves"| node_trusted_search
-node_trusted_search -.->|"expands pre trust"| node_graph_expansion
-node_graph_expansion -.->|"same generation graph"| node_postgres
-node_reasoner -.->|"cited answer"| node_answer
-node_mcp -->|"apply fact"| node_provenance
-node_provenance -->|"fresh search"| node_trusted_search
-node_provenance -->|"appends"| node_ledger
-node_ledger -->|"stores"| node_postgres
-
-click node_cli "https://github.com/GiulioDER/RE-call/blob/master/recall/cli.py"
-click node_mcp "https://github.com/GiulioDER/RE-call/tree/master/recall_mcp"
-click node_sdk "https://github.com/GiulioDER/RE-call/blob/master/recall_agent/memory.py"
-click node_manifest "https://github.com/GiulioDER/RE-call/blob/master/recall/manifest.py"
-click node_generations "https://github.com/GiulioDER/RE-call/blob/master/recall/generations.py"
-click node_parser "https://github.com/GiulioDER/RE-call/blob/master/recall/document.py"
-click node_embedder "https://github.com/GiulioDER/RE-call/blob/master/recall/embeddings.py"
-click node_graph_build "https://github.com/GiulioDER/RE-call/blob/master/recall/semantic_graph/_build.py"
-click node_calibration "https://github.com/GiulioDER/RE-call/blob/master/recall/calibration_v2.py"
-click node_trusted_search "https://github.com/GiulioDER/RE-call/blob/master/recall/trust.py"
-click node_gen_store "https://github.com/GiulioDER/RE-call/blob/master/recall/generation_store.py"
-click node_retriever "https://github.com/GiulioDER/RE-call/blob/master/recall/retriever.py"
-click node_reranker "https://github.com/GiulioDER/RE-call/blob/master/recall/rerank.py"
-click node_trust_gate "https://github.com/GiulioDER/RE-call/blob/master/recall/trust.py"
-click node_reasoner "https://github.com/GiulioDER/RE-call/blob/master/recall/reasoning.py"
-click node_graph_expansion "https://github.com/GiulioDER/RE-call/blob/master/recall_mcp/graph_expansion.py"
-click node_answer "https://github.com/GiulioDER/RE-call/blob/master/recall/answer_provider.py"
-click node_provenance "https://github.com/GiulioDER/RE-call/blob/master/recall/provenance_controller.py"
-click node_ledger "https://github.com/GiulioDER/RE-call/blob/master/recall/fact_ledger.py"
-click node_postgres "https://github.com/GiulioDER/RE-call/tree/master/recall/migrations"
-
-classDef toneNeutral fill:#f8fafc,stroke:#334155,stroke-width:1.5px,color:#0f172a
-classDef toneBlue fill:#dbeafe,stroke:#2563eb,stroke-width:1.5px,color:#172554
-classDef toneAmber fill:#fef3c7,stroke:#d97706,stroke-width:1.5px,color:#78350f
-classDef toneMint fill:#dcfce7,stroke:#16a34a,stroke-width:1.5px,color:#14532d
-classDef toneRose fill:#ffe4e6,stroke:#e11d48,stroke-width:1.5px,color:#881337
-classDef toneIndigo fill:#e0e7ff,stroke:#4f46e5,stroke-width:1.5px,color:#312e81
-classDef toneTeal fill:#ccfbf1,stroke:#0f766e,stroke-width:1.5px,color:#134e4a
-class node_cli,node_mcp,node_sdk,node_caller toneBlue
-class node_manifest,node_generations,node_parser,node_embedder,node_graph_build,node_calibration,node_postgres toneAmber
-class node_trusted_search,node_gen_store,node_retriever,node_reranker,node_trust_gate toneMint
-class node_reasoner,node_graph_expansion,node_answer toneRose
-class node_provenance,node_ledger toneIndigo
-```
-
-</details>
-
-Ordinary `recall search` follows the direct path. Explicit reasoning accepts `graph_expansion`:
-`auto` is the default and resolves to bounded one hop expansion for every nonempty query; `off`
-keeps direct retrieval only; `one-hop` forces the graph path. The CLI uses
-`--graph-expansion auto|off|one-hop`; the MCP tool uses `graph_expansion="auto"|"off"|"one_hop"`.
-Graph neighbors are generation bound, direct candidates remain first, and expanded candidates must
-clear the same trust boundary before they can support a cited answer.
-
-The opt in choices attach to different points in the system:
-
-| Optional capability | Where it fits | What it adds |
-|---|---|---|
-| Hosted embedder | Build and query | Remote model calls for embeddings. Query and corpus text may leave the environment. |
-| Learned sparse retrieval, SPLADE | Hybrid retrieval | A learned term weighted retrieval leg in addition to dense vectors and Postgres full text. |
-| Reranker | After candidate fusion | Reorders the fused candidates with a cross encoder. |
-| Evidence Graph version one | Explicit reasoning retrieval | Adds bounded, generation-bound structural neighbors to reasoning retrieval. See `graph_expansion` above for controls; graph candidates pass through trust before a cited answer can use them. |
-| Structured fact application | Evidence cards | Lets a reviewed fact pass through the provenance controller into the append only ledger. |
-
-For details, see the [architecture writeup](docs/WRITEUP.md), [provenance controller](docs/PROVENANCE_CONTROLLER.md), and [API reference](docs/API.md).
+RE-call is hybrid retrieval with rank fusion (dense vectors plus full-text search, fused by RRF),
+on SQLite or Postgres. On top of it: atomic rescue, which recovers a passage a single sentence
+points to, and a semantic graph built from the links in your memos. Around it sits a trust layer.
+It abstains below a threshold calibrated on your own store, ranks a superseded memo below its
+successor, flags memos that have expired or are not yet valid, and erases what you forget.
 
 ## Quickstart
 
-For one project's memory on your machine, start with **RE-call Lite**. It stores memory in
-`.recall/memory.db`, refreshes changed memos automatically, and needs no Docker or database server.
-
-**Install 0.15.0 or later:** Lite ships in the PyPI wheel from `0.15.0`; earlier wheels do not
-contain it. Follow the [Lite installation guide](docs/LITE.md#install-a-build-that-contains-lite)
-to create an environment and install the package, then run this from your own project with an
-existing folder of notes:
-
 ```bash
+python -m pip install "recall-rag[fastembed,mcp]>=0.15.0"
 recall setup --lite --memory ./notes
 ```
 
-Setup indexes the notes, attempts automatic calibration, and registers Claude Code for this project.
-Inspect the calibration and registration results, use the printed doctor command, and restart the
-client. Strict trust stays enabled; a corpus that cannot certify will refuse trusted answers.
-For other MCP clients, use [manual Lite wiring](docs/LITE.md#connect-another-client).
+Point it at a folder of Markdown notes. Setup indexes them into `.recall/memory.db`, tries to
+calibrate on them, and registers Claude Code for this project. Restart Claude Code and ask about
+something your notes answer.
 
-| Choose | Best fit | Maintenance |
-|---|---|---|
-| **Lite** | One project on one machine, using a local SQLite file | Automatic memo refresh and calibration; back up notes and the store. |
-| **PostgreSQL** | Shared serving, immutable generations, multiple tenants, or authentication | Manage the database, schema migrations, generations, calibration, and backups. |
+No Docker, no database server, no API key. The default embedder runs on your machine after a
+one-time model download. A folder too small to calibrate refuses trusted answers until it grows.
 
-### Try the PostgreSQL demo
+[Getting started](docs/GETTING_STARTED.md) covers Codex, other MCP clients, PostgreSQL, the Agent
+SDK and LangChain.
 
-Prerequisites: Python 3.11 or newer, Docker, and a Docker installation able to run PostgreSQL with
-pgvector.
+## What changes for your agent
 
-```bash
-pip install "recall-rag[fastembed]"
-recall quickstart
-```
+- Every search comes back trusted, degraded or abstained, with the reason.
+- A memo that declares `supersedes:` outranks the memo it replaces.
+- A memo past its validity date comes back flagged as expired.
+- On Lite, forget zeroes the deleted bytes in the store.
+- Storing a memory makes no LLM call.
+- Claude Code and Codex read and write the same store.
 
-The demo starts a throwaway database, indexes a small corpus included in the package, and runs
-three searches. It includes a normal answer, a stale claim that is returned as superseded, and a
-question that is refused. The demo uses development trust and changes no personal files.
+Claude Code loads the first 200 <!--@ citation-pending: Claude Code's documented auto memory load limit (code.claude.com/docs/en/memory, read 2026-11-14), not a RE-call measurement --> lines of its own memory index. RE-call searches every memo.
 
-Remove the demo database when finished:
+## Lite or PostgreSQL
 
-```bash
-recall quickstart --remove
-```
-
-Already have PostgreSQL with pgvector? Use `recall quickstart --existing-dsn <dsn>` instead. The
-demo is intentionally separate from a real install and is not calibrated for your data.
-
-## Install and integrate
-
-### Local, with no database server and no Docker
-
-Use the [Lite installation](docs/LITE.md#install-a-build-that-contains-lite), then run
-from the project whose notes you want to index:
-
-```bash
-recall setup --lite --memory ./notes
-```
-
-Setup creates `.recall/memory.db`, attempts automatic calibration, and registers Claude Code for
-this project. Use the printed doctor and dashboard commands (the dashboard reads the store
-read-only; accepting a review or saving an edit there writes the memo file), and add `.recall/` to
-`.gitignore`. For CLI or manual client wiring, add `--no-register`.
-
-The MCP server refreshes changed memos automatically. To check or refresh explicitly:
-
-```bash
-recall lite refresh --store .recall/memory.db --memory ./notes --check
-recall lite refresh --store .recall/memory.db --memory ./notes
-```
-
-Use the same memo root and embedder as setup. The CLI does not read the MCP client's environment;
-apply setup's printed settings before CLI searches or doctor. Strict trust remains enabled, and
-successful indexing alone does not guarantee certification.
-
-The [Lite guide](docs/LITE.md) covers other clients, source updates, backup and restore, refresh
-budgets, and queued writes. Keep the file on a local disk. Lite uses exact cosine search and
-SQLite keyword retrieval; results can differ from PostgreSQL. Generations, multi-tenant serving,
-and authentication require PostgreSQL. See [the API](docs/API.md) for trust and retrieval limits.
-
-### With PostgreSQL
-
-For your own corpus, provide PostgreSQL with pgvector and run the guided setup wizard after
-installing `recall-rag[fastembed]`:
-
-```bash
-recall setup
-```
-
-It applies the schema, asks for the embedder and retrieval options, indexes the corpus, offers
-calibration, and registers the selected agent integration. When the wizard asks whether to calibrate,
-use a labeled query file that refers to the corpus you are installing. Calibration fitted
-to the bundled demo is only an example, not a certification for your data. The schema uses an
-ordered SQL migration path and pre-tenancy tables are migrated in place.
-
-For Docker, an existing database, headless provisioning, manual calibration, and troubleshooting,
-see [docs/INSTALLATION.md](docs/INSTALLATION.md) and [docs/WIZARD.md](docs/WIZARD.md).
-
-### Choose an integration
-
-| Use case | Install | Next step |
-|---|---|---|
-| Lite CLI or MCP | [Install from source](docs/LITE.md#install-a-build-that-contains-lite) | Run `recall setup --lite --memory ./notes`; use `--no-register` for CLI or manual client wiring. |
-| PostgreSQL CLI and Python | `pip install "recall-rag[fastembed]"` | Run `recall setup`, then use `recall search` or the [Python API](docs/API.md). |
-| PostgreSQL MCP clients | `pip install "recall-rag[fastembed,mcp]"` | Run setup and follow [the MCP guide](docs/USING_WITH_CLAUDE.md). Host specific steps are below. |
-| Claude Agent SDK | `pip install "recall-rag[agent,fastembed]"` | Use the in process integration in [USING_WITH_AGENT_SDK.md](docs/USING_WITH_AGENT_SDK.md). |
-| LangChain or LlamaIndex | Install the matching extra | Use the adapters described in [API.md](docs/API.md). |
-| Windows desktop UI | `pip install "recall-rag[desktop]"` | Run `recall-install`; the current release does not ship a standalone Windows binary. See [the wizard guide](docs/WIZARD.md). |
-
-#### Claude Code
-
-Inside Claude Code, install the plugin after installing the Python package:
-
-```text
-/plugin marketplace add GiulioDER/RE-call
-/plugin install recall@re-call
-```
-
-The plugin supplies the MCP server, memory search skill, and lifecycle hooks. Lite setup already
-registers a project server; the plugin is optional. If you add it, configure its Database DSN with
-the SQLite DSN printed by setup and avoid enabling duplicate servers for the same memory. The
-plugin's server does not refresh memos by itself; run `recall lite refresh` yourself or keep the
-server setup registers.
-For PostgreSQL, run `recall setup` against the project and database Claude should use.
-Details are in [plugin/README.md](plugin/README.md).
-
-#### Codex
-
-For Lite, use [manual MCP wiring](docs/LITE.md#connect-another-client): `recall setup --lite` only
-registers Claude Code. For PostgreSQL, run `recall setup` from the project. When Codex is detected,
-setup installs the Codex MCP server,
-plugin bundle, memory and session skills, and hooks into the user configuration. Restart Codex afterward. The
-Codex and Claude Code integrations share the same memo format and trust layer. See
-[docs/CODEX_RECALL_INTEGRATION.md](docs/CODEX_RECALL_INTEGRATION.md).
-
-#### Claude Agent SDK
-
-The SDK integration runs the same tools in process and does not start an MCP server:
-
-```python
-from recall_agent import RecallAgentMemory
-
-with RecallAgentMemory.from_env() as memory:
-    options = memory.options()
-```
-
-See [docs/USING_WITH_AGENT_SDK.md](docs/USING_WITH_AGENT_SDK.md) for the complete example and
-write-tool boundaries.
-
-#### LangChain and LlamaIndex
-
-Both adapters use the same trusted retrieval path. If trust abstains, they return no document by
-default, and returned documents retain verdict, confidence, cosine, and supersession metadata.
-See [docs/API.md](docs/API.md) for the supported classes and methods.
-
-### If an install is not working
-
-```bash
-recall doctor
-```
-
-For Lite, first apply the environment printed by setup so doctor inspects the SQLite store.
-For PostgreSQL, the doctor checks the interpreter, console scripts, embedder, Docker, database,
-pgvector, schema,
-configured table and tenant, calibration, and agent registration. It changes nothing and prints the
-repair command for each problem.
-
-## Product surface
-
-| Area | What ships |
+| Choose | Best fit |
 |---|---|
-| Retrieval and memory | Dense vectors plus Postgres full text with hybrid RRF, validity, calibrated confidence, provenance, trust verdicts, immutable generations, incremental indexing, pruning, and source erasure. |
-| Structured facts | Citable evidence cards, provenance controller, append only fact ledger, current fact projection, and optional materialization outbox. |
-| Quality | Real pgvector integration tests, type checking, linting, dependency audit, and a claim gate that checks published evidence in CI. |
-
-RE-call is not a hosted memory service, dashboard, or automatic truth extractor. It does not rewrite
-corpus metadata from an agent's inference. Reasoning is opt in, citation constrained, and review
-aware. See [docs/PRODUCTION.md](docs/PRODUCTION.md) for deployment boundaries.
+| **Lite** | One project on one machine, in a local SQLite file. |
+| **PostgreSQL** | Shared serving, immutable generations, several tenants, or authentication. |
 
 ## Read next
 
 | Need | Document |
 |---|---|
-| Why an agent needs persistent, trusted memory | [docs/FOR_AGENTS.md](docs/FOR_AGENTS.md) |
-| Full documentation map | [docs/README.md](docs/README.md) |
-| Install and maintain Lite | [docs/LITE.md](docs/LITE.md) |
-| Install and provision PostgreSQL | [docs/INSTALLATION.md](docs/INSTALLATION.md), [docs/WIZARD.md](docs/WIZARD.md) |
-| Python, CLI, and MCP reference | [docs/API.md](docs/API.md) |
-| Trust, architecture, and provenance | [docs/WRITEUP.md](docs/WRITEUP.md), [docs/PROVENANCE_CONTROLLER.md](docs/PROVENANCE_CONTROLLER.md) |
-| Security and operations | [docs/AUTH.md](docs/AUTH.md), [docs/PRODUCTION.md](docs/PRODUCTION.md), [docs/OPERATING_MODES.md](docs/OPERATING_MODES.md) |
-| Measurements and limits | [docs/EVIDENCE.md](docs/EVIDENCE.md), [results/FINDINGS.md](results/FINDINGS.md) |
-| How it compares with other agent memory layers | [Comparison page](https://giulioder.github.io/RE-call/compare.html), [docs/PRIOR_ART.md](docs/PRIOR_ART.md) |
+| Install, integrations, the PostgreSQL demo | [docs/GETTING_STARTED.md](docs/GETTING_STARTED.md) |
+| Architecture and optional modules | [docs/HOW_IT_WORKS.md](docs/HOW_IT_WORKS.md) |
+| Lite in depth | [docs/LITE.md](docs/LITE.md) |
+| Python, CLI and MCP reference | [docs/API.md](docs/API.md) |
+| Measurements and limits | [docs/EVIDENCE.md](docs/EVIDENCE.md) |
+| Why an agent needs trusted memory | [docs/FOR_AGENTS.md](docs/FOR_AGENTS.md) |
+| Everything else | [docs/README.md](docs/README.md) |
 
-Published numbers are tied to committed artifacts, and the claim gate checks them in CI. Benchmark
-interpretation and limits belong in [docs/EVIDENCE.md](docs/EVIDENCE.md), not in this overview.
+Published numbers are tied to committed artifacts, and the claim gate checks them in CI.
 
 ## Citation
 
-If you describe RE-call in a paper, post, talk, or README of your own, cite the project and credit
-Giulio D'Erme. Use [CITATION.cff](CITATION.cff) as the canonical citation source.
+Cite the project and credit Giulio D'Erme. [CITATION.cff](CITATION.cff) is the canonical source.
 
 ## License
 
-RE-call is open source under the [GNU Affero General Public License v3.0](LICENSE) (AGPL-3.0).
-You may use, study, modify, and share it, commercially as well, on the AGPL's conditions: if you
-distribute RE-call or a work based on it, or let users interact with a modified version over a
-network, you must make the corresponding source available under the same license. When those
-conditions do not fit, for example a closed source product or a proprietary hosted service, a
-commercial license is available from the copyright holder. See
-[COMMERCIAL_LICENSE.md](COMMERCIAL_LICENSE.md) for the boundary between the two and for the terms
-of earlier releases, and preserve [NOTICE](NOTICE) when redistributing the software.
+Open source under the [GNU Affero General Public License v3.0](LICENSE) (AGPL-3.0). For a closed
+source product or a proprietary hosted service, a commercial license is available: see
+[COMMERCIAL_LICENSE.md](COMMERCIAL_LICENSE.md). Preserve [NOTICE](NOTICE) when redistributing.
 Contributions are accepted under the [Contributor License Agreement](CLA.md).

@@ -15,7 +15,9 @@ Lite ships in the PyPI wheel from `0.15.0`; earlier wheels do not contain it.
 
 | Document | Use it for |
 |---|---|
-| [../README.md](../README.md) | Product overview, setup, and integrations. |
+| [../README.md](../README.md) | Product overview and quickstart. |
+| [GETTING_STARTED.md](GETTING_STARTED.md) | Install, integrations, and the PostgreSQL demo. |
+| [HOW_IT_WORKS.md](HOW_IT_WORKS.md) | Architecture, optional modules, and what ships. |
 | [FOR_AGENTS.md](FOR_AGENTS.md) | Why agents need persistent, trusted memory and the experience loop for using it safely. |
 | [INSTALLATION.md](INSTALLATION.md) | Local SQLite and PostgreSQL installation, the wizard, headless provisioning, and integrations. |
 | [LITE.md](LITE.md) | Lite installation, client wiring, automatic refresh, software updates, backups, and troubleshooting. |
