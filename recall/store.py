@@ -198,16 +198,17 @@ def _numeric_query_terms(text: str) -> list[str]:
     return terms
 
 
-#: A chunk's rank for the bounded `source` relation: `recall.related._ordinal` in SQL. The JSON
-#: `ord` when it is an integer number, else 0, so a string "3", a boolean, a float and a missing
-#: ord all rank 0 there and here alike. Python reads a JSON integer literal back as int, and
-#: `-?[0-9]+` on a number's text is exactly that literal. numeric, not int, because Python ints
-#: are unbounded and `::int` raises past 2**31.
-_SOURCE_RANK_SQL = (
-    "(CASE WHEN jsonb_typeof(metadata->'ord') = 'number' "
-    "AND metadata->>'ord' ~ '^-?[0-9]+$' "
-    "THEN (metadata->>'ord')::numeric ELSE 0 END)"
+#: True when a chunk's JSON `ord` is one `recall.related._ordinal` accepts: an integer number,
+#: never a string "3", a boolean or a float. Python reads a JSON integer literal back as int, and
+#: `-?[0-9]+` on a number's text is exactly that literal.
+_INTEGER_ORD_SQL = (
+    "(jsonb_typeof(metadata->'ord') = 'number' AND metadata->>'ord' ~ '^-?[0-9]+$')"
 )
+#: A chunk's rank for the bounded `source` and `ordinal` relations: the integer ord, else 0, as
+#: `_ordinal(chunk) or 0` in the resolver. A CASE, because PostgreSQL does not promise to test an
+#: AND's predicate before casting. numeric, not int, because Python ints are unbounded and `::int`
+#: raises past 2**31.
+_ORD_RANK_SQL = f"(CASE WHEN {_INTEGER_ORD_SQL} THEN (metadata->>'ord')::numeric ELSE 0 END)"
 
 
 _T = TypeVar("_T")
@@ -2750,9 +2751,11 @@ class PgVectorStore(SourceMutationMixin, SupersessionMixin, ReceiptsAuditMixin):
 
         ``source`` keeps the ``max_items`` chunks that ``recall.related.trusted_related`` would
         rank first over the whole source, by its own key ``(abs(rank - centre), id)``: rank is
-        ``_SOURCE_RANK_SQL`` and centre the seed's integer ord, else 0. Ordering by ordinal
+        ``_ORD_RANK_SQL`` and centre the seed's integer ord, else 0. Ordering by ordinal
         ascending before the LIMIT returned a long memo's first chunks for a seed deep inside it.
-        Ties order by ``id COLLATE "C"``, which is Python's code point order for a UTF-8 database
+        ``ordinal`` keeps only what the resolver calls adjacent, an integer ord (``_INTEGER_ORD_SQL``)
+        within 2 of the seed's, by the same key: a string ``"2"`` used to take a LIMIT slot the
+        resolver then dropped. Ties order by ``id COLLATE "C"``, which is Python's code point order for a UTF-8 database
         only; under another server encoding a tie at the cut can keep a different chunk.
         """
         if relation not in {"source", "ordinal"}:
@@ -2778,7 +2781,7 @@ class PgVectorStore(SourceMutationMixin, SupersessionMixin, ReceiptsAuditMixin):
             where = source_match
             centre = seed_ord if isinstance(seed_ord, int) and not isinstance(seed_ord, bool) else 0
             params: tuple[object, ...] = (self._tenant, seed_source, seed_id, centre, max_items)
-            order = f"abs({_SOURCE_RANK_SQL} - %s), id COLLATE \"C\""
+            order = f"abs({_ORD_RANK_SQL} - %s), id COLLATE \"C\""
         else:
             if not isinstance(seed_ord, int) or isinstance(seed_ord, bool):
                 return (
@@ -2786,10 +2789,9 @@ class PgVectorStore(SourceMutationMixin, SupersessionMixin, ReceiptsAuditMixin):
                     [],
                 )
             where = (
-                f"{source_match} AND (metadata->>'ord') ~ '^[0-9]+$' "
-                "AND abs((metadata->>'ord')::int - %s) <= 2"
+                f"{source_match} AND {_INTEGER_ORD_SQL} AND abs({_ORD_RANK_SQL} - %s) <= 2"
             )
-            order = "abs((metadata->>'ord')::int - %s), id"
+            order = f"abs({_ORD_RANK_SQL} - %s), id COLLATE \"C\""
             params = (
                 self._tenant,
                 seed_source,

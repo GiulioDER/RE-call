@@ -38,7 +38,8 @@ from recall.store import (
     EdgeCandidates,
     PgVectorStore,
     SupersessionGraph,
-    _SOURCE_RANK_SQL,
+    _INTEGER_ORD_SQL,
+    _ORD_RANK_SQL,
     _first_write_sql,
     _lexical_tie_order,
     resolve_supersession_graph,
@@ -1086,7 +1087,7 @@ class GenerationStore(PgVectorStore):
         Production uses ``recall_chunks_v1`` where the corresponding columns are ``chunk_id`` and
         ``source_uri`` and every read must also be pinned to the active generation.
         Supersession remains on the generic path because it resolves authored lineage separately.
-        ``source`` ranks as the resolver does; ``PgVectorStore.related_chunks`` says how, and
+        ``source`` and ``ordinal`` rank as the resolver does; ``PgVectorStore.related_chunks`` says how, and
         where the tie order can differ.
         """
         if relation not in {"source", "ordinal"}:
@@ -1120,7 +1121,7 @@ class GenerationStore(PgVectorStore):
                 centre,
                 max_items,
             )
-            order = f"abs({_SOURCE_RANK_SQL} - %s), chunk_id COLLATE \"C\""
+            order = f"abs({_ORD_RANK_SQL} - %s), chunk_id COLLATE \"C\""
         else:
             if not isinstance(seed_ord, int) or isinstance(seed_ord, bool):
                 return (
@@ -1128,10 +1129,9 @@ class GenerationStore(PgVectorStore):
                     [],
                 )
             where = (
-                f"{source_match} AND (metadata->>'ord') ~ '^[0-9]+$' "
-                "AND abs((metadata->>'ord')::int - %s) <= 2"
+                f"{source_match} AND {_INTEGER_ORD_SQL} AND abs({_ORD_RANK_SQL} - %s) <= 2"
             )
-            order = "abs((metadata->>'ord')::int - %s), chunk_id"
+            order = f"abs({_ORD_RANK_SQL} - %s), chunk_id COLLATE \"C\""
             params = (
                 self._tenant,
                 generation_id,
