@@ -286,6 +286,80 @@ def test_lexical_ties_rank_the_same_wherever_the_corpus_lives(
     assert files_by_root[1] == files_by_root[0], files_by_root
 
 
+def _tied_lexical_ids(make_store, ords: dict[str, object], with_vector: bool) -> list[str]:
+    """Upsert one file's chunks whose text ties exactly on `ts_rank`, and search for them."""
+    from recall.types import Chunk
+
+    store = make_store(64)
+    chunks = [
+        Chunk(cid, "/abs/note.md", "museum trip", {"file": "note.md"} | ({} if o is None else {"ord": o}))
+        for cid, o in ords.items()
+    ]
+    vector = [1.0] + [0.0] * 63
+    store.upsert(chunks, [vector for _ in chunks])
+    hits = store.query_sparse("museum", len(chunks), vec=vector if with_vector else None)
+    return [hit.chunk.id for hit in hits]
+
+
+@requires_db
+@pytest.mark.parametrize("with_vector", [False, True], ids=["lexical", "lexical-with-vector"])
+def test_lexical_ties_rank_ords_as_python_reads_them(make_store, with_vector: bool) -> None:
+    """Within one file, tied rows order by the integer ord Python reads, else 0, then id.
+
+    `recall.related._ordinal` and `recall.records._sort_ordinal` read a string "1" as no ordinal
+    (0) and -1 as -1. The tie order read the text with `'^[0-9]+$'`, so "1" ranked 1 and -1
+    ranked 0, and which of these survived LIMIT k disagreed with every Python reader of the row.
+
+    Red proof, CI on PR 1311 (pgvector/pgvector:pg18, 2026-11-15): at 8f8e90e21, with
+    `_lexical_tie_order` still reading `'^[0-9]+$'` as bigint, both nodes failed this assertion
+    with `['b-neg', 'e-zero', ...]` where `['b-neg', 'a-str', ...]` was expected: the string "1"
+    ranked 1. Green on the fix, d383ccc9f.
+    """
+    from recall.related import _ordinal
+    from recall.types import Chunk
+
+    ords: dict[str, object] = {"a-str": "1", "b-neg": -1, "c-two": 2, "d-one": 1, "e-zero": 0}
+    python = sorted(ords, key=lambda cid: (_ordinal(Chunk(cid, "", "", {"ord": ords[cid]})) or 0, cid))
+    assert python == ["b-neg", "a-str", "e-zero", "d-one", "c-two"]
+    assert _tied_lexical_ids(make_store, ords, with_vector) == python
+
+
+@requires_db
+@pytest.mark.parametrize("with_vector", [False, True], ids=["lexical", "lexical-with-vector"])
+def test_lexical_ties_survive_an_ord_past_bigint(make_store, with_vector: bool) -> None:
+    """One matching row with an ord past 2**63 must not fail the whole search.
+
+    Its red is the query raising, which this test turns into its own failure on purpose: not
+    raising is the behaviour under test. Red proof, same CI run at 8f8e90e21: both nodes failed
+    on `value "100000000000000000000" is out of range for type bigint`. Green on d383ccc9f.
+    """
+    try:
+        got = _tied_lexical_ids(make_store, {"m0": 0, "w-big": 10**20}, with_vector)
+    except psycopg.errors.NumericValueOutOfRange as exc:
+        pytest.fail(f"the lexical leg raised on a large ord: {exc}")
+    assert got == ["m0", "w-big"]
+
+
+@requires_db
+@pytest.mark.parametrize("with_vector", [False, True], ids=["lexical", "lexical-with-vector"])
+def test_lexical_ties_with_one_file_and_ord_order_by_id_in_code_point_order(
+    make_store, with_vector: bool
+) -> None:
+    """The id, the last tie-break, sorts as Python sorts strings, not by the database collation.
+
+    The file term already orders `COLLATE "C"`; the id term did not, so under a linguistic
+    collation (the CI service's en_US.utf8 sorts case-insensitively first) the rows that tie on
+    file and ord came back in an order no Python comparison of their ids produces.
+
+    Red proof, CI on PR 1311 (pgvector/pgvector:pg18, 2026-11-15): at ef139ad2f, the id term
+    without `COLLATE "C"`, both nodes failed this assertion with `['a-one', 'b-...o', 'C-three']`
+    (as pytest truncated it), the case-insensitive order. Green on the fix, 70e80d78b.
+    """
+    ids = ["B-two", "a-one", "C-three", "b-four"]
+    assert sorted(ids) == ["B-two", "C-three", "a-one", "b-four"]
+    assert _tied_lexical_ids(make_store, dict.fromkeys(ids, 0), with_vector) == sorted(ids)
+
+
 # --- DEF-32 (DEPLOY-002): an unmigrated database says so, with the command that fixes it ----
 
 

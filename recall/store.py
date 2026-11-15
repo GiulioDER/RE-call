@@ -198,6 +198,28 @@ def _numeric_query_terms(text: str) -> list[str]:
     return terms
 
 
+def _integer_ord_sql(alias: str = "") -> str:
+    """True when a chunk's JSON `ord` is one `recall.related._ordinal` accepts.
+
+    An integer number, never a string "3", a boolean or a float. Python reads a JSON integer
+    literal back as int, and `-?[0-9]+` on a number's text is exactly that literal.
+    """
+    return (
+        f"(jsonb_typeof({alias}metadata->'ord') = 'number' "
+        f"AND {alias}metadata->>'ord' ~ '^-?[0-9]+$')"
+    )
+
+
+def _ord_rank_sql(alias: str = "") -> str:
+    """A chunk's integer ord, else 0: `_ordinal(chunk) or 0`, and `records._sort_ordinal`.
+
+    A CASE, because PostgreSQL does not promise to test an AND's predicate before casting.
+    numeric, not int or bigint, because Python ints are unbounded and a narrower cast raises on a
+    large ord, failing the whole query that orders by it.
+    """
+    return f"(CASE WHEN {_integer_ord_sql(alias)} THEN ({alias}metadata->>'ord')::numeric ELSE 0 END)"
+
+
 _T = TypeVar("_T")
 
 #: Wall time of one retrieval leg, in ms. ONE series with a `leg` label rather than two names,
@@ -254,13 +276,15 @@ def _lexical_tie_order(alias: str, source_col: str = "source", id_col: str = "id
     directory (every benchmark run indexes from a fresh temp dir) ranked its ties differently and
     LoCoMo top-20 lists stopped repeating between identical runs. The root-relative `file` and the
     chunk ordinal are the same wherever the corpus lives; the id stays last for rows without them.
-    `GenerationStore` passes its own column names: its chunk id also hashes the `source_uri`.
+    The ordinal is `_ord_rank_sql`'s, the integer Python reads: a string "1" ranked 1 and -1
+    ranked 0 under the old `'^[0-9]+$'` test, and its `::bigint` cast failed the whole search on
+    one ord past 2**63. The id orders `COLLATE "C"` like the file, so the last tie-break is
+    Python's code point order rather than the database's collation. `GenerationStore` passes its own column names: its chunk id also hashes the `source_uri`.
     """
     return (
         f"COALESCE({alias}metadata->>'file', {alias}{source_col}) COLLATE \"C\", "
-        f"CASE WHEN ({alias}metadata->>'ord') ~ '^[0-9]+$' "
-        f"THEN ({alias}metadata->>'ord')::bigint ELSE 0 END, "
-        f"{alias}{id_col}"
+        f"{_ord_rank_sql(alias)}, "
+        f"{alias}{id_col} COLLATE \"C\""
     )
 
 
@@ -2748,6 +2772,15 @@ class PgVectorStore(SourceMutationMixin, SupersessionMixin, ReceiptsAuditMixin):
         Supersession relations still use the shared lineage resolver because that relation must
         inspect every authored edge. Returning ``None`` for that relation keeps the generic
         fallback explicit while making the common source and ordinal paths bounded at the store.
+
+        ``source`` keeps the ``max_items`` chunks that ``recall.related.trusted_related`` would
+        rank first over the whole source, by its own key ``(abs(rank - centre), id)``: rank is
+        ``_ord_rank_sql()`` and centre the seed's integer ord, else 0. Ordering by ordinal
+        ascending before the LIMIT returned a long memo's first chunks for a seed deep inside it.
+        ``ordinal`` keeps only what the resolver calls adjacent, an integer ord (``_integer_ord_sql``)
+        within 2 of the seed's, by the same key: a string ``"2"`` used to take a LIMIT slot the
+        resolver then dropped. Ties order by ``id COLLATE "C"``, which is Python's code point order for a UTF-8 database
+        only; under another server encoding a tie at the cut can keep a different chunk.
         """
         if relation not in {"source", "ordinal"}:
             return None
@@ -2770,11 +2803,9 @@ class PgVectorStore(SourceMutationMixin, SupersessionMixin, ReceiptsAuditMixin):
         source_match = "source = %s"
         if relation == "source":
             where = source_match
-            params: tuple[object, ...] = (self._tenant, seed_source, seed_id, max_items)
-            order = (
-                "CASE WHEN metadata->>'ord' ~ '^[0-9]+$' "
-                "THEN (metadata->>'ord')::int END NULLS LAST, id"
-            )
+            centre = seed_ord if isinstance(seed_ord, int) and not isinstance(seed_ord, bool) else 0
+            params: tuple[object, ...] = (self._tenant, seed_source, seed_id, centre, max_items)
+            order = f"abs({_ord_rank_sql()} - %s), id COLLATE \"C\""
         else:
             if not isinstance(seed_ord, int) or isinstance(seed_ord, bool):
                 return (
@@ -2782,10 +2813,9 @@ class PgVectorStore(SourceMutationMixin, SupersessionMixin, ReceiptsAuditMixin):
                     [],
                 )
             where = (
-                f"{source_match} AND (metadata->>'ord') ~ '^[0-9]+$' "
-                "AND abs((metadata->>'ord')::int - %s) <= 2"
+                f"{source_match} AND {_integer_ord_sql()} AND abs({_ord_rank_sql()} - %s) <= 2"
             )
-            order = "abs((metadata->>'ord')::int - %s), id"
+            order = f"abs({_ord_rank_sql()} - %s), id COLLATE \"C\""
             params = (
                 self._tenant,
                 seed_source,

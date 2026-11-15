@@ -39,7 +39,9 @@ from recall.store import (
     PgVectorStore,
     SupersessionGraph,
     _first_write_sql,
+    _integer_ord_sql,
     _lexical_tie_order,
+    _ord_rank_sql,
     resolve_supersession_graph,
     supersession_rows_sql,
 )
@@ -1085,6 +1087,8 @@ class GenerationStore(PgVectorStore):
         Production uses ``recall_chunks_v1`` where the corresponding columns are ``chunk_id`` and
         ``source_uri`` and every read must also be pinned to the active generation.
         Supersession remains on the generic path because it resolves authored lineage separately.
+        ``source`` and ``ordinal`` rank as the resolver does; ``PgVectorStore.related_chunks`` says how, and
+        where the tie order can differ.
         """
         if relation not in {"source", "ordinal"}:
             return None
@@ -1108,17 +1112,16 @@ class GenerationStore(PgVectorStore):
         source_match = "source_uri = %s"
         if relation == "source":
             where = source_match
+            centre = seed_ord if isinstance(seed_ord, int) and not isinstance(seed_ord, bool) else 0
             params: tuple[object, ...] = (
                 self._tenant,
                 generation_id,
                 seed_source,
                 seed_id,
+                centre,
                 max_items,
             )
-            order = (
-                "CASE WHEN metadata->>'ord' ~ '^[0-9]+$' "
-                "THEN (metadata->>'ord')::int END NULLS LAST, chunk_id"
-            )
+            order = f"abs({_ord_rank_sql()} - %s), chunk_id COLLATE \"C\""
         else:
             if not isinstance(seed_ord, int) or isinstance(seed_ord, bool):
                 return (
@@ -1126,10 +1129,9 @@ class GenerationStore(PgVectorStore):
                     [],
                 )
             where = (
-                f"{source_match} AND (metadata->>'ord') ~ '^[0-9]+$' "
-                "AND abs((metadata->>'ord')::int - %s) <= 2"
+                f"{source_match} AND {_integer_ord_sql()} AND abs({_ord_rank_sql()} - %s) <= 2"
             )
-            order = "abs((metadata->>'ord')::int - %s), chunk_id"
+            order = f"abs({_ord_rank_sql()} - %s), chunk_id COLLATE \"C\""
             params = (
                 self._tenant,
                 generation_id,
