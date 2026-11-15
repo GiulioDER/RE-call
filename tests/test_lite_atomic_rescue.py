@@ -25,6 +25,12 @@
 - A13 `recall search` on a lite store resolves the tenant's rescue mode as the builder does (CCA
   ENV-001).
 - A14 `recall_calibration_run` on a lite store builds the artifact its new fit names (CCA CODE-001).
+- A15 two stores sharing one artifact root: a build for the second leaves the first's artifact,
+  and the first's active search still succeeds.
+- A16 an artifact at the top of the root, where builds put it before per-store folders, still
+  serves the search whose key it names.
+- A17 a build leaves such top-level artifact folders in place, since their owner is unknown, and
+  its report says how many remain.
 
 Red proof: A1 to A6 in the pull request that added this file (mutations, test node ids and the
 failing assertion of each). A7 to A14 in the commit that added them: each run against that
@@ -32,6 +38,16 @@ commit's parent, `5a10e6e03`, and failing in its own assertion, except the two b
 there too. A8b is a control that passes on the parent by design; it is red with
 `if not manifest.is_file(): raise` removed from `ensure_rescue_artifact`. A10b is red with the
 `clear_atomic_rescue_artifact_cache()` call before the removal deleted.
+
+A15 to A17 are red as follows; each is green with the fix. A15
+(`test_two_stores_sharing_a_root_keep_each_others_artifacts`) run against `195435c19`, the
+commit before per-store folders, fails at "a build for one store removed the artifact of another
+store sharing its root": `_remove_others` scanned the whole root. A16
+(`test_a_flat_layout_artifact_still_serves`) is red with `serving_manifest` returning
+`manifest_path` alone, at "an artifact built before per-store folders no longer serves". A17
+(`test_a_build_leaves_flat_layout_artifacts_and_reports_them`) is red with
+`_remove_others(root, ...)` in place of the store's folder, at "a build removed an artifact
+folder whose owner it cannot know".
 """
 
 from __future__ import annotations
@@ -125,7 +141,7 @@ def test_an_active_lite_store_rescues_a_parent_as_the_postgres_path_does(tmp_pat
 
     resolution = store.resolve_calibration()
     assert resolution.artifact is not None
-    manifest = manifest_path(root, store.lite_generation_id(), resolution.artifact.calibration_id)
+    manifest = manifest_path(root, store, store.lite_generation_id(), resolution.artifact.calibration_id)
     artifact = load_atomic_rescue_artifact(manifest)
     vector = embed_query(embedder, QUERY)
     selection = select_atomic_rescue(artifact, vector, store.query_dense(vector, 20))
@@ -194,7 +210,7 @@ def test_a_background_refit_builds_the_artifact_its_calibration_names(tmp_path: 
     assert landed is not None and landed.status is CalibrationStatus.CERTIFIED, landed
     resolution = store.resolve_calibration()
     assert resolution.artifact is not None and resolution.artifact.calibration_id != fitted.artifact.calibration_id
-    manifest = manifest_path(root, store.lite_generation_id(), resolution.artifact.calibration_id)
+    manifest = manifest_path(root, store, store.lite_generation_id(), resolution.artifact.calibration_id)
     assert manifest.exists(), "the refit's calibration has no atomic rescue artifact"
 
 
@@ -244,7 +260,7 @@ def _certified(tmp_path: Path) -> tuple[LiteStore, ContentWordEmbedder]:
 def _in_force(store: LiteStore, root: Path) -> Path:
     resolution = store.resolve_calibration()
     assert resolution.artifact is not None
-    return manifest_path(root, store.lite_generation_id(), resolution.artifact.calibration_id)
+    return manifest_path(root, store, store.lite_generation_id(), resolution.artifact.calibration_id)
 
 
 def test_a_build_overtaken_by_a_refit_leaves_the_refit_artifact_in_force(tmp_path: Path, monkeypatch) -> None:
@@ -433,3 +449,54 @@ def test_the_rebuild_is_not_blocked_by_this_process_own_cached_mapping(tmp_path:
     except AtomicRescueArtifactError as exc:
         pytest.fail(f"the rebuild was blocked by this process's own cached mapping: {exc}")
     assert again is not None and manifest.is_file(), f"no artifact was rebuilt: {again}"
+
+
+def test_two_stores_sharing_a_root_keep_each_others_artifacts(tmp_path: Path) -> None:
+    root = tmp_path / "atomic"
+    env = _env(root)
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    first, embedder = _certified(tmp_path / "a")
+    second, _ = _certified(tmp_path / "b")
+    built_first = ensure_rescue_artifact(first, embedder, env=env)
+    assert built_first is not None and built_first.manifest is not None, built_first
+    built_second = ensure_rescue_artifact(second, embedder, env=env)
+    assert built_second is not None and built_second.manifest is not None, built_second
+    assert built_second.manifest.parent != built_first.manifest.parent, "the fixture gave both stores one artifact"
+    assert built_first.manifest.is_file(), "a build for one store removed the artifact of another store sharing its root"
+    try:
+        trusted_search(first, embedder, QUERY, k=8, candidate_k=20, env=env)
+    except AtomicRescueArtifactError as exc:
+        pytest.fail(f"a store's active search failed after another store sharing its root built: {exc}")
+
+
+def test_a_flat_layout_artifact_still_serves(tmp_path: Path) -> None:
+    root = tmp_path / "atomic"
+    env = _env(root)
+    store, embedder = _certified(tmp_path)
+    built = ensure_rescue_artifact(store, embedder, env=env)
+    assert built is not None and built.manifest is not None, built
+    # Where a build put it before per-store folders: the top of the root.
+    flat = root / built.manifest.parent.name
+    clear_atomic_rescue_artifact_cache()
+    built.manifest.parent.rename(flat)
+    calibration = store.resolve_calibration().artifact
+    assert calibration is not None
+    served = store.atomic_rescue_manifest(root, store.lite_generation_id(), calibration.calibration_id)
+    assert served == (flat / "manifest.json").resolve(), "an artifact built before per-store folders no longer serves"
+    try:
+        trusted_search(store, embedder, QUERY, k=8, candidate_k=20, env=env)
+    except AtomicRescueArtifactError as exc:
+        pytest.fail(f"an artifact built before per-store folders no longer serves: {exc}")
+
+
+def test_a_build_leaves_flat_layout_artifacts_and_reports_them(tmp_path: Path) -> None:
+    root = tmp_path / "atomic"
+    unknown = root / "lite-0123456789abcdef.cal_00"
+    unknown.mkdir(parents=True)
+    (unknown / "manifest.json").write_text("{}", encoding="utf-8")
+    store, embedder = _certified(tmp_path)
+    built = ensure_rescue_artifact(store, embedder, env=_env(root))
+    assert built is not None and built.manifest is not None, built
+    assert unknown.is_dir(), "a build removed an artifact folder whose owner it cannot know"
+    assert "1 artifact folder(s) from before per-store folders remain" in built.reason, built.reason

@@ -1443,9 +1443,9 @@ class LiteStore:
 
     def atomic_rescue_manifest(self, root: str | Path, generation_id: str, calibration_id: str | None) -> Path:
         """Where `recall.trust` loads this store's atomic rescue artifact: see `recall.lite.atomic`."""
-        from recall.lite.atomic import manifest_path
+        from recall.lite.atomic import serving_manifest
 
-        return manifest_path(root, generation_id, calibration_id)
+        return serving_manifest(root, self, generation_id, calibration_id)
 
     def _stemmed_terms(self, text: str) -> list[str]:
         """The query's terms as the FTS5 tokenizer stores them: stop words out, Porter-stemmed."""
