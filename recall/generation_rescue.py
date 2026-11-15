@@ -66,7 +66,7 @@ def ensure_for_promotion(
     a promotion with the rescue off loads no model.
     """
     root = _active_root(tenant, env)
-    if root is None or True:
+    if root is None:
         return None
     return build_artifact(dsn, tenant, generation_id, embedder(), root)
 
@@ -156,7 +156,11 @@ def build_artifact(dsn: str, tenant: str, generation_id: str, embedder: Embedder
     }
     manifest = resolve_atomic_rescue_manifest(root, generation_id)
     if manifest.is_file():
-        return f"in force for {generation_id}"
+        try:
+            load_atomic_rescue_artifact(manifest).assert_lineage(**lineage, embedder=embedder)
+            return f"in force for {generation_id}"
+        except AtomicRescueArtifactError:
+            pass  # another calibration's, or damaged: replaced below
     root.mkdir(parents=True, exist_ok=True)
     # The root holds view vectors of the corpus, like the `.recall` directory.
     write_ignore(root)
