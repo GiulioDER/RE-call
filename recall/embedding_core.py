@@ -748,7 +748,24 @@ def embed_document_groups(
                     f"a document group containing {len(group)} chunks"
                 )
         return cast(list[list[list[float]]], result)
-    return [embed_passages(embedder, group) for group in groups]
+    # Without a group method every text is embedded on its own, so the groups go in ONE call and
+    # are split back: a call per group paid the encoder's fixed cost once per chunk's ~7 micro
+    # views, on every first atomic rescue build with fastembed.
+    texts = [text for group in groups for text in group]
+    if not texts:
+        return [[] for _ in groups]
+    vectors = embed_passages(embedder, texts)
+    if len(vectors) != len(texts):
+        # A short answer would shift every later vector into the wrong group without an error.
+        raise RuntimeError(
+            f"embedder {embedder.name!r} returned {len(vectors)} vectors for {len(texts)} texts"
+        )
+    out: list[list[list[float]]] = []
+    start = 0
+    for group in groups:
+        out.append(vectors[start : start + len(group)])
+        start += len(group)
+    return out
 
 
 def artifact_tree_sha256(path: str | Path, *, follow_file_symlinks: bool = False) -> str:
