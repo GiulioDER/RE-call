@@ -202,7 +202,7 @@ def _numeric_query_terms(text: str) -> list[str]:
 #: never a string "3", a boolean or a float. Python reads a JSON integer literal back as int, and
 #: `-?[0-9]+` on a number's text is exactly that literal.
 _INTEGER_ORD_SQL = (
-    "(jsonb_typeof(metadata->'ord') = 'number' AND metadata->>'ord' ~ '^[0-9]+$')"
+    "(jsonb_typeof(metadata->'ord') = 'number' AND metadata->>'ord' ~ '^-?[0-9]+$')"
 )
 #: A chunk's rank for the bounded `source` and `ordinal` relations: the integer ord, else 0, as
 #: `_ordinal(chunk) or 0` in the resolver. A CASE, because PostgreSQL does not promise to test an
@@ -2791,7 +2791,7 @@ class PgVectorStore(SourceMutationMixin, SupersessionMixin, ReceiptsAuditMixin):
             where = (
                 f"{source_match} AND {_INTEGER_ORD_SQL} AND abs({_ORD_RANK_SQL} - %s) <= 2"
             )
-            order = f"abs({_ORD_RANK_SQL} - %s), id"
+            order = f"abs({_ORD_RANK_SQL} - %s), id COLLATE \"C\""
             params = (
                 self._tenant,
                 seed_source,
