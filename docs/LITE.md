@@ -205,20 +205,27 @@ PostgreSQL generation route, where `recall_reasoning_query` expands one hop by d
 answers the same structural relations (`source`, `ordinal`, `supersession`, `caused_by`) on both
 backends.
 
-## Atomic rescue (optional)
+## Atomic rescue
 
 Atomic rescue finds a memo whose answer is one sentence inside a long chunk. Each chunk is split
 into overlapping 24 word views (stride 12), the views are embedded, and a search moves at most one
 parent chunk, the one whose best view matches the query most closely outside the dense top five, to
 rank six. That chunk is scored by its own cosine, never the view's, so a rescue changes rank only:
-it cannot turn an abstention into an answer. It is off by default. No release contains it yet
-(0.15.0 does not): install from a clone, as above, with the `atomic` extra added. To turn it on,
-set two variables for the MCP server and the CLI alike:
+it cannot turn an abstention into an answer. No release contains it yet (0.15.0 does not): install
+from a clone, as above.
+
+`recall setup --lite` turns it on. It registers two variables for the MCP server,
+`RECALL_ATOMIC_RESCUE_MODE=active` and `RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT`, a folder beside the
+store (`.recall/memory.db.atomic`), and builds the first artifact before it returns; its `atomic`
+line says what it built. Its two packages, `numpy` and `threadpoolctl`, come with the `fastembed`
+extra. In an environment without them, setup leaves the rescue off and says so; install the
+`atomic` extra and run setup again to turn it on. A mode set in the shell that runs setup is registered as it is, so to keep the rescue
+off, run setup with `RECALL_ATOMIC_RESCUE_MODE=off`. The CLI does not read the server's settings:
+to use the rescue from `recall search`, set the same two variables in your shell.
 
 ```bash
-python -m pip install "./re-call[fastembed,mcp,atomic]"
 export RECALL_ATOMIC_RESCUE_MODE=active
-export RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT=/absolute/path/to/project/.recall/atomic
+export RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT=/absolute/path/to/project/.recall/memory.db.atomic
 ```
 
 The root must be absolute, and a relative one is refused: the MCP server and the CLI each run in
@@ -258,8 +265,11 @@ source policy in force every build is paid for and no search uses it.
 
 A search the rescue applies to refuses while the artifact for the memory as it is now is missing:
 a search that lands between a write and the end of its build fails with an artifact error and
-succeeds once the build finishes. `recall forget` and `recall withdraw` build nothing, so after one
-of them such a search fails on the missing artifact until the next refresh or index builds again.
+succeeds once the build finishes. `recall forget` and `recall withdraw` build nothing, and neither
+does a `recall index` or `recall lite refresh` run without the two variables. The MCP server
+notices such a change at its next check (at most every `RECALL_LITE_REFRESH_INTERVAL`, 30 s) and
+refreshes, which builds the artifact again, mostly from views it already holds; until that build
+ends such a search fails on the missing artifact.
 A background refit that stores a new calibration and then fails to build only logs the failure, so
 such searches fail until the next write that changes the memory, or `recall lite refresh --force`,
 builds again. A store's older artifacts are removed after each build; on Windows one a running

@@ -649,3 +649,53 @@ def test_a_server_calibration_run_builds_under_the_environment_it_was_given(tmp_
     store, embedder = _certified(tmp_path)
     run_calibration(store, embedder, env=_env(root))  # type: ignore[arg-type]
     assert _in_force(store, root).is_file(), "a calibration run ignored the environment it was given"
+
+
+def test_an_unchanged_refresh_with_the_rescue_on_builds_what_one_without_it_did_not(tmp_path: Path, monkeypatch) -> None:
+    """A25: a person's `recall lite refresh`, run without the rescue's settings, leaves the store
+    current and no artifact; the server's refresh of the unchanged folder must not skip it."""
+    _blank_rescue_environment(monkeypatch)
+    root = tmp_path / "atomic"
+    memos = _corpus(tmp_path)
+    store = LiteStore(tmp_path / "memory.db", dim=DIM)
+    embedder = ContentWordEmbedder()
+    person = refresh(store, [memos], embedder)
+    assert person.outcome is Outcome.REFRESHED and person.atomic == "", person.to_dict()
+    server = refresh(store, [memos], embedder, refusal_env=_env(root))
+    assert server.outcome is Outcome.REFRESHED, f"an unchanged refresh with the rescue on skipped a store with no artifact: {server.reason}"
+    assert server.atomic.startswith("built for "), server.atomic
+    again = refresh(store, [memos], embedder, refusal_env=_env(root))
+    assert again.outcome is Outcome.UNCHANGED, "a refresh that built the artifact did not let the next one skip"
+
+
+def test_the_server_rebuilds_when_the_memory_changes_without_its_folder(tmp_path: Path, monkeypatch) -> None:
+    """A26: a change the folder does not show (a forget, a person's `recall index`) leaves no
+    artifact for the memory as it is, so the server's next check must refresh."""
+    from recall.lite.calibration import wait_for_refit
+    from recall_mcp.lite_refresh import LiteAutoRefresher
+
+    _blank_rescue_environment(monkeypatch)
+    root = tmp_path / "atomic"
+    memos = _corpus(tmp_path)
+    store = LiteStore(tmp_path / "memory.db", dim=DIM)
+    embedder = ContentWordEmbedder()
+    now = [1000.0]
+    refresher = LiteAutoRefresher(
+        store, embedder, [memos], interval_s=30, wait_s=120, clock=lambda: now[0], env=_env(root)
+    )
+    try:
+        refresher.before_retrieval()
+        wait_for_refit(store)
+        assert _in_force(store, root).is_file(), "the server's first refresh built no artifact"
+        other = tmp_path / "other"
+        other.mkdir()
+        (other / "elsewhere.md").write_text(" ".join(f"else{k:02d}" for k in range(40)) + "\n", encoding="utf-8")
+        Indexer(store, embedder, env={}).index_path(other)
+        now[0] += 31
+        refresher.before_retrieval()
+        wait_for_refit(store)
+        assert _in_force(store, root).is_file(), (
+            "the server did not rebuild the artifact after the memory changed without its folder"
+        )
+    finally:
+        refresher.stop()

@@ -75,6 +75,10 @@ fastembed = [
     # so a FastEmbed transitive dependency change cannot remove a module this package owns.
     "onnxruntime>=1.17,<2",
     "tokenizers>=0.13,<1",
+    # The `atomic` extra's two packages, so the documented local install has what `recall setup
+    # --lite` needs to turn the atomic rescue on (owner decision 2026-11-15: on by default).
+    "numpy>=1.26",
+    "threadpoolctl>=3.1",
 ]
 # ⛔ Ragas is deliberately NOT declared as an extra, and this is a security decision.
 #

@@ -110,3 +110,56 @@ def test_the_gitignore_note_appears_only_when_needed(tmp_path: Path) -> None:
     (other / "project" / ".gitignore").write_text("node_modules/\n.recall/\n", encoding="utf-8")
     _p, _c, again = _setup(other, register=False)
     assert not any(".gitignore" in note for note in again.notes), "the note repeats advice already followed"
+
+
+def _blank_rescue_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    for name in ("RECALL_ATOMIC_RESCUE_MODE", "RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT", "RECALL_ATOMIC_RESCUE_MODE_BY_TENANT"):
+        monkeypatch.delenv(name, raising=False)
+
+
+def test_setup_turns_the_atomic_rescue_on_and_builds_its_first_artifact(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """E5: on by default (owner decision 2026-11-15), registered for the server, built by setup."""
+    from recall.lite.atomic import manifest_path
+
+    _blank_rescue_environment(monkeypatch)
+    project, config, report = _setup(tmp_path)
+    store_path = (project / ".recall" / "memory.db").resolve()
+    env = _servers(config)[SERVER_NAME]["env"]
+    assert isinstance(env, dict)
+    assert env.get("RECALL_ATOMIC_RESCUE_MODE") == "active", "setup did not register the atomic rescue as active"
+    root = Path(str(env.get("RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT")))
+    assert root == store_path.with_name("memory.db.atomic"), root
+    assert report.atomic.startswith("built for "), f"setup built no artifact: {report.atomic!r}"
+    with LiteStore(store_path, dim=DIM) as store:
+        resolution = store.resolve_calibration()
+        assert resolution.artifact is not None
+        manifest = manifest_path(root, store, store.lite_generation_id(), resolution.artifact.calibration_id)
+        assert manifest.is_file(), "the registered server's first search would find no artifact"
+    assert "atomic       built for " in report.render()
+
+
+def test_a_mode_set_in_the_shell_is_registered_as_it_is(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """E6: `RECALL_ATOMIC_RESCUE_MODE=off` keeps the rescue off, and setup builds nothing."""
+    _blank_rescue_environment(monkeypatch)
+    monkeypatch.setenv("RECALL_ATOMIC_RESCUE_MODE", "off")
+    project, config, report = _setup(tmp_path)
+    env = _servers(config)[SERVER_NAME]["env"]
+    assert isinstance(env, dict)
+    assert env.get("RECALL_ATOMIC_RESCUE_MODE") == "off", "setup overrode the mode the shell set"
+    assert "RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT" not in env
+    assert report.atomic.startswith("off"), report.atomic
+    assert not (project / ".recall" / "memory.db.atomic").exists()
+
+
+def test_without_the_atomic_packages_setup_leaves_the_rescue_off(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """E7: with the rescue on, every search would refuse without numpy and threadpoolctl."""
+    import importlib.util
+
+    _blank_rescue_environment(monkeypatch)
+    real = importlib.util.find_spec
+    monkeypatch.setattr(importlib.util, "find_spec", lambda name, *a: None if name == "threadpoolctl" else real(name, *a))
+    _project, config, report = _setup(tmp_path)
+    env = _servers(config)[SERVER_NAME]["env"]
+    assert isinstance(env, dict)
+    assert "RECALL_ATOMIC_RESCUE_MODE" not in env, "setup turned the rescue on without its packages"
+    assert 'recall-rag[atomic]' in report.atomic, report.atomic
