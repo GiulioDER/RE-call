@@ -1120,7 +1120,7 @@ class GenerationStore(PgVectorStore):
                 centre,
                 max_items,
             )
-            order = f"abs({_SOURCE_RANK_SQL} - %s), chunk_id"
+            order = f"abs({_SOURCE_RANK_SQL} - %s), chunk_id COLLATE \"C\""
         else:
             if not isinstance(seed_ord, int) or isinstance(seed_ord, bool):
                 return (

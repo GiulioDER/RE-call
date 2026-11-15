@@ -2778,7 +2778,7 @@ class PgVectorStore(SourceMutationMixin, SupersessionMixin, ReceiptsAuditMixin):
             where = source_match
             centre = seed_ord if isinstance(seed_ord, int) and not isinstance(seed_ord, bool) else 0
             params: tuple[object, ...] = (self._tenant, seed_source, seed_id, centre, max_items)
-            order = f"abs({_SOURCE_RANK_SQL} - %s), id"
+            order = f"abs({_SOURCE_RANK_SQL} - %s), id COLLATE \"C\""
         else:
             if not isinstance(seed_ord, int) or isinstance(seed_ord, bool):
                 return (
