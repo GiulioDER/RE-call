@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from typing import Any
+from typing import Any, TypeGuard
 
 from psycopg.types.json import Jsonb
 
@@ -24,6 +24,39 @@ from recall.semantic_graph._model import (
 )
 
 
+def marker_is_whole(marker: object) -> TypeGuard[Mapping[str, Any]]:
+    """Whether a readiness marker says ready and carries its graph id, fingerprint and counts, as
+    both stores read it (`read_graph_readiness`, `recall.lite.graph.read_marker`)."""
+    if not isinstance(marker, Mapping) or marker.get("ready") is not True:
+        return False
+    if any(not isinstance(marker.get(field), str) or not marker.get(field) for field in ("graph_id", "graph_fingerprint")):
+        return False
+    counts = (marker.get(field) for field in ("entity_count", "mention_count", "relation_count", "diagnostic_count"))
+    return all(isinstance(value, int) and not isinstance(value, bool) and value >= 0 for value in counts)
+
+
+def marker_diagnostics(marker: object, *, tenant_id: str, generation_id: str) -> tuple[SemanticGraphDiagnostic, ...]:
+    """The diagnostics a marker records, skipping any item without its id, kind and message, as both
+    stores load them (`load_semantic_graph`, `recall.lite.graph.load_graph`)."""
+    return tuple(
+        SemanticGraphDiagnostic(
+            id=str(item["id"]),
+            tenant_id=tenant_id,
+            generation_id=generation_id,
+            kind=item["kind"],
+            reference=str(item["reference"]) if item.get("reference") is not None else None,
+            message=str(item["message"]),
+            entity_ids=tuple(str(value) for value in item.get("entity_ids", ())),
+            relation_ids=tuple(str(value) for value in item.get("relation_ids", ())),
+        )
+        for item in (marker.get("diagnostics", ()) if isinstance(marker, dict) else ())
+        if isinstance(item, Mapping)
+        and isinstance(item.get("id"), str)
+        and isinstance(item.get("kind"), str)
+        and isinstance(item.get("message"), str)
+    )
+
+
 def read_graph_readiness(conn: Any, tenant_id: str, generation_id: str) -> GraphReadiness:
     """Read the compact generation marker without loading graph member rows.
 
@@ -38,17 +71,8 @@ def read_graph_readiness(conn: Any, tenant_id: str, generation_id: str) -> Graph
     ).fetchone()
     summary = row[0] if row and isinstance(row[0], Mapping) else None
     marker = summary.get("semantic_graph") if isinstance(summary, Mapping) else None
-    required = ("graph_id", "graph_fingerprint")
-    counts = ("entity_count", "mention_count", "relation_count", "diagnostic_count")
     if (
-        not isinstance(marker, Mapping)
-        or marker.get("ready") is not True
-        or any(not isinstance(marker.get(field), str) or not marker.get(field) for field in required)
-        or any(
-            (isinstance(value, bool) or not isinstance(value, int) or value < 0)
-            for field in counts
-            for value in (marker.get(field),)
-        )
+        not marker_is_whole(marker)
         # Written by a newer builder (this code was rolled back): this code cannot reproduce
         # its ids, so it is not ready here rather than served under a version it does not know.
         or marker_schema_version(marker) > SEMANTIC_GRAPH_SCHEMA_VERSION
@@ -349,23 +373,7 @@ def load_semantic_graph(conn: Any, tenant_id: str, generation_id: str) -> Semant
         generation_id=generation_id,
         schema_version=schema_version,
     )
-    diagnostics = tuple(
-        SemanticGraphDiagnostic(
-            id=str(item["id"]),
-            tenant_id=tenant_id,
-            generation_id=generation_id,
-            kind=item["kind"],
-            reference=str(item["reference"]) if item.get("reference") is not None else None,
-            message=str(item["message"]),
-            entity_ids=tuple(str(value) for value in item.get("entity_ids", ())),
-            relation_ids=tuple(str(value) for value in item.get("relation_ids", ())),
-        )
-        for item in (marker.get("diagnostics", ()) if isinstance(marker, dict) else ())
-        if isinstance(item, Mapping)
-        and isinstance(item.get("id"), str)
-        and isinstance(item.get("kind"), str)
-        and isinstance(item.get("message"), str)
-    )
+    diagnostics = marker_diagnostics(marker, tenant_id=tenant_id, generation_id=generation_id)
     graph_id = (
         str(marker["graph_id"])
         if isinstance(marker, dict) and marker.get("graph_id")

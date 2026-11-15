@@ -92,6 +92,14 @@ LATEST_CALIBRATION_ORDER = "ORDER BY created_at DESC, rowid DESC"
 def generation_id_for(fingerprint: str) -> str:
     """The lite generation id of a corpus fingerprint, in the place a Postgres generation id goes."""
     return "lite-" + fingerprint[:16]
+
+
+def corpus_fingerprint_of(rows: Iterable[tuple[str, str, bytes]]) -> str:
+    """`LiteStore.corpus_fingerprint` from every chunk's `(id, text, embedding)`: the one place that
+    says what the lite generation id hashes, so a reader without a store agrees (CCA CODE-005)."""
+    from recall.lite.calibration import corpus_digest
+
+    return corpus_digest(list(rows))
 _log = get_logger("lite.store")
 
 #: PostgreSQL's English stop word list (`english.stop`), so both stores drop the same words from a
@@ -1340,9 +1348,7 @@ class LiteStore:
             vectors: Any = np.zeros((len(raw), self._dim), dtype=np.float32)
             for i, r in enumerate(raw):
                 vectors[i] = np.frombuffer(r[5], dtype=np.float32)
-            from recall.lite.calibration import corpus_digest
-
-            fingerprint = corpus_digest([(r[1], r[3], r[5]) for r in raw])
+            fingerprint = corpus_fingerprint_of((r[1], r[3], r[5]) for r in raw)
             self._matrix = _Matrix(
                 version,
                 rows,
@@ -1855,8 +1861,8 @@ class LiteStore:
         return graph
 
     def graph_current(self) -> bool:
-        """Whether a graph is stored for the corpus version as it is now, from the marker alone:
-        unlike `graph_readiness` it hashes no corpus, so an unchanged refresh can afford it."""
+        """Whether a graph is stored for the corpus version as it is now, from the marker alone: it
+        never hashes the corpus, so an unchanged refresh can afford it."""
         from recall.lite.graph import read_marker
 
         with self._lock:
@@ -1864,10 +1870,14 @@ class LiteStore:
 
     def graph_readiness(self) -> GraphReadiness:
         """Whether a graph is stored for the corpus as it is now, from its marker alone."""
-        from recall.lite.graph import readiness
+        from recall.lite.graph import read_marker, readiness
 
         with self._lock:
-            return readiness(self._conn, self._tenant, self.lite_generation_id())
+            # A marker of the corpus version as it is now names its generation (every write moves
+            # the version), so the corpus is hashed only when there is none (CCA PERF-004).
+            marker = read_marker(self._conn)
+            generation = str(marker["generation_id"]) if marker is not None else self.lite_generation_id()
+            return readiness(self._conn, self._tenant, generation)
 
     def related_chunks(
         self, seed_chunk_id: str, relation: str, max_items: int
@@ -1894,19 +1904,19 @@ class LiteStore:
             "THEN json_extract(metadata, '$.ord') END)"
         )
         params: tuple[object, ...]
+        from recall.related import ORDINAL_WINDOW, metadata_ordinal
+
+        seed_ord = metadata_ordinal(seed.metadata)
         if relation == "source":
             # `recall.related._ordinal(chunk) or 0`: any integer, a boolean or none counting as 0
             # (CCA BUG-001: ordered by ordinal, a seed deep in a long memo got its first chunks).
             rank = "(CASE WHEN json_type(metadata, '$.ord') = 'integer' THEN json_extract(metadata, '$.ord') ELSE 0 END)"
-            seed_ord = seed.metadata.get("ord")
-            centre = seed_ord if isinstance(seed_ord, int) and not isinstance(seed_ord, bool) else 0
             where, order = "", f"abs({rank} - ?), id"
-            params = (seed.source, seed.id, centre, max_items)
+            params = (seed.source, seed.id, seed_ord or 0, max_items)
         else:
-            seed_ord = seed.metadata.get("ord")
-            if not isinstance(seed_ord, int) or isinstance(seed_ord, bool):
+            if seed_ord is None:
                 return seed, []
-            where, order = f" AND abs({ordinal} - ?) <= 2", f"abs({ordinal} - ?), id"
+            where, order = f" AND abs({ordinal} - ?) <= {ORDINAL_WINDOW}", f"abs({ordinal} - ?), id"
             params = (seed.source, seed_ord, seed.id, seed_ord, max_items)
         rows = self._metadata_values(
             f"SELECT id, source, text, metadata FROM chunks WHERE source = ?{where} AND id <> ? "  # noqa: S608  # fixed clauses, bound data

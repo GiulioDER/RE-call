@@ -4,7 +4,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
-from typing import Literal, Protocol, get_args
+from typing import Any, Literal, Protocol, get_args
 
 from recall.calibration import Calibration
 from recall.frontmatter import RECORD_KEY
@@ -51,9 +51,20 @@ class RelatedEvidenceResult:
     explanation: dict[str, object] | None = None
 
 
-def _ordinal(chunk: Chunk) -> int | None:
-    value = chunk.metadata.get("ord")
+#: How far, in ordinals, an `ordinal` neighbour may sit from the seed: the stores' bounded reads use
+#: it too (`recall.lite.store.LiteStore.related_chunks`).
+ORDINAL_WINDOW = 2
+
+
+def metadata_ordinal(metadata: dict[str, Any]) -> int | None:
+    """A chunk's ordinal from its metadata: an integer `ord`, never a boolean; the one reader of it
+    for the related reads and the lite dashboard (CCA CODE-006)."""
+    value = metadata.get("ord")
     return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _ordinal(chunk: Chunk) -> int | None:
+    return metadata_ordinal(chunk.metadata)
 
 
 def _record_edges(chunk: Chunk) -> tuple[str | None, frozenset[str]]:
@@ -255,7 +266,7 @@ def trusted_related(
         ordinal = _ordinal(chunk)
         same_source = chunk.source == seed.source
         adjacent = (
-            seed_ord is not None and ordinal is not None and abs(ordinal - seed_ord) <= 2
+            seed_ord is not None and ordinal is not None and abs(ordinal - seed_ord) <= ORDINAL_WINDOW
         )
         supersession = relation == "supersession" and graph.key(file, chunk.source) in linked
         record_id, causes = _record_edges(chunk) if relation == "caused_by" else (None, frozenset())
@@ -358,8 +369,10 @@ def trusted_related(
 
 __all__ = [
     "MAX_RELATED_ITEMS",
+    "ORDINAL_WINDOW",
     "RELATED_RELATIONS",
     "RelatedEvidenceResult",
     "RelatedRelation",
+    "metadata_ordinal",
     "trusted_related",
 ]

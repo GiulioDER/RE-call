@@ -32,10 +32,13 @@ from recall.semantic_graph._model import (
     marker_schema_version as marker_schema_version,
     normalize_entity_name,
     relation_coverage,
+    semantic_graph_marker as semantic_graph_marker,
 )
 from recall.semantic_graph._store import (
     delete_semantic_graph,
     load_semantic_graph,
+    marker_diagnostics as marker_diagnostics,
+    marker_is_whole as marker_is_whole,
     read_graph_readiness as read_graph_readiness,
     write_semantic_graph,
 )

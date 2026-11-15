@@ -20,7 +20,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, date, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 from recall.dashboard.db import SEARCH_EVENTS, USE_REPORT_EVENT, DatabaseUnavailable, _summarise, stale_row
 from recall.lite import LiteStoreError, lite_dsn_path
@@ -319,21 +319,28 @@ def stale_reports(dsn: str, tenants: tuple[str, ...], limit: int) -> list[dict[s
 # ---------------------------------------------------------------------- the corpus graph and View 2
 
 
-def _ordinal(metadata: dict[str, Any]) -> int | None:
-    value = metadata.get("ord")
-    return value if isinstance(value, int) and not isinstance(value, bool) else None
+class _CorpusRow(NamedTuple):
+    """One chunk of the file as the corpus readers use it, read by name (CCA CODE-004)."""
+
+    id: str
+    source: str
+    text: str
+    metadata: dict[str, Any]
+    indexed_at: str
+    first_indexed_at: str
+    file: str
 
 
-def _corpus(c: sqlite3.Connection, tenant: str) -> tuple[list[tuple[Any, ...]], SupersessionGraph, SemanticGraphProjection]:
-    """`(chunks, supersession graph, semantic graph)` of the file. Chunks are `(id, source, text,
-    metadata, indexed_at, first_indexed_at, file)` by ordinal, then rowid, as Postgres orders them
-    by `chunk_ordinal`.
+def _corpus(c: sqlite3.Connection, tenant: str) -> tuple[list[_CorpusRow], SupersessionGraph, SemanticGraphProjection]:
+    """`(chunks, supersession graph, semantic graph)` of the file. Chunks are in order of ordinal,
+    then rowid, as Postgres orders them by `chunk_ordinal`.
 
     The supersession graph is resolved from the rows and records `LiteStore.supersession_graph`
     reads; the semantic graph is the stored one, else one built in memory, since this connection
     is read-only (`recall.lite.graph.graph_of`).
     """
     from recall.lite.store import _supersession_rows
+    from recall.related import metadata_ordinal
     from recall.supersession import resolve_supersession_graph
     from recall.supersession_records import sqlite_records
 
@@ -348,22 +355,22 @@ def _corpus(c: sqlite3.Connection, tenant: str) -> tuple[list[tuple[Any, ...]], 
         digest.update("\0".join(("", cid, source, text, raw, indexed)).encode())
         metadata = _payload(raw)
         file = metadata["file"] if isinstance(metadata.get("file"), str) else source
-        ordinal = _ordinal(metadata)
-        ordered.append(((ordinal is None, ordinal or 0, rowid), (cid, source, text, metadata, indexed, first, file)))
-    chunks = [row for _order, row in sorted(ordered)]
+        ordinal = metadata_ordinal(metadata)
+        ordered.append(((ordinal is None, ordinal or 0, rowid), _CorpusRow(cid, source, text, metadata, indexed, first, file)))
+    chunks = [row for _order, row in sorted(ordered, key=lambda pair: pair[0])]
     winner = resolve_supersession_graph(
-        _supersession_rows((meta, first, source) for _id, source, _t, meta, _i, first, _f in chunks),
+        _supersession_rows((row.metadata, row.first_indexed_at, row.source) for row in chunks),
         sqlite_records(c, "chunks"),
         tenant,
     )
-    return chunks, winner, _semantic_graph(c, tenant, digest.hexdigest())
+    return chunks, winner, _semantic_graph(c, tenant, digest.hexdigest(), chunks)
 
 
 #: `{(file, tenant): (stamp of its rows, graph)}`, one entry per file this process reads.
 _GRAPHS: dict[tuple[str, str], tuple[str, SemanticGraphProjection]] = {}
 
 
-def _semantic_graph(c: sqlite3.Connection, tenant: str, stamp: str) -> SemanticGraphProjection:
+def _semantic_graph(c: sqlite3.Connection, tenant: str, stamp: str, rows: list[_CorpusRow]) -> SemanticGraphProjection:
     """`graph_of`, kept while the file's rows are the ones it was built from (CCA PERF-002): built
     in memory it is the whole build, seconds on a large store, and View 2 asks for it on every page.
     `stamp` digests the corpus version and every row's id, source, text, metadata and `indexed_at`,
@@ -375,27 +382,28 @@ def _semantic_graph(c: sqlite3.Connection, tenant: str, stamp: str) -> SemanticG
     ids and times (ids are positional, so an edited memo keeps its ids, and under an evaluation
     clock its write time too)."""
     from recall.lite.graph import graph_of
+    from recall.types import Chunk
 
     key = (str(c.execute("PRAGMA database_list").fetchone()[2]), tenant)
     kept = _GRAPHS.get(key)
     if kept is not None and kept[0] == stamp:
         return kept[1]
-    graph = graph_of(c, tenant)
+    graph = graph_of(c, tenant, [Chunk(id=r.id, source=r.source, text=r.text, metadata=r.metadata) for r in rows])
     _GRAPHS[key] = (stamp, graph)
     return graph
 
 
-def _python_imports(chunks: list[tuple[Any, ...]], files: set[str]) -> list[tuple[str, str]]:
+def _python_imports(chunks: list[_CorpusRow], files: set[str]) -> list[tuple[str, str]]:
     """`recall.dashboard.corpus._import_edges` over the file's `.py` chunks: the same pattern, run
     by Python's `re` with `^` at each line start, as Postgres runs it newline-sensitive."""
     from recall.dashboard.corpus import _IMPORT_PATTERN, resolve_imports
 
     pattern = re.compile(_IMPORT_PATTERN, re.M)
     matches = [
-        (file, found.group(1), found.group(2), found.group(3))
-        for _id, _source, text, _meta, _i, _f, file in chunks
-        if file.endswith(".py")
-        for found in pattern.finditer(text)
+        (row.file, found.group(1), found.group(2), found.group(3))
+        for row in chunks
+        if row.file.endswith(".py")
+        for found in pattern.finditer(row.text)
     ]
     return resolve_imports(matches, files)
 
@@ -403,26 +411,25 @@ def _python_imports(chunks: list[tuple[Any, ...]], files: set[str]) -> list[tupl
 def corpus_graph(dsn: str, tenant: str, *, today: date | None = None) -> dict[str, Any]:
     """`recall.dashboard.corpus.corpus_graph` for a lite file: the same `assemble_graph`, fed from
     the file's chunks and semantic graph (`recall.lite.graph`) instead of PostgreSQL's tables."""
-    from recall.dashboard.corpus import assemble_graph
+    from recall.dashboard.corpus import assemble_graph, empty_graph
 
     now = (today or datetime.now(UTC).date()).isoformat()
     with connect(dsn) as c:
         found = _corpus(c, tenant) if tenant == _tenant(c) else None
     if found is None or not found[0]:
-        return {"nodes": [], "edges": [], "counts": {"memos": 0, "edges": 0}, "notes": [f"{tenant} has no corpus in this file"],
-                "origin": "database", "tenant": tenant, "generation": None}
+        return empty_graph(tenant, f"{tenant} has no corpus in this file")
     rows, winner, graph = found
-    by_file: dict[tuple[str, str], list[tuple[Any, ...]]] = {}
+    by_file: dict[tuple[str, str], list[_CorpusRow]] = {}
     for row in rows:
-        by_file.setdefault((row[6], row[1]), []).append(row)
+        by_file.setdefault((row.file, row.source), []).append(row)
 
-    def most(group: list[tuple[Any, ...]], key: str) -> str | None:
-        values = [str(r[3][key]) for r in group if r[3].get(key) is not None]
+    def most(group: list[_CorpusRow], key: str) -> str | None:
+        values = [str(r.metadata[key]) for r in group if r.metadata.get(key) is not None]
         return max(values) if values else None  # Postgres's max() over the text values
 
     files = [
-        (file, len(group), min(r[5] for r in group), most(group, "type"), most(group, "valid_from"),
-         most(group, "valid_until"), group[0][3].get("heading_hierarchy"), source)
+        (file, len(group), min(r.first_indexed_at for r in group), most(group, "type"), most(group, "valid_from"),
+         most(group, "valid_until"), group[0].metadata.get("heading_hierarchy"), source)
         for (file, source), group in by_file.items()
     ]
     entities = {entity.id: entity for entity in graph.entities}
@@ -432,7 +439,7 @@ def corpus_graph(dsn: str, tenant: str, *, today: date | None = None) -> dict[st
         if r.relation in ("references", "depends_on")
         and entities[r.subject_id].kind == "file" and entities[r.object_id].kind == "file"
     ]
-    located = {row[0]: (row[6], row[1]) for row in rows}
+    located = {row.id: (row.file, row.source) for row in rows}
     mentions = sorted({
         (m.entity_id, *located[m.chunk_id])
         for m in graph.mentions
@@ -445,25 +452,26 @@ def corpus_graph(dsn: str, tenant: str, *, today: date | None = None) -> dict[st
 def source_detail(dsn: str, tenant: str, file: str, *, today: date | None = None) -> dict[str, Any] | None:
     """`recall.dashboard.corpus.source_detail` for a lite file, through the same `assemble_detail`."""
     from recall.dashboard.corpus import MAX_CHUNKS, MAX_ENTITIES, MAX_RELATIONS, _instant, assemble_detail
+    from recall.related import metadata_ordinal
 
     now = (today or datetime.now(UTC).date()).isoformat()
     with connect(dsn) as c:
         if tenant != _tenant(c):
             return None
         rows, graph, semantic = _corpus(c, tenant)
-    sources = sorted({row[1] for row in rows if file in (row[6], row[1])}, key=lambda s: (s != file, s))
+    sources = sorted({row.source for row in rows if file in (row.file, row.source)}, key=lambda s: (s != file, s))
     if not sources or (len(sources) > 1 and sources[0] != file):
         return None
     source = sources[0]
-    mine = [row for row in rows if row[1] == source]
-    canonical = str(mine[0][6])
+    mine = [row for row in rows if row.source == source]
+    canonical = str(mine[0].file)
     chunks = [
-        (cid, _ordinal(meta), src, text, meta, indexed, first, name)
-        for cid, src, text, meta, indexed, first, name in mine[: MAX_CHUNKS + 1]
+        (r.id, metadata_ordinal(r.metadata), r.source, r.text, r.metadata, r.indexed_at, r.first_indexed_at, r.file)
+        for r in mine[: MAX_CHUNKS + 1]
     ]
     key = graph.key(canonical, source)
     entities = {entity.id: entity for entity in semantic.entities}
-    mine_ids = {row[0] for row in mine}
+    mine_ids = {row.id for row in mine}
     counted: dict[tuple[str, str], int] = {}
     for mention in semantic.mentions:
         entity = entities[mention.entity_id]
@@ -483,7 +491,7 @@ def source_detail(dsn: str, tenant: str, file: str, *, today: date | None = None
     imports: list[tuple[str, str]] = []
     imported_by: list[tuple[str, str]] = []
     if canonical.endswith(".py"):
-        files = {row[6] for row in rows}
+        files = {row.file for row in rows}
         # This copy's own statements, as Postgres scans `source_uri = %s`: another root's copy of
         # the same path is the same importer by name (CCA BUG-002).
         imports = [pair for pair in _python_imports(mine, files) if pair[0] == canonical]
@@ -491,10 +499,11 @@ def source_detail(dsn: str, tenant: str, file: str, *, today: date | None = None
     successor = graph.successor(key, now=_instant(now))
     replaced = sorted(old for old, claims in graph.candidates.items() if any(f == key for f, _when in claims))
     named = {name for name in (successor, *replaced) if name}
-    indexed = {graph.key(row[6], row[1]) for row in rows if row[6] in named or row[1] in named}
+    indexed = {graph.key(row.file, row.source) for row in rows if row.file in named or row.source in named}
     return assemble_detail(
         tenant=tenant, generation=semantic.generation_id, key=key, source=source, canonical=canonical, chunks=chunks,
-        total=len(mine), first_indexed=min(row[5] for row in mine), last_indexed=max(row[4] for row in mine),
+        total=len(mine), first_indexed=min(row.first_indexed_at for row in mine),
+        last_indexed=max(row.indexed_at for row in mine),
         graph=graph, successor=successor, replaced=replaced, indexed=indexed, entities=named_entities,
         relations=relations, collided=key != canonical, imports=imports, imported_by=imported_by, today=now,
     )

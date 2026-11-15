@@ -200,8 +200,10 @@ dependencies, Python imports, and uncommon names two files share; opening a node
 the entities they mention and the relations it takes part in.
 
 The graph is for navigation. Search does not read it: graph expansion is a feature of the
-PostgreSQL generation route, and it is off by default there too. `recall_related` answers the same
-structural relations (`source`, `ordinal`, `supersession`, `caused_by`) on both backends.
+PostgreSQL generation route, where `recall_reasoning_query` expands one hop by default (see
+[REASONING_GRAPH.md](REASONING_GRAPH.md)); on a lite store it expands nothing. `recall_related`
+answers the same structural relations (`source`, `ordinal`, `supersession`, `caused_by`) on both
+backends.
 
 ## Atomic rescue (optional)
 
