@@ -13,6 +13,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 - `recall_remember`'s `supersedes` accepts another assistant's memo of the same index root by the
   id search names it by (`agent-b/note-0001`), so agents with memo folders of their own can retire
   each other's memos. Its folder's ledger decides authorship; `recall_forget_memo` is unchanged.
+- Lite keeps the semantic graph in its store file, built from what memos state (links,
+  `supersedes`, `depends_on`, `recall_graph` front matter, headings) with no model. A refresh builds
+  it, every write clears it in the same transaction, and `recall graph status` and
+  `recall graph rebuild` now work on a lite store. The dashboard draws the store's corpus graph and
+  opens each file's page from it. Search does not read the graph.
+- `recall graph status` reports whether a generation's graph is built, and its counts.
 
 ### Fixed
 
@@ -20,6 +26,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   memo folder's memo of that id under the index root: with two agent folders numbering from
   `note-0001`, the corrected memo and the other folder's memo both read `ambiguous_supersession`.
   It now writes the target's path under the index root. Memos written before keep the bare form.
+- `recall forget` and `recall withdraw`, on Lite and PostgreSQL and through the MCP `recall_forget`
+  and `recall_withdraw` tools, left the forgotten text's vectors in the content-addressed embedding
+  cache, which is on by default, until least recently used eviction. They now erase them under every
+  embedder identity, with SQLite `secure_delete` and a truncating checkpoint, and report a cache
+  that could not be erased. Entries written by 0.15.0 and earlier record no digest of their text
+  and are not found; delete the cache file once to clear them.
 
 ## [0.15.0] (2026-11-08)
 

@@ -1318,6 +1318,35 @@ class GenerationStore(PgVectorStore):
     def chunks_for_source(self, source: str) -> list[Chunk]:
         raise NotImplementedError("chunks_for_source reads the legacy chunk table only")
 
+    def texts_for_sources(self, sources: Sequence[str]) -> list[tuple[str, dict[str, Any]]]:
+        """`(text, metadata)` of these sources' chunks in EVERY generation, and in the adopted
+        v0.8 rows: everything `GenerationManager.forget` erases, for the embedding cache."""
+        if not sources:
+            return []
+        rows = list(
+            self._with_retry(
+                lambda conn: conn.execute(
+                    "SELECT text, metadata FROM recall_chunks_v1 "
+                    "WHERE tenant_id = %s AND source_uri = ANY(%s)",
+                    (self._tenant, list(sources)),
+                ).fetchall()
+            )
+        )
+        exists = self._with_retry(
+            lambda conn: conn.execute(
+                "SELECT to_regclass(%s) IS NOT NULL", (self._migration_target,)
+            ).fetchone()
+        )
+        if exists and exists[0]:
+            rows += self._with_retry(
+                lambda conn: conn.execute(
+                    f"SELECT text, metadata FROM {self._migration_target} "
+                    "WHERE tenant_id = %s AND source = ANY(%s)",
+                    (self._tenant, list(sources)),
+                ).fetchall()
+            )
+        return [(str(row[0]), row[1] or {}) for row in rows]
+
     def chunk_ids_for_sources(self, sources: Sequence[str]) -> dict[str, list[str]]:
         # The prune records chunk ids of the legacy table only; a generation store keeps the name
         # rule (`recall.fact_retraction.chunk_targets` never passes one).

@@ -20,7 +20,12 @@ from psycopg.types.json import Jsonb
 
 from recall.context import ContextMode, ContextPolicy, StructuredChunk, contextual_passages
 from recall.build_progress import BuildCounters, BuildPlan, BuildProgressSink
-from recall.cache import embed_with_cache, open_default_cache
+from recall.cache import (
+    EMBEDDING_TEXT_DIGEST_KEY,
+    embed_with_cache,
+    open_default_cache,
+    text_digest,
+)
 from recall.document import parse_document
 from recall.derived_block import has_legacy_derived_block
 from recall.dependency_invalidation import build_dependency_projection, write_dependency_projection, dependency_key
@@ -77,6 +82,7 @@ from recall.semantic_graph import (
     marker_schema_version,
     write_semantic_graph,
 )
+from recall.semantic_graph._model import semantic_graph_marker as _semantic_graph_marker
 from recall.supersession_records import pg_delete_removals, pg_record_removals, pg_records
 from recall.supersession import resolve_supersession_graph, supersession_rows_sql
 from recall.types import Chunk, EvidenceCard
@@ -377,30 +383,6 @@ def _effective_corpus_fingerprint(
             "excluded_sources": excluded,
         }
     )
-
-
-def _semantic_graph_marker(graph: SemanticGraphProjection) -> dict[str, Any]:
-    return {
-        "schema_version": graph.schema_version,
-        "graph_id": graph.graph_id,
-        "graph_fingerprint": graph.fingerprint,
-        "entity_count": len(graph.entities),
-        "mention_count": len(graph.mentions),
-        "relation_count": len(graph.relations),
-        "diagnostic_count": len(graph.diagnostics),
-        "diagnostics": [
-            {
-                "id": diagnostic.id,
-                "kind": diagnostic.kind,
-                "reference": diagnostic.reference,
-                "message": diagnostic.message,
-                "entity_ids": list(diagnostic.entity_ids),
-                "relation_ids": list(diagnostic.relation_ids),
-            }
-            for diagnostic in graph.diagnostics
-        ],
-        "ready": True,
-    }
 
 
 def _record(row: tuple[Any, ...]) -> GenerationRecord:
@@ -1211,6 +1193,13 @@ class GenerationManager:
                             list(structured_chunk.headings)
                             if structured_chunk is not None
                             else []
+                        ),
+                        # What a forget erases the cache entry by, when the vector was not
+                        # embedded from the chunk text (`recall.cache.EMBEDDING_TEXT_DIGEST_KEY`).
+                        **(
+                            {EMBEDDING_TEXT_DIGEST_KEY: text_digest(embedding_texts[ordinal])}
+                            if embedding_texts[ordinal] != piece
+                            else {}
                         ),
                         **(
                             {"embedding_profile": pipeline.embedder.profile_id}
