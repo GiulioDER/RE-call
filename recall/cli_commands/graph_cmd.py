@@ -48,7 +48,7 @@ def _cmd_graph(args: argparse.Namespace) -> None:
         # Reads the readiness marker only, so the width is a placeholder.
         store = GenerationStore(args.dsn, 1, tenant=args.tenant)
         try:
-            readiness = store.graph_readiness(None)
+            readiness = store.graph_readiness(args.generation)
         finally:
             store.close()
     print(json.dumps(readiness.__dict__, indent=2, default=str))

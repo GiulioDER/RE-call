@@ -43,6 +43,11 @@ run green (37 passed with `tests/test_lite_cli_refusals.py`).
   `LiteStore.related_chunks` returning None for every relation: "recall_related scanned the corpus".
 - M12 `tests/test_lite_cli_refusals.py`, `graph` put back in `LITE_REFUSED`: "a command is both
   served and refused on lite".
+- M13 `test_g8_graph_status_reports_a_generation_marker`, needing a database, was red-proved in CI
+  (2026-11-15, run 43703934093, `floor` job, PostgreSQL 16): `graph_cmd._cmd_graph` passing None
+  instead of `args.generation` to `graph_readiness` failed at its assertion, the CLI having raised
+  `NoActiveGeneration` for the unpromoted generation's tenant; 1 failed, 14516 passed. Reverted
+  in the next commit.
 """
 
 from __future__ import annotations
