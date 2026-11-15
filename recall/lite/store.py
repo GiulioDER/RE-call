@@ -346,6 +346,13 @@ def _normalised(vector: Sequence[float], dim: int) -> Any:
     return _normalize(q)  # PR 894's float64 normalisation, for snapshots and live queries alike
 
 
+def _chunk_position(matrix: _Matrix, chunk_id: str) -> int | None:
+    """`chunk_id`'s row in `matrix`, or None; the id is checked as the parent loaders take it."""
+    if not isinstance(chunk_id, str) or not chunk_id:
+        raise ValueError("chunk_id must be a non-empty string")
+    return matrix.by_id.get(chunk_id)
+
+
 def _top_cosine(matrix: _Matrix, q: Any) -> float:
     if not matrix.rows:
         return 0.0
@@ -1425,21 +1432,20 @@ class LiteStore:
         """One chunk carrying `score`, as `GenerationStore.scored_chunk_by_id`; None when absent.
 
         The atomic rescue's parent loader (`recall.trust`), which scores it by its own cosine."""
-        if not isinstance(chunk_id, str) or not chunk_id:
-            raise ValueError("chunk_id must be a non-empty string")
         matrix = self._load()
-        position = matrix.by_id.get(chunk_id)
+        position = _chunk_position(matrix, chunk_id)
         return None if position is None else self._hit(matrix.rows[position], score)
 
     def scored_chunk_for_query(self, chunk_id: str, vector: list[float]) -> ScoredChunk | None:
-        """One chunk scored against `vector` exactly as `query_dense` scores it; None when absent."""
-        if not isinstance(chunk_id, str) or not chunk_id:
-            raise ValueError("chunk_id must be a non-empty string")
+        """One chunk scored against `vector` exactly as `query_dense` scores it; None when absent.
+
+        Read from the whole matrix product, as `query_dense` computes it: BLAS sums a lone row in
+        another order, a few float32 ulps away, and this score meets a calibrated threshold."""
         matrix = self._load()
-        position = matrix.by_id.get(chunk_id)
+        position = _chunk_position(matrix, chunk_id)
         if position is None:
             return None
-        return self._hit(matrix.rows[position], float(matrix.vectors[position] @ self._query_vector(vector)))
+        return self._hit(matrix.rows[position], float((matrix.vectors @ self._query_vector(vector))[position]))
 
     def atomic_rescue_manifest(self, root: str | Path, generation_id: str, calibration_id: str | None) -> Path:
         """Where `recall.trust` loads this store's atomic rescue artifact: see `recall.lite.atomic`."""

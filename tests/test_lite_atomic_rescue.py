@@ -32,6 +32,16 @@
 - A17 a build leaves such top-level artifact folders in place, since their owner is unknown, and
   its report says how many remain.
 
+Added by the deferred pass:
+- A18 a server refresh builds under the environment it was given, A19 a background refit under
+  the environment of the write that scheduled it, and A24 a server's `recall_calibration_run`
+  under the environment it was given (CCA ENV-004).
+- A20 a missing `atomic` extra is refused before any view is embedded, and an artifact another
+  environment built is kept (CCA DEPLOY-004).
+- A21 a refit on an unchanged corpus copies the artifact it supersedes (CCA PERF-003).
+- A22 a build does not reload the artifact it has just published (CCA PERF-004).
+- A23 a loaded parent scores bit for bit as dense search does (CCA NUM-001).
+
 Red proof: A1 to A6 in the pull request that added this file (mutations, test node ids and the
 failing assertion of each). A7 to A14 in the commit that added them: each run against that
 commit's parent, `5a10e6e03`, and failing in its own assertion, except the two below, recorded
@@ -48,6 +58,14 @@ store sharing its root": `_remove_others` scanned the whole root. A16
 (`test_a_build_leaves_flat_layout_artifacts_and_reports_them`) is red with
 `_remove_others(root, ...)` in place of the store's folder, at "a build removed an artifact
 folder whose owner it cannot know".
+
+A18, A20, A21, A22 and A23 fail against `6c866ade7`, the master commit the deferred pass landed
+on, each in its own assertion. A19 and A24, whose `env` arguments that commit lacks, are red with
+`env=job.env` dropped from `_run_refit`'s build, and with `env=env` dropped from `run_report`'s
+build or from `recall_mcp.generation_admin.run_calibration`'s call to it. The server's half of
+A24, that `recall_calibration_run` passes the server's environment, is
+`tests/test_mcp_tool_authorization.py::test_recall_calibration_run_hands_the_server_environment_to_the_build`,
+which fails against `6c866ade7` in its own assertion.
 """
 
 from __future__ import annotations
@@ -429,6 +447,8 @@ def test_the_rebuild_is_not_blocked_by_this_process_own_cached_mapping(tmp_path:
     first = ensure_rescue_artifact(store, embedder, env=_env(root))
     assert first is not None and first.manifest is not None, first
     manifest = first.manifest
+    # A search maps the artifact, as a serving process would; the builder itself no longer does.
+    load_atomic_rescue_artifact(manifest)
     real = shutil.rmtree
 
     def windows(path, ignore_errors=False, *args, **kwargs):  # noqa: ANN001, ANN002, ANN003, ANN202
@@ -500,3 +520,132 @@ def test_a_build_leaves_flat_layout_artifacts_and_reports_them(tmp_path: Path) -
     assert built is not None and built.manifest is not None, built
     assert unknown.is_dir(), "a build removed an artifact folder whose owner it cannot know"
     assert "1 artifact folder(s) from before per-store folders remain" in built.reason, built.reason
+
+
+def _blank_rescue_environment(monkeypatch) -> None:  # noqa: ANN001
+    for name in ("RECALL_ATOMIC_RESCUE_MODE", "RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT", "RECALL_ATOMIC_RESCUE_MODE_BY_TENANT"):
+        monkeypatch.delenv(name, raising=False)
+
+
+def test_a_server_refresh_builds_under_the_environment_it_was_given(tmp_path: Path, monkeypatch) -> None:
+    _blank_rescue_environment(monkeypatch)
+    store = LiteStore(tmp_path / "memory.db", dim=DIM)
+    report = refresh(store, [_corpus(tmp_path)], ContentWordEmbedder(), refusal_env=_env(tmp_path / "atomic"))
+    assert report.outcome is Outcome.REFRESHED, report.to_dict()
+    assert report.atomic.startswith("built for "), f"a server refresh ignored the environment it was given: {report.atomic!r}"
+
+
+def test_a_background_refit_builds_under_the_environment_of_the_write_that_scheduled_it(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _blank_rescue_environment(monkeypatch)
+    root = tmp_path / "atomic"
+    memos = _corpus(tmp_path)
+    store = LiteStore(tmp_path / "memory.db", dim=DIM)
+    embedder = ContentWordEmbedder()
+    Indexer(store, embedder, env={}).index_path(memos)
+    assert ensure_calibrated(store, embedder).status is CalibrationStatus.CERTIFIED
+    _write_memos(memos, 120, start=48)
+    Indexer(store, embedder, env={}).index_path(memos)
+    ensure_calibrated(store, embedder, background=True, env=_env(root))
+    landed = wait_for_refit(store, timeout=120)
+    assert landed is not None and landed.status is CalibrationStatus.CERTIFIED, landed
+    assert _in_force(store, root).is_file(), "the refit built nothing under the environment of the write that scheduled it"
+
+
+def test_a_missing_atomic_extra_is_refused_before_embedding_and_keeps_the_artifact(tmp_path: Path, monkeypatch) -> None:
+    import sys
+
+    root = tmp_path / "atomic"
+    store, embedder = _certified(tmp_path)
+    first = ensure_rescue_artifact(store, embedder, env=_env(root))
+    assert first is not None and first.manifest is not None, first
+    # Another process, whose environment lacks the extra, sees the same store and root.
+    clear_atomic_rescue_artifact_cache()
+    monkeypatch.setitem(sys.modules, "threadpoolctl", None)
+    import recall.embeddings as embeddings
+
+    embedded: list[int] = []
+    original = embeddings.embed_document_groups
+
+    def counted(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+        embedded.append(1)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(embeddings, "embed_document_groups", counted)
+    with pytest.raises(AtomicRescueArtifactError, match=r"\[atomic\]"):
+        ensure_rescue_artifact(store, embedder, env=_env(root))
+    assert first.manifest.is_file(), "a build without the atomic extra removed an artifact another environment built"
+    assert not embedded, "a build without the atomic extra embedded views before refusing"
+
+
+def test_a_refit_on_an_unchanged_corpus_copies_the_artifact_it_supersedes(tmp_path: Path, monkeypatch) -> None:
+    import recall.atomic_view_store as view_store
+    from recall.lite.calibration import auto_calibrate
+
+    root = tmp_path / "atomic"
+    store, embedder = _certified(tmp_path)
+    first = ensure_rescue_artifact(store, embedder, env=_env(root))
+    assert first is not None and first.manifest is not None, first
+    before = load_atomic_rescue_artifact(first.manifest)
+    auto_calibrate(store, embedder)  # a refit stores a new calibration for the same corpus
+    assembled: list[int] = []
+    real = view_store.assemble
+
+    def counted(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+        assembled.append(1)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(view_store, "assemble", counted)
+    second = ensure_rescue_artifact(store, embedder, env=_env(root))
+    assert second is not None and second.manifest is not None and second.manifest != first.manifest, second
+    assert not assembled, "a refit on an unchanged corpus assembled every view again"
+    after = load_atomic_rescue_artifact(second.manifest)
+    assert after.calibration_id == store.resolve_calibration().artifact.calibration_id  # type: ignore[union-attr]
+    assert after.matrix_sha256 == before.matrix_sha256 and after.views == before.views, "the copy differs"
+
+
+def test_a_build_does_not_reload_the_artifact_it_just_published(tmp_path: Path, monkeypatch) -> None:
+    store, embedder = _certified(tmp_path)
+    loads: list[Path] = []
+    real = atomic.load_atomic_rescue_artifact
+
+    def counted(path):  # noqa: ANN001, ANN202
+        loads.append(Path(path))
+        return real(path)
+
+    monkeypatch.setattr(atomic, "load_atomic_rescue_artifact", counted)
+    report = ensure_rescue_artifact(store, embedder, env=_env(tmp_path / "atomic"))
+    assert report is not None and report.manifest is not None and report.manifest.is_file(), report
+    assert not loads, f"the build hashed its own artifact again after the writer verified it: {loads}"
+
+
+def test_a_loaded_parent_scores_bit_for_bit_as_dense_search(tmp_path: Path) -> None:
+    import numpy as np
+
+    from recall.types import Chunk
+
+    width, rows = 384, 300
+    rng = np.random.default_rng(20261115)
+    store = LiteStore(tmp_path / "wide.db", dim=width)
+    vectors = rng.standard_normal((rows, width))
+    vectors /= np.linalg.norm(vectors, axis=1, keepdims=True)
+    store.upsert(
+        [Chunk(id=f"c{i:04d}", source=f"s{i}.md", text=f"t {i}", metadata={"ord": 0}) for i in range(rows)],
+        vectors.tolist(),
+    )
+    for _ in range(10):
+        query = rng.standard_normal(width).tolist()
+        dense = {hit.chunk.id: hit.score for hit in store.query_dense(query, rows)}
+        differ = [cid for cid, score in dense.items() if store.scored_chunk_for_query(cid, query).score != score]  # type: ignore[union-attr]
+        assert not differ, f"{len(differ)} of {rows} loaded parents scored unlike dense search, bit for bit"
+
+
+def test_a_server_calibration_run_builds_under_the_environment_it_was_given(tmp_path: Path, monkeypatch) -> None:
+    from recall_mcp.generation_admin import run_calibration
+
+    _blank_rescue_environment(monkeypatch)
+    root = tmp_path / "atomic"
+    store, embedder = _certified(tmp_path)
+    run_calibration(store, embedder, env=_env(root))  # type: ignore[arg-type]
+    assert _in_force(store, root).is_file(), "a calibration run ignored the environment it was given"

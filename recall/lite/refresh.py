@@ -366,11 +366,13 @@ def _key_base(root: Path, key_root: Path | None) -> Path:
     return key_root if key_root is not None and root.is_relative_to(key_root) else root
 
 
-def _calibrate(store: LiteStore, embedder: Embedder, background: bool) -> CalibrationOutcome:
-    """`ensure_calibrated`, in the background when asked."""
+def _calibrate(
+    store: LiteStore, embedder: Embedder, background: bool, env: Mapping[str, str] | None
+) -> CalibrationOutcome:
+    """`ensure_calibrated`, in the background when asked; a refit builds from `env`."""
     from recall.lite.calibration import ensure_calibrated
 
-    return ensure_calibrated(store, embedder, background=background)
+    return ensure_calibrated(store, embedder, background=background, env=env)
 
 
 def _finish(
@@ -457,7 +459,10 @@ def refresh(
     and `record_profile` the RECALL_EMBED_PROFILE recorded beside it; the profile is written only
     with a spec, so `record_profile` alone records nothing. `refusal_env` is the environment of a
     refresher that can neither `--force` nor type an embedder (the MCP server): `embedder_refusal`
-    is asked with it under the lane, and a refusal is a FAILED refresh that embeds nothing.
+    is asked with it under the lane, and a refusal is a FAILED refresh that embeds nothing. The
+    atomic rescue artifact is built from it too, by this refresh and by a refit it schedules, so
+    a server builds under the settings its search reads; without it, from the process
+    environment.
     """
     if security_policy is not None and security_context is None:
         raise ValueError("security_context is required when security_policy is configured")
@@ -608,7 +613,7 @@ def _refresh_locked(
                 report.chunks_written += stats.chunks
                 report.skipped += stats.skipped
                 report.deleted += stats.deleted
-        calibration = _calibrate(store, embedder, background_calibration)
+        calibration = _calibrate(store, embedder, background_calibration, refusal_env)
     except Exception as exc:  # BROAD-CATCH: fail-open  # recorded in the state file and returned
         _log.warning("lite refresh of %s failed: %s", db, exc)
         report.outcome, report.reason = Outcome.FAILED, f"{type(exc).__name__}: {exc}"
@@ -639,7 +644,7 @@ def _refresh_locked(
     try:
         # After the calibration it names and the bookkeeping of the write it describes, so a
         # failed build cannot skip either; None while the rescue is off (`recall.lite.atomic`).
-        atomic = ensure_rescue_artifact(store, embedder)
+        atomic = ensure_rescue_artifact(store, embedder, env=refusal_env)
     except Exception as exc:  # BROAD-CATCH: fail-closed  # FAILED is not a success, so the next refresh builds again
         _log.warning("atomic rescue build for %s failed: %s", db, exc)
         report.outcome, report.reason = Outcome.FAILED, f"atomic rescue: {type(exc).__name__}: {exc}"

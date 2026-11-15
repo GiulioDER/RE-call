@@ -23,6 +23,8 @@ its tenant and resolved file path, and a build removes old artifacts from that f
 stores sharing a root (two projects, or two MCP servers) therefore never remove each other's.
 Artifacts built before this layout sit at the top of the root: a search still serves one whose key
 is in force, after the same lineage check, and no build removes them, since their owner is unknown.
+A refit that lands on an unchanged corpus copies the matrix and views of the artifact it
+supersedes rather than assembling them again.
 
 The views of each chunk text are embedded once and kept in `<root>/micro-views.sqlite`
 (`recall.atomic_view_store`), keyed by embedder profile and text, so a build embeds only the
@@ -32,17 +34,18 @@ has about `w / 12` views, each embedded like a passage.
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import os
 import re
 import shutil
-import time
 from collections.abc import Container, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from recall.atomic_rescue import (
+    AtomicRescueArtifact,
     AtomicRescueArtifactError,
     clear_atomic_rescue_artifact_cache,
     load_atomic_rescue_artifact,
@@ -59,7 +62,7 @@ __all__ = ["BuildReport", "configured_root", "ensure_rescue_artifact", "manifest
 
 ROOT_ENV = "RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT"
 VIEW_STORE_NAME = "micro-views.sqlite"
-#: The directories this module writes in a store's folder, and so the only ones it removes there.
+#: The directory names the flat layout wrote at the top of the root, counted (never removed) after a build.
 _ARTIFACT_NAME = re.compile(r"lite-[0-9a-f]{16}\.cal_[0-9a-f]+")
 #: The files `write_atomic_rescue_artifact` publishes in an artifact's directory.
 _MEMBERS = ("manifest.json", "views.json", "matrix.npy")
@@ -72,7 +75,6 @@ class BuildReport:
     manifest: Path | None
     reason: str
     counts: dict[str, int] = field(default_factory=dict)
-    elapsed_s: float = 0.0
 
     def render(self) -> str:
         return f"atomic       {self.reason}"
@@ -120,8 +122,10 @@ def ensure_rescue_artifact(
 ) -> BuildReport | None:
     """Build the artifact for the corpus and calibration in force now; None when the rescue is off.
 
-    Raises when a build fails, so the write that called it reports the failure instead of leaving
-    a store whose every active search would refuse on a missing artifact without saying why.
+    Raises when a build fails, so a write that called it reports the failure instead of leaving a
+    store whose every active search would refuse on a missing artifact without saying why. A
+    background refit has no caller to report to: it logs the failure, and the next write that
+    changes the memory, or `recall lite refresh --force`, builds again.
     """
     from recall import __version__
     from recall.atomic_view_store import AtomicViewStore, assemble
@@ -131,7 +135,12 @@ def ensure_rescue_artifact(
     root = configured_root(store.tenant, env)
     if root is None:
         return None
-    started = time.perf_counter()
+    try:
+        import threadpoolctl  # noqa: F401
+    except ImportError as exc:
+        # The loader needs it too: refused here, before any view is embedded, and before an
+        # artifact another environment built could be taken for a damaged one and removed.
+        raise AtomicRescueArtifactError("atomic rescue requires the recall-rag[atomic] optional dependency") from exc
     resolution = store.resolve_calibration()
     if resolution.status is not CalibrationStatus.CERTIFIED or resolution.artifact is None:
         return BuildReport(None, f"not built: the calibration is {resolution.status.value}")
@@ -148,11 +157,12 @@ def ensure_rescue_artifact(
     if manifest.parent.exists():
         # The same corpus and calibration again (a write undone): the artifact already describes
         # them, unless an interrupted removal left part of it. Checked on disk first, because the
-        # loader answers a key it has cached without reading the directory again.
+        # loader answers a key it has cached without reading the directory again; then loaded in
+        # full, since only the verified load can tell a damaged matrix, which must be rebuilt.
         if all((manifest.parent / name).is_file() for name in _MEMBERS):
             try:
                 load_atomic_rescue_artifact(manifest).assert_lineage(**lineage, embedder=embedder)
-                return BuildReport(manifest, f"in force for {generation_id}", elapsed_s=time.perf_counter() - started)
+                return BuildReport(manifest, f"in force for {generation_id}")
             except AtomicRescueArtifactError:
                 pass
         # This process's own cache maps the matrix it last built or loaded, and Windows refuses to
@@ -165,27 +175,34 @@ def ensure_rescue_artifact(
                 "(another one, or a search in flight here) has its matrix open; the next write builds "
                 "it once that mapping is released"
             )
-    parents: list[tuple[str, str, int, str]] = []
-    for chunk in store.iter_chunks():
-        ordinal = chunk.metadata.get("ord")
-        if not isinstance(ordinal, int) or isinstance(ordinal, bool):
-            raise AtomicRescueArtifactError(f"chunk {chunk.id} has no integer ord, so it cannot be a rescue parent")
-        parents.append((chunk.id, chunk.source, ordinal, chunk.text))
-    parents.sort(key=lambda item: (item[1], item[2]))
     profile = embedding_profile(embedder).fingerprint()
-    # The root holds view vectors and the sources of memo chunks, like the `.recall` directory.
-    root.mkdir(parents=True, exist_ok=True)
-    write_ignore(root)
-    with AtomicViewStore(root / VIEW_STORE_NAME) as views:
-        matrix, metadata, counts = assemble(
-            parents, views, profile, int(embedder.dim), lambda groups: embed_document_groups(embedder, groups)
-        )
+    sibling = _sibling(manifest.parent, generation_id, lineage, embedder)
+    if sibling is not None:
+        # The same corpus under the calibration a refit replaced: the matrix and views depend on
+        # the corpus and the embedder only, so they are copied rather than assembled again.
+        matrix, metadata = sibling.matrix, [dataclasses.asdict(view) for view in sibling.views]
+        ordinary = sibling.ordinary_chunk_count
+        counts = {"parents": sibling.parent_count, "views": sibling.view_count, "embedded_views": 0}
+    else:
+        parents: list[tuple[str, str, int, str]] = []
+        for chunk in store.iter_chunks():
+            ordinal = chunk.metadata.get("ord")
+            if not isinstance(ordinal, int) or isinstance(ordinal, bool):
+                raise AtomicRescueArtifactError(f"chunk {chunk.id} has no integer ord, so it cannot be a rescue parent")
+            parents.append((chunk.id, chunk.source, ordinal, chunk.text))
+        parents.sort(key=lambda item: (item[1], item[2]))
+        ordinary = len(parents)
+        # The root holds view vectors and the sources of memo chunks, like the `.recall` directory.
+        root.mkdir(parents=True, exist_ok=True)
+        write_ignore(root)
+        with AtomicViewStore(root / VIEW_STORE_NAME) as views:
+            matrix, metadata, counts = assemble(
+                parents, views, profile, int(embedder.dim), lambda groups: embed_document_groups(embedder, groups)
+            )
     if store.corpus_fingerprint() != corpus_fingerprint or _key_in_force(store) != manifest.parent.name:
         # A write, or a background refit under its own lane, landed while the views were read;
         # it builds its own artifact, which this build must neither replace nor remove.
-        return BuildReport(
-            None, "not built: the memory or its calibration changed during the build", counts, time.perf_counter() - started
-        )
+        return BuildReport(None, "not built: the memory or its calibration changed during the build", counts)
     try:
         written = write_atomic_rescue_artifact(
             manifest.parent,
@@ -197,18 +214,19 @@ def ensure_rescue_artifact(
             corpus_fingerprint=corpus_fingerprint,
             embedding_profile=embedding_profile_id(embedder),
             embedding_fingerprint=profile,
-            ordinary_chunk_count=len(parents),
+            ordinary_chunk_count=ordinary,
             source_commit=f"recall-rag {__version__}",
         )
     except OSError:
         # A concurrent build of the same key (a refresh beside a background refit) published
         # first: refused before staging (FileExistsError) or at the rename onto its directory
-        # (ENOTEMPTY, or access denied on Windows). Its artifact is verified below like this one
-        # would have been; with no artifact there, the failure was this build's own.
+        # (ENOTEMPTY, or access denied on Windows). With no artifact there, the failure was this
+        # build's own. The winner's is verified here; this build's own was, by the writer, which
+        # loads the staged directory with the serving loader before it publishes it.
         if not manifest.is_file():
             raise
+        load_atomic_rescue_artifact(manifest).assert_lineage(**lineage, embedder=embedder)
         written = manifest
-    load_atomic_rescue_artifact(written).assert_lineage(**lineage, embedder=embedder)
     _remove_others(manifest.parent.parent, keep={manifest.parent.name, _key_in_force(store)})
     # Their owner is unknown, so they are reported rather than removed (docs/LITE.md).
     flat = sum(1 for entry in root.iterdir() if entry.is_dir() and _ARTIFACT_NAME.fullmatch(entry.name))
@@ -218,8 +236,23 @@ def ensure_rescue_artifact(
         f"built for {generation_id}: {counts['views']} view(s) of {counts['parents']} chunk(s), "
         f"{counts['embedded_views']} newly embedded{left}",
         counts,
-        time.perf_counter() - started,
     )
+
+
+def _sibling(
+    directory: Path, generation_id: str, lineage: Mapping[str, str | None], embedder: Embedder
+) -> AtomicRescueArtifact | None:
+    """A complete artifact of this corpus under another calibration, verified; None when there is none."""
+    for entry in sorted(directory.parent.glob(f"{generation_id}.*")):
+        if entry == directory or not all((entry / name).is_file() for name in _MEMBERS):
+            continue
+        try:
+            artifact = load_atomic_rescue_artifact(entry / "manifest.json")
+            artifact.assert_lineage(**{**lineage, "calibration_id": artifact.calibration_id}, embedder=embedder)
+        except AtomicRescueArtifactError:
+            continue
+        return artifact
+    return None
 
 
 def _key_in_force(store: LiteStore) -> str | None:
@@ -237,10 +270,12 @@ def _remove_others(folder: Path, *, keep: Container[str | None]) -> None:
 
     `keep` names this build's key and the key in force when it finished: a background refit
     builds under its own lane, so the other build may have published the one a search now needs.
+    The folder is this module's alone, so every directory in it is an artifact, except a dot-named
+    one, which is a build still staging and is left to it.
     Best effort, for a stated reason: Windows refuses to delete a matrix a serving process still
     has mapped, and that artifact is then removed by the next build. A part left behind is never
     served: a build of its key checks every member on disk before reusing it.
     """
     for entry in folder.iterdir():
-        if entry.name not in keep and entry.is_dir() and _ARTIFACT_NAME.fullmatch(entry.name):
+        if entry.is_dir() and not entry.name.startswith(".") and entry.name not in keep:
             shutil.rmtree(entry, ignore_errors=True)

@@ -324,7 +324,7 @@ def _index_memory_unlocked(
         # embedding); a refit, when one is due, runs in the background so the write returns now.
         from recall.lite.calibration import ensure_calibrated
 
-        outcome = ensure_calibrated(store, embedder, background=True)
+        outcome = ensure_calibrated(store, embedder, background=True, env=values)
         message += f" Calibration: {outcome.status.value}. {outcome.reason}"
     # The facts the indexed memos state, on a lite store or the legacy table (a generation store
     # records them when its generation is promoted). The rule is read from the process

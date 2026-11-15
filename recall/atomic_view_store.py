@@ -13,9 +13,11 @@ digest of the chunk text together with the view parameters. Changing the model, 
 the stride therefore can never return a stale vector; it simply misses.
 
 Reads validate shape and finiteness and treat any mismatch as a miss, so a damaged row costs one
-re-embed rather than a wrong vector. `assemble` is the only writer: the PostgreSQL builder runs it
-under the host's embedding lock, and a lite store under its write lane (`recall.lite.atomic`);
-readers never write.
+re-embed rather than a wrong vector. `assemble` is the only writer. The PostgreSQL builder runs it
+under the host's embedding lock. A lite store (`recall.lite.atomic`) may run two at once, one
+under its write lane and one under its refit lane; that is safe because a row is keyed by its
+content, and each batch is written in one short transaction after its embeddings return, under
+SQLite's busy timeout. Readers never write.
 """
 
 from __future__ import annotations
