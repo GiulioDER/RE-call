@@ -30,7 +30,7 @@ import os
 import re
 import shutil
 import time
-from collections.abc import Container, Mapping
+from collections.abc import Container, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -48,7 +48,7 @@ if TYPE_CHECKING:
     from recall.embeddings import Embedder
     from recall.lite.store import LiteStore
 
-__all__ = ["BuildReport", "configured_root", "ensure_rescue_artifact", "manifest_path"]
+__all__ = ["BuildReport", "configured_root", "ensure_rescue_artifact", "erase_forgotten", "manifest_path"]
 
 ROOT_ENV = "RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT"
 VIEW_STORE_NAME = "micro-views.sqlite"
@@ -195,6 +195,48 @@ def ensure_rescue_artifact(
         counts,
         time.perf_counter() - started,
     )
+
+
+def erase_forgotten(
+    store: LiteStore, texts: Sequence[str], *, env: Mapping[str, str] | None = None
+) -> tuple[int, int]:
+    """Erase what the rescue keeps of forgotten chunks: ``(view rows erased, artifacts removed)``.
+
+    Run by a forget after the chunks are deleted, with their texts read before. The views are
+    erased by text digest from `<root>/micro-views.sqlite`, and every artifact this module wrote
+    is removed except the one the store resolves now: each other one was built from a corpus that
+    held the forgotten chunks, and keeps their view vectors and sources. The root is read whatever
+    the rescue mode, since a rescue turned off keeps what it built. Raises when something is left.
+    """
+    from recall.atomic_view_store import AtomicViewStore, chunk_view_digest
+
+    value = (os.environ if env is None else env).get(ROOT_ENV, "").strip()
+    root = Path(value).expanduser() if value else None
+    # The builder refuses a relative root, so nothing was written under one.
+    if root is None or not root.is_absolute() or not root.is_dir():
+        return 0, 0
+    erased = 0
+    views_path = root / VIEW_STORE_NAME
+    if texts and views_path.is_file():
+        with AtomicViewStore(views_path) as views:
+            erased = views.erase_digests({chunk_view_digest(text) for text in texts})
+    keep = _key_in_force(store)
+    doomed = [
+        entry for entry in root.iterdir()
+        if entry.name != keep and entry.is_dir() and _ARTIFACT_NAME.fullmatch(entry.name)
+    ]
+    if doomed:
+        # This process's cache maps the matrix it last loaded, and Windows refuses to delete it.
+        clear_atomic_rescue_artifact_cache()
+    for entry in doomed:
+        shutil.rmtree(entry, ignore_errors=True)
+    left = [entry.name for entry in doomed if entry.exists()]
+    if left:
+        raise AtomicRescueArtifactError(
+            f"atomic rescue artifact(s) {', '.join(left)} under {root} could not be removed while a "
+            "process has their matrix open"
+        )
+    return erased, len(doomed)
 
 
 def _key_in_force(store: LiteStore) -> str | None:

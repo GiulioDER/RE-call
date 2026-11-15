@@ -462,6 +462,11 @@ def _forget_memory_unlocked(
         raise
     # Read before the rows go: their texts are how the cache entries are found.
     cached_digests = _embedded_text_digests((store, shadow_store), to_delete)
+    from recall.lite import LiteStore
+
+    # The same read for a lite store's atomic rescue, whose view store is keyed by chunk text.
+    lite = isinstance(store, LiteStore)
+    rescue_texts = [text for text, _ in store.texts_for_sources(to_delete)] if lite and to_delete else []
     if erase_memo_requests:
         # Before the rows go, for the same reason: the record is how a re-run, which finds no
         # rows, may still name these memos to the journal erasure below.
@@ -517,6 +522,20 @@ def _forget_memory_unlocked(
             "embedding cache erasure failed after chunk deletion for tenant %r", store.tenant
         )
         cache_entries_erased = -1
+    rescue_views_erased = rescue_artifacts_removed = 0
+    if lite and chunks_removed:
+        from recall.lite.atomic import erase_forgotten
+        from recall_mcp.settings import runtime_environment
+
+        try:
+            rescue_views_erased, rescue_artifacts_removed = erase_forgotten(
+                store, rescue_texts, env=runtime_environment()
+            )
+        except Exception:  # BROAD-CATCH: error-translation
+            _log.exception(
+                "atomic rescue erasure failed after chunk deletion for tenant %r", store.tenant
+            )
+            rescue_views_erased = -1
     memo_requests_erased = 0
     if erase_memo_requests:
         from recall.lite.assistant_memos import forget_memo_requests
@@ -584,6 +603,18 @@ def _forget_memory_unlocked(
         )
     elif cache_entries_erased:
         message += f" Erased {cache_entries_erased} cached embedding(s) of the deleted text."
+    if rescue_views_erased < 0:
+        message += (
+            " WARNING: the chunk deletion succeeded but erasing them from the atomic rescue failed, "
+            "so its view store or an artifact under RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT still holds "
+            "their vectors, and a re-run finds no rows to erase them by; delete micro-views.sqlite "
+            "and the lite-* directories there, which costs only a rebuild at the next write."
+        )
+    elif rescue_views_erased or rescue_artifacts_removed:
+        message += (
+            f" Erased {rescue_views_erased} atomic rescue view set(s) and removed "
+            f"{rescue_artifacts_removed} rescue artifact(s) built with the deleted text."
+        )
     if memo_requests_erased < 0:
         message += (
             " WARNING: the chunk deletion succeeded but erasing the memo request journal failed, "

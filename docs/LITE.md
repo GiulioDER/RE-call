@@ -205,14 +205,21 @@ fails on the missing artifact. Nothing is built until the store has a certified 
 then strict search refuses anyway. The views of each chunk
 text are kept in `micro-views.sqlite` under the root, so a later build embeds only the views of new
 or edited chunks. The first build is the expensive one: a chunk of about 120 words has about ten
-views, so it embeds roughly ten times as many short texts as the first index did. That file only
-grows; delete it to reclaim space, at the cost of one full build.
+views, so it embeds roughly ten times as many short texts as the first index did. That file grows
+until a forget erases from it; delete it to reclaim space, at the cost of one full build.
 
 Search refuses while the artifact for the memory as it is now is missing: a search that lands
 between a write and the end of its build fails with an artifact error and succeeds once the build
 finishes. `recall forget` and `recall withdraw` build nothing, so after one of them an active search
 fails on the missing artifact until the next refresh or index builds again. Older artifacts are
 removed after each build; on Windows one a running server still has open stays until a later build.
+
+`recall forget` and `recall withdraw` also erase what the rescue keeps of the memo: its views in
+`micro-views.sqlite`, with SQLite `secure_delete` and a truncating checkpoint, and every artifact
+under the root but one built for the memory as it is after the forget. They do so whenever
+`RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT` is set, even with the rescue since turned off, and report an
+erasure that failed (on Windows, an artifact a running server still has open). With the variable
+unset a forget does not look there, so delete the root when you stop using the rescue.
 
 A forget does not reach the root. The forgotten memo's chunk ids and source name stay in the
 previous artifact until the next build removes it, and its view vectors stay in
