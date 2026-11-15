@@ -336,6 +336,21 @@ def _index_memory_unlocked(
     stated = reconcile_stated_facts(store, write_env=values)
     if stated.enabled:
         message += f" Stated facts: {stated.summary()}."
+    if isinstance(store, LiteStore):
+        from recall.lite.atomic import ensure_rescue_artifact
+
+        # After the bookkeeping of the index it describes, so a failed build cannot skip it. The
+        # index has committed, so the failure is reported in the receipt rather than raised.
+        try:
+            atomic = ensure_rescue_artifact(store, embedder, env=values)
+        except Exception as exc:  # noqa: BLE001  # BROAD-CATCH: fail-closed; active searches refuse until a build succeeds, and this says why
+            message += (
+                f" Atomic rescue was not built ({type(exc).__name__}: {exc});"
+                " active searches refuse until a later index builds it."
+            )
+        else:
+            if atomic is not None:
+                message += f" Atomic rescue: {atomic.reason}."
     from recall_mcp.lifecycle import ambiguous_references
 
     # What search will resolve to no memo, said while the writer is still here to fix it. Advisory:

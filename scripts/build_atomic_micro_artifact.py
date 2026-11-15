@@ -25,99 +25,13 @@ from pathlib import Path
 import subprocess
 import sys
 import time
-from typing import Any, Callable, Sequence
+from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from recall.atomic_view_store import AtomicViewStore, chunk_view_digest  # noqa: E402
-from recall.atomizer import chunk_micro_views  # noqa: E402
-
-EMBED_BATCH_CHUNKS = 64
-
-
-def assemble(
-    parents: Sequence[tuple[str, str, int, str]],
-    store: AtomicViewStore,
-    profile: str,
-    dimension: int,
-    embed_groups: Callable[[list[list[str]]], list[list[list[float]]]],
-) -> tuple[Any, list[dict[str, object]], dict[str, int]]:
-    """Views and vectors for every parent ``(chunk_id, source, ordinal, text)``, reusing the store.
-
-    Returns the normalized matrix, the artifact metadata rows in parent order, and counts of
-    reused and newly embedded chunks and views. Chunks whose text yields no view are skipped.
-    """
-
-    import numpy as np
-
-    planned: list[tuple[tuple[str, str, int, str], list[str], str]] = []
-    missing: list[int] = []
-    for parent in parents:
-        views = chunk_micro_views(parent[3])
-        if not views:
-            continue
-        digest = chunk_view_digest(parent[3])
-        if store.get(profile, digest, view_count=len(views), dimension=dimension) is None:
-            missing.append(len(planned))
-        planned.append((parent, views, digest))
-
-    embedded_views = 0
-    seen_digests: set[str] = set()
-    for offset in range(0, len(missing), EMBED_BATCH_CHUNKS):
-        batch = []
-        batch_digests: set[str] = set()
-        for index in missing[offset : offset + EMBED_BATCH_CHUNKS]:
-            item = planned[index]
-            digest = item[2]
-            if digest in seen_digests or digest in batch_digests:
-                continue
-            batch.append(item)
-            batch_digests.add(digest)
-        if not batch:
-            continue
-        vectors = embed_groups([views for _, views, _ in batch])
-        if len(vectors) != len(batch):
-            raise RuntimeError("embedder returned the wrong number of view groups")
-        for (_, views, digest), group in zip(batch, vectors, strict=True):
-            if len(group) != len(views):
-                raise RuntimeError("embedder returned the wrong number of views for a chunk")
-            store.put(profile, digest, group)
-            seen_digests.add(digest)
-            embedded_views += len(views)
-        store.commit()
-
-    rows: list[Any] = []
-    metadata: list[dict[str, object]] = []
-    view_ordinal: dict[str, int] = {}
-    for (chunk_id, source, ordinal, _), views, digest in planned:
-        matrix = store.get(profile, digest, view_count=len(views), dimension=dimension)
-        if matrix is None:
-            raise RuntimeError(f"view store lacks vectors for chunk {chunk_id} after embedding")
-        rows.append(matrix)
-        for _ in views:
-            index = view_ordinal.get(source, 0)
-            view_ordinal[source] = index + 1
-            metadata.append(
-                {"chunk_id": chunk_id, "source": source, "parent_ordinal": ordinal, "view_ordinal": index}
-            )
-    if not rows:
-        raise RuntimeError("no parent chunk yields a micro view")
-    full: Any = np.concatenate(rows, axis=0).astype(np.float32)
-    norms = np.linalg.norm(full, axis=1, keepdims=True)
-    if not np.all(norms > 0):
-        raise RuntimeError("a view vector has zero norm")
-    full /= norms
-    counts = {
-        "parents": len(planned),
-        "views": len(metadata),
-        "reused_chunks": len(planned) - len(missing),
-        "embedded_chunks": len(seen_digests),
-        "embedded_views": embedded_views,
-    }
-    return full, metadata, counts
-
+from recall.atomic_view_store import AtomicViewStore, assemble  # noqa: E402
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
