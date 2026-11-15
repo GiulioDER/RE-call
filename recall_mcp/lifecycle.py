@@ -9,6 +9,7 @@ import hashlib
 import json
 from typing import TYPE_CHECKING, Any
 
+from recall.cache import EMBEDDING_TEXT_DIGEST_KEY, erase_cached_digests, text_digest
 from recall.current_state import MAX_CURRENT_STATE_RECORDS, project_current_state
 from recall.errors import RecallError
 from recall.fact_retraction import FactErasure, fact_ledger_for, prepare_fact_erasure
@@ -379,6 +380,26 @@ def _preflight_erasure(
     return requested
 
 
+def _embedded_text_digests(stores: tuple[Any, ...], sources: list[str]) -> set[str]:
+    """Digests of the texts `sources`' chunks were embedded from: what their cache entries carry.
+
+    The chunk text's own, plus the one the indexer recorded where a contextual profile embedded
+    different text. Read before the rows are deleted, since afterwards nothing names them. A store
+    without the read (a test double) contributes none.
+    """
+    digests: set[str] = set()
+    for target in stores:
+        read = getattr(target, "texts_for_sources", None)
+        if not sources or not callable(read):
+            continue
+        for text, metadata in read(sources):
+            digests.add(text_digest(text))
+            recorded = metadata.get(EMBEDDING_TEXT_DIGEST_KEY)
+            if isinstance(recorded, str):
+                digests.add(recorded)
+    return digests
+
+
 def _forget_memory_unlocked(
     store: PgVectorStore,
     sources: list[str],
@@ -439,6 +460,8 @@ def _forget_memory_unlocked(
         # A deletion without its recovery aliases would make an absolute-source retry
         # irrecoverable. A preparation failure therefore leaves the chunks in place.
         raise
+    # Read before the rows go: their texts are how the cache entries are found.
+    cached_digests = _embedded_text_digests((store, shadow_store), to_delete)
     if erase_memo_requests:
         # Before the rows go, for the same reason: the record is how a re-run, which finds no
         # rows, may still name these memos to the journal erasure below.
@@ -484,6 +507,16 @@ def _forget_memory_unlocked(
             "staged upload cleanup failed after chunk deletion for tenant %r", store.tenant
         )
         staged_files_removed = -1
+    cache_entries_erased = 0
+    try:
+        # The vectors of the deleted text, which the content-addressed embedding cache would
+        # otherwise keep until eviction, under every embedder identity that embedded it.
+        cache_entries_erased = erase_cached_digests(cached_digests)
+    except Exception:  # BROAD-CATCH: error-translation
+        _log.exception(
+            "embedding cache erasure failed after chunk deletion for tenant %r", store.tenant
+        )
+        cache_entries_erased = -1
     memo_requests_erased = 0
     if erase_memo_requests:
         from recall.lite.assistant_memos import forget_memo_requests
@@ -542,6 +575,15 @@ def _forget_memory_unlocked(
         )
     elif staged_files_removed:
         message += f" Removed {staged_files_removed} staged upload file(s)."
+    if cache_entries_erased < 0:
+        message += (
+            " WARNING: the chunk deletion succeeded but erasing their vectors from the embedding "
+            "cache failed, so it still holds them, and a re-run finds no rows to erase them by; "
+            "delete the cache file (RECALL_EMBED_CACHE, or the platform default), which costs "
+            "only a re-embed."
+        )
+    elif cache_entries_erased:
+        message += f" Erased {cache_entries_erased} cached embedding(s) of the deleted text."
     if memo_requests_erased < 0:
         message += (
             " WARNING: the chunk deletion succeeded but erasing the memo request journal failed, "

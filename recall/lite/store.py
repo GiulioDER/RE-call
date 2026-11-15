@@ -1227,6 +1227,17 @@ class LiteStore:
         )
         return [Chunk(id=cid, source=src, text=text, metadata=json.loads(metadata)) for cid, src, text, metadata in rows]
 
+    def texts_for_sources(self, sources: Sequence[str]) -> list[tuple[str, dict[str, Any]]]:
+        """`(text, metadata)` of every chunk of these exact sources, in one read: what a forget
+        digests to erase their vectors from the embedding cache."""
+        if not sources:
+            return []
+        rows = self._metadata_values(
+            "SELECT text, metadata FROM chunks WHERE source IN (SELECT value FROM json_each(?))",
+            (json.dumps(list(sources)),),
+        )
+        return [(str(text), json.loads(metadata)) for text, metadata in rows]
+
     def chunk_ids_for_sources(self, sources: Sequence[str]) -> dict[str, list[str]]:
         """`{source: [chunk id, ...]}` of these exact sources, ids only, in one read: what the
         indexer's prune records (CCA PERF-001 of run 20261106T212835Z)."""
