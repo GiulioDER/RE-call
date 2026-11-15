@@ -349,6 +349,15 @@ def generation_ingest(
                 uncertified = _certify_upload(
                     store._dsn, store.tenant, generation.generation_id, embedder
                 )
+                if uncertified is None:
+                    # Before the promotion, which an active rescue would leave refusing every
+                    # unscoped search without the artifact; a failed build fails the upload.
+                    from recall.generation_rescue import ensure_for_promotion
+
+                    ensure_for_promotion(
+                        store._dsn, store.tenant, generation.generation_id, lambda: embedder,
+                        env=values,
+                    )
             try:
                 manager.promote(
                     generation.generation_id,

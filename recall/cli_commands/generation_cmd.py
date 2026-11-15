@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import functools
 import sys
-from typing import get_args
+from typing import TYPE_CHECKING, get_args
 
 from recall.build_progress import BuildProgressReporter
 from recall.embeddings import Embedder
@@ -17,6 +17,9 @@ from recall.index import (
 
 from recall.cli_commands._shared import _make_embedder, _positive_int
 from recall.security_policy import access_context_from_environment, load_source_policy
+
+if TYPE_CHECKING:
+    from recall.generations import GenerationManager
 
 
 def _verify_local_manifest(
@@ -150,6 +153,12 @@ def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
         "--reason", default="abandoned by operator", help="recorded on the generation row"
     )
     generation_sub.add_parser("rollback", help="atomically restore the previous generation")
+    p_rescue = generation_sub.add_parser(
+        "rescue",
+        help="build the atomic rescue artifact a generation serves with, under "
+        "RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT (the active generation by default)",
+    )
+    p_rescue.add_argument("generation_id", nargs="?")
     generation_sub.add_parser("list", help="list immutable generation history")
     p_gc = generation_sub.add_parser("gc", help="collect expired retired generations")
     p_gc.add_argument("--retention-days", type=int, default=7)
@@ -244,6 +253,53 @@ def _report_stated_facts(count: int) -> None:
         )
 
 
+def _rescue_before_serving(args: argparse.Namespace, generation_id: str, action: str) -> None:
+    """Build `generation_id`'s atomic rescue when it is active for the tenant, or refuse `action`.
+
+    Under an active rescue a generation without its artifact refuses every unscoped search, so
+    promoting or rolling back to one is refused rather than done (`recall.generation_rescue`).
+    """
+    from recall.atomic_rescue import AtomicRescueArtifactError
+    from recall.generation_rescue import ensure_for_promotion
+
+    try:
+        built = ensure_for_promotion(
+            args.dsn, args.tenant, generation_id, lambda: _make_embedder(args.embedder)
+        )
+    except (AtomicRescueArtifactError, RuntimeError, OSError) as exc:
+        raise SystemExit(
+            f"not {action}: the atomic rescue is active for tenant {args.tenant!r} and generation "
+            f"{generation_id}'s artifact could not be built: {exc}. Set RECALL_ATOMIC_RESCUE_MODE=off "
+            "(and remove the tenant from RECALL_ATOMIC_RESCUE_MODE_BY_TENANT) to serve it without one."
+        ) from exc
+    if built:
+        print(f"atomic rescue: {built}")
+
+
+def _cmd_rescue(args: argparse.Namespace, manager: GenerationManager) -> None:
+    """`recall generation rescue`: build one artifact by hand, whatever the rescue mode.
+
+    Whatever the mode, so an operator can build the artifacts of the active and the previous
+    generation BEFORE turning the rescue on, which is the order that never refuses a search.
+    """
+    import os
+    from pathlib import Path
+
+    from recall.atomic_rescue import AtomicRescueArtifactError
+    from recall.generation_rescue import build_artifact
+    from recall.lite.atomic import ROOT_ENV
+
+    value = os.environ.get(ROOT_ENV, "").strip()
+    root = Path(value).expanduser() if value else None
+    if root is None or not root.is_absolute():
+        raise SystemExit(f"recall generation rescue needs {ROOT_ENV} set to an absolute path")
+    generation_id = args.generation_id or manager.active_generation_id()
+    try:
+        print(f"atomic rescue: {build_artifact(args.dsn, args.tenant, generation_id, _make_embedder(args.embedder), root)}")
+    except (AtomicRescueArtifactError, RuntimeError, OSError) as exc:
+        raise SystemExit(f"atomic rescue not built for {generation_id}: {exc}") from exc
+
+
 def _cmd_generation(args: argparse.Namespace) -> None:
     from recall.generations import GenerationManager
 
@@ -256,7 +312,13 @@ def _cmd_generation(args: argparse.Namespace) -> None:
                 f"corpus={generation.corpus_fingerprint}"
             )
         return
+    if args.generation_cmd == "rescue":
+        _cmd_rescue(args, manager)
+        return
     if args.generation_cmd == "rollback":
+        target = manager.previous_generation_id()
+        if target is not None:
+            _rescue_before_serving(args, target, "rolled back")
         print(f"active generation: {manager.rollback()}")
         _report_stated_facts(manager.last_stated_facts)
         return
@@ -275,6 +337,17 @@ def _cmd_generation(args: argparse.Namespace) -> None:
             retain_previous=args.retain_previous,
         )
         print(f"collected {len(collected)} generation(s): {', '.join(collected) or '(none)'}")
+        from recall.atomic_rescue import AtomicRescueArtifactError
+        from recall.generation_rescue import remove_artifacts
+
+        try:
+            removed = remove_artifacts(collected)
+        except AtomicRescueArtifactError as exc:
+            # The generations are gone; their artifacts are what is left, and the next gc retries.
+            print(f"WARNING: {exc}; the next gc removes them")
+        else:
+            if removed:
+                print(f"removed {removed} atomic rescue artifact(s) of the collected generation(s)")
         retracted = getattr(manager, "last_gc_facts_retracted", 0)
         if retracted > 0:
             print(f"retracted {retracted} fact(s) whose memos no generation holds any more")
@@ -290,6 +363,7 @@ def _cmd_generation(args: argparse.Namespace) -> None:
         )
         return
     if args.generation_cmd == "promote":
+        _rescue_before_serving(args, args.generation_id, "promoted")
         manager.promote(
             args.generation_id,
             unsafe_development=args.unsafe_development_promotion,

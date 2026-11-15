@@ -2183,6 +2183,15 @@ class GenerationManager:
             raise NoActiveGeneration(f"tenant {self.tenant_id!r} has no active generation")
         return str(row[0])
 
+    def previous_generation_id(self) -> str | None:
+        """The generation `rollback` would restore, or None when there is none."""
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT previous_generation_id FROM recall_tenant_state WHERE tenant_id = %s",
+                (self.tenant_id,),
+            ).fetchone()
+        return str(row[0]) if row and row[0] else None
+
     def servable_manifest(self) -> IndexManifestV1:
         """Continue a pending build or the active corpus, never a rolled-back generation.
 

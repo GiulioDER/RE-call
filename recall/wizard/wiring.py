@@ -394,6 +394,7 @@ def write_project_files(
     dsn: str,
     embedder: str,
     memory_dir: Path,
+    rescue_env: Mapping[str, str] | None = None,
 ) -> tuple[Path, ...]:
     """Write `.env`, the `CLAUDE.md` block and, when absent, `MEMORY.md`, returning what was touched.
 
@@ -410,7 +411,10 @@ def write_project_files(
 
     `.env` carries the serving DSN and embedder for the CLI, not for the MCP servers. The servers get
     their variables in their own `env` blocks, because the client's environment is not the shell
-    that read `.env`, so `.env` alone would leave them on defaults.
+    that read `.env`, so `.env` alone would leave them on defaults. `rescue_env` is the exception
+    that proves it: the atomic rescue settings go into `.env` as well, so a `recall generation
+    promote` run in the project builds the artifact its server will need (`recall.generation_rescue`).
+    They are replaced on every run, so a tenant this run left off does not stay on from an earlier one.
 
     **`project_root` is created if it is absent, and exactly one level of it.** Nothing else creates
     it: the directory used to appear as a side effect of the deleted `write_mcp_config`, which did
@@ -440,9 +444,12 @@ def write_project_files(
     # `_update_env_block` rebuilds the whole managed block from the keys it is given, and
     # `recall setup` keeps provider API keys, RECALL_CALIBRATION, RECALL_RERANK and more in that
     # same block. Passing only the two keys the wizard owns deleted all of them without a backup.
+    managed = _managed_env_values(env_path)
+    for key in ("RECALL_ATOMIC_RESCUE_MODE_BY_TENANT", "RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT"):
+        managed.pop(key, None)
     _update_env_block(
         env_path,
-        {**_managed_env_values(env_path), "RECALL_DSN": dsn, "RECALL_EMBEDDER": embedder},
+        {**managed, **(rescue_env or {}), "RECALL_DSN": dsn, "RECALL_EMBEDDER": embedder},
     )
     written.append(env_path)
 
