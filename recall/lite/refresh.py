@@ -609,10 +609,6 @@ def _refresh_locked(
                 report.skipped += stats.skipped
                 report.deleted += stats.deleted
         calibration = _calibrate(store, embedder, background_calibration)
-        # The navigation graph (`recall.lite.graph`): any write above cleared it, so it is built
-        # here, where a refresh already pays for reading the corpus, rather than on the next read.
-        if not store.graph_readiness().ready:
-            store.rebuild_semantic_graph()
     except Exception as exc:  # BROAD-CATCH: fail-open  # recorded in the state file and returned
         _log.warning("lite refresh of %s failed: %s", db, exc)
         report.outcome, report.reason = Outcome.FAILED, f"{type(exc).__name__}: {exc}"
@@ -648,6 +644,19 @@ def _refresh_locked(
         _log.warning("atomic rescue build for %s failed: %s", db, exc)
         report.outcome, report.reason = Outcome.FAILED, f"atomic rescue: {type(exc).__name__}: {exc}"
         # The failure may be the store's own, as above (CCA BUG-002).
+        with suppress(Exception):
+            report.chunks_total = store.count()
+        return _finish(db, roots, report, key_root=key_root)
+    try:
+        # The navigation graph (`recall.lite.graph`): any write above cleared it, so it is built
+        # here, where a refresh already pays for reading the corpus, rather than on the next read.
+        # Last, so a failed build skips none of the facts, the embedder binding or the rescue
+        # artifact above (CCA STAKES-001, the owner's decision of 2026-11-15).
+        if not store.graph_readiness().ready:
+            store.rebuild_semantic_graph()
+    except Exception as exc:  # BROAD-CATCH: fail-closed  # FAILED is not a success, so the next refresh builds again
+        _log.warning("semantic graph build for %s failed: %s", db, exc)
+        report.outcome, report.reason = Outcome.FAILED, f"semantic graph: {type(exc).__name__}: {exc}"
         with suppress(Exception):
             report.chunks_total = store.count()
         return _finish(db, roots, report, key_root=key_root)

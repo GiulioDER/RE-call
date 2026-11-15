@@ -42,6 +42,9 @@ Invariants and the failure each one catches:
   - M21 the kept graph's stamp made the corpus version alone: G14 `[False]` "a graph kept from the
     deleted file was drawn" (the old corpus's `references` relation and generation id). M22 the
     stamp made each row's id and `indexed_at` only: G14 `[True]`, under the frozen clock, the same.
+  - M23 (G15, STAKES-001, the owner's decision of 2026-11-15) the graph rebuild put back inside
+    the refresh's main try, before the bookkeeping: "the failed graph build skipped recording the
+    embedder spec".
   - M4 re-run on the changed G3 (`corpus_version` comparison removed from `read_marker`): "a
     stale graph read as ready".
 
@@ -436,3 +439,23 @@ def test_g14_a_kept_graph_is_not_served_for_another_file_at_the_same_version(
     fresh = lite_db.source_detail(dsn, tenant, "a.md")
     assert first is not None and fresh is not None and first["relations"] != fresh["relations"], "nothing to tell apart"
     assert served == fresh, "a graph kept from the deleted file was drawn"
+
+
+def test_g15_a_failed_graph_build_skips_nothing_the_refresh_owes(
+    store: LiteStore, folder: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """G15. The graph build fails after a refresh has indexed and calibrated: the refresh still
+    records the embedder spec of its re-embed, and reports FAILED naming the graph, so the next
+    refresh builds again. Catches the build placed before that bookkeeping (CCA STAKES-001)."""
+    with sqlite3.connect(store.path) as c:
+        c.execute("DELETE FROM meta WHERE key = 'semantic_graph'")
+
+    def broken(self: LiteStore) -> None:
+        raise OSError("disk I/O error")
+
+    monkeypatch.setattr(LiteStore, "rebuild_semantic_graph", broken)
+    report = refresh(store, [folder], ContentWordEmbedder(), force=True, record_spec="hashing")  # type: ignore[arg-type]
+    with sqlite3.connect(store.path) as c:
+        spec = c.execute("SELECT value FROM meta WHERE key = 'embedder_spec'").fetchone()
+    assert spec == ("hashing",), "the failed graph build skipped recording the embedder spec"
+    assert report.outcome is Outcome.FAILED and report.reason.startswith("semantic graph: OSError"), report.to_dict()
