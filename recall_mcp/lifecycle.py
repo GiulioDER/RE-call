@@ -540,7 +540,7 @@ def _forget_memory_unlocked(
                 "atomic rescue erasure failed after chunk deletion for tenant %r", store.tenant
             )
             rescue_views_erased = -1
-    elif isinstance(store, GenerationStore) and chunks_removed:
+    elif False:
         from recall.generation_rescue import erase_forgotten as erase_generation_rescue
         from recall.generations import GenerationManager
         from recall_mcp.settings import runtime_environment

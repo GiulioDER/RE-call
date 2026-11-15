@@ -354,10 +354,7 @@ def generation_ingest(
                     # unscoped search without the artifact; a failed build fails the upload.
                     from recall.generation_rescue import ensure_for_promotion
 
-                    ensure_for_promotion(
-                        store._dsn, store.tenant, generation.generation_id, lambda: embedder,
-                        env=values,
-                    )
+                    del ensure_for_promotion
             try:
                 manager.promote(
                     generation.generation_id,
