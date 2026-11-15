@@ -24,7 +24,7 @@ Both diagrams are pinned to commit `0d5d407b731e62e3929589bdc30b1a60fc46cf4b`. T
 point at that commit, so they keep resolving after master moves, and they describe the code as it
 was then. When the code moves on, regenerate them rather than editing the HTML.
 
-The overview follows the flowchart in the [README](../../README.md#how-it-works), with every box
+The overview follows the flowchart in [How RE-call works](../HOW_IT_WORKS.md#how-it-works), with every box
 and arrow checked against the code. It leaves out the opt in reasoning, fact application and
 ingest paths, and a card on the page summarises them instead.
 

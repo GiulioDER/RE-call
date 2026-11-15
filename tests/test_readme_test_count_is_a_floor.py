@@ -6,7 +6,12 @@ import re
 
 from pathlib import Path
 
-README = Path(__file__).resolve().parent.parent / "README.md"
+ROOT = Path(__file__).resolve().parent.parent
+README = ROOT / "README.md"
+#: The detail the README carried until 2026-11-15, moved verbatim when it was shortened to a
+#: landing page. The pins below follow each sentence to where it now lives.
+GETTING_STARTED = ROOT / "docs" / "GETTING_STARTED.md"
+HOW_IT_WORKS = ROOT / "docs" / "HOW_IT_WORKS.md"
 
 
 def test_the_readme_does_not_advertise_a_numeric_test_count() -> None:
@@ -16,7 +21,7 @@ def test_the_readme_does_not_advertise_a_numeric_test_count() -> None:
 
 
 def test_the_schema_migrations_claim_matches_the_readme_body() -> None:
-    text = README.read_text(encoding="utf-8")
+    text = GETTING_STARTED.read_text(encoding="utf-8")
     assert "no versioned upgrade path" not in text
     assert "ordered SQL migration path" in text
     assert "pre-tenancy tables are migrated in place" in text
@@ -25,14 +30,17 @@ def test_the_schema_migrations_claim_matches_the_readme_body() -> None:
 def test_the_readme_has_a_clear_quickstart_and_surface_split() -> None:
     text = README.read_text(encoding="utf-8")
     assert "## Quickstart" in text
-    assert "## Product surface" in text
     assert "recall setup" in text
+    assert "## Product surface" in HOW_IT_WORKS.read_text(encoding="utf-8")
+    text = GETTING_STARTED.read_text(encoding="utf-8")
     assert "When the wizard asks whether to calibrate" in text
     # Matched case-insensitively on the instruction rather than on one sentence's opening words.
     # The quickstart now leads with the database, because its first command needed a compose file
     # a pip-only reader did not have, so the wizard sentence moved rather than went away.
     assert "run the guided setup wizard" in text.lower()
-    assert "Declared supersession makes the current memory win" in text
+    assert "Declared supersession makes the current memory win" in HOW_IT_WORKS.read_text(
+        encoding="utf-8"
+    )
 
 
 def test_the_install_path_does_not_change_invocation_style_halfway() -> None:
@@ -84,7 +92,7 @@ def test_the_readme_names_the_dual_license_and_the_citation_path() -> None:
 
 
 def test_the_readme_names_the_actual_gate_shapes() -> None:
-    text = README.read_text(encoding="utf-8")
+    text = HOW_IT_WORKS.read_text(encoding="utf-8")
     assert "Real pgvector integration tests" in text
     assert "type checking" in text
     assert "dependency audit" in text

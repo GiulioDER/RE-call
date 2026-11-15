@@ -114,6 +114,8 @@ GATED_DOCS: tuple[str, ...] = (
     "docs/PRIOR_ART.md",
     "docs/ENGINEERING.md",
     "docs/ATM_BENCH.md",
+    "docs/GETTING_STARTED.md",
+    "docs/HOW_IT_WORKS.md",
 )
 
 #: Spans masked before numbers are extracted.
