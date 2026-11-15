@@ -82,7 +82,7 @@ from recall.semantic_graph import (
     marker_schema_version,
     write_semantic_graph,
 )
-from recall.semantic_graph._model import semantic_graph_marker as _semantic_graph_marker
+from recall.semantic_graph import semantic_graph_marker as _semantic_graph_marker
 from recall.supersession_records import pg_delete_removals, pg_record_removals, pg_records
 from recall.supersession import resolve_supersession_graph, supersession_rows_sql
 from recall.types import Chunk, EvidenceCard

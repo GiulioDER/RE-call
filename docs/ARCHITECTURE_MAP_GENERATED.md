@@ -63,7 +63,7 @@ Cross package edges: 399
 | 61 | `recall_mcp.server` |
 | 59 | `recall_mcp.service` |
 | 30 | `recall.cli_commands.index_search` |
-| 28 | `recall.generations` |
+| 27 | `recall.generations` |
 | 23 | `recall.index` |
 | 23 | `recall_mcp.indexing` |
 | 23 | `recall_mcp.reasoning_engine` |
@@ -73,8 +73,8 @@ Cross package edges: 399
 | 21 | `recall.rewrite` |
 | 20 | `recall_mcp.lifecycle` |
 | 19 | `recall.cli_commands.setup_wizard` |
+| 19 | `recall.lite.store` |
 | 19 | `recall_mcp.provenance` |
-| 18 | `recall.lite.store` |
 | 18 | `recall.wizard.headless` |
 | 17 | `recall.cli_commands.calibration_cmd` |
 | 17 | `recall.dashboard.server` |
@@ -91,6 +91,7 @@ Cross package edges: 399
 | 14 | `recall_mcp.desktop_ingest` |
 | 14 | `recall_mcp.reasoning_api` |
 | 13 | `recall.cli_commands._shared` |
+| 13 | `recall.dashboard.lite_db` |
 | 13 | `recall.eval.labelled` |
 | 13 | `recall.reasoning` |
 | 13 | `recall_mcp.assistant` |
@@ -99,7 +100,6 @@ Cross package edges: 399
 | 12 | `recall.eval.harness` |
 | 12 | `recall.lite.calibration` |
 | 12 | `recall.setup` |
-| 12 | `recall.stated_facts` |
 
 ## Cross package edges
 
@@ -544,7 +544,7 @@ They are observations, not automatic failures.
 | `recall.cli_commands.doctor_cmd` | 1 | 168 |
 | `recall.cli_commands.extract_rewrite` | 12 | 156 |
 | `recall.cli_commands.generation_cmd` | 11 | 144 |
-| `recall.cli_commands.graph_cmd` | 7 | 140 |
+| `recall.cli_commands.graph_cmd` | 8 | 140 |
 | `recall.cli_commands.idempotency_cmd` | 2 | 40 |
 | `recall.cli_commands.index_search` | 30 | 153 |
 | `recall.cli_commands.lint_check` | 7 | 144 |
@@ -569,7 +569,7 @@ They are observations, not automatic failures.
 | `recall.dashboard.db` | 5 | 160 |
 | `recall.dashboard.edit` | 10 | 160 |
 | `recall.dashboard.graph` | 6 | 160 |
-| `recall.dashboard.lite_db` | 11 | 160 |
+| `recall.dashboard.lite_db` | 13 | 160 |
 | `recall.dashboard.markdown` | 0 | 0 |
 | `recall.dashboard.review` | 11 | 160 |
 | `recall.dashboard.server` | 17 | 189 |
@@ -657,7 +657,7 @@ They are observations, not automatic failures.
 | `recall.generation_build` | 8 | 139 |
 | `recall.generation_store` | 16 | 138 |
 | `recall.generation_types` | 2 | 13 |
-| `recall.generations` | 28 | 138 |
+| `recall.generations` | 27 | 138 |
 | `recall.graph_first` | 2 | 31 |
 | `recall.guards` | 1 | 5 |
 | `recall.idempotency_receipts` | 3 | 14 |
@@ -674,13 +674,13 @@ They are observations, not automatic failures.
 | `recall.lite.atomic` | 8 | 138 |
 | `recall.lite.calibration` | 12 | 138 |
 | `recall.lite.facts` | 9 | 138 |
-| `recall.lite.graph` | 6 | 138 |
+| `recall.lite.graph` | 5 | 138 |
 | `recall.lite.inspect` | 3 | 138 |
 | `recall.lite.memo_requests` | 4 | 23 |
 | `recall.lite.receipts` | 3 | 138 |
 | `recall.lite.refresh` | 14 | 138 |
 | `recall.lite.setup` | 7 | 164 |
-| `recall.lite.store` | 18 | 138 |
+| `recall.lite.store` | 19 | 138 |
 | `recall.lite.writer_lock` | 1 | 138 |
 | `recall.manifest` | 3 | 15 |
 | `recall.memory_index` | 6 | 139 |

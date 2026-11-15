@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import sys
 from collections import Counter, defaultdict
+from collections.abc import Sequence
 from datetime import UTC, date, datetime
 from pathlib import PurePosixPath
 from typing import Any
@@ -40,7 +41,18 @@ from recall.frontmatter import supersedes_targets, validity_bounds
 from recall.supersession import SupersessionGraph, resolve_supersession_graph, supersession_rows_sql
 from recall.supersession_records import pg_records
 
-__all__ = ["HUB_LINKS", "SHARE_MAX_FILES", "SHARE_PER_FILE", "assemble_detail", "assemble_graph", "corpus_graph", "resolve_imports", "source_detail"]
+__all__ = [
+    "HUB_LINKS", "SHARE_MAX_FILES", "SHARE_PER_FILE", "DetailChunk", "DetailEntity", "DetailRelation", "assemble_detail",
+    "assemble_graph", "corpus_graph", "empty_graph", "resolve_imports", "source_detail",
+]
+
+#: `assemble_detail`'s rows, as both its producers build them (CCA CODE-003): a chunk is
+#: `(chunk_id, ordinal, source_uri, text, metadata, indexed_at, first indexed, file)`, with the
+#: times as each store holds them; an entity `(name, kind, mentions)`; a relation `(relation,
+#: status, subject, subject kind, object, object kind)`.
+DetailChunk = tuple[str, int | None, str, str, Any, Any, Any, str]
+DetailEntity = tuple[str, str, int]
+DetailRelation = tuple[str, str, str, str, str, str]
 
 #: An entity named in more files than this is too common to link them (a project name, `self`).
 SHARE_MAX_FILES = 8
@@ -226,6 +238,12 @@ def _state(file: str, graph: SupersessionGraph, valid_from: str | None, valid_un
     return "current"
 
 
+def empty_graph(tenant: str, note: str) -> dict[str, Any]:
+    """The corpus graph of no corpus, `note` saying why: one shape for both readers (CCA CODE-007)."""
+    return {"nodes": [], "edges": [], "counts": {"memos": 0, "edges": 0}, "notes": [note],
+            "origin": "database", "tenant": tenant, "generation": None}
+
+
 def corpus_graph(db: DashboardDB, tenant: str, *, today: date | None = None) -> dict[str, Any]:
     """Every file of `tenant`'s active generation as a node; supersession, relations, Python
     imports and shared entities as edges. The shape of `build_graph`, see the module docstring."""
@@ -237,8 +255,7 @@ def corpus_graph(db: DashboardDB, tenant: str, *, today: date | None = None) -> 
     with db.connect(tenant=tenant) as c:
         generation = _generation(c, tenant)
         if generation is None:
-            return {"nodes": [], "edges": [], "counts": {"memos": 0, "edges": 0}, "notes": [f"{tenant} has no active generation"],
-                    "origin": "database", "tenant": tenant, "generation": None}
+            return empty_graph(tenant, f"{tenant} has no active generation")
         files = c.execute(
             "select coalesce(c.metadata->>'file', c.source_uri), count(*), min(coalesce(c.first_indexed_at, c.indexed_at)), "
             "max(c.metadata->>'type'), max(c.metadata->>'valid_from'), max(c.metadata->>'valid_until'), "
@@ -512,7 +529,7 @@ def assemble_detail(
     key: str,
     source: str,
     canonical: str,
-    chunks: Any,
+    chunks: Sequence[DetailChunk],
     total: int,
     first_indexed: Any,
     last_indexed: Any,
@@ -520,8 +537,8 @@ def assemble_detail(
     successor: str | None,
     replaced: list[str],
     indexed: set[str],
-    entities: Any,
-    relations: Any,
+    entities: Sequence[DetailEntity],
+    relations: Sequence[DetailRelation],
     collided: bool,
     imports: list[tuple[str, str]],
     imported_by: list[tuple[str, str]],
@@ -530,9 +547,7 @@ def assemble_detail(
     """`source_detail`'s answer from its queries' values, pure, so the lite store's reader
     (`recall.dashboard.lite_db.source_detail`) answers in exactly this shape.
 
-    `chunks`: `(chunk_id, ordinal, source_uri, text, metadata, indexed_at, first indexed, file)` in
-    order, at most `MAX_CHUNKS + 1`; `entities`: `(name, kind, mentions)`; `relations`:
-    `(relation, status, subject, subject kind, object, object kind)`.
+    `chunks` in order, at most `MAX_CHUNKS + 1` (`DetailChunk`, `DetailEntity`, `DetailRelation`).
     """
     now = today
     first_meta = chunks[0][4] if isinstance(chunks[0][4], dict) else {}
