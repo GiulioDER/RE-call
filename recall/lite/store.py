@@ -100,6 +100,8 @@ def corpus_fingerprint_of(rows: Iterable[tuple[str, str, bytes]]) -> str:
     from recall.lite.calibration import corpus_digest
 
     return corpus_digest(list(rows))
+
+
 _log = get_logger("lite.store")
 
 #: PostgreSQL's English stop word list (`english.stop`), so both stores drop the same words from a
@@ -1883,7 +1885,7 @@ class LiteStore:
             # the version), so the corpus is hashed only when there is none (CCA PERF-004).
             marker = read_marker(self._conn)
             generation = str(marker["generation_id"]) if marker is not None else self.lite_generation_id()
-            return readiness(self._conn, self._tenant, generation)
+            return readiness(marker, self._tenant, generation)
 
     def related_chunks(
         self, seed_chunk_id: str, relation: str, max_items: int

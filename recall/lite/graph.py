@@ -187,9 +187,9 @@ def read_marker(conn: sqlite3.Connection) -> dict[str, Any] | None:
     return marker
 
 
-def readiness(conn: sqlite3.Connection, tenant: str, generation_id: str) -> GraphReadiness:
-    """`recall.semantic_graph.read_graph_readiness` for a lite file: the marker, no member rows."""
-    marker = read_marker(conn)
+def readiness(marker: dict[str, Any] | None, tenant: str, generation_id: str) -> GraphReadiness:
+    """`recall.semantic_graph.read_graph_readiness` for a lite file, from a marker `read_marker`
+    returned: the caller has read it already, so it is not decoded twice (CCA CODE-003)."""
     if marker is None or marker["generation_id"] != generation_id:
         return GraphReadiness(
             ready=False, tenant_id=tenant, generation_id=generation_id, graph_id=None, graph_fingerprint=None,

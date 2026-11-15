@@ -91,7 +91,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import urlencode
@@ -568,9 +568,9 @@ def test_g19_a_marker_missing_its_graph_id_is_no_graph(store: LiteStore) -> None
         del marker["graph_id"]
         c.execute("UPDATE meta SET value = ? WHERE key = 'semantic_graph'", (json.dumps(marker),))
 
-    def outcome(call: object) -> object:
+    def outcome(call: Callable[[], object]) -> object:
         try:
-            return call()  # type: ignore[operator]
+            return call()
         except Exception as exc:  # noqa: BLE001  # the assertions below name what came out
             return exc
 
@@ -579,3 +579,43 @@ def test_g19_a_marker_missing_its_graph_id_is_no_graph(store: LiteStore) -> None
     with store._lock:
         loaded = outcome(lambda: load_graph(store._conn, store.tenant))
     assert loaded is None, repr(loaded)
+
+
+def test_g20_a_rebuild_loads_no_corpus_under_the_write_lane(store: LiteStore, monkeypatch: pytest.MonkeyPatch) -> None:
+    """G20. `recall graph rebuild` on a store the command has just opened hashes the corpus before
+    it takes the write lane, so the lane is held for the build, not for a load as well. Catches the
+    BUG-004 check that loaded the whole corpus under the lane (CCA PERF-001, deferred run of
+    20261115T155439Z).
+
+    Red proof: this node against `recall/cli_commands/graph_cmd.py` as of 9e1c3d2c6 (no hash before
+    the lane) fails its "corpus load(s) under the write lane" assertion; green with the fix.
+    """
+    import contextlib
+
+    import recall.backends as backends
+
+    real_session, real_load = backends.write_session, LiteStore._load
+    lane: list[bool] = []
+    loads_under_lane: list[int] = []
+
+    @contextlib.contextmanager
+    def tracked(target: object, purpose: str, **kwargs: object) -> Iterator[None]:
+        with real_session(target, purpose, **kwargs):
+            lane.append(True)
+            try:
+                yield
+            finally:
+                lane.pop()
+
+    def counted(self: LiteStore) -> object:
+        before = self._matrix
+        matrix = real_load(self)
+        if lane and matrix is not before:  # a cache hit returns the matrix it already held
+            loads_under_lane.append(1)
+        return matrix
+
+    monkeypatch.setattr(backends, "write_session", tracked)
+    monkeypatch.setattr(LiteStore, "_load", counted)
+    out = run_cli(["--dsn", "sqlite:///" + store.path.as_posix(), "graph", "rebuild"])
+    assert '"ready": true' in out, out
+    assert not loads_under_lane, f"{len(loads_under_lane)} corpus load(s) under the write lane"
