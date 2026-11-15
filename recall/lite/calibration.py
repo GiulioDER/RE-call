@@ -702,7 +702,7 @@ def _run_refit(store: LiteStore, embedder: Embedder, job: _RefitJob) -> None:
             with lite_lane(store.path, lane="refit", purpose="calibrate", coalesce=True, on_busy="skip") as ticket:
                 if ticket is None or not _refit_wanted(store):
                     return
-                job.outcome = auto_calibrate(store, embedder)
+                job.outcome = _fit_and_build(store, embedder)
             with _REFIT_LOCK:
                 job.again = False
             if not _refit_wanted(store):
@@ -832,8 +832,23 @@ def run_report(
             f"generation {generation_id!r} is not this lite store's corpus ({store.lite_generation_id()}); "
             "a lite store calibrates the corpus it holds now"
         )
-    outcome = auto_calibrate(store, embedder, queries=queries)
+    outcome = _fit_and_build(store, embedder, queries=queries)
     return {**status_report(store), "outcome": outcome.status.value, "message": outcome.reason}
+
+
+def _fit_and_build(
+    store: LiteStore, embedder: Embedder, *, queries: Sequence[Mapping[str, Any]] | None = None
+) -> CalibrationOutcome:
+    """`auto_calibrate`, then the atomic rescue artifact its new calibration id names.
+
+    Every fit stored outside a write (a background refit, `recall_calibration_run`) goes through
+    here: a write builds after its own bookkeeping instead (`recall.lite.refresh`).
+    """
+    outcome = auto_calibrate(store, embedder, queries=queries)
+    from recall.lite.atomic import ensure_rescue_artifact
+
+    ensure_rescue_artifact(store, embedder)
+    return outcome
 
 
 def corpus_digest(rows: list[tuple[str, str, bytes]]) -> str:

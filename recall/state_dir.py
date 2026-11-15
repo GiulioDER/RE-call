@@ -28,10 +28,14 @@ def make_parent(path: Path) -> None:
     """
     parent = path.parent
     parent.mkdir(parents=True, exist_ok=True)
-    if parent.name != STATE_DIR:
-        return
+    if parent.name == STATE_DIR:
+        write_ignore(parent)
+
+
+def write_ignore(directory: Path) -> None:
+    """Give an existing ``directory`` the ``.gitignore`` of ``*`` when it has none; never overwrite one."""
     try:
-        with open(parent / IGNORE_NAME, "x", encoding="utf-8", newline="\n") as handle:
+        with open(directory / IGNORE_NAME, "x", encoding="utf-8", newline="\n") as handle:
             handle.write(IGNORE_TEXT)
     except FileExistsError:
         pass
