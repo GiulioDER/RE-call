@@ -32,7 +32,7 @@ Agent SDK.
 | `recall_consistency/` | Repository consistency checks. | Repository support, not packaged library API. |
 | `plugin/` | The Claude Code plugin: MCP wiring, hooks, and the RE-call skills. | Supported; see [../plugin/README.md](../plugin/README.md). |
 | `codex-plugin/` | The Codex plugin bundle and matching portable skills. | See [CODEX_RECALL_INTEGRATION.md](CODEX_RECALL_INTEGRATION.md). |
-| `site/` | Source of the setup guide published at giulioder.github.io/RE-call. | Published on every push to master. |
+| `site/` | Source of the former project site, kept for reference. | Retired. |
 | `hooks/` | Deployable copies of repository guard hooks. | Repository support. |
 | `packaging/` | Windows installer packaging. | Release tooling. |
 | `docker/` | Container build files. | Release tooling. |

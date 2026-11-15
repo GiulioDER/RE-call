@@ -3,7 +3,7 @@
   "name": "io.github.GiulioDER/re-call",
   "title": "RE-call MCP Memory Server",
   "description": "Agent memory on SQLite or Postgres that flags superseded facts and abstains below its threshold.",
-  "websiteUrl": "https://giulioder.github.io/RE-call/",
+  "websiteUrl": "https://github.com/GiulioDER/RE-call",
   "repository": {
     "url": "https://github.com/GiulioDER/RE-call",
     "source": "github"

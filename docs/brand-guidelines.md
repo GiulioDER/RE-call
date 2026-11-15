@@ -1,6 +1,6 @@
 # RE-call brand guidelines
 
-The RE-call desktop UI, README graphics, GitHub Pages, and social preview use the same visual language. This file is the versioned source of truth for that language.
+The RE-call desktop UI, README graphics and GitHub social preview use the same visual language. This file is the versioned source of truth for that language.
 
 ## Palette
 
@@ -38,6 +38,6 @@ Primary text must remain high contrast against `canvas` and `surface`. Gold is a
 
 ## Source files
 
-Run `python docs/make_brand_assets.py` after changing the canonical logo. It updates the GitHub Pages logo, desktop watermark, Claude plugin icon, README banner, and GitHub social preview.
+Run `python docs/make_brand_assets.py` after changing the canonical logo. It updates the legacy site logo, desktop watermark, Claude plugin icon, README banner, and GitHub social preview.
 
 Run `python docs/make_readme_banner.py` to rebuild the GIF, static PNG, and identical social preview after changing the banner copy or design.

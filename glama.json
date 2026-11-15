@@ -3,6 +3,6 @@
   "maintainers": ["GiulioDER"],
   "name": "RE-call",
   "description": "Agent memory on SQLite or Postgres that flags superseded facts and abstains below its threshold.",
-  "homepage": "https://giulioder.github.io/RE-call/",
+  "homepage": "https://github.com/GiulioDER/RE-call",
   "keywords": ["agent-memory", "rag", "sqlite", "pgvector", "postgresql", "abstention", "mcp"]
 }

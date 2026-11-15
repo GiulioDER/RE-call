@@ -181,7 +181,7 @@ better.** Both are published, including the one that did not work.
 
 ## Links
 
-- [Setup guide](https://giulioder.github.io/RE-call/)
+- [Setup guide](../docs/INSTALLATION.md)
 - [Repository](https://github.com/GiulioDER/RE-call)
 - [Using RE-call with Claude](https://github.com/GiulioDER/RE-call/blob/master/docs/USING_WITH_CLAUDE.md)
 - [Privacy](https://github.com/GiulioDER/RE-call/blob/master/plugin/README.md#privacy-what-it-sends-and-where)
