@@ -310,7 +310,10 @@ def test_lexical_ties_rank_ords_as_python_reads_them(make_store, with_vector: bo
     (0) and -1 as -1. The tie order read the text with `'^[0-9]+$'`, so "1" ranked 1 and -1
     ranked 0, and which of these survived LIMIT k disagreed with every Python reader of the row.
 
-    Red proof: recorded once CI has run this against the unfixed tie order.
+    Red proof, CI on PR 1311 (pgvector/pgvector:pg18, 2026-11-15): at 8f8e90e21, with
+    `_lexical_tie_order` still reading `'^[0-9]+$'` as bigint, both nodes failed this assertion
+    with `['b-neg', 'e-zero', ...]` where `['b-neg', 'a-str', ...]` was expected: the string "1"
+    ranked 1. Green on the fix, d383ccc9f.
     """
     from recall.related import _ordinal
     from recall.types import Chunk
@@ -327,7 +330,8 @@ def test_lexical_ties_survive_an_ord_past_bigint(make_store, with_vector: bool) 
     """One matching row with an ord past 2**63 must not fail the whole search.
 
     Its red is the query raising, which this test turns into its own failure on purpose: not
-    raising is the behaviour under test. Red proof: recorded once CI has run it unfixed.
+    raising is the behaviour under test. Red proof, same CI run at 8f8e90e21: both nodes failed
+    on `value "100000000000000000000" is out of range for type bigint`. Green on d383ccc9f.
     """
     try:
         got = _tied_lexical_ids(make_store, {"m0": 0, "w-big": 10**20}, with_vector)

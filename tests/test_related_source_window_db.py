@@ -25,6 +25,21 @@ the test's own final list assertion:
   nodes red under the service's collation, ``['m1', 'm3', 'a-bool'] == ['m1', 'm3', 'X-none']``.
 
 Each probe was reverted (f77b92975) and the whole CI run was green on the fix and on the revert.
+
+The ``ordinal`` tests, same CI service and day, red in their own assertions:
+
+- Unfixed ordinal query (b84550086, ``'^[0-9]+$'`` filter, ``::int`` distance, ``id`` ties): all
+  eight ordinal nodes red. The string ord ``"1"`` took a slot (``['Z-str'] == ['Q0']`` at k=1,
+  ``{'Q0', 'Z-str', 'm2', 'm3'}`` for the membership), ``N-neg`` was never admitted, and
+  ``test_ordinal_window_survives_an_ord_past_int`` failed on ``value "100000000000000000000" is
+  out of range for type integer``, raised by the query and turned into the test's own failure.
+- One probe of the fix (b2ec5d07e) dropping both ``-?`` and the ordinal ``COLLATE "C"``. The
+  nodes separate the two clauses: ``order[*-1]`` red from the collation alone, ``['m2'] ==
+  ['Q0']`` (no negative ord sits at distance 1), and ``membership[*]`` red from ``-?`` alone,
+  ``{'Q0', 'm2', 'm3'}`` without ``N-neg`` (a set ignores order). The two source odd-ord k=10
+  nodes went red from ``-?`` too, as predicted.
+
+The fix (8a872bb79) and the probe's revert (b51d9221b) were green across the whole CI run.
 """
 
 import hashlib
