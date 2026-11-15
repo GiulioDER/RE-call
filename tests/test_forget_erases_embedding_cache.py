@@ -33,7 +33,7 @@ from pathlib import Path
 
 import pytest
 
-from recall.cache import EmbeddingCache, cache_key
+from recall.cache import EmbeddingCache, cache_key, embed_with_cache, text_digest
 from recall.context import ContextPolicy
 from recall.embedding_core import HashingEmbedder
 from recall.embeddings import embedding_profile
@@ -167,3 +167,90 @@ def test_a_cache_that_cannot_be_erased_is_reported(tmp_path: Path, monkeypatch: 
 
         assert result.chunks_removed > 0, result.message
         assert "erasing their vectors from the embedding cache failed" in result.message, result.message
+
+
+def test_an_erase_a_reader_kept_from_checkpointing_raises(tmp_path: Path) -> None:
+    """A blocked TRUNCATE checkpoint is a failed erase, so the forget can report it.
+
+    Failure mode: `erase_digests` discarded the checkpoint's result row, so with another
+    connection holding a read snapshot the deleted vector's old pages stayed in the file and its
+    write-ahead log while the forget reported success.
+
+    Red proof: against `origin/master` `98ae7efba` (the checkpoint result unread) this fails at
+    `pytest.raises` with `DID NOT RAISE`. The forget turns the raise into a WARNING, which
+    `test_a_cache_that_cannot_be_erased_is_reported` pins.
+    """
+    path = tmp_path / "embeddings.sqlite"
+    with EmbeddingCache(path) as cache:
+        cache.put_many([("k", [0.25, 0.5])], texts=["the locker code"])
+        # Without this the checkpoint waits out the 5 s busy timeout before giving up.
+        cache._conn.execute("PRAGMA busy_timeout = 0")
+        with closing(sqlite3.connect(path, isolation_level=None)) as reader:
+            reader.execute("BEGIN")
+            assert reader.execute("SELECT COUNT(*) FROM embeddings").fetchone() == (1,)
+            with pytest.raises(sqlite3.OperationalError, match="blocked the checkpoint"):
+                cache.erase_digests({text_digest("the locker code")})
+            reader.execute("COMMIT")
+
+
+def _drop_digests(cache_path: Path) -> None:
+    """Make every entry look as 0.15.0 wrote it: with no digest of its text."""
+    with closing(sqlite3.connect(cache_path)) as conn:
+        conn.execute("UPDATE embeddings SET text_sha256 = NULL")
+        conn.commit()
+
+
+def test_forget_warns_while_the_cache_holds_entries_without_a_digest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A forget that cannot tell whether the cache still holds the text says so.
+
+    Failure mode: an entry written before the digest column (0.15.0 and earlier) has a NULL
+    digest, which the erase-by-digest never matches, so the forgotten vector stayed cached and
+    the forget reported success. The negative control is
+    `test_forget_erases_the_memos_cache_entries_under_every_embedder`, which asserts no WARNING
+    for a cache whose entries all carry a digest.
+
+    Red proof: against `origin/master` `98ae7efba` this fails at the `record no digest` message
+    assertion (`Forgot 1 chunk(s) from 1 source(s).`, no warning).
+    """
+    cache_path = tmp_path / "cache" / "embeddings.sqlite"
+    monkeypatch.setenv("RECALL_EMBED_CACHE", str(cache_path))
+    gone, _kept = _memos(tmp_path / "mem")
+    with LiteStore(tmp_path / "a.db", dim=64) as store:
+        _index(store, tmp_path / "mem", HashingEmbedder(64), cache_path)
+        _drop_digests(cache_path)
+        assert len(_cached(cache_path)) == 2, "negative control: one entry per memo"
+
+        result = forget_memory(store, [gone])
+
+        assert result.chunks_removed > 0, result.message
+        assert "holds 2 embedding(s) that record no digest of their text" in result.message, (
+            result.message
+        )
+
+
+def test_a_cache_hit_gives_an_entry_without_a_digest_its_digest(tmp_path: Path) -> None:
+    """An entry 0.15.0 wrote becomes erasable the next time its text is embedded through the cache.
+
+    Failure mode: a NULL digest stayed NULL for the entry's lifetime, however often it was
+    served, so no forget could ever find it.
+
+    Red proof: against `origin/master` `98ae7efba` this fails at `erase_digests(...) == 1` (0
+    erased). Mutation: deleting the `SET text_sha256` statement from
+    `recall.cache.EmbeddingCache._touch` fails it the same way.
+    """
+    path = tmp_path / "embeddings.sqlite"
+    embedder = HashingEmbedder(16)
+    texts = ["The locker code is zqx four four seven.", "The car is parked on level three."]
+    with EmbeddingCache(path) as cache:
+        embed_with_cache(embedder, texts, cache, purpose="passage")
+    _drop_digests(path)
+
+    with EmbeddingCache(path) as cache:
+        embed_with_cache(embedder, texts, cache, purpose="passage")
+        assert (cache.hits, cache.misses) == (2, 0), "negative control: both were cache hits"
+
+    with EmbeddingCache(path) as cache:
+        assert cache.erase_digests({text_digest(texts[0])}) == 1, "the served entry has no digest"
+    assert len(_cached(path)) == 1, "the other text's entry went too"

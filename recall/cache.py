@@ -362,8 +362,14 @@ class EmbeddingCache:
     def get(self, key: str) -> list[float] | None:
         return self.get_many([key]).get(key)
 
-    def get_many(self, keys: list[str]) -> dict[str, list[float]]:
+    def get_many(
+        self, keys: list[str], *, texts: list[str] | None = None
+    ) -> dict[str, list[float]]:
         """Look up many keys, counting the hits and recording that they were used.
+
+        ``texts``, aligned with ``keys``, are the texts the keys were derived from. A hit on an
+        entry that records no digest (written by 0.15.0 or earlier) is given its text's, so a
+        forget can find it from then on; only those entries are written.
 
         One bound statement per key rather than an `IN (...)` list built by interpolation: the
         lookup is a primary-key probe in an in-process database, the caller's batch is a chunk
@@ -372,15 +378,26 @@ class EmbeddingCache:
         """
         if self._degraded or not keys:
             return {}
+        # A file whose writes are off may lack the digest column (`_migrate`), and could not
+        # record a digest anyway.
+        text_of = (
+            dict(zip(keys, texts, strict=True))
+            if texts is not None and not self._writes_disabled
+            else {}
+        )
+        select = (
+            "SELECT vec, used_at, text_sha256 FROM embeddings WHERE key = ?"
+            if text_of
+            else "SELECT vec, used_at FROM embeddings WHERE key = ?"
+        )
         unique = list(dict.fromkeys(keys))
         found: dict[str, list[float]] = {}
         stale: list[str] = []
+        undigested: dict[str, str] = {}
         stale_before = time.time() - _RECENCY_REWRITE_SECONDS
         try:
             for key in unique:
-                row = self._conn.execute(
-                    "SELECT vec, used_at FROM embeddings WHERE key = ?", (key,)
-                ).fetchone()
+                row = self._conn.execute(select, (key,)).fetchone()
                 if row is None:
                     continue
                 vec = self._decode(row[0])
@@ -388,20 +405,25 @@ class EmbeddingCache:
                     found[key] = vec
                     if row[1] is None or row[1] < stale_before:
                         stale.append(key)
+                    if text_of and row[2] is None:
+                        undigested[key] = text_digest(text_of[key])
         except sqlite3.Error as exc:
             self._degrade(exc)
             return {}
         # Only stale stamps are rewritten: an UPDATE takes the file's single write lock even when
         # it matches nothing, so touching every hit made each warm lookup queue behind any writer
         # for up to the busy timeout (CCA PERF-002).
-        self._touch(stale)
+        self._touch(stale, undigested)
         self.hits += len(found)
         self.misses += len(unique) - len(found)
         return found
 
-    def _touch(self, keys: list[str]) -> None:
-        """Record that these entries were used. Failing here must not cost the caller its hits."""
-        if not keys or self._writes_disabled:
+    def _touch(self, keys: list[str], digests: dict[str, str] | None = None) -> None:
+        """Record that these entries were used, and give the ``digests`` keys their digest.
+
+        Failing here must not cost the caller its hits.
+        """
+        if not (keys or digests) or self._writes_disabled:
             return
         now = time.time()
         stale_before = now - _RECENCY_REWRITE_SECONDS
@@ -410,6 +432,10 @@ class EmbeddingCache:
                 "UPDATE embeddings SET used_at = ? WHERE key = ? "
                 "AND (used_at IS NULL OR used_at < ?)",
                 [(now, key, stale_before) for key in keys],
+            )
+            self._conn.executemany(
+                "UPDATE embeddings SET text_sha256 = ? WHERE key = ? AND text_sha256 IS NULL",
+                [(digest, key) for key, digest in (digests or {}).items()],
             )
             self._conn.commit()
         except sqlite3.Error as exc:
@@ -540,7 +566,8 @@ class EmbeddingCache:
         a plain DELETE leaves the vector's bytes in a free page until something reuses it.
 
         Raises on failure, rather than degrading as a read does: the caller is a forget, which
-        must report that the vectors are still here.
+        must report that the vectors are still here. That includes a checkpoint a reader kept
+        from finishing, which leaves the vectors' old pages in the file and its log.
         """
         if not digests:
             return 0
@@ -557,8 +584,22 @@ class EmbeddingCache:
             raise
         finally:
             self._conn.execute(f"PRAGMA secure_delete = {prior}")
-        self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        # (busy, log frames, checkpointed frames): (0, -1, -1) outside WAL mode, where nothing
+        # is pending; in WAL mode a finished copy has checkpointed every frame.
+        busy, logged, copied = self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+        if busy or logged != copied:
+            raise sqlite3.OperationalError(
+                f"a reader of {self._path} blocked the checkpoint, so erased vectors may stay in "
+                "the file and its log"
+            )
         return removed
+
+    def undigested(self) -> int:
+        """How many entries record no digest of their text, so no forget can find them."""
+        row = self._conn.execute(
+            "SELECT COUNT(*) FROM embeddings WHERE text_sha256 IS NULL"
+        ).fetchone()
+        return int(row[0])
 
     def close(self) -> None:
         self._conn.close()
@@ -570,17 +611,20 @@ class EmbeddingCache:
         self.close()
 
 
-def erase_cached_digests(digests: set[str]) -> int:
-    """Erase these texts' entries from the shared cache; how many went, 0 when it is off or absent.
+def erase_cached_digests(digests: set[str]) -> tuple[int, int]:
+    """Erase these texts' entries from the shared cache: (how many went, how many it could not tell).
+
+    The second count is of entries that record no digest (`EmbeddingCache.undigested`), any of
+    which may hold one of these texts. Both are 0 when the cache is off or absent.
 
     The cache `RECALL_EMBED_CACHE` names in THIS process, which is the one this process's indexing
     wrote. An absent file is not created, and a failure raises (`EmbeddingCache.erase_digests`).
     """
     path = default_cache_path()
     if not digests or path is None or not path.exists():
-        return 0
+        return 0, 0
     with EmbeddingCache(path) as cache:
-        return cache.erase_digests(digests)
+        return cache.erase_digests(digests), cache.undigested()
 
 
 def embed_with_cache(
@@ -616,7 +660,7 @@ def embed_with_cache(
         return _embed(texts)
     profile = embedding_profile(embedder)
     keys = [cache_key(profile, embedder.dim, t, purpose) for t in texts]
-    cached = cache.get_many(keys)
+    cached = cache.get_many(keys, texts=texts)
     # Deduplicated by KEY, not by text: two identical texts share a key by construction, and a
     # corpus repeats itself (a licence header, a template, the same memo filed twice). Embedding
     # one of them twice inside a single call is spend with a known answer.
