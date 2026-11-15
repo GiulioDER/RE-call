@@ -465,8 +465,11 @@ def _forget_memory_unlocked(
     from recall.lite import LiteStore
 
     # The same read for a lite store's atomic rescue, whose view store is keyed by chunk text.
-    lite = isinstance(store, LiteStore)
-    rescue_texts = [text for text, _ in store.texts_for_sources(to_delete)] if lite and to_delete else []
+    rescue_texts: list[str] = (
+        [text for text, _ in store.texts_for_sources(to_delete)]
+        if isinstance(store, LiteStore) and to_delete
+        else []
+    )
     if erase_memo_requests:
         # Before the rows go, for the same reason: the record is how a re-run, which finds no
         # rows, may still name these memos to the journal erasure below.
@@ -523,7 +526,7 @@ def _forget_memory_unlocked(
         )
         cache_entries_erased = -1
     rescue_views_erased = rescue_artifacts_removed = 0
-    if lite and chunks_removed:
+    if isinstance(store, LiteStore) and chunks_removed:
         from recall.lite.atomic import erase_forgotten
         from recall_mcp.settings import runtime_environment
 
