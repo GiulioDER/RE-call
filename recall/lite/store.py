@@ -1410,6 +1410,32 @@ class LiteStore:
                 found[cid] = float(matrix.vectors[position] @ q)
         return found
 
+    def scored_chunk_by_id(self, chunk_id: str, score: float) -> ScoredChunk | None:
+        """One chunk carrying `score`, as `GenerationStore.scored_chunk_by_id`; None when absent.
+
+        The atomic rescue's parent loader (`recall.trust`), which scores it by its own cosine."""
+        if not isinstance(chunk_id, str) or not chunk_id:
+            raise ValueError("chunk_id must be a non-empty string")
+        matrix = self._load()
+        position = matrix.by_id.get(chunk_id)
+        return None if position is None else self._hit(matrix.rows[position], score)
+
+    def scored_chunk_for_query(self, chunk_id: str, vector: list[float]) -> ScoredChunk | None:
+        """One chunk scored against `vector` exactly as `query_dense` scores it; None when absent."""
+        if not isinstance(chunk_id, str) or not chunk_id:
+            raise ValueError("chunk_id must be a non-empty string")
+        matrix = self._load()
+        position = matrix.by_id.get(chunk_id)
+        if position is None:
+            return None
+        return self._hit(matrix.rows[position], float(matrix.vectors[position] @ self._query_vector(vector)))
+
+    def atomic_rescue_manifest(self, root: str | Path, generation_id: str, calibration_id: str | None) -> Path:
+        """Where `recall.trust` loads this store's atomic rescue artifact: see `recall.lite.atomic`."""
+        from recall.lite.atomic import manifest_path
+
+        return manifest_path(root, generation_id, calibration_id)
+
     def _stemmed_terms(self, text: str) -> list[str]:
         """The query's terms as the FTS5 tokenizer stores them: stop words out, Porter-stemmed."""
         terms = _query_terms(text)

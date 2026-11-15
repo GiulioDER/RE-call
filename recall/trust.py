@@ -624,8 +624,13 @@ def _trusted_search(
             raise AtomicRescueArtifactError(
                 "active atomic rescue requires an artifact root and generation identity"
             )
+        # A lite store's calibration can change while its corpus does not (a background refit
+        # lands), so it keys an artifact by both and names the path itself (`recall.lite.atomic`).
+        store_manifest = getattr(store, "atomic_rescue_manifest", None)
         artifact = load_atomic_rescue_artifact(
-            resolve_atomic_rescue_manifest(artifact_root, generation_id)
+            store_manifest(artifact_root, generation_id, calibration_id)
+            if callable(store_manifest)
+            else resolve_atomic_rescue_manifest(artifact_root, generation_id)
         )
         artifact.assert_lineage(
             generation_id=generation_id,

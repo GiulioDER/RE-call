@@ -5,7 +5,7 @@
 <!-- mcp-name: io.github.GiulioDER/re-call -->
 
 <p align="center">
-  <b>Memory that abstains instead of guessing.</b><br>
+  <b>Memory that abstains when nothing clears its threshold.</b><br>
   RE-call is agent memory in a local SQLite file or your own PostgreSQL with pgvector. Each result carries a verdict,
   confidence, and provenance, while unsupported questions are refused instead of answered by the
   nearest match.

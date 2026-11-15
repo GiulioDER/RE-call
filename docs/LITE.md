@@ -195,6 +195,51 @@ The graph is for navigation. Search does not read it: graph expansion is a featu
 PostgreSQL generation route, and it is off by default there too. `recall_related` answers the same
 structural relations (`source`, `ordinal`, `supersession`, `caused_by`) on both backends.
 
+## Atomic rescue (optional)
+
+Atomic rescue finds a memo whose answer is one sentence inside a long chunk. Each chunk is split
+into overlapping 24 word views (stride 12), the views are embedded, and a search moves at most one
+parent chunk, the one whose best view matches the query most closely outside the dense top five, to
+rank six. That chunk is scored by its own cosine, never the view's, so a rescue changes rank only:
+it cannot turn an abstention into an answer. It is off by default. No release contains it yet
+(0.15.0 does not): install from a clone, as above, with the `atomic` extra added. To turn it on,
+set two variables for the MCP server and the CLI alike:
+
+```bash
+python -m pip install "./re-call[fastembed,mcp,atomic]"
+export RECALL_ATOMIC_RESCUE_MODE=active
+export RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT=/absolute/path/to/project/.recall/atomic
+```
+
+The root must be absolute, and a relative one is refused: the MCP server and the CLI each run in
+their own working directory, so a relative root would name two different folders.
+
+`RECALL_ATOMIC_RESCUE_PLACEMENT=fused` places the rescued chunk after fusion, so the final top five
+never change; the default `dense` places it before. Use one artifact root per store.
+
+With the rescue on, every write that keeps a calibration in force (a refresh, `recall index`,
+`recall_index`, a background refit landing) builds an artifact for the memory and calibration then
+in force, under the root, and the refresh report prints an `atomic` line. A refresh of memos that
+have not changed does nothing, so on a store that already exists, run `recall lite refresh --force`
+(or `recall index`) once after setting the variables; until then every search with the rescue on
+fails on the missing artifact. Nothing is built until the store has a certified calibration; until
+then strict search refuses anyway. The views of each chunk
+text are kept in `micro-views.sqlite` under the root, so a later build embeds only the views of new
+or edited chunks. The first build is the expensive one: a chunk of about 120 words has about ten
+views, so it embeds roughly ten times as many short texts as the first index did. That file only
+grows; delete it to reclaim space, at the cost of one full build.
+
+Search refuses while the artifact for the memory as it is now is missing: a search that lands
+between a write and the end of its build fails with an artifact error and succeeds once the build
+finishes. `recall forget` and `recall withdraw` build nothing, so after one of them an active search
+fails on the missing artifact until the next refresh or index builds again. Older artifacts are
+removed after each build; on Windows one a running server still has open stays until a later build.
+
+A forget does not reach the root. The forgotten memo's chunk ids and source name stay in the
+previous artifact until the next build removes it, and its view vectors stay in
+`micro-views.sqlite`, which nothing deletes. After a forget that must erase everything, delete
+`micro-views.sqlite` and the artifact folders under the root, then run `recall lite refresh --force`.
+
 ## Update the software
 
 Back up first, stop every MCP client and dashboard using this environment, and activate the same

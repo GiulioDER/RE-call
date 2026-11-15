@@ -27,7 +27,12 @@ from recall.ops.secret_mapping import (  # noqa: F401  # re-exported
     SECRET_DESTINATIONS,
     secret_mapping_from_env,
 )
-from recall._env import parse_generation_dense_search
+from recall._env import (  # noqa: F401  # re-exported
+    _ATOMIC_RESCUE_MODES,
+    atomic_rescue_modes_by_tenant,
+    parse_generation_dense_search,
+    tenant_retrieval_environment,
+)
 from recall.constants import (
     DEFAULT_RATE_LIMIT_KEY_PREFIX,
     DEFAULT_READ_FALLBACK_BUDGET,
@@ -320,37 +325,6 @@ def _number_or_off(source: Mapping[str, str], name: str, default: float) -> None
     _number({name: raw}, name, default, minimum=0.0)
 
 
-_ATOMIC_RESCUE_MODES = frozenset({"off", "shadow", "active"})
-
-
-def atomic_rescue_modes_by_tenant(source: Mapping[str, str]) -> dict[str, str]:
-    """Parse `RECALL_ATOMIC_RESCUE_MODE_BY_TENANT` (`tenant:mode,...`) into a tenant to mode map.
-
-    The rescue mode is otherwise process-wide, so one process could not serve a tenant whose
-    generation has a rescue artifact beside one whose generation has none: the second tenant's
-    every search fails on the missing manifest. Each entry splits on its LAST colon, as
-    `RECALL_OIDC_SUBJECT_TENANTS` does; a malformed or repeated entry refuses at startup. A tenant
-    the server does not serve is not refused, because one host `.env` can feed several
-    single-tenant servers; the server warns about it at startup instead
-    (`unserved_atomic_rescue_tenants`).
-    """
-    name = "RECALL_ATOMIC_RESCUE_MODE_BY_TENANT"
-    modes: dict[str, str] = {}
-    for entry in (item.strip() for item in source.get(name, "").split(",")):
-        if not entry:
-            continue
-        tenant, _, mode = entry.rpartition(":")
-        tenant, mode = tenant.strip(), mode.strip().lower()
-        if not tenant or mode not in _ATOMIC_RESCUE_MODES:
-            raise ValueError(
-                f"{name} entry {entry!r} is malformed; expected tenant:off|shadow|active"
-            )
-        if tenant in modes:
-            raise ValueError(f"{name} names tenant {tenant!r} twice")
-        modes[tenant] = mode
-    return modes
-
-
 def unserved_atomic_rescue_tenants(values: Mapping[str, str], served: Iterable[str]) -> list[str]:
     """The tenants `RECALL_ATOMIC_RESCUE_MODE_BY_TENANT` names that `served` does not, sorted.
 
@@ -358,15 +332,6 @@ def unserved_atomic_rescue_tenants(values: Mapping[str, str], served: Iterable[s
     leaves its tenant on the process mode with nothing else to say so.
     """
     return sorted(set(atomic_rescue_modes_by_tenant(values)) - set(served))
-
-
-def tenant_retrieval_environment(values: Mapping[str, str], tenant: str | None) -> dict[str, str]:
-    """`values` with the atomic rescue mode replaced by `tenant`'s override, when it has one."""
-    resolved = dict(values)
-    override = atomic_rescue_modes_by_tenant(values).get(tenant) if tenant is not None else None
-    if override is not None:
-        resolved["RECALL_ATOMIC_RESCUE_MODE"] = override
-    return resolved
 
 
 def _validate_runtime_options(source: Mapping[str, str]) -> None:

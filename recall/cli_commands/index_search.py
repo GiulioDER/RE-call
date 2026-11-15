@@ -472,6 +472,20 @@ def _cmd_index(args: argparse.Namespace) -> None:
                 # only once the operator turned it on.
                 if stated.enabled or isinstance(store, LiteStore):
                     print(stated.render())
+                if isinstance(store, LiteStore):
+                    from recall.lite.atomic import ensure_rescue_artifact
+
+                    # Last, after the bookkeeping of the index it describes, so a failed build
+                    # cannot skip it; refused with a message, since the index has committed.
+                    try:
+                        atomic = ensure_rescue_artifact(store, embedder)
+                    except Exception as exc:  # BROAD-CATCH: fail-closed  # exits non-zero, naming the failure
+                        raise SystemExit(
+                            f"recall index: the index committed, but its atomic rescue artifact was not built "
+                            f"({type(exc).__name__}: {exc}); active searches refuse until `recall index` builds it"
+                        ) from exc
+                    if atomic is not None:
+                        print(atomic.render())
         except LiteWriterBusy as exc:
             raise SystemExit(str(exc)) from exc
 
@@ -832,6 +846,17 @@ def _search_scope(args: argparse.Namespace) -> Scope | None:
     return Scope(folder=folder, facet=facet)
 
 
+def _lite_search_environment(store: object) -> dict[str, str] | None:
+    """The process environment with a lite store's per-tenant rescue mode applied; None otherwise."""
+    if not isinstance(store, LiteStore):
+        return None
+    import os
+
+    from recall._env import tenant_retrieval_environment
+
+    return tenant_retrieval_environment(os.environ, store.tenant)
+
+
 def _cmd_search(args: argparse.Namespace) -> None:
     # First, before any model or database work: a configuration that still asks for the removed
     # entailment judge is refused rather than served the wider, unjudged results.
@@ -904,6 +929,9 @@ def _cmd_search(args: argparse.Namespace) -> None:
                     DocumentExpansionPolicy(enabled=True) if args.expand_documents else None
                 ),
                 ledger=DecisionLedger.from_env(store, actor="cli"),
+                # The tenant's rescue mode as the lite builder resolves it (`recall.lite.atomic`),
+                # so a write and a search agree on whether an artifact is needed.
+                env=_lite_search_environment(store),
             )
         except TrustRefusal as exc:
             raise SystemExit(refusal_message(exc)) from exc
