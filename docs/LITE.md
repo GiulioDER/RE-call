@@ -186,7 +186,19 @@ The root must be absolute, and a relative one is refused: the MCP server and the
 their own working directory, so a relative root would name two different folders.
 
 `RECALL_ATOMIC_RESCUE_PLACEMENT=fused` places the rescued chunk after fusion, so the final top five
-never change; the default `dense` places it before. Use one artifact root per store.
+never change; the default `dense` places it before.
+
+Several stores (two projects, or two MCP servers) may share one root. Each store keeps its
+artifacts in a folder of its own under it, `store-<digest>`, named by the store's tenant and file
+path, and a build removes old artifacts from that folder only. Moving a store file starts a new
+folder; delete the old one by hand. The stores share `micro-views.sqlite`.
+
+Before per-store folders, a build put its artifacts at the top of the root, as `lite-*` folders,
+and removed every other such folder, including another store's. A search still serves the one for
+the memory and calibration in force, after the same lineage check, so a root built that way keeps
+working without a rebuild. The next build writes the store's own folder, and its `atomic` line says
+how many `lite-*` folders remain at the top. No build removes them, because nothing records which
+store built them: delete them by hand once every store using the root has built once.
 
 With the rescue on, every write that keeps a calibration in force (a refresh, `recall index`,
 `recall_index`, a background refit landing) builds an artifact for the memory and calibration then
@@ -203,8 +215,9 @@ grows; delete it to reclaim space, at the cost of one full build.
 Search refuses while the artifact for the memory as it is now is missing: a search that lands
 between a write and the end of its build fails with an artifact error and succeeds once the build
 finishes. `recall forget` and `recall withdraw` build nothing, so after one of them an active search
-fails on the missing artifact until the next refresh or index builds again. Older artifacts are
-removed after each build; on Windows one a running server still has open stays until a later build.
+fails on the missing artifact until the next refresh or index builds again. A store's older
+artifacts are removed after each build; on Windows one a running server still has open stays until
+a later build.
 
 A forget does not reach the root. The forgotten memo's chunk ids and source name stay in the
 previous artifact until the next build removes it, and its view vectors stay in
