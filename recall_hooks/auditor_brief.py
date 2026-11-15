@@ -713,7 +713,16 @@ def _collect(
         if not root_text:
             raise RuntimeError(f"{cwd} is not inside a git work tree")
         root = Path(root_text)
-        repo = repo_identity(_finish_git(started["url"], deadline).decode("utf-8", "replace"))
+        try:
+            url = _finish_git(started["url"], deadline)
+        except subprocess.CalledProcessError as error:
+            # Exit 1 is `git config --get`'s "no such key": a local-only clone. Every record is
+            # scoped to an owner/name, so none can apply; say that, not the exit status. Any other
+            # status is a real git failure and is reported as one.
+            if error.returncode != 1:
+                raise
+            raise RuntimeError("no origin remote, so no prior records can apply") from None
+        repo = repo_identity(url.decode("utf-8", "replace"))
         if repo is None:
             raise RuntimeError("the origin remote names no owner/name repository")
         base, diff = _base_and_diff(started, cwd, deadline, processes)
