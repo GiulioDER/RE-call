@@ -119,9 +119,9 @@ def build() -> str:
 
 
 def main() -> None:
-    from make_brand_assets import ROOT, save, social_card
+    from shutil import copyfile
 
-    save(social_card(), ROOT / "social_card.png")
+    copyfile(HERE / "banner.png", HERE / "social_card.png")
     print("wrote docs/social_card.png")
 
 

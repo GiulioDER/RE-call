@@ -1,5 +1,9 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/GiulioDER/RE-call/master/docs/banner.png" alt="RE-call: memory that knows when not to guess" width="900">
+  <picture>
+    <source media="(prefers-reduced-motion: no-preference)" srcset="docs/banner.gif">
+    <source media="(prefers-reduced-motion: reduce)" srcset="docs/banner.png">
+    <img src="https://raw.githubusercontent.com/GiulioDER/RE-call/master/docs/banner.png" alt="RE-call. One memory, every agent." width="900">
+  </picture>
 </p>
 
 <!-- mcp-name: io.github.GiulioDER/re-call -->

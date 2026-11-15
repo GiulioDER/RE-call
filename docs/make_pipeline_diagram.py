@@ -1,6 +1,6 @@
 """Emits docs/pipeline.svg — the full RE-call pipeline, ingest at the top, answer at the bottom.
 
-Hand-drawn SVG in the same GitHub-dark card language as docs/banner.svg, but generated rather
+Hand-drawn SVG in a GitHub-dark palette, generated rather
 than typed: every cell's height falls out of its wrapped body text, so editing a description
 cannot silently push a box through the one below it.
 
@@ -43,7 +43,7 @@ import sys
 import textwrap
 
 # ---------------------------------------------------------------------------------------------
-# palette — GitHub dark, same values as docs/banner.svg so the two read as one family
+# Palette for the GitHub-dark diagram
 # ---------------------------------------------------------------------------------------------
 BG = "#0d1117"
 CARD_STROKE = "#30363d"

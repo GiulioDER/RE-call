@@ -283,7 +283,7 @@ def test_cache_write_failure_still_renders(generator, serve, monkeypatch):
 
 
 def test_import_does_not_touch_the_network_or_the_cache(tmp_path, monkeypatch):
-    """Everything effectful belongs behind main(), as in docs/make_banner_graph.py."""
+    """Everything effectful belongs behind main()."""
     (tmp_path / "glama_score_badge.svg").write_text(
         COMMITTED_BADGE, encoding="utf-8", newline="\n"
     )
