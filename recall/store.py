@@ -205,7 +205,7 @@ def _numeric_query_terms(text: str) -> list[str]:
 #: are unbounded and `::int` raises past 2**31.
 _SOURCE_RANK_SQL = (
     "(CASE WHEN jsonb_typeof(metadata->'ord') = 'number' "
-    "AND metadata->>'ord' ~ '^[0-9]+$' "
+    "AND metadata->>'ord' ~ '^-?[0-9]+$' "
     "THEN (metadata->>'ord')::numeric ELSE 0 END)"
 )
 
@@ -2778,7 +2778,7 @@ class PgVectorStore(SourceMutationMixin, SupersessionMixin, ReceiptsAuditMixin):
             where = source_match
             centre = seed_ord if isinstance(seed_ord, int) and not isinstance(seed_ord, bool) else 0
             params: tuple[object, ...] = (self._tenant, seed_source, seed_id, centre, max_items)
-            order = f"abs({_SOURCE_RANK_SQL} - %s), id COLLATE \"C\""
+            order = f"abs({_SOURCE_RANK_SQL} - %s), id"
         else:
             if not isinstance(seed_ord, int) or isinstance(seed_ord, bool):
                 return (
