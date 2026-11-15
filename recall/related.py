@@ -251,7 +251,7 @@ def trusted_related(
             raise PermissionError("access context tenant does not match the serving store")
         if not security_policy.allows_stored_chunk(seed, access_context):
             raise PermissionError("related seed is outside the authorized source scope")
-        if bounded is not None:
+        if bounded is not None and store_query is not None:
             # Bound here: a closure does not keep the narrowing from None.
             source_policy, context = security_policy, access_context
             candidates_iter = _widen_past_denied(
