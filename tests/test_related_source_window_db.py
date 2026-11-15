@@ -6,7 +6,24 @@ first ``k`` chunks of the seed's source under ``recall.related.trusted_related``
 Failure mode: the store ordered by ordinal ascending before its LIMIT, so for a seed deep inside a
 long memo the resolver re-ranked the memo's first chunks and never saw the seed's neighbours.
 
-Red proof: recorded here once CI has run the unfixed query and each mutation.
+Red proof, observed in CI on PR 1311 (pgvector/pgvector:pg18 service, 2026-11-15), every red in
+the test's own final list assertion:
+
+- Unfixed query (commit 05d439eca, ``PgVectorStore.related_chunks`` and
+  ``GenerationStore.related_chunks`` ordering by ``CASE WHEN metadata->>'ord' ~ '^[0-9]+$' THEN
+  (metadata->>'ord')::int END NULLS LAST``): all four ``test_source_window_is_the_resolvers_top_k``
+  nodes red, ``['s0'] == ['s11']`` at k=1 and ``['s0', 's1', 's2', 's3', 's4'] == ['s11', 's9',
+  ...]`` at k=5. The odd-ord nodes raised ``NumericValueOutOfRange`` on ``10**20`` there, which is
+  not counted as red proof; their proof is the three mutations of the fix below.
+- ``jsonb_typeof`` test dropped from ``recall.store._SOURCE_RANK_SQL`` (21730f40a): all four
+  ``test_source_window_ranks_odd_ords_as_the_resolver_does`` nodes red, the string ord ``"2"``
+  ranked first: ``['Z-str', 'm1', 'm3'] == ['m1', 'm3', 'X-none']``.
+- ``-?`` dropped from its regex (22c67864b): ``[legacy-10]`` and ``[generation-10]`` red, ``-1``
+  ranked 0 and moved ahead of ``m5``; k=3 stays green, as predicted.
+- ``COLLATE "C"`` dropped from both stores' ``source`` tie order (9749ffa5c): all four odd-ord
+  nodes red under the service's collation, ``['m1', 'm3', 'a-bool'] == ['m1', 'm3', 'X-none']``.
+
+Each probe was reverted (f77b92975) and the whole CI run was green on the fix and on the revert.
 """
 
 import hashlib
