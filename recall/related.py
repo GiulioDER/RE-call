@@ -1,7 +1,7 @@
 """Trusted, generation scoped evidence related to an existing chunk."""
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from typing import Literal, Protocol, get_args
@@ -121,6 +121,30 @@ def _lineage(graph: SupersessionGraph, seed: str) -> frozenset[str]:
     return frozenset(seen - {seed})
 
 
+def _widen_past_denied(
+    query: Callable[[str, RelatedRelation, int], tuple[Chunk, list[Chunk]] | None],
+    seed_chunk_id: str,
+    relation: RelatedRelation,
+    max_items: int,
+    candidates: list[Chunk],
+    allowed: Callable[[Chunk], bool],
+) -> list[Chunk]:
+    """The store's bounded window, widened until it holds `max_items` chunks the policy allows.
+
+    The store's LIMIT counts rows before the policy sees them, so denied rows next to the seed (a
+    stale digest, a narrower rule) filled it and the allowed chunks one step further out were
+    never read. The window doubles until enough are allowed or the store returns fewer rows than
+    asked, which means the relation is exhausted: bounded by the relation, never the corpus.
+    """
+    window = max_items
+    while len(candidates) >= window and sum(1 for c in candidates if allowed(c)) < max_items:
+        window *= 2
+        bounded = query(seed_chunk_id, relation, window)
+        assert bounded is not None, "the store answered this relation for the first window"
+        candidates = bounded[1]
+    return candidates
+
+
 def _generation_binding(store: RelatedStore) -> dict[str, str]:
     reader = getattr(store, "generation_binding", None)
     if callable(reader):
@@ -227,6 +251,17 @@ def trusted_related(
             raise PermissionError("access context tenant does not match the serving store")
         if not security_policy.allows_stored_chunk(seed, access_context):
             raise PermissionError("related seed is outside the authorized source scope")
+        if bounded is not None:
+            # Bound here: a closure does not keep the narrowing from None.
+            source_policy, context = security_policy, access_context
+            candidates_iter = _widen_past_denied(
+                store_query,
+                seed_chunk_id,
+                relation,
+                max_items,
+                list(candidates_iter or ()),
+                lambda chunk: source_policy.allows_stored_chunk(chunk, context),
+            )
     seed_ord = _ordinal(seed)
     graph = store_supersession_graph(store)
     linked: frozenset[str] = frozenset()
