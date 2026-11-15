@@ -286,6 +286,56 @@ def test_lexical_ties_rank_the_same_wherever_the_corpus_lives(
     assert files_by_root[1] == files_by_root[0], files_by_root
 
 
+def _tied_lexical_ids(make_store, ords: dict[str, object], with_vector: bool) -> list[str]:
+    """Upsert one file's chunks whose text ties exactly on `ts_rank`, and search for them."""
+    from recall.types import Chunk
+
+    store = make_store(64)
+    chunks = [
+        Chunk(cid, "/abs/note.md", "museum trip", {"file": "note.md"} | ({} if o is None else {"ord": o}))
+        for cid, o in ords.items()
+    ]
+    vector = [1.0] + [0.0] * 63
+    store.upsert(chunks, [vector for _ in chunks])
+    hits = store.query_sparse("museum", len(chunks), vec=vector if with_vector else None)
+    return [hit.chunk.id for hit in hits]
+
+
+@requires_db
+@pytest.mark.parametrize("with_vector", [False, True], ids=["lexical", "lexical-with-vector"])
+def test_lexical_ties_rank_ords_as_python_reads_them(make_store, with_vector: bool) -> None:
+    """Within one file, tied rows order by the integer ord Python reads, else 0, then id.
+
+    `recall.related._ordinal` and `recall.records._sort_ordinal` read a string "1" as no ordinal
+    (0) and -1 as -1. The tie order read the text with `'^[0-9]+$'`, so "1" ranked 1 and -1
+    ranked 0, and which of these survived LIMIT k disagreed with every Python reader of the row.
+
+    Red proof: recorded once CI has run this against the unfixed tie order.
+    """
+    from recall.related import _ordinal
+    from recall.types import Chunk
+
+    ords: dict[str, object] = {"a-str": "1", "b-neg": -1, "c-two": 2, "d-one": 1, "e-zero": 0}
+    python = sorted(ords, key=lambda cid: (_ordinal(Chunk(cid, "", "", {"ord": ords[cid]})) or 0, cid))
+    assert python == ["b-neg", "a-str", "e-zero", "d-one", "c-two"]
+    assert _tied_lexical_ids(make_store, ords, with_vector) == python
+
+
+@requires_db
+@pytest.mark.parametrize("with_vector", [False, True], ids=["lexical", "lexical-with-vector"])
+def test_lexical_ties_survive_an_ord_past_bigint(make_store, with_vector: bool) -> None:
+    """One matching row with an ord past 2**63 must not fail the whole search.
+
+    Its red is the query raising, which this test turns into its own failure on purpose: not
+    raising is the behaviour under test. Red proof: recorded once CI has run it unfixed.
+    """
+    try:
+        got = _tied_lexical_ids(make_store, {"m0": 0, "w-big": 10**20}, with_vector)
+    except psycopg.errors.NumericValueOutOfRange as exc:
+        pytest.fail(f"the lexical leg raised on a large ord: {exc}")
+    assert got == ["m0", "w-big"]
+
+
 # --- DEF-32 (DEPLOY-002): an unmigrated database says so, with the command that fixes it ----
 
 
