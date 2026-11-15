@@ -27,7 +27,7 @@ pinned generation. Lite binds calibration to its single-file corpus. Every searc
 reasoning and fact paths, goes through trusted search and the trust gate.
 
 <p align="center">
-  <a href="https://giulioder.github.io/RE-call/how-it-works.html">
+  <a href="diagrams/README.md">
     <picture>
       <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/GiulioDER/RE-call/master/docs/diagrams/recall-overview-dark.png">
       <img src="https://raw.githubusercontent.com/GiulioDER/RE-call/master/docs/diagrams/recall-overview-light.png" alt="RE-call architecture: entry points, the generation build, trusted retrieval against a pinned generation, and the trust gate">
@@ -35,11 +35,9 @@ reasoning and fact paths, goes through trusted search and the trust gate.
   </a>
 </p>
 
-The diagram is interactive on the [project site](https://giulioder.github.io/RE-call/how-it-works.html):
-click any box to see the source lines it describes. A
-[step by step view of one `recall_search` call](https://giulioder.github.io/RE-call/diagrams/recall-search.html)
-follows a single search through its refusal, abstention and answer paths. Both are generated from
-the sources in [docs/diagrams](diagrams/README.md).
+Download the [interactive diagrams](diagrams/README.md) and open them in a browser.
+Click a box in the system overview to see the source lines it describes. The sequence diagram
+follows one search through its refusal, abstention and answer paths.
 
 <details>
 <summary>Text version of the diagram, with each box linked to its file</summary>

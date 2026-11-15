@@ -1,7 +1,8 @@
-# Publishing and search discovery
+# Legacy site source
 
-GitHub Pages publishes this directory through `.github/workflows/pages.yml`.
-The public base URL is `https://giulioder.github.io/RE-call/`.
+This directory contains the retired GitHub Pages site. Its canonical URLs and sitemap record the
+former deployment. Update them for the new domain before reusing these pages. The maintained
+project documentation is in [docs/README.md](../docs/README.md).
 
 ## Page identity
 
@@ -24,11 +25,6 @@ The generated diagrams remain maintained through `docs/diagrams/README.md`.
 publishing or retiring one of those pages. Leave redirect aliases out. Do not invent
 `lastmod` dates or update them merely because the site was deployed.
 
-The site lives under a GitHub Pages project path. A `robots.txt` inside this directory
-would be served at `/RE-call/robots.txt`, but crawlers read `/robots.txt` at the host
-root. A missing host-root robots file does not block crawling. Submit this project's
-sitemap directly in Search Console instead of relying on a project-path robots file.
-
 ## Pages for agents
 
 `llms.txt` is a plain Markdown index for language models and agents, following the
@@ -40,20 +36,6 @@ path, the licence, the package name or a linked page changes. It is linked from 
 `compare.html` describes other memory projects from their public sources, with the check date in
 its text. Recheck those descriptions and update the date together; keep score claims to the
 paired measurements on the benchmark scorecard.
-
-## Google Search Console
-
-1. Add the URL-prefix property `https://giulioder.github.io/RE-call/`.
-2. Choose HTML tag verification and add the exact Google-provided meta tag to the
-   homepage's `<head>`. Preserve it across later edits.
-3. Publish the site, confirm the tag appears in the live HTML, then verify ownership.
-4. Submit `https://giulioder.github.io/RE-call/sitemap.xml` under Sitemaps.
-5. Inspect the homepage URL, run the live test, and request indexing if eligible.
-   Use Page indexing and URL inspection to diagnose exclusions and Google's selected
-   canonical. Public search queries alone do not establish the indexing state.
-
-A sitemap and metadata help discovery and identification; neither guarantees indexing
-or a particular search position.
 
 ## Benchmark scorecard
 
