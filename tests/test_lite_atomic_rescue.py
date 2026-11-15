@@ -74,7 +74,7 @@ A24, that `recall_calibration_run` passes the server's environment, is
 `tests/test_mcp_tool_authorization.py::test_recall_calibration_run_hands_the_server_environment_to_the_build`,
 which fails against `6c866ade7` in its own assertion.
 
-A25 to A27, run on VPS2 on 2026-11-15, each red in its own assertion and green restored. A25
+A25 to A27, run on Linux on 2026-11-15, each red in its own assertion and green restored. A25
 (`test_an_unchanged_refresh_with_the_rescue_on_builds_what_one_without_it_did_not`) with the
 `last.get("rescued")` clause removed from `refresh`'s unchanged check: "an unchanged refresh with
 the rescue on skipped a store with no artifact". A26

@@ -27,7 +27,7 @@ The handshake behind E2 (the registered server, started with exactly its registe
 21 tools) was run by hand on Windows the same day; CI cannot repeat it meaningfully, because an
 editable install there does not live in a user site directory.
 
-E5 to E7, run on VPS2 on 2026-11-15, each mutation alone of `recall/lite/setup.py`, red in its own
+E5 to E7, run on Linux on 2026-11-15, each mutation alone of `recall/lite/setup.py`, red in its own
 assertion, then restored and green: `local_env.update(atomic_env)` removed (E5: "setup did not
 register the atomic rescue as active"); `rescue_env=` not passed to the setup refresh (E5: "setup
 built no artifact"); the shell's mode ignored (E6: "setup overrode the mode the shell set"); the
