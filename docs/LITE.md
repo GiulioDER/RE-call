@@ -247,8 +247,8 @@ until then every search with the rescue on refuses, in development trust mode to
 would otherwise answer uncalibrated. The views of each chunk text are kept in
 `micro-views.sqlite` under the root, so a later build embeds only the views of new or edited
 chunks. The first build is the expensive one: a chunk of about 120 words has about ten
-views, so it embeds roughly ten times as many short texts as the first index did. That file only
-grows; delete it to reclaim space, at the cost of one full build.
+views, so it embeds roughly ten times as many short texts as the first index did. That file grows
+until a forget erases from it; delete it to reclaim space, at the cost of one full build.
 
 The rescue applies only to a search with no folder, source or other scope and no source policy
 (`RECALL_SOURCE_POLICY_FILE`): any other search neither uses the artifact nor needs it, so with a
@@ -263,10 +263,15 @@ such searches fail until the next write that changes the memory, or `recall lite
 builds again. A store's older artifacts are removed after each build; on Windows one a running
 server still has open stays until a later build.
 
-A forget does not reach the root. The forgotten memo's chunk ids and source name stay in the
-previous artifact until the next build removes it, and its view vectors stay in
-`micro-views.sqlite`, which nothing deletes. After a forget that must erase everything, delete
-`micro-views.sqlite` and the store's folder under the root, then run `recall lite refresh --force`.
+`recall forget` and `recall withdraw` also erase what the rescue keeps of the memo: its views in
+`micro-views.sqlite`, with SQLite `secure_delete` and a truncating checkpoint, and every artifact
+in the store's own folder but one built for the memory as it is after the forget. A `lite-*`
+folder at the top of the root, from before per-store folders, is removed when it names the memo.
+Views are shared by text, so another store holding the same text re-embeds it at its next build.
+They do so whenever `RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT` is set, even with the rescue since turned
+off, and report an erasure that failed (on Windows, an artifact a running server still has open).
+With the variable unset a forget does not look there, so delete the root when you stop using the
+rescue.
 
 ## Update the software
 

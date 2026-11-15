@@ -36,10 +36,11 @@ from __future__ import annotations
 
 import dataclasses
 import hashlib
+import json
 import os
 import re
 import shutil
-from collections.abc import Container, Mapping
+from collections.abc import Container, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -58,11 +59,14 @@ if TYPE_CHECKING:
     from recall.embeddings import Embedder
     from recall.lite.store import LiteStore
 
-__all__ = ["BuildReport", "configured_root", "ensure_rescue_artifact", "manifest_path", "serving_manifest"]
+__all__ = [
+    "BuildReport", "configured_root", "ensure_rescue_artifact", "erase_forgotten", "manifest_path", "serving_manifest"
+]
 
 ROOT_ENV = "RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT"
 VIEW_STORE_NAME = "micro-views.sqlite"
-#: The directory names the flat layout wrote at the top of the root, counted (never removed) after a build.
+#: The directory names of artifacts, in a store's folder and, from the flat layout, at the top of
+#: the root: there a build only counts them, and only a forget naming their sources removes one.
 _ARTIFACT_NAME = re.compile(r"lite-[0-9a-f]{16}\.cal_[0-9a-f]+")
 #: The files `write_atomic_rescue_artifact` publishes in an artifact's directory.
 _MEMBERS = ("manifest.json", "views.json", "matrix.npy")
@@ -88,9 +92,13 @@ def manifest_path(root: str | Path, store: LiteStore, generation_id: str, calibr
         # Each process would resolve it against its own working directory, so a CLI build and an
         # MCP server started elsewhere would write and read different roots.
         raise AtomicRescueArtifactError(f"{ROOT_ENV} must be an absolute path, not {str(root)!r}")
+    return resolve_atomic_rescue_manifest(_store_folder(root, store), f"{generation_id}.{calibration_id}")
+
+
+def _store_folder(root: str | Path, store: LiteStore) -> Path:
+    """`store`'s own folder under the root, named by its tenant and resolved file path."""
     identity = f"{store.tenant}\0{os.path.normcase(store.path.resolve())}"
-    folder = Path(root).expanduser() / f"store-{hashlib.sha256(identity.encode('utf-8')).hexdigest()[:16]}"
-    return resolve_atomic_rescue_manifest(folder, f"{generation_id}.{calibration_id}")
+    return Path(root).expanduser() / f"store-{hashlib.sha256(identity.encode('utf-8')).hexdigest()[:16]}"
 
 
 def serving_manifest(root: str | Path, store: LiteStore, generation_id: str, calibration_id: str | None) -> Path:
@@ -128,7 +136,7 @@ def ensure_rescue_artifact(
     changes the memory, or `recall lite refresh --force`, builds again.
     """
     from recall import __version__
-    from recall.atomic_view_store import AtomicViewStore, assemble
+    from recall.atomic_view_store import AtomicViewStore, assemble, chunk_view_digest
     from recall.calibration_v2 import CalibrationStatus
     from recall.embeddings import embed_document_groups, embedding_profile, embedding_profile_id
 
@@ -202,6 +210,15 @@ def ensure_rescue_artifact(
     if store.corpus_fingerprint() != corpus_fingerprint or _key_in_force(store) != manifest.parent.name:
         # A write, or a background refit under its own lane, landed while the views were read;
         # it builds its own artifact, which this build must neither replace nor remove.
+        if sibling is None and store.corpus_fingerprint() != corpus_fingerprint:
+            # A forget that landed after the chunks were read erased their views before this
+            # build stored them, so they are erased here, by the texts the store no longer holds.
+            # A build that copied a sibling stored no views.
+            current = {chunk.text for chunk in store.iter_chunks()}
+            stale = {chunk_view_digest(text) for *_, text in parents if text not in current}
+            if stale:
+                with AtomicViewStore(root / VIEW_STORE_NAME) as views:
+                    views.erase_digests(stale)
         return BuildReport(None, "not built: the memory or its calibration changed during the build", counts)
     try:
         written = write_atomic_rescue_artifact(
@@ -253,6 +270,69 @@ def _sibling(
             continue
         return artifact
     return None
+
+
+def erase_forgotten(
+    store: LiteStore,
+    texts: Sequence[str],
+    sources: Sequence[str],
+    *,
+    env: Mapping[str, str] | None = None,
+) -> tuple[int, int]:
+    """Erase what the rescue keeps of forgotten chunks: ``(view rows erased, artifacts removed)``.
+
+    Run by a forget after the chunks are deleted, with their texts read before. The views are
+    erased by text digest from `<root>/micro-views.sqlite`, and every artifact in the store's own
+    folder is removed except the one the store resolves now: each other one was built from a
+    corpus that held the forgotten chunks, and keeps their view vectors and sources. An artifact
+    left at the top of the root by the layout before per-store folders has no known owner, so it is
+    removed only when its `views.json` names one of `sources`. The root is read whatever the rescue
+    mode, since a rescue turned off keeps what it built. Raises when something is left.
+    """
+    from recall.atomic_view_store import AtomicViewStore, chunk_view_digest
+
+    value = (os.environ if env is None else env).get(ROOT_ENV, "").strip()
+    root = Path(value).expanduser() if value else None
+    # The builder refuses a relative root, so nothing was written under one.
+    if root is None or not root.is_absolute() or not root.is_dir():
+        return 0, 0
+    erased = 0
+    views_path = root / VIEW_STORE_NAME
+    if texts and views_path.is_file():
+        with AtomicViewStore(views_path) as views:
+            erased = views.erase_digests({chunk_view_digest(text) for text in texts})
+    keep = _key_in_force(store)
+    own = _store_folder(root, store)
+    doomed = [
+        entry for entry in (own.iterdir() if own.is_dir() else ())
+        if entry.name != keep and entry.is_dir() and _ARTIFACT_NAME.fullmatch(entry.name)
+    ]
+    doomed += [
+        entry for entry in root.iterdir()
+        if entry.name != keep and entry.is_dir() and _ARTIFACT_NAME.fullmatch(entry.name)
+        and _names_any(entry, set(sources))
+    ]
+    if doomed:
+        # This process's cache maps the matrix it last loaded, and Windows refuses to delete it.
+        clear_atomic_rescue_artifact_cache()
+    for entry in doomed:
+        shutil.rmtree(entry, ignore_errors=True)
+    left = [entry.name for entry in doomed if entry.exists()]
+    if left:
+        raise AtomicRescueArtifactError(
+            f"atomic rescue artifact(s) {', '.join(left)} under {root} could not be removed while a "
+            "process has their matrix open"
+        )
+    return erased, len(doomed)
+
+
+def _names_any(artifact: Path, sources: set[str]) -> bool:
+    """Whether the artifact's `views.json` names one of `sources`; False when it cannot be read."""
+    try:
+        views = json.loads((artifact / "views.json").read_text(encoding="utf-8"))["views"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
+    return any(isinstance(view, dict) and view.get("source") in sources for view in views)
 
 
 def _key_in_force(store: LiteStore) -> str | None:
