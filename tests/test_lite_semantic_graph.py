@@ -258,6 +258,32 @@ def test_g7_related_chunks_reads_the_seed_source_as_postgres_does(numbered: Lite
     assert numbered.related_chunks("s3", "supersession", 5) is None
 
 
+def test_g7_ordinal_admits_a_negative_ord_as_postgres_and_the_resolver_do(tmp_path: Path) -> None:
+    """`ordinal` keeps every integer ord within two of the seed's, negative ones included.
+
+    `recall.related._ordinal` accepts any integer that is not a boolean, and since PR 1311 the
+    PostgreSQL stores do too (`recall.store._integer_ord_sql`). This store still required
+    `>= 0`, copying the old Postgres `'^[0-9]+$'`, so a chunk at -1 next to a seed at 0 was
+    related on PostgreSQL and missing here. A string ord stays out on every backend.
+
+    Red proof: on the testbench on 2026-11-15, against `LiteStore.related_chunks` with
+    `json_extract(metadata, '$.ord') >= 0` in its `ordinal` filter, this assertion failed with
+    `['p1'] == ['n1', 'p1', 'n2']`: both negative ords missing.
+    """
+    with LiteStore(tmp_path / "negative.db", dim=4) as opened:
+        chunks = [
+            Chunk("s0", "s.md", "seed", {"file": "s.md", "ord": 0}),
+            Chunk("n1", "s.md", "minus one", {"file": "s.md", "ord": -1}),
+            Chunk("n2", "s.md", "minus two", {"file": "s.md", "ord": -2}),
+            Chunk("p1", "s.md", "one", {"file": "s.md", "ord": 1}),
+            Chunk("p3", "s.md", "three", {"file": "s.md", "ord": 3}),
+            Chunk("q1", "s.md", "string one", {"file": "s.md", "ord": "1"}),
+        ]
+        opened.upsert(chunks, [[1.0, 0.0, 0.0, 0.0]] * len(chunks))
+        _seed, near = opened.related_chunks("s0", "ordinal", 50)  # type: ignore[misc]
+    assert [c.id for c in near] == ["n1", "p1", "n2"]
+
+
 @pytest.mark.parametrize("max_items", [50, 3])
 @pytest.mark.parametrize("relation", ["source", "ordinal"])
 def test_g7_recall_related_on_lite_returns_what_the_scan_did(
