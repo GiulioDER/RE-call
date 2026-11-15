@@ -75,11 +75,13 @@ def _resolver_top(seed: Chunk, chunks: list[Chunk], k: int) -> list[str]:
     return [c.id for c in same[:k]]
 
 
-def _related_ids(backend, request, seed: Chunk, chunks: list[Chunk], k: int) -> list[str]:
+def _related_ids(
+    backend, request, seed: Chunk, chunks: list[Chunk], k: int, relation: str = "source"
+) -> list[str]:
     if backend == "legacy":
         store = request.getfixturevalue("make_store")(3)
         store.upsert(chunks, [[1.0, 0.0, 0.0] for _ in chunks])
-        _seed, related = store.related_chunks(seed.id, "source", k)
+        _seed, related = store.related_chunks(seed.id, relation, k)
         return [c.id for c in related]
     tenant, generation = request.getfixturevalue("graph_rows")
     with psycopg.connect(TEST_DSN, autocommit=True) as conn:
@@ -98,7 +100,7 @@ def _related_ids(backend, request, seed: Chunk, chunks: list[Chunk], k: int) -> 
             )
     with GenerationStore(TEST_DSN, 64, tenant=tenant) as store:
         store._fixed_generation = generation
-        _seed, related = store.related_chunks(seed.id, "source", k)
+        _seed, related = store.related_chunks(seed.id, relation, k)
     return [c.id for c in related]
 
 
@@ -124,3 +126,89 @@ def test_source_window_ranks_odd_ords_as_the_resolver_does(backend, k, request):
     """
     seed, chunks = _odd_ords()
     assert _related_ids(backend, request, seed, chunks, k) == _resolver_top(seed, chunks, k)
+
+
+def _ordinal_odd() -> tuple[Chunk, list[Chunk]]:
+    """Seed ord 1: adjacent are Q0, m2 (distance 1) and N-neg, m3 (distance 2), nothing else.
+
+    The ids differ in case so that code point order (Q0 before m2, N-neg before m3) and a
+    case-insensitive collation disagree at both ties.
+    """
+    meta = {"file": "odd.md"}
+    seed = Chunk("m1", _SOURCE, "seed", {**meta, "ord": 1})
+    chunks = [
+        seed,
+        Chunk("Q0", _SOURCE, "Q0", {**meta, "ord": 0}),
+        Chunk("m2", _SOURCE, "m2", {**meta, "ord": 2}),
+        Chunk("m3", _SOURCE, "m3", {**meta, "ord": 3}),
+        Chunk("m4", _SOURCE, "m4", {**meta, "ord": 4}),
+        Chunk("N-neg", _SOURCE, "negative ord", {**meta, "ord": -1}),
+        Chunk("Z-str", _SOURCE, "string ord", {**meta, "ord": "1"}),
+        Chunk("a-bool", _SOURCE, "boolean ord", {**meta, "ord": True}),
+        Chunk("Y-float", _SOURCE, "float ord", {**meta, "ord": 1.0}),
+        Chunk("X-none", _SOURCE, "no ord", dict(meta)),
+        Chunk("other", "file:///notes/other.md", "other", {"file": "other.md", "ord": 1}),
+    ]
+    return seed, chunks
+
+
+def _resolver_adjacent(seed: Chunk, chunks: list[Chunk], k: int) -> list[str]:
+    """`trusted_related`'s `ordinal` match and ranking, over the whole corpus."""
+    centre = _ordinal(seed)
+    assert centre is not None
+    near = [
+        c for c in chunks
+        if c.source == seed.source and c.id != seed.id
+        and (ord_ := _ordinal(c)) is not None and abs(ord_ - centre) <= 2
+    ]
+    near.sort(key=lambda c: (abs((_ordinal(c) or 0) - centre), c.id))
+    return [c.id for c in near[:k]]
+
+
+@requires_db
+@pytest.mark.parametrize("k", [1, 3])
+@pytest.mark.parametrize("backend", ["legacy", "generation"])
+def test_ordinal_window_order_is_the_resolvers(backend, k, request):
+    """The kept chunks and their order, at cuts inside the distance-1 and distance-2 ties.
+
+    No string, boolean or float ord takes a slot; at k=1 the tie order alone picks Q0 over m2.
+    """
+    seed, chunks = _ordinal_odd()
+    expected = _resolver_adjacent(seed, chunks, k)
+    assert expected == ["Q0", "m2", "N-neg"][:k]
+    assert _related_ids(backend, request, seed, chunks, k, "ordinal") == expected
+
+
+@requires_db
+@pytest.mark.parametrize("backend", ["legacy", "generation"])
+def test_ordinal_window_membership_is_the_resolvers(backend, request):
+    """With room for everything, exactly the resolver's adjacent set: the negative ord included.
+
+    A set, so that the tie order (checked above) cannot make this node red.
+    """
+    seed, chunks = _ordinal_odd()
+    expected = set(_resolver_adjacent(seed, chunks, 10))
+    assert expected == {"Q0", "m2", "N-neg", "m3"}
+    assert set(_related_ids(backend, request, seed, chunks, 10, "ordinal")) == expected
+
+
+@requires_db
+@pytest.mark.parametrize("backend", ["legacy", "generation"])
+def test_ordinal_window_survives_an_ord_past_int(backend, request):
+    """An ord past 2**31 elsewhere in the source is simply not adjacent; the query must not raise.
+
+    Its red is the query raising, which this test turns into its own failure on purpose: not
+    raising is the behaviour under test.
+    """
+    seed = Chunk("m1", _SOURCE, "seed", {"ord": 1})
+    chunks = [
+        seed,
+        Chunk("m0", _SOURCE, "m0", {"ord": 0}),
+        Chunk("m2", _SOURCE, "m2", {"ord": 2}),
+        Chunk("W-big", _SOURCE, "huge ord", {"ord": 10**20}),
+    ]
+    try:
+        got = _related_ids(backend, request, seed, chunks, 5, "ordinal")
+    except psycopg.errors.NumericValueOutOfRange as exc:
+        pytest.fail(f"the ordinal query raised on a large ord: {exc}")
+    assert got == ["m0", "m2"]
