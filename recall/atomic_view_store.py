@@ -15,7 +15,8 @@ the stride therefore can never return a stale vector; it simply misses.
 Reads validate shape and finiteness and treat any mismatch as a miss, so a damaged row costs one
 re-embed rather than a wrong vector. `assemble` is the only writer: the PostgreSQL builder runs it
 under the host's embedding lock, and a lite store under its write lane (`recall.lite.atomic`);
-readers never write.
+readers never write. `erase_digests` is the only delete, which a lite forget runs
+(`recall.lite.atomic.erase_forgotten`).
 """
 
 from __future__ import annotations
@@ -123,6 +124,34 @@ class AtomicViewStore:
 
     def commit(self) -> None:
         self._conn.commit()
+
+    def erase_digests(self, digests: set[str]) -> int:
+        """Delete the views of these chunk texts under every profile, and return how many rows went.
+
+        `secure_delete` zeroes the freed cells and a TRUNCATE checkpoint empties the write-ahead
+        log, as `LiteStore.erasing` does for the store, since a plain DELETE leaves the vectors'
+        bytes in a free page. Raises on failure: the caller is a forget, which must report it.
+        """
+        if not digests:
+            return 0
+        prior = int(self._conn.execute("PRAGMA secure_delete").fetchone()[0])
+        self._conn.execute("PRAGMA secure_delete = ON")
+        try:
+            removed = self._conn.executemany(
+                "DELETE FROM micro_views WHERE digest = ?", [(d,) for d in sorted(digests)]
+            ).rowcount
+            self._conn.commit()
+        except BaseException:
+            self._conn.rollback()
+            raise
+        finally:
+            self._conn.execute(f"PRAGMA secure_delete = {prior}")
+        busy = self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()[0]
+        if busy:
+            raise sqlite3.OperationalError(
+                f"a reader of {self.path} blocked the checkpoint, so erased views may stay in its log"
+            )
+        return removed
 
     def count(self, profile: str | None = None) -> int:
         if profile is None:

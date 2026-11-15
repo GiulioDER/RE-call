@@ -32,6 +32,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   embedder identity, with SQLite `secure_delete` and a truncating checkpoint, and report a cache
   that could not be erased. Entries written by 0.15.0 and earlier record no digest of their text
   and are not found; delete the cache file once to clear them.
+- `recall forget` and `recall withdraw` on a Lite store with the opt-in atomic rescue left the
+  forgotten memo's view vectors in `micro-views.sqlite` and in the rescue artifacts under
+  `RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT`, which also name its source. They now erase its views with
+  SQLite `secure_delete` and a truncating checkpoint, remove every artifact built before it, and
+  report an erasure that failed.
 
 ## [0.15.0] (2026-11-08)
 
