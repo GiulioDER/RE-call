@@ -5,10 +5,12 @@ links, `supersedes`, `depends_on`, `recall_graph` front matter and conservative 
 model. It is keyed by the lite generation id (`recall.lite.store.generation_id_for`). A lite store
 has one corpus, so the file holds one graph, the one for the corpus as it is now.
 
-Every corpus write clears it in the same transaction (`LiteStore._bump`), so graph rows never
-outlive the chunks they quote, a forgotten memo's included, and the rows present are the current
-corpus's. A release from before these tables cannot clear them, which is why the marker also
-records the corpus version it was built at: a marker from another version reads as no graph.
+Every corpus write clears it in the same transaction, so graph rows never outlive the chunks they
+quote, a forgotten memo's included, and the rows present are the current corpus's. The clearing
+is a trigger stored in the file (`graph_cleared_by_corpus_write`), fired by the corpus version
+moving, so a release from before these tables clears them too: it knows nothing of them, but every
+release's write moves that version (CCA SEC-001). The marker also records the version it was built
+at, so a marker from another version reads as no graph.
 
 It serves navigation (`recall graph`, the dashboard's corpus graph). Search never reads it: graph
 expansion is a generation feature of the PostgreSQL install, off by default there too.
@@ -89,6 +91,14 @@ CREATE TABLE IF NOT EXISTS graph_relation_evidence (
     PRIMARY KEY (generation_id, relation_id, chunk_id)
 );
 CREATE INDEX IF NOT EXISTS graph_relation_evidence_chunk ON graph_relation_evidence(generation_id, chunk_id);
+CREATE TRIGGER IF NOT EXISTS graph_cleared_by_corpus_write AFTER UPDATE OF value ON meta
+WHEN new.key = 'corpus_version' BEGIN
+    DELETE FROM graph_relation_evidence;
+    DELETE FROM graph_relations;
+    DELETE FROM graph_mentions;
+    DELETE FROM graph_entities;
+    DELETE FROM meta WHERE key = 'semantic_graph';
+END;
 """
 #: The `meta` row holding the readiness marker (`semantic_graph_marker`, plus `generation_id` and
 #: `corpus_version`), the place a generation's `validation_summary` holds it on PostgreSQL.

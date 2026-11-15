@@ -12,6 +12,7 @@ so its ledger is small, and keeping the rules in one readable place beats a seco
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import sqlite3
@@ -332,15 +333,19 @@ def _corpus(c: sqlite3.Connection, tenant: str) -> tuple[list[tuple[Any, ...]], 
     reads; the semantic graph is the stored one, else one built in memory, since this connection
     is read-only (`recall.lite.graph.graph_of`).
     """
-    from recall.lite.graph import graph_of
     from recall.lite.store import _supersession_rows
     from recall.supersession import resolve_supersession_graph
     from recall.supersession_records import sqlite_records
 
+    # One read view for the rows, the records and the graph, so a graph kept under the rows'
+    # digest is the graph of those rows (`recall.lite.inspect` opens one for the same reason).
+    c.execute("BEGIN")
+    digest = hashlib.sha256(str(c.execute("SELECT value FROM meta WHERE key = 'corpus_version'").fetchone()[0]).encode())
     ordered = []
     for rowid, cid, source, text, raw, indexed, first in c.execute(
-        "SELECT rowid, id, source, text, metadata, indexed_at, first_indexed_at FROM chunks"
+        "SELECT rowid, id, source, text, metadata, indexed_at, first_indexed_at FROM chunks ORDER BY id"
     ):
+        digest.update("\0".join(("", cid, source, text, raw, indexed)).encode())
         metadata = _payload(raw)
         file = metadata["file"] if isinstance(metadata.get("file"), str) else source
         ordinal = _ordinal(metadata)
@@ -351,7 +356,33 @@ def _corpus(c: sqlite3.Connection, tenant: str) -> tuple[list[tuple[Any, ...]], 
         sqlite_records(c, "chunks"),
         tenant,
     )
-    return chunks, winner, graph_of(c, tenant)
+    return chunks, winner, _semantic_graph(c, tenant, digest.hexdigest())
+
+
+#: `{(file, tenant): (stamp of its rows, graph)}`, one entry per file this process reads.
+_GRAPHS: dict[tuple[str, str], tuple[str, SemanticGraphProjection]] = {}
+
+
+def _semantic_graph(c: sqlite3.Connection, tenant: str, stamp: str) -> SemanticGraphProjection:
+    """`graph_of`, kept while the file's rows are the ones it was built from (CCA PERF-002): built
+    in memory it is the whole build, seconds on a large store, and View 2 asks for it on every page.
+    `stamp` digests the corpus version and every row's id, source, text, metadata and `indexed_at`,
+    everything the graph's entities, mentions and relations are built from, so no write can leave
+    a kept graph describing other text. (The vectors are not read: they feed only its generation
+    id, which could lag after a file is recreated with the same rows, version and write times but
+    other vectors.) The version alone is not enough (a file deleted and indexed again, or a
+    backup copied over it, starts it again and can reach the same number with other rows), nor are
+    ids and times (ids are positional, so an edited memo keeps its ids, and under an evaluation
+    clock its write time too)."""
+    from recall.lite.graph import graph_of
+
+    key = (str(c.execute("PRAGMA database_list").fetchone()[2]), tenant)
+    kept = _GRAPHS.get(key)
+    if kept is not None and kept[0] == stamp:
+        return kept[1]
+    graph = graph_of(c, tenant)
+    _GRAPHS[key] = (stamp, graph)
+    return graph
 
 
 def _python_imports(chunks: list[tuple[Any, ...]], files: set[str]) -> list[tuple[str, str]]:
@@ -452,9 +483,11 @@ def source_detail(dsn: str, tenant: str, file: str, *, today: date | None = None
     imports: list[tuple[str, str]] = []
     imported_by: list[tuple[str, str]] = []
     if canonical.endswith(".py"):
-        every = _python_imports(rows, {row[6] for row in rows})
-        imports = [pair for pair in every if pair[0] == canonical]
-        imported_by = [pair for pair in every if pair[1] == canonical]
+        files = {row[6] for row in rows}
+        # This copy's own statements, as Postgres scans `source_uri = %s`: another root's copy of
+        # the same path is the same importer by name (CCA BUG-002).
+        imports = [pair for pair in _python_imports(mine, files) if pair[0] == canonical]
+        imported_by = [pair for pair in _python_imports(rows, files) if pair[1] == canonical]
     successor = graph.successor(key, now=_instant(now))
     replaced = sorted(old for old, claims in graph.candidates.items() if any(f == key for f, _when in claims))
     named = {name for name in (successor, *replaced) if name}

@@ -480,6 +480,9 @@ def refresh(
         # although no memo changed (`recall.stated_facts.stated_marker`).
         and (marker := _stated_marker(store, resolved)) is not None
         and last.get("stated") == marker
+        # A store upgraded from a release before the graph, or a rebuild a write raced, has no
+        # graph although no memo changed (CCA BUG-007).
+        and store.graph_current()
     ):
         # Nothing is written: this path holds no lane, and rewriting the file here could put back
         # a `last_success` that a concurrent refresh has just replaced.

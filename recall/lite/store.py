@@ -1804,14 +1804,26 @@ class LiteStore:
         graph expansion probes for: search never reads this graph."""
         from recall.lite.graph import build_graph, write_graph
 
-        with self._lock:
-            with self.snapshot():
-                version = self._version()
-                graph = build_graph(list(self.iter_chunks()), tenant=self._tenant, corpus_fingerprint=self.corpus_fingerprint())
-            with self._write():
-                if self._version() == version:
-                    write_graph(self._conn, graph, version)
+        with self.snapshot():
+            version = self._version()
+            fingerprint = self.corpus_fingerprint()
+            chunks = list(self.iter_chunks())
+        # Built with the store lock released (CCA PERF-001): a search in this process, the MCP
+        # server's, waits for the read above, not for a build of seconds. The version check below
+        # still refuses to store a graph of a corpus that moved meanwhile.
+        graph = build_graph(chunks, tenant=self._tenant, corpus_fingerprint=fingerprint)
+        with self._write():
+            if self._version() == version:
+                write_graph(self._conn, graph, version)
         return graph
+
+    def graph_current(self) -> bool:
+        """Whether a graph is stored for the corpus version as it is now, from the marker alone:
+        unlike `graph_readiness` it hashes no corpus, so an unchanged refresh can afford it."""
+        from recall.lite.graph import read_marker
+
+        with self._lock:
+            return read_marker(self._conn) is not None
 
     def graph_readiness(self) -> GraphReadiness:
         """Whether a graph is stored for the corpus as it is now, from its marker alone."""
@@ -1827,8 +1839,10 @@ class LiteStore:
         neighbours, read from the source's rows rather than by scanning the corpus.
 
         None for the other relations, which the shared resolver answers (`recall.related`).
-        Ordered as the Postgres query orders them: by ordinal, unnumbered rows last, for `source`;
-        by distance from the seed's ordinal for `ordinal`; then by id.
+        Ordered by the resolver's own key, distance from the seed's ordinal with an unnumbered row
+        at 0, then id, so the LIMIT keeps the rows it would keep from a scan; for `ordinal` the
+        Postgres window, two either side. (`PgVectorStore` orders `source` by ordinal from the
+        start, which keeps a long source's first chunks rather than the seed's neighbours.)
         """
         if relation not in {"source", "ordinal"}:
             return None
@@ -1844,8 +1858,13 @@ class LiteStore:
         )
         params: tuple[object, ...]
         if relation == "source":
-            where, order = "", f"{ordinal} IS NULL, {ordinal}, id"
-            params = (seed.source, seed.id, max_items)
+            # `recall.related._ordinal(chunk) or 0`: any integer, a boolean or none counting as 0
+            # (CCA BUG-001: ordered by ordinal, a seed deep in a long memo got its first chunks).
+            rank = "(CASE WHEN json_type(metadata, '$.ord') = 'integer' THEN json_extract(metadata, '$.ord') ELSE 0 END)"
+            seed_ord = seed.metadata.get("ord")
+            centre = seed_ord if isinstance(seed_ord, int) and not isinstance(seed_ord, bool) else 0
+            where, order = "", f"abs({rank} - ?), id"
+            params = (seed.source, seed.id, centre, max_items)
         else:
             seed_ord = seed.metadata.get("ord")
             if not isinstance(seed_ord, int) or isinstance(seed_ord, bool):
