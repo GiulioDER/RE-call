@@ -44,11 +44,15 @@ turned-off cases at "an artifact built with the memo is left" and
 `::test_a_flat_artifact_naming_the_memo_is_removed_and_another_stays` at "the store's own
 artifact"; the `_names_any` filter dropped fails that test at "a flat artifact of another memory
 was removed"; the top of the root not scanned fails it at "a flat artifact naming the forgotten
-memo is left".
+memo is left". `::test_a_forget_in_one_store_leaves_another_store_sharing_the_root` fails at "a
+forget in store A removed store B's artifact" when the store folder scan is widened to every
+`store-*/lite-*` under the root, and at "store A's folder still names the forgotten memo" when no
+store folder is scanned.
 """
 
 from __future__ import annotations
 
+import json
 import shutil
 import sqlite3
 from contextlib import closing
@@ -256,3 +260,40 @@ def test_a_flat_artifact_naming_the_memo_is_removed_and_another_stays(
     assert not naming.exists(), "a flat artifact naming the forgotten memo is left"
     assert other.exists(), "a flat artifact of another memory was removed"
     store.close()
+
+
+
+def _sources(artifact: Path) -> set[str]:
+    return {view["source"] for view in json.loads((artifact / "views.json").read_text(encoding="utf-8"))["views"]}
+
+
+def test_a_forget_in_one_store_leaves_another_store_sharing_the_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two stores share one root, each with its own `store-*` folder (#1313): a forget in A
+    removes A's artifacts that name the memo and leaves B's, whose memo has the same file name."""
+    root = tmp_path / "atomic"
+    built = {}
+    for name in ("a", "b"):
+        (tmp_path / name).mkdir()
+        store, embedder = _certified(tmp_path / name)
+        before = set(root.glob("store-*")) if root.exists() else set()
+        assert ensure_rescue_artifact(store, embedder, env=_env(root)) is not None
+        [folder] = set(root.glob("store-*")) - before
+        built[name] = (store, folder)
+    (store_a, folder_a), (store_b, folder_b) = built["a"], built["b"]
+    [source] = {c.source for c in store_a.iter_chunks() if Path(c.source).name == "ops-log.md"}
+    a_artifacts, b_artifacts = list(folder_a.glob("lite-*")), list(folder_b.glob("lite-*"))
+    assert a_artifacts and any(source in _sources(p) for p in a_artifacts), "negative control: A names its memo"
+    assert b_artifacts, "negative control: store B has no artifact"
+    monkeypatch.setenv(ROOT_ENV, str(root))
+
+    result = forget_memory(store_a, [source])
+
+    assert "WARNING" not in result.message, result.message
+    assert [p for p in folder_a.glob("lite-*") if source in _sources(p)] == [], (
+        "store A's folder still names the forgotten memo"
+    )
+    assert all(p.exists() for p in b_artifacts), "a forget in store A removed store B's artifact"
+    store_a.close()
+    store_b.close()
