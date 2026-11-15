@@ -895,3 +895,26 @@ def test_tenants_listing_is_scoped_to_the_caller_without_admin(monkeypatch) -> N
     admin_token = _Token([SCOPE_READ, SCOPE_ADMIN], {"tenant": _CALLER})
     result = _invoke("recall_tenants", _state(registry, limiter), admin_token, monkeypatch)
     assert set(_json.loads(result)["tenants"]) >= {_CALLER, _OTHER}
+
+
+def test_recall_calibration_run_hands_the_server_environment_to_the_build(monkeypatch) -> None:
+    """The tool passes the server's runtime environment to `run_calibration` (CCA ENV-004, PR 1309).
+
+    A lite store's fit builds its atomic rescue artifact from that environment, which is the one the
+    server's search reads; without it the build read the process environment. Red proof: with
+    `env=_runtime_env_for(state)` dropped from the tool's call, `seen` has no `env` and the
+    assertion fails.
+    """
+    registry = _Registry()
+    token = _Token([TOOLS["recall_calibration_run"][0]], {"tenant": _CALLER})
+    state = _state(registry, _Limiter())
+    seen: dict = {}
+
+    def _capture(store, *args, **kwargs):
+        seen.update(kwargs)
+        raise _ReachedService(store)
+
+    monkeypatch.setattr(server_module, "run_calibration", _capture)
+    with pytest.raises(_ReachedService):
+        _invoke("recall_calibration_run", state, token, monkeypatch)
+    assert seen.get("env") is state["settings"].env, "recall_calibration_run did not pass the server's environment"

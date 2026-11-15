@@ -51,8 +51,14 @@ def run_calibration(
     embedder: Embedder,
     generation_id: str | None = None,
     queries: Sequence[dict[str, object]] | None = None,
+    *,
+    env: Mapping[str, str] | None = None,
 ) -> dict[str, object]:
-    """Measure a calibration artifact for a generation."""
+    """Measure a calibration artifact for a generation.
+
+    `env` is the server's runtime environment: on a lite store the fit's atomic rescue artifact is
+    built from it (`recall.lite.atomic`), as the server's search reads it.
+    """
     from recall.lite import LiteStore
 
     if isinstance(store, LiteStore):
@@ -61,7 +67,7 @@ def run_calibration(
 
         # The refit lane, not the write lane: a fit never blocks a write (see the module).
         with lite_lane(store.path, lane="refit", purpose="calibrate"):
-            return run_report(store, embedder, generation_id, queries)
+            return run_report(store, embedder, generation_id, queries, env=env)
     from recall_mcp import desktop_ingest
 
     return desktop_ingest.run_calibration(store, embedder, generation_id, queries)

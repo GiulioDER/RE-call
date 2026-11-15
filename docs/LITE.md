@@ -242,19 +242,26 @@ With the rescue on, every write that keeps a calibration in force (a refresh, `r
 in force, under the root, and the refresh report prints an `atomic` line. A refresh of memos that
 have not changed does nothing, so on a store that already exists, run `recall lite refresh --force`
 (or `recall index`) once after setting the variables; until then every search with the rescue on
-fails on the missing artifact. Nothing is built until the store has a certified calibration; until
-then strict search refuses anyway. The views of each chunk
-text are kept in `micro-views.sqlite` under the root, so a later build embeds only the views of new
-or edited chunks. The first build is the expensive one: a chunk of about 120 words has about ten
+fails on the missing artifact. Nothing is built until the store has a certified calibration, and
+until then every search with the rescue on refuses, in development trust mode too, where search
+would otherwise answer uncalibrated. The views of each chunk text are kept in
+`micro-views.sqlite` under the root, so a later build embeds only the views of new or edited
+chunks. The first build is the expensive one: a chunk of about 120 words has about ten
 views, so it embeds roughly ten times as many short texts as the first index did. That file grows
 until a forget erases from it; delete it to reclaim space, at the cost of one full build.
 
-Search refuses while the artifact for the memory as it is now is missing: a search that lands
-between a write and the end of its build fails with an artifact error and succeeds once the build
-finishes. `recall forget` and `recall withdraw` build nothing, so after one of them an active search
-fails on the missing artifact until the next refresh or index builds again. A store's older
-artifacts are removed after each build; on Windows one a running server still has open stays until
-a later build.
+The rescue applies only to a search with no folder, source or other scope and no source policy
+(`RECALL_SOURCE_POLICY_FILE`): any other search neither uses the artifact nor needs it, so with a
+source policy in force every build is paid for and no search uses it.
+
+A search the rescue applies to refuses while the artifact for the memory as it is now is missing:
+a search that lands between a write and the end of its build fails with an artifact error and
+succeeds once the build finishes. `recall forget` and `recall withdraw` build nothing, so after one
+of them such a search fails on the missing artifact until the next refresh or index builds again.
+A background refit that stores a new calibration and then fails to build only logs the failure, so
+such searches fail until the next write that changes the memory, or `recall lite refresh --force`,
+builds again. A store's older artifacts are removed after each build; on Windows one a running
+server still has open stays until a later build.
 
 `recall forget` and `recall withdraw` also erase what the rescue keeps of the memo: its views in
 `micro-views.sqlite`, with SQLite `secure_delete` and a truncating checkpoint, and every artifact

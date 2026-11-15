@@ -608,7 +608,9 @@ def _record_carry(store: LiteStore, carried: CarryForward) -> None:
         )
 
 
-def ensure_calibrated(store: LiteStore, embedder: Embedder, *, background: bool = False) -> CalibrationOutcome:
+def ensure_calibrated(
+    store: LiteStore, embedder: Embedder, *, background: bool = False, env: Mapping[str, str] | None = None
+) -> CalibrationOutcome:
     """Keep a calibration in force after a write: carry it forward when it re-verifies, else refit.
 
     Never fitted: fit now, inline, whatever `background` says (the first fit, below or at the
@@ -641,7 +643,7 @@ def ensure_calibrated(store: LiteStore, embedder: Embedder, *, background: bool 
     if carried.artifact is not None and not carried.refit_due:
         return CalibrationOutcome(CalibrationStatus.CERTIFIED, carried.reason, carried.artifact)
     if background and fit.certified:
-        schedule_refit(store, embedder)
+        schedule_refit(store, embedder, env=env)
         if carried.artifact is not None:
             return CalibrationOutcome(
                 CalibrationStatus.CERTIFIED, carried.reason + "; a refit is due and is running in the background", carried.artifact
@@ -661,6 +663,8 @@ class _RefitJob:
     finished: bool = False
     outcome: CalibrationOutcome | None = None
     error: str | None = None
+    #: The environment of the write that scheduled the job, which its artifact build reads.
+    env: Mapping[str, str] | None = None
 
 
 _REFIT_LOCK = threading.Lock()
@@ -702,7 +706,7 @@ def _run_refit(store: LiteStore, embedder: Embedder, job: _RefitJob) -> None:
             with lite_lane(store.path, lane="refit", purpose="calibrate", coalesce=True, on_busy="skip") as ticket:
                 if ticket is None or not _refit_wanted(store):
                     return
-                job.outcome = _fit_and_build(store, embedder)
+                job.outcome = _fit_and_build(store, embedder, env=job.env)
             with _REFIT_LOCK:
                 job.again = False
             if not _refit_wanted(store):
@@ -721,12 +725,14 @@ def _run_refit(store: LiteStore, embedder: Embedder, job: _RefitJob) -> None:
             job.finished = True
 
 
-def schedule_refit(store: LiteStore, embedder: Embedder) -> bool:
+def schedule_refit(store: LiteStore, embedder: Embedder, *, env: Mapping[str, str] | None = None) -> bool:
     """Refit `store` in a background thread; False when one is already running for its file.
 
     A running refit is not doubled: it re-checks the corpus after each fit and fits again (up to
     `_MAX_REFIT_ATTEMPTS` in a row) while the newest fit no longer covers it. The thread is a
     daemon, so a process that exits mid-fit stores nothing, and the next write schedules again.
+    `env` is the environment of the write that scheduled it: the refit's atomic rescue build
+    reads it (`recall.lite.atomic`), as the write's own build did.
     """
     key = _refit_key(store)
     with _REFIT_LOCK:
@@ -734,7 +740,7 @@ def schedule_refit(store: LiteStore, embedder: Embedder) -> bool:
         if job is not None and not job.finished:
             job.again = True
             return False
-        job = _RefitJob()
+        job = _RefitJob(env=env)
         job.thread = threading.Thread(
             target=_run_refit, args=(store, embedder, job), name="recall-lite-refit", daemon=True
         )
@@ -821,23 +827,30 @@ def run_report(
     embedder: Embedder,
     generation_id: str | None = None,
     queries: Sequence[Mapping[str, Any]] | None = None,
+    *,
+    env: Mapping[str, str] | None = None,
 ) -> dict[str, object]:
     """`recall_calibration_run` for a lite store: fit now, store it, and report.
 
     A lite calibration that certifies is in force at once; there is no draft to publish, because
-    there is one corpus and nothing else it could be bound to.
+    there is one corpus and nothing else it could be bound to. The fit's atomic rescue artifact is
+    built from `env`, the server's runtime environment, as its search reads it.
     """
     if generation_id is not None and generation_id != store.lite_generation_id():
         raise LiteStoreError(
             f"generation {generation_id!r} is not this lite store's corpus ({store.lite_generation_id()}); "
             "a lite store calibrates the corpus it holds now"
         )
-    outcome = _fit_and_build(store, embedder, queries=queries)
+    outcome = _fit_and_build(store, embedder, queries=queries, env=env)
     return {**status_report(store), "outcome": outcome.status.value, "message": outcome.reason}
 
 
 def _fit_and_build(
-    store: LiteStore, embedder: Embedder, *, queries: Sequence[Mapping[str, Any]] | None = None
+    store: LiteStore,
+    embedder: Embedder,
+    *,
+    queries: Sequence[Mapping[str, Any]] | None = None,
+    env: Mapping[str, str] | None = None,
 ) -> CalibrationOutcome:
     """`auto_calibrate`, then the atomic rescue artifact its new calibration id names.
 
@@ -847,7 +860,7 @@ def _fit_and_build(
     outcome = auto_calibrate(store, embedder, queries=queries)
     from recall.lite.atomic import ensure_rescue_artifact
 
-    ensure_rescue_artifact(store, embedder)
+    ensure_rescue_artifact(store, embedder, env=env)
     return outcome
 
 
