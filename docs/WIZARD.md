@@ -224,19 +224,23 @@ generation's artifact after publishing its calibration and before promoting it, 
 `RECALL_ATOMIC_RESCUE_MODE=active` and an absolute `RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT` on that
 tenant's server. The report's `atomic rescue:` line under each corpus says what it built.
 
-- **Where the artifacts go.** `<data_root>/atomic` when `data_root` is set, else
-  `<project_root>/.recall/atomic`. A `RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT` set in the shell that runs
-  the wizard is used instead, and must be absolute. One root can serve several tenants.
+- **Where the artifacts go.** `<project_root>/.recall/atomic`. A `RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT`
+  set in the shell that runs the wizard is used instead, and must be absolute. One root can serve
+  several tenants.
+- **Not with the Docker stack.** When `data_root` provisions it, the rescue stays off unless the
+  shell sets `RECALL_ATOMIC_RESCUE_MODE`: the desktop app's uploads, forgets and calibrations run in
+  those containers, which do not mount the host's artifact root, so an upload there would promote a
+  generation without an artifact and the host servers would refuse to search it. With the mode set
+  in the shell anyway, do uploads from the CLI or the agent, not the desktop app.
 - **Only a tenant this run built an artifact for is served active.** Every other server is pinned to
   `RECALL_ATOMIC_RESCUE_MODE=off`: the memory tenant has no generation, and a tenant left on an
   earlier generation may have no artifact. In active mode either would refuse every unscoped search.
 - **A mode set in the shell is kept.** Run the wizard with `RECALL_ATOMIC_RESCUE_MODE=off` to leave
   the rescue off. A mistyped mode is refused before anything is built, because the server would
   refuse to start on it.
-- **Without `numpy` and `threadpoolctl`** (the `atomic` extra), or with neither `data_root` nor
-  `project_root` nor a root in the shell, the rescue stays off and the report says why.
-- **The Docker stack serves with the rescue off**, because its containers do not mount the host's
-  artifact root.
+- **Without `numpy` and `threadpoolctl`** (the `atomic` extra), or with neither `project_root` nor
+  a root in the shell, the rescue stays off and the report says why.
+- **The Docker services themselves serve with the rescue off**, for the same reason.
 - **A failed build refuses the promotion**, as a failed publish does: the generation is left
   unpromoted and released for `recall generation gc`.
 
@@ -247,8 +251,11 @@ local model on a loaded host (2026-11-15): 1,776 chunks took about 35 minutes to
 hours to build the first artifact. With a hosted embedder the cost is the provider's, per view.
 
 After install, every path that makes a generation serve builds its artifact first when the rescue
-is active for the tenant: `recall generation promote` and `rollback`, and an upload through the
-desktop app. See [GENERATIONS.md](GENERATIONS.md#atomic-rescue).
+is active for the tenant: `recall generation promote` and `rollback`, an upload through an MCP
+server, and publishing a new calibration. **The CLI learns the mode from the project's `.env`**, so
+run those commands from the project directory: from anywhere else the rescue reads as off, nothing
+is built, and the server, which is active, refuses the promoted generation. See
+[GENERATIONS.md](GENERATIONS.md#atomic-rescue).
 
 **Docker autostart is not configured.** Making a container start on login is a change to the machine
 rather than the project; on Windows it is a Docker Desktop setting.

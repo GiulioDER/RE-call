@@ -341,7 +341,7 @@ def test_publishing_a_calibration_rebuilds_the_rescue(monkeypatch) -> None:
 
 def test_a_rebuild_after_publish_that_fails_is_reported_not_raised(monkeypatch) -> None:
     """The publication has happened; the operator is told how to retry rather than handed a traceback
-    that reads as a failed publish. RP-18: removing the `except` in `after_publish` made this fail."""
+    that reads as a failed publish. RP-18: narrowing the `except` in `after_publish` to `KeyError` made this fail: the error escaped."""
     import recall.generation_rescue as rescue
 
     def ensure(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
