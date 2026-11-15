@@ -1878,8 +1878,7 @@ class LiteStore:
         None for the other relations, which the shared resolver answers (`recall.related`).
         Ordered by the resolver's own key, distance from the seed's ordinal with an unnumbered row
         at 0, then id, so the LIMIT keeps the rows it would keep from a scan; for `ordinal` the
-        Postgres window, two either side. (`PgVectorStore` orders `source` by ordinal from the
-        start, which keeps a long source's first chunks rather than the seed's neighbours.)
+        Postgres window, two either side. `PgVectorStore` ranks both relations by the same key.
         """
         if relation not in {"source", "ordinal"}:
             return None
@@ -1888,9 +1887,10 @@ class LiteStore:
         seed = self.chunk_by_id(seed_chunk_id)
         if seed is None:
             raise ValueError(f"seed chunk not found: {seed_chunk_id!r}")
-        # Postgres reads `metadata->>'ord' ~ '^[0-9]+$'`: a non-negative integer, never a boolean.
+        # `recall.related._ordinal`, as Postgres reads it (`recall.store._integer_ord_sql`): any
+        # integer, negative included, never a boolean, a float or a string.
         ordinal = (
-            "(CASE WHEN json_type(metadata, '$.ord') = 'integer' AND json_extract(metadata, '$.ord') >= 0 "
+            "(CASE WHEN json_type(metadata, '$.ord') = 'integer' "
             "THEN json_extract(metadata, '$.ord') END)"
         )
         params: tuple[object, ...]
