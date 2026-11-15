@@ -32,6 +32,10 @@ survive"; the `rmtree` loop of `recall.lite.atomic.erase_forgotten` removed fail
 case at "an artifact built with the memo is left" and the parametrized cases at their no-WARNING
 assertion, since the left-behind check then raises; `rescue_views_erased = -1` in the `except` of
 `recall_mcp.lifecycle._forget_memory_unlocked` replaced by `pass` fails the reporting test.
+`::test_a_build_overtaken_by_a_forget_does_not_keep_the_forgotten_views` was added after the rest
+(from an automated review): with the `erase_digests(stale)` block of
+`recall.lite.atomic.ensure_rescue_artifact` removed it fails at "the forgotten memo's views are
+still in the view store", its negative control having passed.
 """
 
 from __future__ import annotations
@@ -42,6 +46,7 @@ from pathlib import Path
 
 import pytest
 
+from recall import atomic_view_store
 from recall.atomic_rescue import clear_atomic_rescue_artifact_cache
 from recall.atomic_view_store import AtomicViewStore, chunk_view_digest
 from recall.lite import LiteStore
@@ -182,4 +187,35 @@ def test_a_rescue_that_cannot_be_erased_is_reported(tmp_path: Path, monkeypatch:
 
     assert result.chunks_removed > 0, result.message
     assert "erasing them from the atomic rescue failed" in result.message, result.message
+    store.close()
+
+
+def test_a_build_overtaken_by_a_forget_does_not_keep_the_forgotten_views(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A build (a background refit's runs under its own lane) reads the chunks, a forget lands, and
+    only then does the build store the views: the forget found none to erase, so the build must."""
+    root = tmp_path / "atomic"
+    store, embedder = _certified(tmp_path)
+    monkeypatch.setenv(ROOT_ENV, str(root))
+    needle = [chunk for chunk in store.iter_chunks() if Path(chunk.source).name == "ops-log.md"]
+    assert needle, "the fixture has no needle memo"
+    gone = {chunk_view_digest(chunk.text) for chunk in needle}
+    real_assemble = atomic_view_store.assemble
+    stored: list[set[str]] = []
+
+    def forget_then_assemble(parents, views, *args):  # noqa: ANN001, ANN002, ANN202
+        result = forget_memory(store, [needle[0].source])
+        assert result.chunks_removed > 0, result.message
+        out = real_assemble(parents, views, *args)
+        stored.append(set(_views(root)))
+        return out
+
+    monkeypatch.setattr(atomic_view_store, "assemble", forget_then_assemble)
+
+    report = ensure_rescue_artifact(store, embedder, env=_env(root))
+
+    assert report is not None and report.manifest is None, report
+    assert stored and gone <= stored[0], "negative control: the overtaken build stored no views of the memo"
+    assert gone & set(_views(root)) == set(), "the forgotten memo's views are still in the view store"
     store.close()

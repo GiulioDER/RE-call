@@ -102,7 +102,7 @@ def ensure_rescue_artifact(
     a store whose every active search would refuse on a missing artifact without saying why.
     """
     from recall import __version__
-    from recall.atomic_view_store import AtomicViewStore, assemble
+    from recall.atomic_view_store import AtomicViewStore, assemble, chunk_view_digest
     from recall.calibration_v2 import CalibrationStatus
     from recall.embeddings import embed_document_groups, embedding_profile, embedding_profile_id
 
@@ -161,6 +161,14 @@ def ensure_rescue_artifact(
     if store.corpus_fingerprint() != corpus_fingerprint or _key_in_force(store) != manifest.parent.name:
         # A write, or a background refit under its own lane, landed while the views were read;
         # it builds its own artifact, which this build must neither replace nor remove.
+        if store.corpus_fingerprint() != corpus_fingerprint:
+            # A forget that landed after the chunks were read erased their views before this
+            # build stored them, so they are erased here, by the texts the store no longer holds.
+            current = {chunk.text for chunk in store.iter_chunks()}
+            stale = {chunk_view_digest(text) for *_, text in parents if text not in current}
+            if stale:
+                with AtomicViewStore(root / VIEW_STORE_NAME) as views:
+                    views.erase_digests(stale)
         return BuildReport(
             None, "not built: the memory or its calibration changed during the build", counts, time.perf_counter() - started
         )
