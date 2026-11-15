@@ -515,11 +515,11 @@ def _forget_memory_unlocked(
             "staged upload cleanup failed after chunk deletion for tenant %r", store.tenant
         )
         staged_files_removed = -1
-    cache_entries_erased = 0
+    cache_entries_erased = cache_entries_undigested = 0
     try:
         # The vectors of the deleted text, which the content-addressed embedding cache would
         # otherwise keep until eviction, under every embedder identity that embedded it.
-        cache_entries_erased = erase_cached_digests(cached_digests)
+        cache_entries_erased, cache_entries_undigested = erase_cached_digests(cached_digests)
     except Exception:  # BROAD-CATCH: error-translation
         _log.exception(
             "embedding cache erasure failed after chunk deletion for tenant %r", store.tenant
@@ -606,6 +606,14 @@ def _forget_memory_unlocked(
         )
     elif cache_entries_erased:
         message += f" Erased {cache_entries_erased} cached embedding(s) of the deleted text."
+    if cache_entries_undigested:
+        message += (
+            f" WARNING: the embedding cache holds {cache_entries_undigested} embedding(s) that "
+            "record no digest of their text (written by 0.15.0 or earlier), which a forget cannot "
+            "find, so the deleted text's vectors may be among them; delete the cache file "
+            "(RECALL_EMBED_CACHE, or the platform default) once to clear them, which costs only "
+            "a re-embed."
+        )
     if rescue_views_erased < 0:
         message += (
             " WARNING: the chunk deletion succeeded but erasing them from the atomic rescue failed, "
