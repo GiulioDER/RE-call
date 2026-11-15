@@ -38,10 +38,10 @@ from recall.store import (
     EdgeCandidates,
     PgVectorStore,
     SupersessionGraph,
-    _INTEGER_ORD_SQL,
-    _ORD_RANK_SQL,
     _first_write_sql,
+    _integer_ord_sql,
     _lexical_tie_order,
+    _ord_rank_sql,
     resolve_supersession_graph,
     supersession_rows_sql,
 )
@@ -1121,7 +1121,7 @@ class GenerationStore(PgVectorStore):
                 centre,
                 max_items,
             )
-            order = f"abs({_ORD_RANK_SQL} - %s), chunk_id COLLATE \"C\""
+            order = f"abs({_ord_rank_sql()} - %s), chunk_id COLLATE \"C\""
         else:
             if not isinstance(seed_ord, int) or isinstance(seed_ord, bool):
                 return (
@@ -1129,9 +1129,9 @@ class GenerationStore(PgVectorStore):
                     [],
                 )
             where = (
-                f"{source_match} AND {_INTEGER_ORD_SQL} AND abs({_ORD_RANK_SQL} - %s) <= 2"
+                f"{source_match} AND {_integer_ord_sql()} AND abs({_ord_rank_sql()} - %s) <= 2"
             )
-            order = f"abs({_ORD_RANK_SQL} - %s), chunk_id COLLATE \"C\""
+            order = f"abs({_ord_rank_sql()} - %s), chunk_id COLLATE \"C\""
             params = (
                 self._tenant,
                 generation_id,
