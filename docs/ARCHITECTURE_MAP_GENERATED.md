@@ -76,7 +76,7 @@ Cross package edges: 403
 | 19 | `recall.cli_commands.setup_wizard` |
 | 19 | `recall.lite.store` |
 | 19 | `recall_mcp.provenance` |
-| 17 | `recall.cli_commands.calibration_cmd` |
+| 18 | `recall.cli_commands.calibration_cmd` |
 | 17 | `recall.dashboard.server` |
 | 17 | `recall_mcp.semantic_graph_cache` |
 | 16 | `recall.generation_store` |
@@ -543,7 +543,7 @@ They are observations, not automatic failures.
 | `recall.cli_commands._lite` | 3 | 139 |
 | `recall.cli_commands._shared` | 13 | 140 |
 | `recall.cli_commands.backup_cmd` | 1 | 8 |
-| `recall.cli_commands.calibration_cmd` | 17 | 219 |
+| `recall.cli_commands.calibration_cmd` | 18 | 219 |
 | `recall.cli_commands.dashboard_cmd` | 4 | 190 |
 | `recall.cli_commands.doctor_cmd` | 1 | 168 |
 | `recall.cli_commands.extract_rewrite` | 12 | 156 |

@@ -37,7 +37,7 @@ from recall.state_dir import write_ignore
 if TYPE_CHECKING:
     from recall.embeddings import Embedder
 
-__all__ = ["build_artifact", "ensure_for_promotion", "erase_forgotten", "remove_artifacts"]
+__all__ = ["after_publish", "build_artifact", "ensure_for_promotion", "erase_forgotten", "remove_artifacts"]
 
 
 def _active_root(tenant: str, env: Mapping[str, str] | None) -> Path | None:
@@ -69,6 +69,32 @@ def ensure_for_promotion(
     if root is None:
         return None
     return build_artifact(dsn, tenant, generation_id, embedder(), root)
+
+
+def after_publish(
+    dsn: str,
+    tenant: str,
+    generation_id: str,
+    embedder: Callable[[], Embedder],
+    *,
+    env: Mapping[str, str] | None = None,
+) -> str:
+    """Rebuild `generation_id`'s artifact for the calibration just published, and say what happened.
+
+    An artifact names the calibration it serves beside, so a new one on a serving generation leaves
+    every unscoped search refusing until it is rebuilt. The publication has happened by now and is
+    not undone, so a failed build is reported, with the command that retries it, rather than raised.
+    "" when the rescue is off for `tenant`.
+    """
+    try:
+        built = ensure_for_promotion(dsn, tenant, generation_id, embedder, env=env)
+    except Exception as exc:  # BROAD-CATCH: error-translation  # the publication stands; the operator must see this
+        return (
+            f"WARNING: the atomic rescue is active for tenant {tenant!r} and its artifact for "
+            f"{generation_id} could not be rebuilt for the new calibration ({exc}), so its unscoped "
+            f"searches refuse; retry with `recall --tenant {tenant} generation rescue {generation_id}`"
+        )
+    return f"atomic rescue: {built}" if built else ""
 
 
 def build_artifact(dsn: str, tenant: str, generation_id: str, embedder: Embedder, root: Path) -> str:

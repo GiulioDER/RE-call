@@ -26,6 +26,19 @@ if TYPE_CHECKING:
     from recall.lite import LiteStore
 
 
+def _rescue_after_publish(args: argparse.Namespace, generation_id: str) -> None:
+    """Rebuild the generation's atomic rescue for the calibration just published, when it is active.
+
+    An artifact names its calibration, so without this every unscoped search on a serving
+    generation refuses after a recalibration (`recall.generation_rescue.after_publish`).
+    """
+    from recall.generation_rescue import after_publish
+
+    line = after_publish(args.dsn, args.tenant, generation_id, lambda: _make_embedder(args.embedder))
+    if line:
+        print(line, file=sys.stderr if line.startswith("WARNING") else sys.stdout)
+
+
 def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     # Top-level `calibrate` is the INSTALL-TIME step: it fits the abstention threshold to the
     # operator's own corpus, which is the only thing that makes the shipped default meaningful.
@@ -346,6 +359,7 @@ def _cmd_calibration(args: argparse.Namespace) -> None:
             )
             if args.publish:
                 artifact = repository.publish(artifact.calibration_id)
+                _rescue_after_publish(args, artifact.generation_id)
             print(f"calibration: {artifact.calibration_id}")
             print(f"status: {artifact.status.value}")
             print(f"generation: {artifact.generation_id}")
@@ -416,6 +430,7 @@ def _cmd_calibration(args: argparse.Namespace) -> None:
             if args.publish:
                 artifact = repository.publish(artifact.calibration_id)
                 print(f"published: {artifact.calibration_id}")
+                _rescue_after_publish(args, artifact.generation_id)
         elif args.calibration_cmd == "drift":
             from recall.drift import (
                 corpus_objects_for_directory,
@@ -465,6 +480,8 @@ def _cmd_calibration(args: argparse.Namespace) -> None:
                 print(f"calibration: {outcome.calibration_id or 'none'}")
                 print(f"published: {'yes' if outcome.published else 'no'}")
                 print(f"reason: {outcome.reason}")
+            if outcome.published:
+                _rescue_after_publish(args, args.generation)
             # `failed` is the only exit-1 case. `skipped` is a correct, expected outcome for a
             # tenant whose first calibration has not been made yet, and exiting non-zero on it
             # would make a post-index hook look broken on every fresh install.

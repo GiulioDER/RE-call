@@ -1425,11 +1425,15 @@ def _atomic_rescue_env(config: HeadlessConfig) -> tuple[dict[str, str], str]:
     """The atomic rescue settings to build and serve the corpora under, and a note when it is off.
 
     On by default (owner decision 2026-11-15), because the rescue finds a one-sentence answer
-    inside a long chunk: active, its artifacts under `<data_root>/atomic`, else
-    `<project_root>/.recall/atomic`. A mode or root this shell sets is used as it is; a mistyped
-    mode is refused before anything is built, since a server refuses to start on it. Without the
-    `atomic` dependencies, or without a place for the artifacts, the rescue stays off, because
-    active without an artifact refuses every search.
+    inside a long chunk: active, its artifacts under `<project_root>/.recall/atomic`. A mode or root
+    this shell sets is used as it is; a mistyped mode is refused before anything is built, since a
+    server refuses to start on it. Without the `atomic` dependencies, or without a place for the
+    artifacts, the rescue stays off, because active without an artifact refuses every search.
+
+    It also stays off, unless this shell asks for it, when `data_root` provisions the Docker stack:
+    the desktop app's uploads, forgets and calibrations run in those containers, which cannot reach
+    a host artifact root (a bind mount is how a database here was corrupted, `recall.wizard.stack`),
+    so an upload there would promote a generation the host servers then refuse to search.
     """
     from recall._env import _ATOMIC_RESCUE_MODES
     from recall.lite.atomic import ROOT_ENV
@@ -1447,12 +1451,16 @@ def _atomic_rescue_env(config: HeadlessConfig) -> tuple[dict[str, str], str]:
     if not mode:
         if any(importlib.util.find_spec(name) is None for name in ("numpy", "threadpoolctl")):
             return {}, 'atomic rescue is off: pip install "recall-rag[atomic]" and run again to turn it on'
+        if config.data_root is not None:
+            return {}, (
+                "atomic rescue is off: the desktop app's Docker services cannot reach a host "
+                "artifact root, so an upload there would leave the host servers refusing"
+            )
         mode = "active"
     if mode.lower() == "active" and not root:
-        base = config.data_root or (config.project_root / ".recall" if config.project_root else None)
-        if base is None:
-            return {}, f"atomic rescue is off: set {ROOT_ENV}, data_root or project_root to turn it on"
-        root = str((base / "atomic").resolve())
+        if config.project_root is None:
+            return {}, f"atomic rescue is off: set {ROOT_ENV} or project_root to turn it on"
+        root = str((config.project_root / ".recall" / "atomic").resolve())
     return {"RECALL_ATOMIC_RESCUE_MODE": mode, **({ROOT_ENV: root} if root else {})}, ""
 
 
@@ -1461,17 +1469,19 @@ def _with_rescue(
 ) -> None:
     """Register the rescue on each server whose generation this run built an artifact for.
 
-    Every other server is pinned off, whatever the client's environment says: the memory tenant
-    has no generation, a tenant served by an earlier generation may have no artifact, and active
-    mode refuses every search on either. The root is registered on all of them, so a forget
-    through any server erases what the rescue keeps.
+    Every other server that would be active is pinned off, whatever the client's environment
+    says: the memory tenant has no generation, a tenant served by an earlier generation may have no
+    artifact, and active mode refuses every search on either. Another mode (`shadow`, `off`) is
+    registered as this shell set it. The root is registered on all of them, so a forget through any
+    server erases what the rescue keeps.
     """
     from recall.lite.atomic import ROOT_ENV
 
     built = {outcome.tenant for outcome in outcomes if outcome.atomic}
+    configured = atomic_env.get("RECALL_ATOMIC_RESCUE_MODE", "off")
     for block in blocks:
-        mode = atomic_env.get("RECALL_ATOMIC_RESCUE_MODE", "off") if block.tenant in built else "off"
-        block.env["RECALL_ATOMIC_RESCUE_MODE"] = mode
+        active = configured.lower() == "active"
+        block.env["RECALL_ATOMIC_RESCUE_MODE"] = "off" if active and block.tenant not in built else configured
         if ROOT_ENV in atomic_env:
             block.env[ROOT_ENV] = atomic_env[ROOT_ENV]
 

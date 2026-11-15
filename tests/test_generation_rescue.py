@@ -14,6 +14,7 @@ import argparse
 import importlib.util
 import uuid
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import psycopg
@@ -137,8 +138,22 @@ def test_a_fresh_install_turns_the_rescue_on_with_an_absolute_root(tmp_path: Pat
     assert Path(env[ROOT_ENV]).is_absolute()
     assert Path(env[ROOT_ENV]) == (tmp_path / "project" / ".recall" / "atomic").resolve()
 
-    env, _ = _atomic_rescue_env(_config(tmp_path, data_root=tmp_path / "data"))
-    assert Path(env[ROOT_ENV]) == (tmp_path / "data" / "atomic").resolve()
+
+
+def test_a_docker_stack_install_leaves_the_rescue_off(tmp_path: Path, monkeypatch) -> None:
+    """The desktop app's uploads run in containers that cannot reach a host root, so an upload
+    there would promote without an artifact while the host servers are active.
+
+    RP-15: removing the `data_root` branch of `_atomic_rescue_env` made this fail: active was
+    registered.
+    """
+    from recall.wizard.headless import _atomic_rescue_env
+
+    monkeypatch.delenv("RECALL_ATOMIC_RESCUE_MODE", raising=False)
+    monkeypatch.delenv(ROOT_ENV, raising=False)
+
+    env, note = _atomic_rescue_env(_config(tmp_path, data_root=tmp_path / "data"))
+    assert env == {} and "Docker" in note
 
 
 def test_a_shell_mode_is_kept_and_a_mistyped_one_is_refused(tmp_path: Path, monkeypatch) -> None:
@@ -192,6 +207,16 @@ def test_only_a_tenant_this_run_built_for_is_served_active(tmp_path: Path) -> No
     assert [b.env["RECALL_ATOMIC_RESCUE_MODE"] for b in blocks] == ["active", "off", "off"]
     assert all(b.env[ROOT_ENV] == root for b in blocks)
     assert _cli_rescue_env(blocks) == {"RECALL_ATOMIC_RESCUE_MODE_BY_TENANT": "p-docs:active", ROOT_ENV: root}
+
+
+def test_a_shell_shadow_mode_is_registered_as_it_is(tmp_path: Path) -> None:
+    """RP-16: pinning every unbuilt tenant off whatever the mode made this fail: shadow became off."""
+    from recall.wizard.headless import _with_rescue
+    from recall.wizard.wiring import ServerBlock
+
+    blocks = (ServerBlock(name="p-docs", tenant="p-docs", env={}, rationale="r"),)
+    _with_rescue(blocks, [], {"RECALL_ATOMIC_RESCUE_MODE": "shadow"})
+    assert blocks[0].env["RECALL_ATOMIC_RESCUE_MODE"] == "shadow"
 
 
 def test_the_project_env_carries_the_rescue_and_a_rerun_replaces_it(tmp_path: Path) -> None:
@@ -250,9 +275,8 @@ class _CliManager:
 
 
 def _args(command: str, **values: object) -> argparse.Namespace:
-    return argparse.Namespace(
-        dsn="postgresql://x", tenant="p-docs", embedder="hashing", generation_cmd=command, **values
-    )
+    values.setdefault("generation_cmd", command)
+    return argparse.Namespace(dsn="postgresql://x", tenant="p-docs", embedder="hashing", **values)
 
 
 @pytest.mark.parametrize(
@@ -285,7 +309,47 @@ def test_the_cli_builds_before_it_serves_and_refuses_when_it_cannot(
 
     assert built == [target]
     assert _CliManager.calls == []
-    assert "RECALL_ATOMIC_RESCUE_MODE=off" in str(refused.value)
+    # Turned off in the CLI alone, the server would still refuse, so the advice names both.
+    assert "RECALL_ATOMIC_RESCUE_MODE=off" in str(refused.value) and "MCP server" in str(refused.value)
+
+
+def test_publishing_a_calibration_rebuilds_the_rescue(monkeypatch) -> None:
+    """An artifact names its calibration, so a new one leaves every unscoped search refusing.
+
+    RP-17: deleting the `_rescue_after_publish` call in the `auto` branch of
+    `recall.cli_commands.calibration_cmd._cmd_calibration` made this fail.
+    """
+    import recall.calibration_v2 as calibration
+    import recall.drift as drift
+    import recall.generation_rescue as rescue
+    from recall.cli_commands.calibration_cmd import _cmd_calibration
+
+    monkeypatch.setattr(calibration, "CalibrationRepository", lambda dsn, tenant: object())
+    monkeypatch.setattr(
+        drift, "auto_recalibrate",
+        lambda *args, **kwargs: SimpleNamespace(
+            action="recalibrated", calibration_id="cal_new", published=True, reason="drift"
+        ),
+    )
+    rebuilt: list[str] = []
+    monkeypatch.setattr(rescue, "after_publish", lambda dsn, tenant, gid, embedder, **_: rebuilt.append(gid) or "")
+
+    _cmd_calibration(_args("auto", calibration_cmd="auto", generation="gen_live", publish=True, json=False))
+
+    assert rebuilt == ["gen_live"]
+
+
+def test_a_rebuild_after_publish_that_fails_is_reported_not_raised(monkeypatch) -> None:
+    """The publication has happened; the operator is told how to retry rather than handed a traceback
+    that reads as a failed publish. RP-18: removing the `except` in `after_publish` made this fail."""
+    import recall.generation_rescue as rescue
+
+    def ensure(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+        raise AtomicRescueArtifactError("the root is full")
+
+    monkeypatch.setattr(rescue, "ensure_for_promotion", ensure)
+    line = rescue.after_publish("postgresql://x", "p-docs", "gen_live", lambda: _FakeEmbedder())
+    assert line.startswith("WARNING") and "recall --tenant p-docs generation rescue gen_live" in line
 
 
 def test_gc_removes_the_artifacts_of_the_collected_generations(tmp_path: Path, monkeypatch, capsys) -> None:
@@ -448,7 +512,7 @@ def test_a_recalibrated_generation_gets_a_new_artifact(rescue_tenant, tmp_path: 
     lineage check, made this fail at the search with `AtomicRescueLineageError` (calibration_id).
     """
     from recall.calibration_v2 import CalibrationRepository
-    from recall.generation_rescue import build_artifact
+    from recall.generation_rescue import after_publish, build_artifact
     from tests.test_calibration_carry_forward import _CarryEmbedder, _labels
 
     tenant, manager = rescue_tenant
@@ -459,9 +523,10 @@ def test_a_recalibrated_generation_gets_a_new_artifact(rescue_tenant, tmp_path: 
     repo = CalibrationRepository(TEST_DSN, tenant, actor="pytest")
     repo.publish(repo.calibrate(generation_id, _labels(), embedder).calibration_id)
 
-    report = build_artifact(TEST_DSN, tenant, generation_id, embedder, tmp_path)
+    env = {"RECALL_ATOMIC_RESCUE_MODE": "active", ROOT_ENV: str(tmp_path)}
+    report = after_publish(TEST_DSN, tenant, generation_id, lambda: embedder, env=env)
 
-    assert report.startswith(f"built for {generation_id}")
+    assert report.startswith(f"atomic rescue: built for {generation_id}"), report
     assert _search(tenant, embedder, tmp_path).trust_state == "trusted"
 
 
