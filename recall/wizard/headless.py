@@ -1634,13 +1634,13 @@ def run_headless(
                     except Exception as exc:  # BROAD-CATCH: fail-closed
                         # The generation is already serving: dropped to `failures`, whatever the
                         # cause, it would lose its server. Served with the rescue pinned off instead
-                        # (`_with_rescue`). Scrubbed, as a psycopg error can quote the password.
+                        # (`_with_rescue`). Named by type only: a psycopg error can quote the
+                        # password, and progress is printed.
                         atomic = ""
                         if progress:
-                            reason = scrub_dsn_secrets(
-                                f"{type(exc).__name__}: {exc}", config.resolved_dsn, config.resolved_migration_dsn
+                            progress(
+                                f"{spec.tenant}: atomic rescue not rebuilt ({type(exc).__name__}), so it stays off"
                             )
-                            progress(f"{spec.tenant}: atomic rescue not rebuilt, so it stays off: {reason}")
                     recorded = replace(recorded, atomic=atomic)
                 outcomes.append(recorded)
                 reused.append(spec.tenant)
