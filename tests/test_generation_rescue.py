@@ -453,14 +453,14 @@ def rescue_tenant():
             conn.execute(f"DELETE FROM {table} WHERE tenant_id = %s", (tenant,))
 
 
-def _certified_ready(manager, embedder) -> str:
+def _certified_ready(manager, embedder, version: str = "v1") -> str:
     """A built, validated generation with a published certified calibration, not yet promoted."""
     from recall.calibration_v2 import CalibrationRepository
     from tests.test_calibration_carry_forward import _labels, _manifest, _reader
     from tests.test_generations import _pipeline
 
     bodies = _bodies()
-    manifest = _manifest(manager.tenant_id, bodies, "v1")
+    manifest = _manifest(manager.tenant_id, bodies, version)
     generation = manager.create(manifest, _pipeline(embedder.name))
     manager.build(generation.generation_id, _reader(manifest, bodies), embedder, lambda t: [t])
     manager.validate(generation.generation_id)
@@ -619,3 +619,76 @@ def test_a_desktop_upload_whose_rescue_cannot_be_built_is_not_activated(tmp_path
     assert len(built) == 1
     assert active is None or active[0] is None
 
+
+@requires_db
+def test_a_build_that_loses_the_race_keeps_the_winners_artifact(rescue_tenant, tmp_path: Path, monkeypatch) -> None:
+    """Two builds of one generation (a promote beside `recall generation rescue`): the one that
+    finishes second must keep the artifact the first published, not delete it and write its own,
+    which leaves a window with no artifact and, on Windows with the matrix mapped, a half-removed one.
+
+    Red against 6fa3c8306 (the pre-fix `build_artifact`): the second build removed the first's
+    artifact and returned "built for", so the published `constructed_at` changed.
+    """
+    import json
+
+    import recall.atomic_view_store as view_store
+    from recall.generation_rescue import build_artifact
+    from tests.test_calibration_carry_forward import _CarryEmbedder
+
+    tenant, manager = rescue_tenant
+    embedder = _CarryEmbedder()
+    generation_id = _certified_ready(manager, embedder)
+    manifest = tmp_path / generation_id / "manifest.json"
+    real = view_store.assemble
+    winner: list[str] = []
+
+    def overtaken(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+        built = real(*args, **kwargs)
+        if not winner:
+            winner.append("racing")
+            build_artifact(TEST_DSN, tenant, generation_id, embedder, tmp_path)  # publishes first
+            winner.append(json.loads(manifest.read_text(encoding="utf-8"))["constructed_at"])
+        return built
+
+    monkeypatch.setattr(view_store, "assemble", overtaken)
+
+    report = build_artifact(TEST_DSN, tenant, generation_id, embedder, tmp_path)
+
+    assert report == f"in force for {generation_id}", report
+    assert json.loads(manifest.read_text(encoding="utf-8"))["constructed_at"] == winner[1]
+
+
+@requires_db
+def test_a_rollback_whose_target_moved_during_its_build_is_refused(rescue_tenant, monkeypatch) -> None:
+    """`rollback` builds the target's artifact before it takes the tenant-state lock, so a promote
+    landing meanwhile moves the target to a generation nothing built for. That rollback must be
+    refused, not activate the unbuilt generation.
+
+    Red against 6fa3c8306 (the pre-fix rollback): the rollback activated the second generation,
+    whose artifact was never built.
+    """
+    import recall.generation_rescue as rescue
+    from recall.cli_commands.generation_cmd import _cmd_generation
+    from tests.test_calibration_carry_forward import _CarryEmbedder
+
+    tenant, manager = rescue_tenant
+    embedder = _CarryEmbedder()
+    first, second, third = (_certified_ready(manager, embedder, version) for version in ("v1", "v2", "v3"))
+    manager.promote(first, unsafe_development=True)
+    manager.promote(second, unsafe_development=True)
+    built: list[str] = []
+
+    def ensure(dsn, tenant_id, generation_id, embedder_factory, **_):  # noqa: ANN001, ANN202
+        built.append(generation_id)
+        manager.promote(third, unsafe_development=True)  # lands while the build runs
+        return f"built for {generation_id}"
+
+    monkeypatch.setattr(rescue, "ensure_for_promotion", ensure)
+    args = argparse.Namespace(dsn=TEST_DSN, tenant=tenant, embedder="hashing", generation_cmd="rollback")
+
+    with pytest.raises((SystemExit, ValueError, RuntimeError)) as refused:
+        _cmd_generation(args)
+
+    assert built == [first]
+    assert manager.active_generation_id() == third, "the unbuilt generation must not be activated"
+    assert first in str(refused.value)
