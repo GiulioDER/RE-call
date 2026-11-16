@@ -76,7 +76,7 @@ def _lite_graph(args: argparse.Namespace) -> GraphReadiness:
     def refuse_another(current: str) -> None:
         if args.generation and args.generation != current:
             raise SystemExit(
-                f"{command}: a lite store has one corpus, {current}; --generation {terminal_safe(args.generation)} is not it"
+                f"{command}: a lite store has one corpus, {terminal_safe(current)}; --generation {terminal_safe(args.generation)} is not it"
             )
 
     if args.graph_cmd == "status":

@@ -495,6 +495,36 @@ def test_g15_a_failed_graph_build_skips_nothing_the_refresh_owes(
     assert report.outcome is Outcome.FAILED and report.reason.startswith("semantic graph: OSError"), report.to_dict()
 
 
+def test_refresh_reports_a_graph_discarded_by_a_concurrent_writer(
+    store: LiteStore, folder: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A normal return from graph assembly can still mean the projection was never stored."""
+    import recall.lite.graph as lite_graph
+
+    with store._write():
+        lite_graph.clear_graph(store._conn)
+    build = lite_graph.build_graph
+    wrote = False
+
+    def build_then_write(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+        nonlocal wrote
+        projection = build(*args, **kwargs)
+        with LiteStore(store.path, dim=DIM) as writer:
+            writer.upsert(
+                [Chunk("concurrent", str(folder / "new.md"), "synthetic concurrent write", {"ord": 0, "file": "new.md"})],
+                [[1.0] + [0.0] * (DIM - 1)],
+            )
+        wrote = True
+        return projection
+
+    monkeypatch.setattr(lite_graph, "build_graph", build_then_write)
+    report = refresh(store, [folder], ContentWordEmbedder(), force=True)
+    assert wrote and not store.graph_readiness().ready, "negative control: no projection was discarded"
+    assert report.outcome is Outcome.FAILED and report.reason.startswith("semantic graph:"), (
+        "refresh reported success after discarding its graph"
+    )
+
+
 def test_g16_a_rebuild_checks_its_generation_under_the_write_lane(store: LiteStore, monkeypatch: pytest.MonkeyPatch) -> None:
     """G16. A write lands while `recall graph rebuild --generation G` waits for the lane: the
     command refuses, as G no longer names the corpus. Catches the check made before the lane
@@ -515,6 +545,24 @@ def test_g16_a_rebuild_checks_its_generation_under_the_write_lane(store: LiteSto
     monkeypatch.setattr(backends, "write_session", lane_after_a_write)
     out = run_cli(["--dsn", dsn, "graph", "rebuild", "--generation", named])
     assert "EXIT" in out and "is not it" in out, out
+
+
+def test_graph_status_formats_the_stored_generation(tmp_path: Path) -> None:
+    """SEC-002. A stored identity must stay within the CLI error's single-line layout.
+
+    Red proof against 8b3bb14d3: the stored newline is copied into the mismatch message.
+    """
+    path = tmp_path / "status.db"
+    with LiteStore(path, dim=1) as opened:
+        opened.upsert([Chunk("seed", "memo.md", "# Memo", {"ord": 0})], [[1.0]])
+        opened.rebuild_semantic_graph()
+    with sqlite3.connect(path) as conn:
+        marker = json.loads(conn.execute("SELECT value FROM meta WHERE key = 'semantic_graph'").fetchone()[0])
+        marker["generation_id"] = "first\nsecond"
+        conn.execute("UPDATE meta SET value = ? WHERE key = 'semantic_graph'", (json.dumps(marker),))
+    out = run_cli(["--dsn", "sqlite:///" + path.as_posix(), "graph", "status", "--generation", "another"])
+    assert "EXIT" in out, out
+    assert "one corpus, firstsecond;" in out and "first\nsecond" not in out, out
 
 
 def test_g17_graph_status_without_an_active_generation_is_a_message(monkeypatch: pytest.MonkeyPatch) -> None:

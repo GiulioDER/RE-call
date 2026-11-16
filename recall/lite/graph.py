@@ -206,8 +206,9 @@ def readiness(marker: dict[str, Any] | None, tenant: str, generation_id: str) ->
 def load_graph(conn: sqlite3.Connection, tenant: str) -> SemanticGraphProjection | None:
     """The stored graph, or None when there is none for the corpus as it is now.
 
-    The loaded graph must reproduce the marker's fingerprint, as on PostgreSQL, so a partial or
-    altered set of rows reads as no graph rather than as a smaller one.
+    The fingerprint covers graph identity, member IDs and relation temporal fields, as on
+    PostgreSQL. Missing members or changed relation times read as no graph. Other stored payload
+    fields are outside this fingerprint's coverage.
     """
     from recall.semantic_graph._store import _load_relation_rows
 

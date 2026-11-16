@@ -182,7 +182,7 @@ recall search "what did I decide about caching?"
 Lite keeps the same semantic graph as the PostgreSQL install, inside the store file. It is built
 only from what memos state: Markdown and wiki links, `supersedes`, `depends_on`, `recall_graph`
 front matter and headings. No model is involved, so building it embeds nothing and calls no API.
-Every write to the store clears the graph in the same transaction, so a forgotten memo never stays
+Every corpus write clears the graph in the same transaction, so a forgotten memo never stays
 in it. A refresh builds it again, `recall graph rebuild` builds it on demand, and the dashboard
 builds one in memory, without writing it, when none is stored.
 

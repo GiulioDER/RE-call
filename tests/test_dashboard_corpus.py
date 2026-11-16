@@ -650,3 +650,269 @@ def test_every_corpus_query_runs_under_the_tenant_setting() -> None:
         assert db.statements and db.statements[0] == ("select set_config(%s, %s, false)", (TENANT_GUC, "acme")), (
             "a corpus query ran before the tenant was set"
         )
+
+
+def test_lite_graph_does_not_return_a_forgotten_source(tmp_path: Path) -> None:
+    """The same app must stop plotting a deleted source immediately after erasure.
+
+    Red proof at ac67de930: DashboardApp._graph_json reused the warm response.
+    """
+    import json
+
+    from recall.lite import LiteStore
+    from recall.types import Chunk
+
+    with LiteStore(tmp_path / "lite.db", dim=2) as store:
+        store.upsert([Chunk("file-0", "forgotten.md", "Synthetic note", {"file": "forgotten.md"})], [[1.0, 0.0]])
+        app = DashboardApp(tmp_path, port=8765, token="tok", db=DashboardDB("sqlite:///" + store.path.as_posix()))
+        url = "/api/graph.json?corpus=" + store.tenant
+        first = app.handle("GET", url, SIGNED)
+        assert first.status == 200
+        assert [node["id"] for node in json.loads(first.body)["nodes"]] == ["forgotten.md"]
+        with store.erasing():
+            store.delete_sources(["forgotten.md"])
+        after = app.handle("GET", url, SIGNED)
+        assert after.status == 200
+        assert json.loads(after.body)["nodes"] == [], "the warm graph kept a forgotten source"
+
+
+def test_lite_detail_reuses_decoded_rows_until_a_write(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """PERF-001. Warm detail reads avoid decoding the full corpus again.
+
+    Red proof on 392aa49: the second request decoded all corpus rows again.
+    """
+    from recall.dashboard import lite_db
+    from recall.lite import LiteStore
+    from recall.types import Chunk
+
+    monkeypatch.setattr(lite_db, "_GRAPHS", {})
+    with LiteStore(tmp_path / "cache.db", dim=2) as store:
+        store.upsert([Chunk("a", "a.md", "old text", {"file": "a.md"})], [[1.0, 0.0]])
+        dsn = "sqlite:///" + store.path.as_posix()
+        decode = lite_db._payload
+        decoded = []
+
+        def counted(raw: Any) -> dict[str, Any]:
+            decoded.append(raw)
+            return decode(raw)
+
+        monkeypatch.setattr(lite_db, "_payload", counted)
+        first = lite_db.source_detail(dsn, store.tenant, "a.md")
+        count = len(decoded)
+        assert count > 0 and first is not None
+        assert lite_db.source_detail(dsn, store.tenant, "a.md") == first
+        assert len(decoded) == count, "the warm detail decoded the entire corpus again"
+        store.upsert([Chunk("a", "a.md", "new text", {"file": "a.md"})], [[1.0, 0.0]])
+        changed = lite_db.source_detail(dsn, store.tenant, "a.md")
+        assert changed is not None and changed["chunks"][0]["text"] == "new text"
+        assert len(decoded) > count
+        with store.erasing():
+            store.delete_sources(["a.md"])
+        assert lite_db.source_detail(dsn, store.tenant, "a.md") is None
+
+
+def test_lite_replaced_vectors_change_the_cached_generation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """DAT-002. Same-path replacement with identical rows and different vectors is fresh.
+
+    Red proof on 392aa49: the served generation matched the removed file.
+    """
+    from datetime import UTC, datetime
+
+    from recall import eval_clock
+    from recall.dashboard import lite_db
+    from recall.lite import LiteStore
+    from recall.types import Chunk
+
+    monkeypatch.setattr(eval_clock, "_source", None)
+    eval_clock.install(lambda: datetime(2026, 11, 15, 12, tzinfo=UTC))
+    monkeypatch.setattr(lite_db, "_GRAPHS", {})
+    path = tmp_path / "memory.db"
+    replacement = tmp_path / "replacement.db"
+    chunk = Chunk("a", "a.md", "identical text", {"file": "a.md"})
+    with LiteStore(path, dim=2) as store:
+        store.upsert([chunk], [[1.0, 0.0]])
+        tenant = store.tenant
+    with LiteStore(replacement, dim=2) as other:
+        other.upsert([chunk], [[0.0, 1.0]])
+    dsn = "sqlite:///" + path.as_posix()
+    first = lite_db.source_detail(dsn, tenant, "a.md")
+    assert first is not None
+    replacement.replace(path)
+    served = lite_db.source_detail(dsn, tenant, "a.md")
+    lite_db._GRAPHS.clear()
+    fresh = lite_db.source_detail(dsn, tenant, "a.md")
+    assert fresh is not None and first["generation"] != fresh["generation"]
+    assert served == fresh, "the replaced file kept the prior vector generation"
+
+
+def test_lite_cache_replacement_during_connection_open(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """PERF-001 repair. Emulate POSIX old-handle semantics with real SQLite files on Windows.
+
+    Red proof: pre-repair cache published old connection rows under replacement identity.
+    """
+    import shutil
+    from types import SimpleNamespace
+
+    from recall.dashboard import lite_db
+    from recall.lite import LiteStore
+    from recall.types import Chunk
+
+    path, replacement, held = (tmp_path / name for name in ("live.db", "new.db", "held.db"))
+    for target, text in ((path, "old"), (replacement, "new")):
+        with LiteStore(target, dim=2) as store:
+            store.upsert([Chunk("a", "a.md", text, {"file": "a.md"})], [[1.0, 0.0]])
+            tenant = store.tenant
+    shutil.copyfile(path, held)
+    original = lite_db.sqlite3.connect
+    opened = []
+    anchors = []
+
+    class OldHandle:
+        def __init__(self, connection: Any) -> None:
+            self.connection = connection
+
+        def execute(self, sql: str, *args: Any) -> Any:
+            if sql == "PRAGMA database_list":
+                return SimpleNamespace(fetchone=lambda: (0, "main", str(path)))
+            return self.connection.execute(sql, *args)
+
+        def close(self) -> None:
+            self.connection.close()
+
+    def connect(database: str, **kwargs: Any) -> Any:
+        if not opened:
+            opened.append(True)
+            connection = original(held.as_uri() + "?mode=ro", **kwargs)
+            replacement.replace(path)
+            anchor = original(path.as_uri() + "?mode=ro", uri=True)
+            anchor.execute("SELECT count(*) FROM chunks").fetchone()
+            anchors.append(anchor)
+            return OldHandle(connection)
+        return original(database, **kwargs)
+
+    monkeypatch.setattr(lite_db, "_GRAPHS", {})
+    monkeypatch.setattr(lite_db, "_CORPORA", {})
+    monkeypatch.setattr(lite_db.sqlite3, "connect", connect)
+    dsn = "sqlite:///" + path.as_posix()
+    first = lite_db.source_detail(dsn, tenant, "a.md")
+    assert first is not None and first["chunks"][0]["text"] == "old"
+    try:
+        after = lite_db.source_detail(dsn, tenant, "a.md")
+        assert after is not None and after["chunks"][0]["text"] == "new", "replacement inherited old connection rows"
+    finally:
+        for anchor in anchors:
+            anchor.close()
+
+
+def test_lite_cache_publication_keeps_its_bound(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """PERF-001 repair. Force publication between another request's prune and insert.
+
+    Red proof: pre-repair concurrent publications left nine cached read views.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    from recall.dashboard import lite_db
+    from recall.lite import LiteStore
+    from recall.types import Chunk
+
+    paths = [tmp_path / name for name in ("a.db", "b.db")]
+    for path in paths:
+        with LiteStore(path, dim=2) as store:
+            store.upsert([Chunk("a", "a.md", "text", {"file": "a.md"})], [[1.0, 0.0]])
+            tenant = store.tenant
+    start_b, b_inserted = threading.Event(), threading.Event()
+
+    class InterleavedCache(dict):
+        def __setitem__(self, key: Any, value: Any) -> None:
+            if key[0] == str(paths[0]) and len(self) == 7:
+                start_b.set()
+                assert b_inserted.wait(10), "second publication did not run"
+            super().__setitem__(key, value)
+            if key[0] == str(paths[1]):
+                b_inserted.set()
+
+    cache = InterleavedCache({("old" + str(i), tenant): None for i in range(8)})
+    monkeypatch.setattr(lite_db, "_CORPORA", cache)
+    monkeypatch.setattr(lite_db, "_GRAPHS", {})
+
+    def read(index: int) -> Any:
+        if index:
+            assert start_b.wait(10)
+        try:
+            return lite_db.source_detail("sqlite:///" + paths[index].as_posix(), tenant, "a.md")
+        finally:
+            if not index:
+                start_b.set()
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(read, (0, 1)))
+    assert all(result is not None for result in results)
+    assert len(cache) <= 8, "concurrent publication exceeded the read-view bound"
+
+
+def test_lite_detail_reuses_rows_after_writer_closes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """PERF-001. Empty WAL sidecars created by readers do not invalidate an unchanged view.
+
+    Red proof targets the connection stamp treatment of empty WAL lifecycle.
+    """
+    from recall.dashboard import lite_db
+    from recall.lite import LiteStore
+    from recall.types import Chunk
+
+    path = tmp_path / "closed.db"
+    with LiteStore(path, dim=2) as store:
+        store.upsert([Chunk("a", "a.md", "text", {"file": "a.md"})], [[1.0, 0.0]])
+        tenant = store.tenant
+    decode, calls = lite_db._payload, []
+
+    def counted(raw: Any) -> dict[str, Any]:
+        calls.append(raw)
+        return decode(raw)
+
+    monkeypatch.setattr(lite_db, "_GRAPHS", {})
+    monkeypatch.setattr(lite_db, "_CORPORA", {})
+    monkeypatch.setattr(lite_db, "_payload", counted)
+    dsn = "sqlite:///" + path.as_posix()
+    assert lite_db.source_detail(dsn, tenant, "a.md") is not None
+    count = len(calls)
+    assert count > 0
+    assert lite_db.source_detail(dsn, tenant, "a.md") is not None
+    assert len(calls) == count, "closing the writer disabled warm detail reuse"
+
+
+def test_lite_copied_vectors_change_the_cached_generation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """PERF-002 repair: a timestamp-preserving restore must invalidate a warm detail.
+
+    Red on the owner's c664cbabe cache: Windows stat fields were unchanged after copy2,
+    leaving source_detail's generation stale. The cold read proves vectors changed.
+    """
+    import os
+    import shutil
+    from datetime import UTC, datetime
+
+    from recall import eval_clock
+    from recall.dashboard import lite_db
+    from recall.lite import LiteStore
+    from recall.types import Chunk
+
+    monkeypatch.setattr(eval_clock, "_source", None)
+    eval_clock.install(lambda: datetime(2026, 11, 15, 12, tzinfo=UTC))
+    monkeypatch.setattr(lite_db, "_GRAPHS", {})
+    monkeypatch.setattr(lite_db, "_CORPORA", {})
+    path, replacement = tmp_path / "memory.db", tmp_path / "replacement.db"
+    chunk = Chunk("a", "a.md", "identical text", {"file": "a.md"})
+    for target, vector in ((path, [1.0, 0.0]), (replacement, [0.0, 1.0])):
+        with LiteStore(target, dim=2) as store:
+            store.upsert([chunk], [vector])
+            tenant = store.tenant
+    dsn = "sqlite:///" + path.as_posix()
+    first = lite_db.source_detail(dsn, tenant, "a.md")
+    stat = path.stat()
+    os.utime(replacement, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+    shutil.copy2(replacement, path)
+    served = lite_db.source_detail(dsn, tenant, "a.md")
+    lite_db._CORPORA.clear()
+    lite_db._GRAPHS.clear()
+    fresh = lite_db.source_detail(dsn, tenant, "a.md")
+    assert first is not None and fresh is not None and first["generation"] != fresh["generation"]
+    assert served == fresh, "timestamp-preserving copy2 retained a stale cached generation"

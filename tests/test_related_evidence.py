@@ -147,3 +147,79 @@ def test_related_evidence_widening_stops_when_the_relation_is_exhausted() -> Non
     assert result.items == ()
     assert store.windows[-1] > len(store.chunks) - 1
     assert len(store.windows) <= 5
+
+
+@pytest.mark.parametrize("relation", ["source", "ordinal"])
+@pytest.mark.parametrize("deny_window", [False, True])
+def test_related_expansion_reads_source_metadata_once(tmp_path, monkeypatch, relation, deny_window):
+    """PERF-001. Denied neighbors must not cause repeated ranked full-text queries.
+
+    Red proof against 8b3bb14d3: windows contains repeated, growing LIMITs. The same
+    public request must keep nearest allowed rows, ordinal membership and stored text.
+    """
+    from recall.lite import LiteStore
+
+    policy = SourceSecurityPolicy((SourceRule("notes.md"),))
+    denied = {3, 4, 6, 7} if deny_window else {4, 6}
+    chunks = _stale_neighbours(policy, denied)
+    chunks.append(Chunk("unrelated", "other.md", "other body", {"ord": 5}))
+    expected = [] if relation == "ordinal" and deny_window else (["c2", "c8"] if deny_window else ["c3", "c7"])
+    with LiteStore(tmp_path / "related.db", dim=1) as store:
+        store.upsert(chunks, [[1.0]] * len(chunks))
+        windows, streams, hydrated = [], [], []
+        original_query, original_stream, original_by_id = store.related_chunks, store.iter_scoped_chunks, store.chunk_by_id
+
+        def query(seed, requested_relation, max_items):
+            windows.append(max_items)
+            return original_query(seed, requested_relation, max_items)
+
+        def stream(scope, **kwargs):
+            streams.append((kwargs.get("sources"), kwargs.get("include_text")))
+            yield from original_stream(scope, **kwargs)
+
+        def by_id(chunk_id):
+            hydrated.append(chunk_id)
+            return original_by_id(chunk_id)
+
+        monkeypatch.setattr(store, "related_chunks", query)
+        monkeypatch.setattr(store, "iter_scoped_chunks", stream)
+        monkeypatch.setattr(store, "chunk_by_id", by_id)
+        result = trusted_related(
+            store, "c5", relation=relation, max_items=2,
+            calibration=Calibration(embedder="fixture", threshold=0.5),
+            security_policy=policy, access_context=AccessContext("reader", store.tenant),
+        )
+    assert [hit.chunk.id for hit in result.items] == expected
+    assert [hit.chunk.text for hit in result.items] == [f"part {chunk_id[1:]}" for chunk_id in expected]
+    assert windows == [2], f"repeated ranked text windows: {windows}"
+    assert streams == [(["notes.md"], False)]
+    assert hydrated == ["c5", *expected]
+
+
+def test_related_metadata_expansion_supports_batch_hydration():
+    """PERF-001. A native batch reader hydrates only the selected permitted IDs.
+
+    Red proof with related.py restored to 8b3bb14d3: repeated text windows are observed.
+    """
+    policy = SourceSecurityPolicy((SourceRule("notes.md"),))
+    store = _BoundedSourceStore(_stale_neighbours(policy, {4, 6}))
+    hydrated = []
+
+    def stream(scope, *, sources, include_text):
+        assert sources == ["notes.md"] and include_text is False
+        return (Chunk(chunk.id, chunk.source, "", chunk.metadata) for chunk in store.chunks)
+
+    def by_ids(ids):
+        hydrated.append(ids)
+        return {chunk.id: chunk for chunk in store.chunks if chunk.id in ids}
+
+    store.iter_scoped_chunks = stream
+    store.chunks_by_ids = by_ids
+    result = trusted_related(
+        store, "c5", relation="source", max_items=2,
+        calibration=Calibration(embedder="fixture", threshold=0.5),
+        security_policy=policy, access_context=AccessContext("reader", store.tenant),
+    )
+    assert [hit.chunk.id for hit in result.items] == ["c3", "c7"]
+    assert store.windows == [2], f"repeated ranked text windows: {store.windows}"
+    assert hydrated == [["c3", "c7"]]

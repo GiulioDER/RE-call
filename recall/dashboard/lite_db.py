@@ -16,6 +16,8 @@ import hashlib
 import json
 import re
 import sqlite3
+import sys
+import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, date, datetime
@@ -39,15 +41,22 @@ def store_path(dsn: str) -> Path:
         raise DatabaseUnavailable(str(exc)) from exc
 
 
+class _ReadConnection(sqlite3.Connection):
+    file_stamp: tuple[tuple[int, ...] | None, ...] | None = None
+
+
 @contextmanager
 def connect(dsn: str) -> Iterator[sqlite3.Connection]:
     path = store_path(dsn)
     if not path.exists():
         raise DatabaseUnavailable(f"no lite store at {path} yet: `recall index <memory folder>` creates it")
+    path = path.resolve()
+    before = _corpus_stamp(path)
     try:
-        connection = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True)
+        connection = sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True, factory=_ReadConnection)
     except sqlite3.Error as exc:
         raise DatabaseUnavailable(f"{type(exc).__name__}: {exc}") from exc
+    connection.file_stamp = before if before == _corpus_stamp(path) else None
     try:
         yield connection
     except sqlite3.Error as exc:
@@ -347,12 +356,26 @@ def _corpus(c: sqlite3.Connection, tenant: str) -> tuple[list[_CorpusRow], Super
     # One read view for the rows, the records and the graph, so a graph kept under the rows'
     # digest is the graph of those rows (`recall.lite.inspect` opens one for the same reason).
     c.execute("BEGIN")
-    digest = hashlib.sha256(str(c.execute("SELECT value FROM meta WHERE key = 'corpus_version'").fetchone()[0]).encode())
+    key = (str(c.execute("PRAGMA database_list").fetchone()[2]), tenant)
+    files = getattr(c, "file_stamp", None)
+    if files != _corpus_stamp(Path(key[0])):
+        files = None
+    version = str(c.execute("SELECT value FROM meta WHERE key = 'corpus_version'").fetchone()[0])
+    stamp = (version, files)
+    with _CORPUS_LOCK:
+        kept = _CORPORA.get(key)
+        if files is not None and kept is not None and kept[0] == stamp:
+            projection = _GRAPHS.get(key)
+            if projection is not None and projection[1] is kept[1][2]:
+                return kept[1]
+        _CORPORA.pop(key, None)
+    digest = hashlib.sha256(version.encode())
     ordered = []
-    for rowid, cid, source, text, raw, indexed, first in c.execute(
-        "SELECT rowid, id, source, text, metadata, indexed_at, first_indexed_at FROM chunks ORDER BY id"
+    for rowid, cid, source, text, raw, indexed, first, embedding in c.execute(
+        "SELECT rowid, id, source, text, metadata, indexed_at, first_indexed_at, embedding FROM chunks ORDER BY id"
     ):
         digest.update("\0".join(("", cid, source, text, raw, indexed)).encode())
+        digest.update(embedding)
         metadata = _payload(raw)
         file = metadata["file"] if isinstance(metadata.get("file"), str) else source
         ordinal = metadata_ordinal(metadata)
@@ -363,7 +386,67 @@ def _corpus(c: sqlite3.Connection, tenant: str) -> tuple[list[_CorpusRow], Super
         sqlite_records(c, "chunks"),
         tenant,
     )
-    return chunks, winner, _semantic_graph(c, tenant, digest.hexdigest(), chunks)
+    result = chunks, winner, _semantic_graph(c, tenant, digest.hexdigest(), chunks)
+    if files is not None and files == _corpus_stamp(Path(key[0])):
+        with _CORPUS_LOCK:
+            _CORPORA[key] = (stamp, result)
+            for old in list(_CORPORA)[:-8]:
+                _CORPORA.pop(old, None)
+    return result
+
+
+def _corpus_stamp(path: Path) -> tuple[tuple[int, ...] | None, ...] | None:
+    """Observe file replacement and SQLite writes, including commits still in the WAL."""
+    stamps: list[tuple[int, ...] | None] = []
+    for file in (path, path.with_name(path.name + "-wal")):
+        try:
+            stat = file.stat()
+        except FileNotFoundError:
+            stamps.append(None)
+        except OSError:
+            return None
+        else:
+            # A read-only connection can create an empty WAL without changing any row.
+            if file != path and stat.st_size == 0:
+                stamps.append(None)
+                continue
+            changed = _change_time(file, stat.st_ctime_ns)
+            if changed is None:
+                return None
+            stamps.append((stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, changed))
+    return tuple(stamps) if stamps[0] is not None else None
+
+
+def _change_time(path: Path, posix_ctime: int) -> int | None:
+    # Windows stat ctime is creation time; copy2 can preserve every other stat field.
+    if sys.platform != "win32":
+        return posix_ctime
+    import ctypes
+    import msvcrt
+
+    try:
+        query = ctypes.WinDLL("kernel32", use_last_error=True).GetFileInformationByHandleEx
+        query.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_uint32]
+        query.restype = ctypes.c_int
+        with path.open("rb") as stream:
+            # FILE_BASIC_INFO: four LARGE_INTEGER times followed by DWORD attributes.
+            info = (ctypes.c_longlong * 5)()
+            if query(msvcrt.get_osfhandle(stream.fileno()), 0, ctypes.byref(info), ctypes.sizeof(info)):
+                return int(info[3])
+    except OSError:
+        pass
+    # An unavailable change stamp disables reuse; the reader still builds a fresh view.
+    return None
+
+
+_CORPUS_LOCK = threading.RLock()
+
+#: At most eight decoded read views, reused only while file identity and write stamps match.
+_CORPORA: dict[
+    tuple[str, str],
+    tuple[tuple[str, tuple[tuple[int, ...] | None, ...] | None],
+          tuple[list[_CorpusRow], SupersessionGraph, SemanticGraphProjection]],
+] = {}
 
 
 #: `{(file, tenant): (stamp of its rows, graph)}`, one entry per file this process reads.
@@ -374,10 +457,8 @@ def _semantic_graph(c: sqlite3.Connection, tenant: str, stamp: str, rows: list[_
     """`graph_of`, kept while the file's rows are the ones it was built from (CCA PERF-002): built
     in memory it is the whole build, seconds on a large store, and View 2 asks for it on every page.
     `stamp` digests the corpus version and every row's id, source, text, metadata and `indexed_at`,
-    everything the graph's entities, mentions and relations are built from, so no write can leave
-    a kept graph describing other text. (The vectors are not read: they feed only its generation
-    id, which could lag after a file is recreated with the same rows, version and write times but
-    other vectors.) The version alone is not enough (a file deleted and indexed again, or a
+    plus its embedding bytes, so the generation follows vector changes too. The version alone is
+    not enough (a file deleted and indexed again, or a
     backup copied over it, starts it again and can reach the same number with other rows), nor are
     ids and times (ids are positional, so an edited memo keeps its ids, and under an evaluation
     clock its write time too)."""
