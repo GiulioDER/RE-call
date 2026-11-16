@@ -1435,33 +1435,22 @@ def _atomic_rescue_env(config: HeadlessConfig) -> tuple[dict[str, str], str]:
     a host artifact root (a bind mount is how a database here was corrupted, `recall.wizard.stack`),
     so an upload there would promote a generation the host servers then refuse to search.
     """
-    from recall._env import _ATOMIC_RESCUE_MODES
-    from recall.lite.atomic import ROOT_ENV
+    from recall.lite.atomic import ROOT_ENV, rescue_settings
 
-    mode = os.environ.get("RECALL_ATOMIC_RESCUE_MODE", "").strip()
-    root = os.environ.get(ROOT_ENV, "").strip()
-    if mode and mode.lower() not in _ATOMIC_RESCUE_MODES:
-        raise ConfigRefusal(
-            f"RECALL_ATOMIC_RESCUE_MODE must be off, shadow, or active, not {mode!r}",
-            ("RECALL_ATOMIC_RESCUE_MODE",),
+    try:
+        values, note = rescue_settings(
+            (config.project_root / ".recall" / "atomic").resolve() if config.project_root else None,
+            off_reason=(
+                "the desktop app's Docker services cannot reach a host artifact root, so an upload "
+                "there would leave the host servers refusing"
+                if config.data_root is not None
+                else ""
+            ),
         )
-    if root and not Path(root).expanduser().is_absolute():
-        # The servers start in another directory, so they would read another root.
-        raise ConfigRefusal(f"{ROOT_ENV} must be an absolute path, not {root!r}", (ROOT_ENV,))
-    if not mode:
-        if any(importlib.util.find_spec(name) is None for name in ("numpy", "threadpoolctl")):
-            return {}, 'atomic rescue is off: pip install "recall-rag[atomic]" and run again to turn it on'
-        if config.data_root is not None:
-            return {}, (
-                "atomic rescue is off: the desktop app's Docker services cannot reach a host "
-                "artifact root, so an upload there would leave the host servers refusing"
-            )
-        mode = "active"
-    if mode.lower() == "active" and not root:
-        if config.project_root is None:
-            return {}, f"atomic rescue is off: set {ROOT_ENV} or project_root to turn it on"
-        root = str((config.project_root / ".recall" / "atomic").resolve())
-    return {"RECALL_ATOMIC_RESCUE_MODE": mode, **({ROOT_ENV: root} if root else {})}, ""
+    except ValueError as exc:
+        # Named by key, as every other config refusal is.
+        raise ConfigRefusal(str(exc), (ROOT_ENV if ROOT_ENV in str(exc) else "RECALL_ATOMIC_RESCUE_MODE",)) from exc
+    return values, note
 
 
 def _with_rescue(

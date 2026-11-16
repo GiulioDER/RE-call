@@ -10,6 +10,12 @@ Invariants and the failure each one catches:
   PYTHONSAFEPATH=1, and never PATH.
 - E3 a memory folder that does not exist is refused by name, before any store is created.
 - E4 setup says to add `.recall/` to .gitignore unless it is already there.
+- E5 setup turns the atomic rescue on (owner decision 2026-11-15): the server is registered with
+  `RECALL_ATOMIC_RESCUE_MODE=active` and a root beside the store, and the artifact its first search
+  needs exists when setup returns.
+- E6 a mode set in setup's shell (`off`) is registered as it is, and nothing is built.
+- E7 without the `atomic` packages the rescue is not registered, and the report says how to add it.
+- E8 a mode setup's shell sets that the server would refuse to start on is refused before any write.
 
 Red proof, 2026-10-08, each mutation alone, failing in its intended assertion (JUnit XML), then
 restored byte for byte and green:
@@ -20,6 +26,13 @@ restored byte for byte and green:
 The handshake behind E2 (the registered server, started with exactly its registered env, listing
 21 tools) was run by hand on Windows the same day; CI cannot repeat it meaningfully, because an
 editable install there does not live in a user site directory.
+
+E5 to E7, run on Linux on 2026-11-15, each mutation alone of `recall/lite/setup.py`, red in its own
+assertion, then restored and green: `local_env.update(atomic_env)` removed (E5: "setup did not
+register the atomic rescue as active"); `rescue_env=` not passed to the setup refresh (E5: "setup
+built no artifact"); the shell's mode ignored (E6: "setup overrode the mode the shell set"); the
+package check made `if False:` (E7: "setup turned the rescue on without its packages"). E8 is red
+with the mode check removed: setup builds the store and raises nothing, "DID NOT RAISE ValueError".
 """
 
 from __future__ import annotations
@@ -110,3 +123,78 @@ def test_the_gitignore_note_appears_only_when_needed(tmp_path: Path) -> None:
     (other / "project" / ".gitignore").write_text("node_modules/\n.recall/\n", encoding="utf-8")
     _p, _c, again = _setup(other, register=False)
     assert not any(".gitignore" in note for note in again.notes), "the note repeats advice already followed"
+
+
+def _blank_rescue_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    for name in ("RECALL_ATOMIC_RESCUE_MODE", "RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT", "RECALL_ATOMIC_RESCUE_MODE_BY_TENANT"):
+        monkeypatch.delenv(name, raising=False)
+
+
+def test_setup_turns_the_atomic_rescue_on_and_builds_its_first_artifact(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """E5: on by default (owner decision 2026-11-15), registered for the server, built by setup."""
+    from recall.lite.atomic import manifest_path
+
+    _blank_rescue_environment(monkeypatch)
+    project, config, report = _setup(tmp_path)
+    store_path = (project / ".recall" / "memory.db").resolve()
+    env = _servers(config)[SERVER_NAME]["env"]
+    assert isinstance(env, dict)
+    assert env.get("RECALL_ATOMIC_RESCUE_MODE") == "active", "setup did not register the atomic rescue as active"
+    root = Path(str(env.get("RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT")))
+    assert root == store_path.with_name("memory.db.atomic"), root
+    assert report.atomic.startswith("built for "), f"setup built no artifact: {report.atomic!r}"
+    with LiteStore(store_path, dim=DIM) as store:
+        resolution = store.resolve_calibration()
+        assert resolution.artifact is not None
+        manifest = manifest_path(root, store, store.lite_generation_id(), resolution.artifact.calibration_id)
+        assert manifest.is_file(), "the registered server's first search would find no artifact"
+    assert "atomic       built for " in report.render()
+
+
+def test_a_mode_set_in_the_shell_is_registered_as_it_is(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """E6: `RECALL_ATOMIC_RESCUE_MODE=off` keeps the rescue off, and setup builds nothing."""
+    _blank_rescue_environment(monkeypatch)
+    monkeypatch.setenv("RECALL_ATOMIC_RESCUE_MODE", "off")
+    project, config, report = _setup(tmp_path)
+    env = _servers(config)[SERVER_NAME]["env"]
+    assert isinstance(env, dict)
+    assert env.get("RECALL_ATOMIC_RESCUE_MODE") == "off", "setup overrode the mode the shell set"
+    assert "RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT" not in env
+    assert report.atomic.startswith("off"), report.atomic
+    assert not (project / ".recall" / "memory.db.atomic").exists()
+
+
+def test_without_the_atomic_packages_setup_leaves_the_rescue_off(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """E7: with the rescue on, every search would refuse without numpy and threadpoolctl."""
+    import importlib.util
+
+    _blank_rescue_environment(monkeypatch)
+    real = importlib.util.find_spec
+    monkeypatch.setattr(importlib.util, "find_spec", lambda name, *a: None if name == "threadpoolctl" else real(name, *a))
+    _project, config, report = _setup(tmp_path)
+    env = _servers(config)[SERVER_NAME]["env"]
+    assert isinstance(env, dict)
+    assert "RECALL_ATOMIC_RESCUE_MODE" not in env, "setup turned the rescue on without its packages"
+    assert 'recall-rag[atomic]' in report.atomic, report.atomic
+
+
+def test_an_unknown_mode_in_the_shell_is_refused_before_anything_is_written(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """E8: registered, it would stop the server from starting, which a client shows as no tools."""
+    _blank_rescue_environment(monkeypatch)
+    monkeypatch.setenv("RECALL_ATOMIC_RESCUE_MODE", "activ")
+    with pytest.raises(ValueError, match="RECALL_ATOMIC_RESCUE_MODE"):
+        _setup(tmp_path)
+    assert not (tmp_path / "project" / ".recall").exists(), "setup wrote a store before refusing the mode"
+
+
+def test_a_relative_root_in_the_shell_is_refused_before_anything_is_written(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """E9: the server and the CLI resolve a relative root against their own working directories.
+
+    Red proof: removing the relative-root check from `recall.lite.atomic.rescue_settings` made this
+    fail on the last assertion: setup indexed the store and only then refused, in the build.
+    """
+    _blank_rescue_environment(monkeypatch)
+    monkeypatch.setenv("RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT", "relative/atomic")
+    with pytest.raises(ValueError, match="RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT"):
+        _setup(tmp_path)
+    assert not (tmp_path / "project" / ".recall").exists(), "setup wrote a store before refusing the root"

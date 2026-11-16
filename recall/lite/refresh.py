@@ -385,10 +385,13 @@ def _finish(
     policy: str | None = None,
     key_root: Path | None = None,
     stated: str | None = None,
+    rescued: bool = False,
 ) -> RefreshReport:
     """Write the state file for this run. `success_generation` marks it the new last success.
 
     `stated` is the stating rule the run's reconcile used (`recall.stated_facts.stated_marker`).
+    `rescued` says the run asked for the atomic rescue artifact, so a refresher with the rescue on
+    may skip an unchanged folder only after a run that did.
     """
     report.finished_utc = _utc()
     document: dict[str, Any] = {
@@ -407,6 +410,7 @@ def _finish(
             "corpus_version": corpus_version,
             "policy": policy,
             "stated": stated,
+            "rescued": rescued,
             "finished_utc": report.finished_utc,
         }
     _write_state(db, document)
@@ -475,6 +479,8 @@ def refresh(
     report.fingerprint, report.files_seen = before.fingerprint, before.count
     # A missing folder is refused under the lane (`_refresh_locked`), where the refusal is written
     # safely; nothing outside the lane writes the state file (CCA BUG-004).
+    from recall.lite.atomic import configured_root
+
     last = read_state(db).get("last_success") or {}
     if (
         not force
@@ -492,6 +498,9 @@ def refresh(
         # A store upgraded from a release before the graph, or a rebuild a write raced, has no
         # graph although no memo changed (CCA BUG-007).
         and store.graph_current()
+        # A refresh run without the rescue's settings (a person's `recall lite refresh`) built no
+        # artifact, and with the rescue on every unscoped search refuses until one does.
+        and (last.get("rescued") or configured_root(store.tenant, refusal_env) is None)
     ):
         # Nothing is written: this path holds no lane, and rewriting the file here could put back
         # a `last_success` that a concurrent refresh has just replaced.
@@ -544,7 +553,10 @@ def _refresh_locked(
     record_spec: str | None = None,
     record_profile: str | None = None,
     refusal_env: Mapping[str, str] | None = None,
+    rescue_env: Mapping[str, str] | None = None,
 ) -> RefreshReport:
+    """`rescue_env`, when given, is the environment the atomic rescue artifact is built under in
+    place of `refusal_env` (setup's, which registers settings its own shell does not hold)."""
     from recall.cache import default_cache
     from recall.context import context_policy_for_profile
     from recall.embeddings import embedding_profile_id
@@ -644,7 +656,7 @@ def _refresh_locked(
     try:
         # After the calibration it names and the bookkeeping of the write it describes, so a
         # failed build cannot skip either; None while the rescue is off (`recall.lite.atomic`).
-        atomic = ensure_rescue_artifact(store, embedder, env=refusal_env)
+        atomic = ensure_rescue_artifact(store, embedder, env=refusal_env if rescue_env is None else rescue_env)
     except Exception as exc:  # BROAD-CATCH: fail-closed  # FAILED is not a success, so the next refresh builds again
         _log.warning("atomic rescue build for %s failed: %s", db, exc)
         report.outcome, report.reason = Outcome.FAILED, f"atomic rescue: {type(exc).__name__}: {exc}"
@@ -684,6 +696,7 @@ def _refresh_locked(
         policy=policy_key(security_policy, security_context),
         key_root=key_root,
         stated=_stated_marker(store, roots) if report.facts_stated >= 0 else None,
+        rescued=atomic is not None,
     )
 
 

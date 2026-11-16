@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING
 
 from recall.index_budget import IndexBudget, budget_from_env
 from recall.lite import LiteStore
+from recall.lite.atomic import configured_root
 from recall.lite.refresh import Outcome, Snapshot, embedder_refusal, read_state, refresh, snapshot
 
 if TYPE_CHECKING:
@@ -177,17 +178,26 @@ class LiteAutoRefresher:
             fingerprint = current.fingerprint
             if fingerprint == self._refreshed:
                 # A switch made while no memo changed starts no refresh, so it is asked here, a
-                # meta read (CCA ENV-002); otherwise nothing is missing.
+                # meta read (CCA ENV-002).
                 refusal = embedder_refusal(self._store, self._embedder, self._env)
+                # The memory changed without its folder (a forget, or a person's `recall index`)
+                # and no artifact was built for it, so every unscoped search refuses until a
+                # refresh builds one. While that refresh is failing, its failure is kept.
+                stale = refusal is None and self._rescue_stale()
                 with self._lock:
-                    self._failure = refusal
-                return
-            if fingerprint == self._failed and self._refreshed_elsewhere(fingerprint):
-                return
-            with self._lock:
-                if fingerprint == self._failed and now < self._retry_at:
+                    if not stale:
+                        self._failure = refusal
+                        return
+                    if now < self._retry_at:
+                        return
+                    self._pending = current
+            else:
+                if fingerprint == self._failed and self._refreshed_elsewhere(fingerprint):
                     return
-                self._pending = current  # the refresh this check starts reuses the walk (CCA PERF-004)
+                with self._lock:
+                    if fingerprint == self._failed and now < self._retry_at:
+                        return
+                    self._pending = current  # the refresh this check starts reuses the walk (CCA PERF-004)
             thread, started = self._kick()
             if thread is not None and started:
                 # Only a refresh this check started is waited for. One already running (queued
@@ -196,6 +206,14 @@ class LiteAutoRefresher:
                 thread.join(self._wait_s)
         except Exception as exc:  # BROAD-CATCH: fail-open  # a refresh problem must never fail a search
             _log.warning("lite auto refresh check failed: %s", exc)
+
+    def _rescue_stale(self) -> bool:
+        """With the atomic rescue on, whether the last successful refresh built no artifact for the
+        memory as it is now. The state file and the store's write counter: no corpus is hashed."""
+        if configured_root(self._store.tenant, self._env) is None:
+            return False
+        last = read_state(self._store.path).get("last_success") or {}
+        return not last.get("rescued") or last.get("corpus_version") != self._store.corpus_revision()
 
     def _refreshed_elsewhere(self, fingerprint: str) -> bool:
         """Did another refresher (a person's CLI run) bring this failing snapshot current? Then adopt it."""

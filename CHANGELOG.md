@@ -15,7 +15,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   artifact the trust gate serves, and a search can move one parent chunk to rank six as on
   PostgreSQL. Off by default; the first build embeds about ten views per 120 word chunk. A search
   the rescue applies to refuses while its artifact is missing, as between a write and its build or
-  after `recall forget` until the next refresh. See [docs/LITE.md](docs/LITE.md#atomic-rescue-optional).
+  after `recall forget` until the next refresh. See [docs/LITE.md](docs/LITE.md#atomic-rescue).
 - `recall_remember`'s `supersedes` accepts another assistant's memo of the same index root by the
   id search names it by (`agent-b/note-0001`), so agents with memo folders of their own can retire
   each other's memos. Its folder's ledger decides authorship; `recall_forget_memo` is unchanged.

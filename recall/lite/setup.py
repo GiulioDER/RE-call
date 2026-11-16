@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from recall.lite import LITE_DSN_PREFIX, LiteStore
+from recall.lite.atomic import rescue_settings
 
 if TYPE_CHECKING:
     from recall.embeddings import Embedder
@@ -109,6 +110,8 @@ class LiteSetupReport:
     skipped: int = 0
     calibration: str = ""
     calibration_reason: str = ""
+    #: The atomic rescue: on (and what the setup refresh built) or off, and why.
+    atomic: str = ""
     registration: LocalScopeRegistration | None = None
     notes: list[str] = field(default_factory=list)
     #: Only non-secret settings needed by the printed CLI followups.
@@ -121,6 +124,7 @@ class LiteSetupReport:
             f"memory       {self.memory}",
             f"indexed      {self.chunks} chunk(s) from {self.files} file(s); {self.skipped} unchanged",
             f"calibration  {self.calibration}: {self.calibration_reason}",
+            f"atomic       {self.atomic}",
         ]
         reg = self.registration
         if reg is None:
@@ -186,6 +190,9 @@ def run_lite_setup(
     # Setup indexes under the embedding cache settings of this shell; the server's refreshes must
     # too, or a cache the user switched off or moved here comes back at the default there.
     local_env.update({key: os.environ[key] for key in ("RECALL_EMBED_CACHE", "RECALL_EMBED_CACHE_MAX_MB") if key in os.environ})
+    # Its artifacts beside the store (`<store>.atomic`, which the store's own .gitignore advice covers).
+    atomic_env, atomic_note = rescue_settings(path.with_name(path.name + ".atomic"))
+    local_env.update(atomic_env)
     if model_env is not None:
         local_env.update(model_env)
         safe_keys = {
@@ -193,6 +200,7 @@ def run_lite_setup(
             "RECALL_ENV", "RECALL_INDEX_MODE", "RECALL_TRANSPORT",
             "RECALL_TRUST_MODE", "RECALL_EMBEDDER", "RECALL_EMBED_PROFILE", "RECALL_MODEL_CACHE",
             "RECALL_MODEL_SHA256", "RECALL_QWEN_MODEL_PATH", "RECALL_EMBED_CACHE", "RECALL_EMBED_CACHE_MAX_MB",
+            "RECALL_ATOMIC_RESCUE_MODE", "RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT",
         }
         report.followup_env = {key: value for key, value in local_env.items() if key in safe_keys}
     with LiteStore(path, dim=embedder.dim) as store:
@@ -215,6 +223,9 @@ def run_lite_setup(
                 RefreshReport(Outcome.UNCHANGED, ""),
                 background_calibration=False, allow_prune=False,
                 security_policy=policy, security_context=context, budget=None, key_root=memory,
+                # The settings the registered server will search under, so the artifact its first
+                # search needs exists when setup returns.
+                rescue_env={**os.environ, **atomic_env},
             )
             if refreshed.outcome is not Outcome.REFRESHED:
                 raise ValueError(f"indexing {memory} failed: {refreshed.reason}")
@@ -223,6 +234,7 @@ def run_lite_setup(
             refreshed.indexed_files, refreshed.chunks_written, refreshed.skipped,
         )
         report.calibration, report.calibration_reason = refreshed.calibration, refreshed.calibration_reason
+        report.atomic = atomic_note or refreshed.atomic or "off: RECALL_ATOMIC_RESCUE_MODE is not active"
     if register:
         from recall.wizard.wiring import ServerBlock, register_local_scope
 

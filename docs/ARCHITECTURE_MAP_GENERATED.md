@@ -9,7 +9,7 @@ design violation.
 
 Packages: `recall`, `recall_mcp`, `recall_agent`, `recall_hooks`, `recall_interop`, `recall_consistency`
 Modules: 364
-Cross package edges: 403
+Cross package edges: 404
 
 ## Highest fan in modules
 
@@ -72,7 +72,7 @@ Cross package edges: 403
 | 22 | `recall.trust` |
 | 21 | `recall` |
 | 21 | `recall.rewrite` |
-| 21 | `recall.wizard.headless` |
+| 20 | `recall.wizard.headless` |
 | 19 | `recall.cli_commands.setup_wizard` |
 | 19 | `recall.lite.store` |
 | 19 | `recall_mcp.provenance` |
@@ -283,6 +283,7 @@ They are observations, not automatic failures.
 | `recall_mcp.lite_refresh` | `recall.embeddings` |
 | `recall_mcp.lite_refresh` | `recall.index_budget` |
 | `recall_mcp.lite_refresh` | `recall.lite` |
+| `recall_mcp.lite_refresh` | `recall.lite.atomic` |
 | `recall_mcp.lite_refresh` | `recall.lite.refresh` |
 | `recall_mcp.lite_refresh` | `recall.security_policy` |
 | `recall_mcp.models` | `recall.support` |
@@ -684,7 +685,7 @@ They are observations, not automatic failures.
 | `recall.lite.memo_requests` | 4 | 23 |
 | `recall.lite.receipts` | 3 | 138 |
 | `recall.lite.refresh` | 14 | 138 |
-| `recall.lite.setup` | 7 | 164 |
+| `recall.lite.setup` | 8 | 164 |
 | `recall.lite.store` | 19 | 138 |
 | `recall.lite.writer_lock` | 1 | 138 |
 | `recall.manifest` | 3 | 15 |
@@ -798,7 +799,7 @@ They are observations, not automatic failures.
 | `recall.wizard.config_lock` | 0 | 0 |
 | `recall.wizard.corpora` | 4 | 140 |
 | `recall.wizard.database` | 2 | 40 |
-| `recall.wizard.headless` | 21 | 170 |
+| `recall.wizard.headless` | 20 | 170 |
 | `recall.wizard.identity` | 1 | 1 |
 | `recall.wizard.interactive` | 5 | 143 |
 | `recall.wizard.inventory` | 2 | 139 |
@@ -856,7 +857,7 @@ They are observations, not automatic failures.
 | `recall_mcp.indexing` | 23 | 151 |
 | `recall_mcp.lifecycle` | 23 | 149 |
 | `recall_mcp.limits` | 5 | 15 |
-| `recall_mcp.lite_refresh` | 5 | 139 |
+| `recall_mcp.lite_refresh` | 6 | 139 |
 | `recall_mcp.models` | 2 | 5 |
 | `recall_mcp.oidc` | 4 | 42 |
 | `recall_mcp.provenance` | 19 | 153 |
