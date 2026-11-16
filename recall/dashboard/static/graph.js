@@ -6,7 +6,7 @@
   const canvas = document.getElementById("chart");
   if (!canvas) return;
   const ctx = canvas.getContext("2d");
-  const frame = document.getElementById("chart-frame");
+  const viewport = canvas.parentElement;
   const tip = document.getElementById("tip");
   const panel = document.getElementById("panel");
   const countsEl = document.getElementById("counts");
@@ -52,6 +52,12 @@
   let alpha = 0;
   let palette = {};
   let stars = [];
+  let labelBoxes = [];
+  let returnFocus = null;
+  let cameraAdjusted = false;
+  let panX = 0, panY = 0;
+  let viewWidth = 0, viewHeight = 0;
+  const canInteract = () => data !== null;
 
   // Camera: orbit around a pivot point, perspective projection.
   const cam = { yaw: 0.6, pitch: -0.32, dist: 900, zoom: 1, px: 0, py: 0, pz: 0 };
@@ -63,6 +69,7 @@
     const css = getComputedStyle(document.documentElement);
     const v = (name) => css.getPropertyValue(name).trim();
     palette = {
+      brass: v("--edge-link"),
       ground: v("--ground"),
       current: v("--node-current"),
       superseded: v("--node-superseded"),
@@ -142,6 +149,7 @@
     } else {
       items = [legendItem(palette.current, "current"), legendItem(palette.superseded, "superseded", true), legendItem(palette.expired, asOf ? "expired or not yet valid" : "expired"), legendItem(palette.pending, "pending review")];
     }
+    if (lens !== "state") items.push(legendItem(palette.superseded, "superseded", true));
     legendEl.replaceChildren(...items);
   }
 
@@ -200,6 +208,7 @@
     const wasEmpty = !active.length;
     active = pool;
     activeEdges = candidate;
+    findMatches();
     neighbours = new Map(active.map((n) => [n.id, new Set()]));
     for (const e of activeEdges) {
       neighbours.get(e.source).add(e.target);
@@ -226,10 +235,11 @@
     });
     // Reheat only as much as the change needs, so a filter or a date step does not scramble the
     // picture the person is looking at.
-    alpha = Math.max(alpha, wasEmpty ? 1 : placed ? 0.35 : 0.08);
+    alpha = reducedMotion.matches ? 0 : Math.max(alpha, wasEmpty ? 1 : placed ? 0.35 : 0.08);
     if (hops > 0 && selected) fitDistance();
     updateCounts();
     renderLegend();
+    needsDraw = true;
   }
 
   function tick() {
@@ -276,6 +286,10 @@
     alpha *= 0.985;
   }
 
+  function clampZoom(value) {
+    return Math.max(0.1, Math.min(14, value));
+  }
+
   function fitDistance() {
     if (!active.length) return;
     // Orbit the middle of the memory, not the origin, and fit its body rather than its strays:
@@ -287,7 +301,8 @@
     const r = ds[Math.floor(ds.length * 0.96)] || 200;
     const view = Math.min(canvas.clientWidth, canvas.clientHeight) || 600;
     cam.dist = Math.max(160, r * 2.6);
-    cam.zoom = (view * 0.44) / r;
+    cam.zoom = clampZoom((view * 0.38) / r);
+    panX = panY = 0;
   }
 
   // ------------------------------------------------------------ projection
@@ -305,8 +320,8 @@
       const depth = cam.dist + z2;
       if (depth < 20) { n.visible = false; continue; }
       const s = (cam.dist / depth) * cam.zoom;
-      n.sx = w / 2 + x1 * s;
-      n.sy = h / 2 + y2 * s;
+      n.sx = w / 2 + x1 * s + panX;
+      n.sy = h / 2 + y2 * s + panY;
       n.scale = s;
       n.depth = depth;
       n.visible = true;
@@ -318,22 +333,49 @@
   function fog(n) {
     // Near memos are bright, far ones fade toward the ground colour.
     const near = cam.dist * 0.55, far = cam.dist * 1.6;
-    return 1 - 0.78 * Math.min(1, Math.max(0, (n.depth - near) / (far - near)));
+    return 1 - 0.67 * Math.min(1, Math.max(0, (n.depth - near) / (far - near)));
   }
 
   // ------------------------------------------------------------ drawing
 
   function resize() {
-    const ratio = window.devicePixelRatio || 1;
-    canvas.width = Math.round(canvas.clientWidth * ratio);
-    canvas.height = Math.round(canvas.clientHeight * ratio);
+    const ratio = Math.min(window.devicePixelRatio || 1, 2);
+    const w = canvas.clientWidth, h = canvas.clientHeight;
+    if (!w || !h) return;
+    const width = Math.round(w * ratio), height = Math.round(h * ratio);
+    if (canvas.width === width && canvas.height === height && viewWidth === w && viewHeight === h) return;
+    if (viewWidth && selected) {
+      cam.zoom = clampZoom(cam.zoom * Math.min(w, h) / Math.min(viewWidth, viewHeight));
+    }
+    viewWidth = w;
+    viewHeight = h;
+    canvas.width = width;
+    canvas.height = height;
     ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
-    stars = Array.from({ length: 140 }, (_, i) => ({
-      x: hash("sx" + i) * canvas.clientWidth,
-      y: hash("sy" + i) * canvas.clientHeight,
-      r: 0.3 + hash("sr" + i) * 0.9,
-      p: hash("sp" + i) * Math.PI * 2,
+    const star = (i, salt) => hash(String(Math.imul(i + 1, 0x9e3779b1) ^ salt));
+    stars = Array.from({ length: Math.min(96, Math.ceil(w * h / 6000)) }, (_, i) => ({
+      x: star(i, 827) * w,
+      y: star(i, 46213) * h,
+      r: 0.4 + star(i, 81281) * 1.25,
+      opacity: 0.03 + star(i, 16411) * 0.23,
     }));
+    if (!selected && !cameraAdjusted) fitDistance();
+    needsDraw = true;
+  }
+
+  function dotRadius(n) {
+    return Math.max(2, Math.min(17, radius(n) * n.scale * 0.9));
+  }
+
+  function glow(x, y, radius, colour, opacity) {
+    const fill = ctx.createRadialGradient(x, y, 0, x, y, radius);
+    fill.addColorStop(0, colour);
+    fill.addColorStop(1, "transparent");
+    ctx.globalAlpha = opacity;
+    ctx.fillStyle = fill;
+    ctx.beginPath();
+    ctx.arc(x, y, radius, 0, Math.PI * 2);
+    ctx.fill();
   }
 
   function focusSet() {
@@ -347,10 +389,10 @@
     const t = time / 1000;
     ctx.clearRect(0, 0, w, h);
 
-    // A faint field of fixed stars behind the memory, twinkling slowly.
-    ctx.fillStyle = palette.ink;
+    // An unlabelled, stationary layer of light behind the interactive nodes.
+    ctx.fillStyle = palette.brass;
     for (const s of stars) {
-      ctx.globalAlpha = 0.05 + 0.06 * (moving() ? (1 + Math.sin(t * 0.7 + s.p)) / 2 : 0.5);
+      ctx.globalAlpha = s.opacity;
       ctx.beginPath();
       ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2);
       ctx.fill();
@@ -364,11 +406,16 @@
       if (!a.visible || !b.visible) continue;
       const lit = !focus || (focus.has(a.id) && focus.has(b.id));
       const depthFade = (fog(a) + fog(b)) / 2;
+      const dx = b.sx - a.sx, dy = b.sy - a.sy;
+      const length = Math.hypot(dx, dy);
+      const start = dotRadius(a) + 1, end = dotRadius(b) + 1;
+      if (length <= start + end) continue;
       ctx.beginPath();
+      ctx.lineDashOffset = 0;
       ctx.setLineDash(e.kind === "pending" ? [5, 4] : e.kind === "shares" ? [2, 3] : []);
       if (e.kind === "link") {
         ctx.strokeStyle = palette.link;
-        ctx.globalAlpha = (lit ? (focus ? 0.8 : 0.24) : 0.03) * depthFade;
+        ctx.globalAlpha = (lit ? (focus ? 0.85 : 0.47) : 0.06) * depthFade;
         ctx.lineWidth = 0.7;
       } else if (e.kind === "shares") {
         ctx.strokeStyle = palette.shares;
@@ -376,18 +423,18 @@
         ctx.lineWidth = 0.6;
       } else if (e.kind === "supersedes") {
         ctx.strokeStyle = palette.supersedes;
-        ctx.globalAlpha = (lit ? 0.85 : 0.1) * depthFade;
-        ctx.lineWidth = 1.3;
+        ctx.globalAlpha = lit ? 0.65 + 0.35 * depthFade : 0.24;
+        ctx.lineWidth = 1.7;
       } else {
         ctx.strokeStyle = palette.pendingEdge;
         ctx.globalAlpha = (lit ? 0.95 : 0.2) * depthFade;
         ctx.lineWidth = 1.3;
         ctx.lineDashOffset = moving() ? -t * 18 : 0;
       }
-      ctx.moveTo(a.sx, a.sy);
-      ctx.lineTo(b.sx, b.sy);
+      ctx.moveTo(a.sx + dx * start / length, a.sy + dy * start / length);
+      ctx.lineTo(b.sx - dx * end / length, b.sy - dy * end / length);
       ctx.stroke();
-      if (e.kind !== "link" && e.kind !== "shares" && lit) arrow(a, b);
+      if (e.kind === "supersedes" || (e.kind === "pending" && lit)) arrow(a, b, end);
       // A pulse of light runs from the newer memo to the one it replaces.
       if (e.kind === "supersedes" && lit && moving()) {
         const phase = (t * 0.45 + hash(e.source + e.target)) % 1;
@@ -407,43 +454,32 @@
 
     for (const n of projected) {
       const lit = !focus || focus.has(n.id);
-      const r = Math.max(0.8, radius(n) * n.scale * 0.9);
+      const r = dotRadius(n);
       const f = fog(n);
       const state = stateAt(n);
-      const lensOnState = lensEl.value === "state";
-      if (lensOnState && state === "pending") {
-        const breathe = moving() ? 2.3 + 0.7 * Math.sin(t * 2.2 + n.phase) : 2.6;
-        const halo = ctx.createRadialGradient(n.sx, n.sy, 0, n.sx, n.sy, r * breathe * 1.6);
-        halo.addColorStop(0, palette.pending);
-        halo.addColorStop(1, "transparent");
-        ctx.globalAlpha = (lit ? 0.35 : 0.06) * f;
-        ctx.fillStyle = halo;
-        ctx.beginPath();
-        ctx.arc(n.sx, n.sy, r * breathe * 1.6, 0, Math.PI * 2);
-        ctx.fill();
+      const superseded = state === "superseded";
+      const colour = colourOf(n, state);
+      if (lit && !superseded && state !== "expired" && (r > 2.5 || n === selected)) {
+        const pending = state === "pending" && lensEl.value === "state";
+        const breathe = pending && moving() ? 3.5 + 0.6 * Math.sin(t * 2.2 + n.phase) : 3.5;
+        glow(n.sx, n.sy, r * breathe, colour, (pending ? 0.42 : 0.31) * f);
       }
-      ctx.globalAlpha = (lit ? 1 : 0.12) * f;
+      ctx.globalAlpha = superseded ? (lit ? 0.9 : 0.45) : (lit ? 1 : 0.24) * f;
       ctx.beginPath();
       ctx.arc(n.sx, n.sy, r, 0, Math.PI * 2);
-      const colour = colourOf(n, state);
-      if (lensOnState && state === "superseded") {
-        ctx.strokeStyle = colour;
-        ctx.lineWidth = 1.3;
+      if (superseded) {
+        ctx.strokeStyle = palette.superseded;
+        ctx.lineWidth = 1.8;
         ctx.stroke();
+        if (lensEl.value !== "state") {
+          ctx.beginPath();
+          ctx.arc(n.sx, n.sy, r + 3, Math.PI * 1.1, Math.PI * 1.9);
+          ctx.strokeStyle = colour;
+          ctx.stroke();
+        }
       } else {
         ctx.fillStyle = colour;
         ctx.fill();
-        if (lit && lensOnState && state === "current" && r > 2.5) {
-          // A soft bloom on the larger, nearer memos gives the sphere its depth.
-          ctx.globalAlpha = 0.18 * f;
-          const bloom = ctx.createRadialGradient(n.sx, n.sy, r * 0.4, n.sx, n.sy, r * 2.6);
-          bloom.addColorStop(0, palette.current);
-          bloom.addColorStop(1, "transparent");
-          ctx.fillStyle = bloom;
-          ctx.beginPath();
-          ctx.arc(n.sx, n.sy, r * 2.6, 0, Math.PI * 2);
-          ctx.fill();
-        }
       }
       if (n === selected || n === hover) {
         ctx.beginPath();
@@ -455,13 +491,56 @@
       }
     }
     ctx.globalAlpha = 1;
+    // Hover can change emphasis without moving the label that the pointer is over.
+    drawLabels(w, h, hover && !selected ? matches : focus);
   }
 
-  function arrow(a, b) {
+  function drawLabels(width, height, focus) {
+    labelBoxes = [];
+    ctx.font = '500 12px "Geist Mono", monospace';
+    ctx.textBaseline = "middle";
+    ctx.lineJoin = "round";
+    const limit = Math.min(18, Math.max(6, Math.floor(width * height / 17000)));
+    const capacity = limit * 4;
+    const buckets = [[], [], [], []];
+    // Projection already orders nodes by depth. Keep the nearest candidates in each priority.
+    for (let i = projected.length - 1; i >= 0; i--) {
+      const n = projected[i];
+      if (!n.title || (focus && !focus.has(n.id)) || n.sx <= 0 || n.sx >= width || n.sy <= 0 || n.sy >= height) continue;
+      const superseded = stateAt(n) === "superseded";
+      const priority = n === selected ? 3 : matches?.has(n.id) ? 2 : superseded ? 1 : 0;
+      if (buckets[priority].length < capacity) buckets[priority].push({ n, superseded });
+    }
+    const foreground = buckets.reverse().flat().slice(0, capacity);
+    for (const { n, superseded } of foreground) {
+      if (labelBoxes.length >= limit) break;
+      const chars = Math.max(16, Math.min(31, Math.floor(width / 15)));
+      const text = n.title.length > chars ? n.title.slice(0, chars - 1).trimEnd() + "…" : n.title;
+      const w = Math.ceil(ctx.measureText(text).width) + 8, h = 18;
+      const gap = dotRadius(n) + 5;
+      const placements = [[n.sx + gap, n.sy - h / 2], [n.sx - gap - w, n.sy - h / 2],
+        [n.sx - w / 2, n.sy + gap], [n.sx - w / 2, n.sy - gap - h]];
+      for (const [x, y] of placements) {
+        if (x < 5 || y < 5 || x + w > width - 5 || y + h > height - 5) continue;
+        if (x + w > width - 130 && y < 52) continue;
+        if (labelBoxes.some((b) => x < b.x + b.w + 3 && x + w + 3 > b.x && y < b.y + b.h && y + h > b.y)) continue;
+        if (foreground.some(({ n: other }) => other.sx >= x - 3 && other.sx <= x + w + 3
+          && other.sy >= y - 3 && other.sy <= y + h + 3)) continue;
+        ctx.strokeStyle = palette.ground;
+        ctx.lineWidth = 4;
+        ctx.fillStyle = superseded ? palette.superseded : palette.ink;
+        ctx.strokeText(text, x + 4, y + h / 2);
+        ctx.fillText(text, x + 4, y + h / 2);
+        labelBoxes.push({ x, y, w, h, n });
+        break;
+      }
+    }
+  }
+
+  function arrow(a, b, r) {
     const angle = Math.atan2(b.sy - a.sy, b.sx - a.sx);
-    const r = radius(b) * b.scale * 0.9 + 2;
     const tipX = b.sx - Math.cos(angle) * r, tipY = b.sy - Math.sin(angle) * r;
-    const size = 6;
+    const size = 7;
     ctx.beginPath();
     ctx.setLineDash([]);
     ctx.moveTo(tipX, tipY);
@@ -478,7 +557,7 @@
   function frameLoop(time) {
     if (alpha > 0.004) {
       for (let i = 0; i < 3; i++) tick();
-      if (!selected && !flight) fitDistance();
+      if (!selected && !flight && !cameraAdjusted) fitDistance();
       needsDraw = true;
     }
     if (flight) {
@@ -490,7 +569,7 @@
     }
     if (moving()) {
       // Drift slowly while nobody is steering; stop the moment someone is.
-      if (!drag && time - lastInteraction > 2500) cam.yaw += 0.0011;
+      if (!drag && !hover && time - lastInteraction > 2500) cam.yaw += 0.0011;
       needsDraw = true;
     }
     if (needsDraw) {
@@ -501,42 +580,101 @@
   }
 
   function flyTo(n) {
+    const to = { px: n.x, py: n.y, pz: n.z, dist: Math.max(220, cam.dist * 0.55) };
+    panX = panY = 0;
+    if (!moving()) {
+      flight = null;
+      Object.assign(cam, to);
+      return;
+    }
     flight = {
       start: performance.now(),
       ms: 700,
       from: { px: cam.px, py: cam.py, pz: cam.pz, dist: cam.dist },
-      to: { px: n.x, py: n.y, pz: n.z, dist: Math.max(220, cam.dist * 0.55) },
+      to,
     };
   }
 
   // ------------------------------------------------------------ interaction
 
   function at(px, py) {
+    const label = labelBoxes.find(({ x, y, w, h }) => px >= x && px <= x + w && py >= y && py <= y + h);
+    if (label) return label.n;
     let best = null, bestD = Infinity;
     for (let i = projected.length - 1; i >= 0; i--) {
       const n = projected[i];
       const d = (n.sx - px) ** 2 + (n.sy - py) ** 2;
-      const reach = (Math.max(4, radius(n) * n.scale) + 5) ** 2;
+      const reach = (dotRadius(n) + 7) ** 2;
       if (d < reach && d < bestD) { best = n; bestD = d; }
     }
     return best;
   }
 
+  function steer() {
+    flight = null;
+    cameraAdjusted = true;
+    lastInteraction = performance.now();
+    needsDraw = true;
+  }
+
+  function zoom(factor) {
+    if (!canInteract()) return;
+    cam.zoom = clampZoom(cam.zoom * factor);
+    steer();
+  }
+
+  function fitGraph() {
+    if (!canInteract()) return;
+    select(null);
+    steer();
+    cameraAdjusted = false;
+    cam.yaw = 0.6;
+    cam.pitch = -0.32;
+    fitDistance();
+  }
+
   let drag = null;
+  const pointers = new Map();
+  function gesture() {
+    const [a, b] = pointers.values();
+    return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2, distance: Math.hypot(b.x - a.x, b.y - a.y) };
+  }
   canvas.addEventListener("pointerdown", (ev) => {
-    drag = { x: ev.clientX, y: ev.clientY, yaw: cam.yaw, pitch: cam.pitch, moved: false };
+    if (!canInteract() || ev.button !== 0 || pointers.size >= 2) return;
+    const box = canvas.getBoundingClientRect();
+    const target = at(ev.clientX - box.left, ev.clientY - box.top);
+    pointers.set(ev.pointerId, { x: ev.clientX, y: ev.clientY });
+    drag = { target, x: ev.clientX, y: ev.clientY, yaw: cam.yaw, pitch: cam.pitch, panX, panY,
+      panning: ev.shiftKey, moved: pointers.size > 1 };
+    if (drag.moved) drag.gesture = gesture();
     lastInteraction = performance.now();
     canvas.setPointerCapture(ev.pointerId);
   });
   canvas.addEventListener("pointermove", (ev) => {
     const box = canvas.getBoundingClientRect();
     if (drag) {
+      if (!pointers.has(ev.pointerId)) return;
+      pointers.set(ev.pointerId, { x: ev.clientX, y: ev.clientY });
+      if (pointers.size === 2) {
+        const next = gesture();
+        panX += next.x - drag.gesture.x;
+        panY += next.y - drag.gesture.y;
+        zoom(next.distance / Math.max(1, drag.gesture.distance));
+        drag.gesture = next;
+        return;
+      }
       const dx = ev.clientX - drag.x, dy = ev.clientY - drag.y;
-      if (Math.abs(dx) + Math.abs(dy) > 3) drag.moved = true;
-      cam.yaw = drag.yaw + dx * 0.006;
-      cam.pitch = Math.max(-1.4, Math.min(1.4, drag.pitch + dy * 0.006));
-      lastInteraction = performance.now();
-      needsDraw = true;
+      if (!drag.moved && Math.abs(dx) + Math.abs(dy) <= 3) return;
+      drag.moved = true;
+      if (drag.panning) {
+        panX = drag.panX + dx;
+        panY = drag.panY + dy;
+      } else {
+        cam.yaw = drag.yaw + dx * 0.006;
+        cam.pitch = Math.max(-1.4, Math.min(1.4, drag.pitch + dy * 0.006));
+      }
+      tip.hidden = true;
+      steer();
       return;
     }
     const found = at(ev.clientX - box.left, ev.clientY - box.top);
@@ -547,27 +685,48 @@
     }
     showTip(found, ev.clientX - box.left, ev.clientY - box.top);
   });
-  canvas.addEventListener("pointerup", (ev) => {
-    const box = canvas.getBoundingClientRect();
-    if (drag && !drag.moved) select(at(ev.clientX - box.left, ev.clientY - box.top), true);
-    drag = null;
-  });
+  function endDrag(ev) {
+    if (!pointers.delete(ev.pointerId)) return;
+    if (!drag.moved && ev.type === "pointerup") {
+      if (drag.target) returnFocus = canvas;
+      hover = null;
+      tip.hidden = true;
+      select(drag.target, true, ev.pointerType === "touch");
+    }
+    const [remaining] = pointers.values();
+    drag = remaining ? { ...remaining, panX, panY, panning: true, moved: true } : null;
+  }
+  canvas.addEventListener("pointerup", endDrag);
+  canvas.addEventListener("pointercancel", endDrag);
+  canvas.addEventListener("lostpointercapture", endDrag);
   canvas.addEventListener("pointerleave", () => {
     hover = null;
     tip.hidden = true;
     needsDraw = true;
   });
-  canvas.addEventListener("dblclick", () => {
-    select(null);
-    flight = { start: performance.now(), ms: 700, from: { px: cam.px, py: cam.py, pz: cam.pz, dist: cam.dist }, to: { px: 0, py: 0, pz: 0, dist: cam.dist } };
-    setTimeout(fitDistance, 720);
-  });
+  canvas.addEventListener("dblclick", fitGraph);
   canvas.addEventListener("wheel", (ev) => {
+    if (!canInteract()) return;
     ev.preventDefault();
-    cam.zoom = Math.max(0.1, Math.min(14, cam.zoom * Math.exp(-ev.deltaY * 0.0015)));
-    lastInteraction = performance.now();
-    needsDraw = true;
+    zoom(Math.exp(-ev.deltaY * 0.0015));
   }, { passive: false });
+  const panKeys = { ArrowLeft: [-28, 0], ArrowRight: [28, 0], ArrowUp: [0, -28], ArrowDown: [0, 28] };
+  canvas.addEventListener("keydown", (ev) => {
+    if (!canInteract()) return;
+    if (Object.hasOwn(panKeys, ev.key)) {
+      const [x, y] = panKeys[ev.key];
+      panX += x;
+      panY += y;
+      steer();
+    } else if (ev.key === "+" || ev.key === "=") zoom(1.2);
+    else if (ev.key === "-" || ev.key === "−") zoom(1 / 1.2);
+    else if (ev.key === "Home") fitGraph();
+    else return;
+    ev.preventDefault();
+  });
+  document.getElementById("zoom-in").addEventListener("click", () => zoom(1.2));
+  document.getElementById("zoom-out").addEventListener("click", () => zoom(1 / 1.2));
+  document.getElementById("fit").addEventListener("click", fitGraph);
 
   const STATE_LABEL = { current: "current", superseded: "superseded", expired: "expired", not_yet_valid: "not yet valid", invalid_metadata: "validity dates search cannot read", ambiguous: "ambiguous supersession", pending: "pending review" };
 
@@ -575,32 +734,40 @@
     if (!n) { tip.hidden = true; return; }
     tip.replaceChildren(el("strong", "", n.title), el("span", "tip-meta", STATE_LABEL[stateAt(n)] + " · " + n.degree + " connections" + (n.issues.length ? " · " + n.issues.length + " issue(s)" : "")));
     tip.hidden = false;
-    const w = frame.clientWidth;
-    tip.style.left = Math.min(x + 14, w - tip.offsetWidth - 8) + "px";
-    tip.style.top = y + 14 + "px";
+    tip.style.left = Math.max(8, Math.min(x + 14, viewport.clientWidth - tip.offsetWidth - 8)) + "px";
+    tip.style.top = Math.max(8, Math.min(y + 14, viewport.clientHeight - tip.offsetHeight - 8)) + "px";
   }
 
-  function select(n, fly) {
+  function select(n, fly, moveFocus = false) {
     selected = n;
+    if (!data) return;
     if (Number(focusEl.value) > 0) rebuild();
     if (n && fly) flyTo(n);
     needsDraw = true;
     renderPanel();
+    if (moveFocus && n) panel.querySelector(".close").focus();
+  }
+
+  function closeDetails() {
+    const target = returnFocus || canvas;
+    select(null);
+    target.focus();
   }
 
   function renderPanel() {
+    panel.hidden = !selected;
     if (!selected) {
-      panel.replaceChildren(el("p", "panel-empty", "Select a star to read the memo and follow its links. Drag to orbit, scroll to zoom, double-click to reset."));
+      panel.replaceChildren();
       return;
     }
     const n = selected;
     const head = el("div", "panel-head");
-    head.append(el("span", "state state-" + stateAt(n), STATE_LABEL[stateAt(n)]));
+    head.append(el("span", "state"));
     if (n.type) head.append(el("span", "chip", n.type));
     const close = el("button", "close", "×");
     close.type = "button";
-    close.setAttribute("aria-label", "Close");
-    close.addEventListener("click", () => select(null));
+    close.setAttribute("aria-label", "Close memory details");
+    close.addEventListener("click", closeDetails);
     head.append(close);
     const parts = [head, el("h2", "", n.title), el("code", "path", n.id)];
     const validity = [n.valid_from ? "valid from " + n.valid_from : "", n.valid_until ? "until " + n.valid_until : ""].filter(Boolean).join(" ");
@@ -652,11 +819,12 @@
       const list = el("ul");
       for (const other of items.slice(0, 40)) {
         const li = el("li");
-        const btn = el("button", "linkbtn state-dot-" + stateAt(other), other.title);
+        const btn = el("button", "linkbtn", other.title);
+        btn.dataset.memo = other.id;
         btn.type = "button";
-        btn.addEventListener("click", () => {
+        btn.addEventListener("click", (ev) => {
           if (!active.includes(other)) { toggles.hubs.checked = true; rebuild(); }
-          select(other, true);
+          select(other, true, ev.detail === 0);
         });
         li.append(btn);
         list.append(li);
@@ -666,9 +834,21 @@
       parts.push(section);
     }
     panel.replaceChildren(...parts);
+    updatePanelStates();
+  }
+
+  function updatePanelStates() {
+    const state = stateAt(selected);
+    const badge = panel.querySelector(".state");
+    badge.className = "state state-" + state;
+    badge.textContent = STATE_LABEL[state];
+    for (const button of panel.querySelectorAll(".linkbtn")) {
+      button.className = "linkbtn state-dot-" + stateAt(byId.get(button.dataset.memo));
+    }
   }
 
   function updateCounts() {
+    if (!data) return;
     const c = data.counts;
     const visible = active.length;
     const parts = [
@@ -686,24 +866,67 @@
     }
     if (asOf) parts.unshift(["as of", asOf]);
     if (matches) parts.push(["matching", matches.size]);
-    countsEl.replaceChildren(...parts.flatMap(([label, value]) => [el("span", "count-label", label), el("strong", "", String(value))]));
+    countsEl.replaceChildren(...parts.map(([label, value]) => {
+      const item = el("span", "count-item");
+      item.append(el("span", "count-label", label), el("strong", "", String(value)));
+      return item;
+    }));
+  }
+
+  function findMatches() {
+    const q = search.value.trim().toLowerCase();
+    matches = q ? new Set(active.filter((n) => (n.title + " " + n.id + " " + n.description).toLowerCase().includes(q)).map((n) => n.id)) : null;
   }
 
   search.addEventListener("input", () => {
-    const q = search.value.trim().toLowerCase();
-    matches = q ? new Set(active.filter((n) => (n.title + " " + n.id + " " + n.description).toLowerCase().includes(q)).map((n) => n.id)) : null;
+    if (!canInteract()) return;
+    findMatches();
     updateCounts();
     needsDraw = true;
   });
   search.addEventListener("keydown", (ev) => {
-    if (ev.key === "Enter" && matches && matches.size) select(byId.get([...matches][0]), true);
+    if (ev.key === "Enter" && matches?.size) {
+      ev.preventDefault();
+      const ids = [...matches];
+      const next = (ids.indexOf(selected?.id) + 1) % ids.length;
+      returnFocus = search;
+      select(byId.get(ids[next]), true, true);
+    }
   });
   document.addEventListener("keydown", (ev) => {
-    if (ev.key === "/" && document.activeElement !== search) { ev.preventDefault(); search.focus(); }
-    if (ev.key === "Escape") { select(null); search.value = ""; matches = null; updateCounts(); needsDraw = true; }
+    if (!canInteract()) return;
+    if (ev.key === "/" && !ev.ctrlKey && !ev.metaKey && !ev.altKey
+      && !ev.target.closest("input, textarea, select, [contenteditable]")) {
+      ev.preventDefault();
+      search.focus();
+    }
+    if (ev.key === "Escape" && (selected || matches)) {
+      if (panel.contains(document.activeElement)) closeDetails();
+      else select(null);
+      search.value = "";
+      matches = null;
+      updateCounts();
+      needsDraw = true;
+    }
   });
   for (const name of [...EDGE_KINDS, "hubs"]) if (toggles[name]) toggles[name].addEventListener("change", rebuild);
-  toggles.motion.addEventListener("change", () => { needsDraw = true; });
+  let wantsMotion = toggles.motion.checked;
+  function updateMotion() {
+    toggles.motion.disabled = reducedMotion.matches;
+    toggles.motion.checked = wantsMotion && !reducedMotion.matches;
+    if (!moving() && flight) {
+      Object.assign(cam, flight.to);
+      flight = null;
+    }
+    if (reducedMotion.matches) alpha = 0;
+    needsDraw = true;
+  }
+  toggles.motion.addEventListener("change", () => {
+    wantsMotion = toggles.motion.checked;
+    updateMotion();
+  });
+  reducedMotion.addEventListener("change", updateMotion);
+  updateMotion();
   lensEl.addEventListener("change", () => { renderLegend(); updateCounts(); needsDraw = true; });
   focusEl.addEventListener("change", () => { rebuild(); if (!selected) fitDistance(); needsDraw = true; });
 
@@ -712,13 +935,23 @@
     asOf = index >= days.length - 1 ? null : days[index];
     timeLabel.textContent = asOf || "today";
     rebuild();
+    if (selected) {
+      if (active.includes(selected)) updatePanelStates();
+      else if (panel.contains(document.activeElement)) closeDetails();
+      else select(null);
+    }
     needsDraw = true;
   }
-  timeEl.addEventListener("input", () => { stopPlaying(); setTime(Number(timeEl.value)); });
+  timeEl.addEventListener("input", () => {
+    if (!canInteract()) return;
+    stopPlaying();
+    setTime(Number(timeEl.value));
+  });
   function stopPlaying() {
     if (playing) { clearInterval(playing); playing = null; playEl.textContent = "▶"; }
   }
   playEl.addEventListener("click", () => {
+    if (days.length < 2) return;
     if (playing) { stopPlaying(); return; }
     let index = Number(timeEl.value) >= days.length - 1 ? 0 : Number(timeEl.value);
     playEl.textContent = "❚❚";
@@ -730,8 +963,8 @@
       if (index >= days.length - 1) stopPlaying();
     }, reducedMotion.matches ? 600 : 160);
   });
-  window.addEventListener("resize", () => { resize(); needsDraw = true; });
-  window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => { readPalette(); needsDraw = true; });
+  new ResizeObserver(resize).observe(viewport);
+  document.fonts.load('500 12px "Geist Mono"').then(() => { needsDraw = true; }, () => {});
 
   fetch("api/graph.json" + (corpus ? "?corpus=" + encodeURIComponent(corpus) : ""), { credentials: "same-origin" })
     .then((r) => { if (!r.ok) throw new Error("status " + r.status); return r.json(); })
@@ -760,14 +993,14 @@
       renderPanel();
       rebuild();
       fitDistance();
-      frame.classList.add("ready");
       requestAnimationFrame(frameLoop);
       // `/graph#memo=<path>` opens on that memo, as the editing page links back here.
       const wanted = location.hash.startsWith("#memo=") ? decodeURIComponent(location.hash.slice(6)) : "";
       if (wanted && byId.has(wanted)) {
         const target = byId.get(wanted);
         if (!active.includes(target)) { toggles.hubs.checked = true; rebuild(); }
-        setTimeout(() => select(target, true), 900);
+        if (moving()) setTimeout(() => select(target, true), 900);
+        else select(target, true);
       }
     })
     .catch((err) => {
