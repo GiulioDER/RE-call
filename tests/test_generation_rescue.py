@@ -264,7 +264,7 @@ class _CliManager:
     def previous_generation_id(self) -> str:
         return "gen_previous"
 
-    def rollback(self) -> str:
+    def rollback(self, **_: object) -> str:
         _CliManager.calls.append("rollback")
         return "gen_previous"
 

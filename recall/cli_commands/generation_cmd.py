@@ -319,10 +319,16 @@ def _cmd_generation(args: argparse.Namespace) -> None:
         _cmd_rescue(args, manager)
         return
     if args.generation_cmd == "rollback":
+        from recall.generation_types import InvalidGenerationTransition
+
         target = manager.previous_generation_id()
         if target is not None:
             _rescue_before_serving(args, target, "rolled back")
-        print(f"active generation: {manager.rollback()}")
+        try:
+            restored = manager.rollback(expected_target=target)
+        except InvalidGenerationTransition as exc:
+            raise SystemExit(f"not rolled back: {exc}") from exc
+        print(f"active generation: {restored}")
         _report_stated_facts(manager.last_stated_facts)
         return
     if args.generation_cmd == "stated-facts":
