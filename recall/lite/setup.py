@@ -1,11 +1,14 @@
 """`recall setup --lite`: memory for this project in one SQLite file, with no server and no Docker.
 
-Four steps, each reported, none hidden:
+Five steps, each reported, none hidden:
 
 1. open (or create) the store at `<project>/.recall/memory.db`;
 2. index the memory folder into it, the same `Indexer` every other path uses;
 3. calibrate it automatically, so strict search can answer as soon as there is enough text;
-4. register the MCP server for THIS project only (Claude Code's local scope), unless asked not to.
+4. turn the atomic rescue on, with its artifacts beside the store (`<store>.atomic`), and build its
+   first artifact during the index, unless the shell sets the mode or its packages are missing
+   (`recall.lite.atomic.rescue_settings`);
+5. register the MCP server for THIS project only (Claude Code's local scope), unless asked not to.
 
 Local scope, for the reasons `recall.wizard.wiring.register_local_scope` gives: no approval
 prompt, and no server answering about this memory inside some other repository. The entry
@@ -23,7 +26,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from recall.lite import LITE_DSN_PREFIX, LiteStore
-from recall.lite.atomic import rescue_settings, store_default_root
+from recall.lite.atomic import MODE_ENV, ROOT_ENV, rescue_settings, store_default_root
 
 if TYPE_CHECKING:
     from recall.embeddings import Embedder
@@ -200,7 +203,7 @@ def run_lite_setup(
             "RECALL_ENV", "RECALL_INDEX_MODE", "RECALL_TRANSPORT",
             "RECALL_TRUST_MODE", "RECALL_EMBEDDER", "RECALL_EMBED_PROFILE", "RECALL_MODEL_CACHE",
             "RECALL_MODEL_SHA256", "RECALL_QWEN_MODEL_PATH", "RECALL_EMBED_CACHE", "RECALL_EMBED_CACHE_MAX_MB",
-            "RECALL_ATOMIC_RESCUE_MODE", "RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT",
+            MODE_ENV, ROOT_ENV,
         }
         report.followup_env = {key: value for key, value in local_env.items() if key in safe_keys}
     with LiteStore(path, dim=embedder.dim) as store:

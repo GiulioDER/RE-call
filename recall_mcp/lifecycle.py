@@ -464,11 +464,16 @@ def _forget_memory_unlocked(
     cached_digests = _embedded_text_digests((store, shadow_store), to_delete)
     from recall.generation_store import GenerationStore
     from recall.lite import LiteStore
+    from recall.lite.atomic import artifact_root
+    from recall_mcp.settings import runtime_environment
 
+    # A PostgreSQL rescue keeps nothing outside the root, so without one there is nothing to read
+    # or list for it (CCA PERF-005); a lite store falls back to the root setup chose.
+    rescue_root = artifact_root(runtime_environment()) if isinstance(store, GenerationStore) else None
     # The same read for the atomic rescue, whose view store is keyed by chunk text.
     rescue_texts: list[str] = (
         [text for text, _ in store.texts_for_sources(to_delete)]
-        if isinstance(store, (LiteStore, GenerationStore)) and to_delete
+        if (isinstance(store, LiteStore) or rescue_root is not None) and to_delete
         else []
     )
     if erase_memo_requests:
@@ -529,7 +534,6 @@ def _forget_memory_unlocked(
     rescue_views_erased = rescue_artifacts_removed = 0
     if isinstance(store, LiteStore) and chunks_removed:
         from recall.lite.atomic import erase_forgotten
-        from recall_mcp.settings import runtime_environment
 
         try:
             rescue_views_erased, rescue_artifacts_removed = erase_forgotten(
@@ -540,10 +544,9 @@ def _forget_memory_unlocked(
                 "atomic rescue erasure failed after chunk deletion for tenant %r", store.tenant
             )
             rescue_views_erased = -1
-    elif isinstance(store, GenerationStore) and chunks_removed:
+    elif isinstance(store, GenerationStore) and chunks_removed and rescue_root is not None:
         from recall.generation_rescue import erase_forgotten as erase_generation_rescue
         from recall.generations import GenerationManager
-        from recall_mcp.settings import runtime_environment
 
         try:
             manager = GenerationManager(store._dsn, store.tenant)
@@ -647,6 +650,16 @@ def _forget_memory_unlocked(
         message += (
             f" Erased {rescue_views_erased} atomic rescue view set(s) and removed "
             f"{rescue_artifacts_removed} rescue artifact(s) built with the deleted text."
+        )
+    elif isinstance(store, GenerationStore) and chunks_removed and rescue_root is None:
+        # The wizard writes the root to the project `.env` and the server blocks only, so a CLI
+        # forget run elsewhere erased nothing the rescue keeps, and a re-run finds no rows to erase
+        # it by (CCA SEC-003).
+        message += (
+            " NOTE: RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT is not set here, so nothing the atomic rescue "
+            "keeps was erased. If this tenant uses the rescue (the setup wizard turns it on), its "
+            "micro-views.sqlite and the generation folders under that root still hold the deleted "
+            "text's vectors; delete them, which costs only a rebuild."
         )
     if memo_requests_erased < 0:
         message += (
