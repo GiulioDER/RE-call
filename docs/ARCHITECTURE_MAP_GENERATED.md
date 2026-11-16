@@ -72,7 +72,7 @@ Cross package edges: 404
 | 22 | `recall.trust` |
 | 21 | `recall` |
 | 21 | `recall.rewrite` |
-| 21 | `recall.wizard.headless` |
+| 20 | `recall.wizard.headless` |
 | 19 | `recall.cli_commands.setup_wizard` |
 | 19 | `recall.lite.store` |
 | 19 | `recall_mcp.provenance` |
@@ -799,7 +799,7 @@ They are observations, not automatic failures.
 | `recall.wizard.config_lock` | 0 | 0 |
 | `recall.wizard.corpora` | 4 | 140 |
 | `recall.wizard.database` | 2 | 40 |
-| `recall.wizard.headless` | 21 | 170 |
+| `recall.wizard.headless` | 20 | 170 |
 | `recall.wizard.identity` | 1 | 1 |
 | `recall.wizard.interactive` | 5 | 143 |
 | `recall.wizard.inventory` | 2 | 139 |
