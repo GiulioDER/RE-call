@@ -157,12 +157,14 @@ def test_the_signing_credential_never_shares_a_job_with_an_install() -> None:
 def test_the_installer_is_built_only_from_hashed_packages() -> None:
     """⛔ **Every package frozen into the installer is pinned by hash.**
 
-    Invariant: each `pip install` in `build` is `--require-hashes`, or is
-    `.github/scripts/locked_install.sh`, which exports uv.lock with hashes. Failure caught: the job
+    Invariant: external installs require hashes. The local checkout is built with its
+    dependencies and build backend already installed, without index access. Failure caught: the job
     ran `pip install ".[desktop,mcp,fastembed,documents]"` and `pip install "pyinstaller>=6.10"`,
     resolving whatever PyPI served that minute, with no lock and no cooldown. Red proof,
     2026-11-12: `tests/test_installer_workflow.py::test_the_installer_is_built_only_from_hashed_packages`
     against origin/master's windows-installer.yml (528d662a3) fails on the unhashed install.
+    SEC-002 checkout control was red-proved by removing --no-index from the fixed
+    workflow's local checkout install. It fails with "can still resolve unhashed build inputs".
     """
     scripts = _runs(_workflow()["jobs"]["build"])
     installs = [
@@ -173,6 +175,93 @@ def test_the_installer_is_built_only_from_hashed_packages() -> None:
     ]
     assert installs, "the build installs nothing, so this test would observe nothing"
     for line in installs:
+        if line.split()[-1] == ".":
+            assert all(flag in line.split() for flag in (
+                "--no-index", "--no-deps", "--no-build-isolation",
+            )), "the checkout can still resolve unhashed build inputs (SEC-002)"
+            continue
         assert "--require-hashes" in line or "locked_install.sh" in line, (
             f"unhashed install in the installer build: {line}"
         )
+
+
+def test_the_lock_exporter_uses_the_pinned_actions_checksum_table() -> None:
+    """SEC-001. The exporter must use executable bytes reviewed with the action.
+
+    Red proof uses ac67de930a666e2264850c2c7cbcf5b1f2190540's workflow.
+    Its setup-uv step has no version input and fails the latest-known assertion.
+    """
+    steps = _workflow()["jobs"]["build"]["steps"]
+    exporter = next(step for step in steps if str(step.get("uses", "")).startswith("astral-sh/setup-uv@"))
+    assert exporter.get("with", {}).get("version") == "latest-known", (
+        "the lock exporter can download an unreviewed uv release"
+    )
+
+
+def test_the_installer_cannot_resolve_unhashed_build_dependencies() -> None:
+    """SEC-002. Every external build input is a hashed wheel.
+
+    Red proof uses ac67de930a666e2264850c2c7cbcf5b1f2190540's workflow
+    and install helper. Its editable checkout install leaves build isolation on
+    and fails the explicit no-build-isolation assertion.
+    """
+    root = WORKFLOW.parents[2]
+    scripts = _runs(_workflow()["jobs"]["build"])
+    if any("locked_install.sh" in script for script in scripts):
+        scripts.append((root / ".github/scripts/locked_install.sh").read_text(encoding="utf-8"))
+    commands = [
+        line.strip().split()
+        for script in scripts
+        for line in script.splitlines()
+        if line.strip().startswith("pip install ")
+    ]
+    checkout = [command for command in commands if command[-1] == "."]
+    assert checkout, "the checkout install was not inspected"
+    for command in checkout:
+        assert "--no-build-isolation" in command, "the checkout opens an unhashed build environment"
+        assert "--no-deps" in command and "--no-index" in command
+        assert "-e" not in command, "editable builds need an additional unmanaged backend requirement"
+    external = [command for command in commands if command not in checkout]
+    assert external, "the external build inputs were not inspected"
+    for command in external:
+        assert "--require-hashes" in command
+        assert "--only-binary=:all:" in command, "an sdist can open a second build environment"
+    requirements = root / ".github/requirements/pyinstaller.txt"
+    assert "hatchling==" in requirements.read_text(encoding="utf-8")
+    scripts_text = "\n".join(_runs(_workflow()["jobs"]["build"]))
+    assert scripts_text.index(".github/requirements/pyinstaller.txt") < scripts_text.index(
+        "--no-build-isolation"
+    ), "the backend must be installed before building the checkout"
+
+
+@pytest.mark.parametrize("path", [
+    "uv.lock",
+    "pyproject.toml",
+    ".github/requirements/pyinstaller.txt",
+])
+def test_dependency_changes_select_the_windows_installer(path: str) -> None:
+    """BUG-001. Dependency-only PRs must reach the Windows bundle selftest.
+
+    Red proof uses ac67de930a666e2264850c2c7cbcf5b1f2190540's workflow.
+    Each input misses all four original path filters.
+    """
+    from fnmatch import fnmatchcase
+
+    workflow = _workflow()
+    events = workflow.get("on", workflow.get(True))
+    assert events is not None, "the workflow has no event configuration"
+    assert any(fnmatchcase(path, pattern) for pattern in events["pull_request"]["paths"]), (
+        f"{path} changes cannot select the Windows installer"
+    )
+
+
+def test_dependency_prs_without_secrets_keep_their_installer_build_unsigned() -> None:
+    """BUG-001. Adding dependency paths must preserve secret-free PR builds.
+
+    Red proof uses the pinned workflow's organization-only signing condition.
+    It omits both PR secret-availability guards asserted below.
+    """
+    gate = _workflow()["jobs"]["sign"]["if"]
+    assert "github.event_name != 'pull_request'" in gate
+    assert "github.event.pull_request.head.repo.full_name == github.repository" in gate
+    assert "github.actor != 'dependabot[bot]'" in gate

@@ -732,7 +732,13 @@ def embed_passages(embedder: Embedder, texts: list[str]) -> list[list[float]]:
 def embed_document_groups(
     embedder: Embedder, groups: list[list[str]]
 ) -> list[list[list[float]]]:
-    """Embed ordered document groups without flattening a context boundary."""
+    """Embed ordered document groups, one vector list per group.
+
+    A group method keeps each group's context. Without one, every group's texts go in one
+    `embed_passages` call and are split back, which keeps groups apart only for an embedder that
+    embeds each passage on its own; a wrapper that exposes only `embed_passages` over a contextual
+    embedder would put every group in one context.
+    """
     method = getattr(embedder, "embed_document_groups", None)
     if callable(method):
         result = method(groups)

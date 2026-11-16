@@ -30,7 +30,7 @@ from typing import TYPE_CHECKING
 
 from recall.index_budget import IndexBudget, budget_from_env
 from recall.lite import LiteStore
-from recall.lite.atomic import configured_root
+from recall.lite.atomic import artifact_in_force, configured_root
 from recall.lite.refresh import Outcome, Snapshot, embedder_refusal, read_state, refresh, snapshot
 
 if TYPE_CHECKING:
@@ -208,12 +208,20 @@ class LiteAutoRefresher:
             _log.warning("lite auto refresh check failed: %s", exc)
 
     def _rescue_stale(self) -> bool:
-        """With the atomic rescue on, whether the last successful refresh built no artifact for the
-        memory as it is now. The state file and the store's write counter: no corpus is hashed."""
-        if configured_root(self._store.tenant, self._env) is None:
+        """With the atomic rescue on, whether no artifact is in force for the memory as it is now.
+
+        The state file and the store's write counter first. A write outside the folder refresh
+        (`recall_index`, a person's `recall index`) builds its own artifact and writes no state
+        file, so then the artifact itself is asked, through the store's matrix a search loads
+        anyway (CCA PERF-003).
+        """
+        root = configured_root(self._store.tenant, self._env)
+        if root is None:
             return False
         last = read_state(self._store.path).get("last_success") or {}
-        return not last.get("rescued") or last.get("corpus_version") != self._store.corpus_revision()
+        if last.get("rescued") and last.get("corpus_version") == self._store.corpus_revision():
+            return False
+        return not artifact_in_force(self._store, root)
 
     def _refreshed_elsewhere(self, fingerprint: str) -> bool:
         """Did another refresher (a person's CLI run) bring this failing snapshot current? Then adopt it."""

@@ -38,6 +38,7 @@ def test_forget_purges_text_committed_after_its_initial_read(tmp_path, monkeypat
     rescue_texts = []
     monkeypatch.setattr(GenerationManager, "list_generations", lambda _: [])
     monkeypatch.setattr(GenerationManager, "collected_generation_ids", lambda _: set())
+    monkeypatch.setattr("recall.generation_rescue.forget_roots", lambda *args, **kwargs: ([tmp_path / "rescue"], [], False))
     monkeypatch.setattr("recall.generation_rescue.erase_forgotten",
                         lambda _, texts, *args, **kwargs: (rescue_texts.extend(texts) or 0, 0))
 
@@ -131,6 +132,7 @@ def test_later_source_failure_cleans_already_committed_erasure(tmp_path, monkeyp
     monkeypatch.setattr(GenerationManager, "list_generations", lambda _: [])
     monkeypatch.setattr(GenerationManager, "collected_generation_ids", lambda _: set())
     rescued, committed = [], []
+    monkeypatch.setattr("recall.generation_rescue.forget_roots", lambda *args, **kwargs: ([tmp_path / "rescue"], [], False))
     monkeypatch.setattr("recall.generation_rescue.erase_forgotten",
                         lambda _, texts, *args, **kwargs: (rescued.extend(texts) or 0, 0))
 

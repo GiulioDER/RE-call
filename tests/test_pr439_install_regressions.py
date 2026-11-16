@@ -272,3 +272,17 @@ def test_desktop_extra_includes_local_server_pool() -> None:
     project = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
     names = {Requirement(value).name for value in project["project"]["optional-dependencies"]["desktop"]}
     assert "psycopg-pool" in names, "desktop installation omits its local server's pool dependency"
+
+
+def test_desktop_extra_carries_the_atomic_rescue_packages() -> None:
+    """CCA DEP-001 (owner decision 2026-11-16): the desktop install must hold what the atomic rescue
+    imports, or the rescue can never be turned on there. Red proof: run against `08261f8f5`, whose
+    `desktop` extra lacks both, it fails at "desktop installation omits the atomic rescue's"."""
+    import tomllib
+    from packaging.requirements import Requirement
+
+    root = Path(__file__).resolve().parents[1]
+    project = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
+    desktop = {Requirement(value).name for value in project["project"]["optional-dependencies"]["desktop"]}
+    atomic = {Requirement(value).name for value in project["project"]["optional-dependencies"]["atomic"]}
+    assert atomic <= desktop, f"desktop installation omits the atomic rescue's {sorted(atomic - desktop)}"

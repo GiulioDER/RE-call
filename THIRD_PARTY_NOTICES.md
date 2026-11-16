@@ -131,7 +131,7 @@ otherwise its trove classifier.
 | `sse-starlette` | 3.4.5 | BSD-3-Clause | License-Expression | mcp |
 | `starlette` | 1.9.0 | BSD-3-Clause | License-Expression | mcp |
 | `tenacity` | 9.1.4 | Apache 2.0 | License | voyage |
-| `threadpoolctl` | 3.7.0 | BSD-3-Clause | License-Expression | atomic |
+| `threadpoolctl` | 3.7.0 | BSD-3-Clause | License-Expression | atomic, fastembed |
 | `tokenizers` | 0.23.3 | Apache Software License | classifier | voyage, fastembed |
 | `tqdm` | 4.69.0 | MPL-2.0 AND MIT | License | voyage, fastembed |
 | `truststore` | 0.10.4 | MIT | License-Expression | mcp, openai |
