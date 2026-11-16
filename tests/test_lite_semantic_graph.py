@@ -619,3 +619,98 @@ def test_g20_a_rebuild_loads_no_corpus_under_the_write_lane(store: LiteStore, mo
     out = run_cli(["--dsn", "sqlite:///" + store.path.as_posix(), "graph", "rebuild"])
     assert '"ready": true' in out, out
     assert not loads_under_lane, f"{len(loads_under_lane)} corpus load(s) under the write lane"
+
+
+def test_status_keeps_a_legacy_lite_schema_unchanged(tmp_path: Path) -> None:
+    """BUG-002. Status must inspect a legacy file without adding graph tables.
+
+    Red proof on ac67de930: the public status command adds GRAPH_TABLES to sqlite_master.
+    """
+    path = tmp_path / "legacy.db"
+    with LiteStore(path, dim=1) as opened:
+        opened.upsert([Chunk("seed", "memo.md", "# Memo", {"ord": 0})], [[1.0]])
+        generation = opened.lite_generation_id()
+    with sqlite3.connect(path) as conn:
+        conn.execute("DROP TRIGGER graph_cleared_by_corpus_write")
+        for table in GRAPH_TABLES:
+            conn.execute(f"DROP TABLE {table}")  # noqa: S608  # test constants
+        before = conn.execute("SELECT type, name, sql FROM sqlite_master ORDER BY name").fetchall()
+
+    out = run_cli(["--dsn", "sqlite:///" + path.as_posix(), "graph", "status"])
+    assert "RAISED" not in out and "EXIT" not in out, out
+    ready = json.loads(out)
+    assert ready["ready"] is False and ready["generation_id"] == generation, ready
+    with sqlite3.connect(path) as conn:
+        after = conn.execute("SELECT type, name, sql FROM sqlite_master ORDER BY name").fetchall()
+    assert after == before, "graph status migrated the legacy schema"
+
+
+def test_rebuild_reports_its_result_before_releasing_the_lane(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """BUG-003. A writer after lane exit must not replace the completed command's result.
+
+    Red proof on ac67de930: readiness reports the later corpus with ready=false.
+    """
+    import contextlib
+
+    import recall.backends as backends
+
+    path = tmp_path / "memory.db"
+    with LiteStore(path, dim=1) as opened:
+        opened.upsert([Chunk("seed", "memo.md", "# Before", {"ord": 0})], [[1.0]])
+        generation = opened.lite_generation_id()
+
+    @contextlib.contextmanager
+    def lane_then_write(*_args: object, **_kwargs: object) -> Iterator[None]:
+        yield
+        with LiteStore(path, dim=1) as other:
+            other.upsert([Chunk("seed", "memo.md", "# After", {"ord": 0})], [[1.0]])
+
+    monkeypatch.setattr(backends, "write_session", lane_then_write)
+    out = run_cli(["--dsn", "sqlite:///" + path.as_posix(), "graph", "rebuild", "--generation", generation])
+    assert "RAISED" not in out and "EXIT" not in out, out
+    ready = json.loads(out)
+    assert ready["ready"] is True and ready["generation_id"] == generation, ready
+
+
+def test_rebuild_refuses_a_projection_that_was_not_persisted(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """BUG-003. A concurrent corpus write during assembly must produce a retry message.
+
+    Red proof on ac67de930: the command exits normally with an unbuilt graph.
+    """
+    import recall.lite.graph as lite_graph
+
+    path = tmp_path / "memory.db"
+    with LiteStore(path, dim=1) as opened:
+        opened.upsert([Chunk("seed", "memo.md", "# Before", {"ord": 0})], [[1.0]])
+    original = lite_graph.build_graph
+
+    def build_then_write(*args: object, **kwargs: object) -> object:
+        graph = original(*args, **kwargs)  # type: ignore[arg-type]
+        with LiteStore(path, dim=1) as other:
+            other.upsert([Chunk("seed", "memo.md", "# After", {"ord": 0})], [[1.0]])
+        return graph
+
+    monkeypatch.setattr(lite_graph, "build_graph", build_then_write)
+    out = run_cli(["--dsn", "sqlite:///" + path.as_posix(), "graph", "rebuild"])
+    assert "EXIT" in out and "corpus changed" in out and "retry" in out, out
+
+
+def test_rebuild_checks_the_generation_of_its_projection(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """BUG-003. A direct write before the build snapshot cannot satisfy an older selector.
+
+    Red proof on ac67de930: the command succeeds and names the replacement generation.
+    """
+    path = tmp_path / "memory.db"
+    with LiteStore(path, dim=1) as opened:
+        opened.upsert([Chunk("seed", "memo.md", "# Before", {"ord": 0})], [[1.0]])
+        generation = opened.lite_generation_id()
+    original = LiteStore.rebuild_semantic_graph
+
+    def write_then_build(self: LiteStore) -> object:
+        with LiteStore(path, dim=1) as other:
+            other.upsert([Chunk("seed", "memo.md", "# After", {"ord": 0})], [[1.0]])
+        return original(self)
+
+    monkeypatch.setattr(LiteStore, "rebuild_semantic_graph", write_then_build)
+    out = run_cli(["--dsn", "sqlite:///" + path.as_posix(), "graph", "rebuild", "--generation", generation])
+    assert "EXIT" in out and "is not it" in out, out

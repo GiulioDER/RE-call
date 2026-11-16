@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import sqlite3
+from contextlib import closing
 from typing import TYPE_CHECKING
 
 from recall.lite import is_lite_dsn, lite_dsn_path
@@ -29,7 +31,7 @@ def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     rebuild.add_argument(
         "--generation", help="the generation to rebuild: required on PostgreSQL; a lite store's own corpus by default"
     )
-    status = graph_sub.add_parser("status", help="whether the graph is built, and its counts")
+    status = graph_sub.add_parser("status", help="show the graph build marker and its recorded counts")
     status.add_argument("--generation", help="the generation to report: the active one by default")
 
 
@@ -77,18 +79,33 @@ def _lite_graph(args: argparse.Namespace) -> GraphReadiness:
                 f"{command}: a lite store has one corpus, {current}; --generation {terminal_safe(args.generation)} is not it"
             )
 
+    if args.graph_cmd == "status":
+        from recall.lite.graph import read_marker, readiness
+        from recall.lite.store import corpus_fingerprint_of, generation_id_for
+
+        # A diagnostic must also work before graph tables exist, without creating them.
+        with closing(sqlite3.connect(f"{lite_dsn_path(args.dsn).resolve().as_uri()}?mode=ro", uri=True)) as conn:
+            conn.execute("BEGIN")
+            if conn.execute("SELECT value FROM meta WHERE key = 'tenant'").fetchone() != (args.tenant,):
+                raise SystemExit(f"{command}: the store tenant changed during inspection; retry")
+            marker = read_marker(conn)
+            generation = str(marker["generation_id"]) if marker is not None else generation_id_for(
+                corpus_fingerprint_of(conn.execute("SELECT id, text, embedding FROM chunks"))
+            )
+            result = readiness(marker, args.tenant, generation)
+            refuse_another(result.generation_id)
+            return result
+
     # `lite_read_meta` has refused a table other than the file's one.
     with LiteStore.from_dsn(args.dsn, dim=int(meta["dim"]), tenant=args.tenant) as store:
-        if args.graph_cmd == "rebuild":
-            # Hash the corpus before the lane, so the check under it is a cache hit unless a write
-            # moved the version meanwhile, and the lane is not held for a load (CCA PERF-001).
-            store.lite_generation_id()
-            with write_session(store, "graph rebuild"):
-                # Under the lane, so no write lands between this check and the build (CCA BUG-004).
-                refuse_another(store.lite_generation_id())
-                store.rebuild_semantic_graph()
-        readiness = store.graph_readiness()
-        if args.graph_cmd == "status":
-            # The generation the marker names: no corpus hashed for a stored graph (CCA PERF-004).
-            refuse_another(readiness.generation_id)
-        return readiness
+        # Hash before the lane so an unchanged corpus is a cache hit under it (CCA PERF-001).
+        store.lite_generation_id()
+        with write_session(store, "graph rebuild"):
+            refuse_another(store.lite_generation_id())
+            graph = store.rebuild_semantic_graph()
+            refuse_another(graph.generation_id)
+            with store.snapshot():
+                result = store.graph_readiness()
+                if result != graph.readiness():
+                    raise SystemExit(f"{command}: the corpus changed during the graph rebuild; retry")
+            return result

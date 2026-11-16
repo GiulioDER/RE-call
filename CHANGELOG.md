@@ -35,7 +35,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   it, every write clears it in the same transaction, and `recall graph status` and
   `recall graph rebuild` now work on a lite store. The dashboard draws the store's corpus graph and
   opens each file's page from it. Search does not read the graph.
-- `recall graph status` reports whether a generation's graph is built, and its counts.
+- `recall graph status` reports the graph build marker and its recorded counts. On PostgreSQL,
+  source removal can invalidate graph members while retaining this marker until a rebuild.
 
 ### Fixed
 
