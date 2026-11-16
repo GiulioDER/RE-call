@@ -213,7 +213,8 @@ backends.
 Atomic rescue finds a memo whose answer is one sentence inside a long chunk. Each chunk is split
 into overlapping 24 word views (stride 12), the views are embedded, and a search moves at most one
 parent chunk, the one whose best view matches the query most closely outside the dense top five, to
-rank six. That chunk is scored by its own cosine, never the view's, so a rescue changes rank only:
+dense rank six before fusion. Fusion can move it into the final top five. That chunk is scored
+by its own cosine, never the view's, so a rescue changes rank only:
 it cannot turn an abstention into an answer. No release contains it yet (0.15.0 does not): install
 from a clone, as above.
 
@@ -236,8 +237,8 @@ export RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT=/absolute/path/to/project/.recall/memo
 The root must be absolute, and a relative one is refused: the MCP server and the CLI each run in
 their own working directory, so a relative root would name two different folders.
 
-`RECALL_ATOMIC_RESCUE_PLACEMENT=fused` places the rescued chunk after fusion, so the final top five
-never change; the default `dense` places it before.
+`RECALL_ATOMIC_RESCUE_PLACEMENT=fused` places the rescued chunk at rank six in the retriever's
+fused ranking, before trust evaluation. The default `dense` inserts it before fusion.
 
 Several stores (two projects, or two MCP servers) may share one root. Each store keeps its
 artifacts in a folder of its own under it, `store-<digest>`, named by the store's tenant and file
@@ -285,10 +286,10 @@ server still has open stays until a later build.
 in the store's own folder but one built for the memory as it is after the forget. A `lite-*`
 folder at the top of the root, from before per-store folders, is removed when it names the memo.
 Views are shared by text, so another store holding the same text re-embeds it at its next build.
-They do so whenever `RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT` is set, even with the rescue since turned
-off, and report an erasure that failed (on Windows, an artifact a running server still has open).
-With the variable unset a forget does not look there, so delete the root when you stop using the
-rescue.
+They do so even with the rescue since turned off, and report an erasure that failed (on Windows,
+an artifact a running server still has open). With `RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT` unset,
+forget checks the default setup root beside the store, `<store-path>.atomic`. A custom root still
+requires that variable in the forgetting process, or manual cleanup of that root.
 
 ## Update the software
 
