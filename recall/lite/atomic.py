@@ -3,11 +3,13 @@
 `recall.trust` applies the rescue to any store once RECALL_ATOMIC_RESCUE_MODE is active: it loads
 one artifact of micro-view vectors (`recall.atomic_rescue`), refuses it unless its lineage is the
 serving lineage, and moves at most one parent, scored by its own cosine, to rank six. On
-PostgreSQL the artifact is built by `scripts/build_atomic_micro_artifact.py` before a generation
-is promoted. A lite store has no promotion, so `ensure_rescue_artifact` builds it after every
+PostgreSQL the artifact is built before a generation is promoted
+(`recall.generation_rescue.ensure_for_promotion`), or by hand with `recall generation rescue`.
+A lite store has no promotion, so `ensure_rescue_artifact` builds it after every
 write that keeps a calibration in force: a refresh, an index, and a background refit landing.
 
-Off by default. It builds only when RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT is set and the store's
+Off unless configured; `recall setup --lite` and the PostgreSQL wizard configure it on
+(`rescue_settings`). It builds only when RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT is set and the store's
 tenant resolves to the active mode exactly as the server's and the CLI's search resolve it
 (`recall._env.tenant_retrieval_environment`), so the builder and the search agree.
 
@@ -36,7 +38,6 @@ from __future__ import annotations
 
 import dataclasses
 import hashlib
-import json
 import os
 import re
 import shutil
@@ -48,11 +49,16 @@ from typing import TYPE_CHECKING
 from recall.atomic_rescue import (
     AtomicRescueArtifact,
     AtomicRescueArtifactError,
+    artifact_names_any,
     clear_atomic_rescue_artifact_cache,
     load_atomic_rescue_artifact,
+    remove_artifact_directories,
+    require_atomic_dependency,
+    rescue_parents,
     resolve_atomic_rescue_manifest,
     write_atomic_rescue_artifact,
 )
+from recall.errors import RecallError
 from recall.state_dir import write_ignore
 
 if TYPE_CHECKING:
@@ -60,17 +66,28 @@ if TYPE_CHECKING:
     from recall.lite.store import LiteStore
 
 __all__ = [
-    "BuildReport", "artifact_root", "configured_root", "ensure_rescue_artifact", "erase_forgotten",
-    "manifest_path", "rescue_active", "rescue_settings", "serving_manifest", "store_default_root",
+    "MODE_BY_TENANT_ENV", "MODE_ENV", "BuildReport", "RescueSettingError", "artifact_in_force",
+    "artifact_root", "configured_root", "ensure_rescue_artifact", "erase_forgotten", "manifest_path",
+    "rescue_active", "rescue_settings", "serving_manifest", "store_default_root",
 ]
 
 ROOT_ENV = "RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT"
+MODE_ENV = "RECALL_ATOMIC_RESCUE_MODE"
+MODE_BY_TENANT_ENV = "RECALL_ATOMIC_RESCUE_MODE_BY_TENANT"
 VIEW_STORE_NAME = "micro-views.sqlite"
 #: The directory names of artifacts, in a store's folder and, from the flat layout, at the top of
 #: the root: there a build only counts them, and only a forget naming their sources removes one.
 _ARTIFACT_NAME = re.compile(r"lite-[0-9a-f]{16}\.cal_[0-9a-f]+")
 #: The files `write_atomic_rescue_artifact` publishes in an artifact's directory.
 _MEMBERS = ("manifest.json", "views.json", "matrix.npy")
+
+
+class RescueSettingError(ValueError, RecallError):
+    """A rescue setting an installer refuses; `key` names the variable (CCA CODE-005)."""
+
+    def __init__(self, key: str, message: str) -> None:
+        super().__init__(message)
+        self.key = key
 
 
 @dataclass(frozen=True)
@@ -131,7 +148,7 @@ def rescue_active(tenant: str, env: Mapping[str, str] | None = None) -> bool:
     from recall._env import tenant_retrieval_environment
 
     values = tenant_retrieval_environment(os.environ if env is None else env, tenant)
-    return values.get("RECALL_ATOMIC_RESCUE_MODE", "off").strip().lower() == "active"
+    return values.get(MODE_ENV, "off").strip().lower() == "active"
 
 
 def artifact_root(env: Mapping[str, str] | None = None) -> Path | None:
@@ -159,7 +176,7 @@ def rescue_settings(
     Shared by `recall setup --lite` and the PostgreSQL wizard. On by default (owner decision
     2026-11-15): active, with its artifacts under `default_root`. A mode or root the shell sets is
     used as it is, and a root is kept with `off` or `shadow` too, so a forget still erases what it
-    holds. A mistyped mode or a relative root raises ValueError: the server refuses to start on the
+    holds. A mistyped mode or a relative root raises RescueSettingError: the server refuses to start on the
     first, and under the second the build and the server would resolve different roots. With no
     mode set, the rescue stays off, with a note, without the `atomic` dependencies, when the
     caller gives an `off_reason`, or when there is no `default_root`.
@@ -169,12 +186,12 @@ def rescue_settings(
     from recall._env import _ATOMIC_RESCUE_MODES
 
     source = os.environ if env is None else env
-    mode = source.get("RECALL_ATOMIC_RESCUE_MODE", "").strip()
+    mode = source.get(MODE_ENV, "").strip()
     root = source.get(ROOT_ENV, "").strip()
     if mode and mode.lower() not in _ATOMIC_RESCUE_MODES:
-        raise ValueError(f"RECALL_ATOMIC_RESCUE_MODE must be off, shadow, or active, not {mode!r}")
+        raise RescueSettingError(MODE_ENV, f"{MODE_ENV} must be off, shadow, or active, not {mode!r}")
     if root and not Path(root).expanduser().is_absolute():
-        raise ValueError(f"{ROOT_ENV} must be an absolute path, not {root!r}")
+        raise RescueSettingError(ROOT_ENV, f"{ROOT_ENV} must be an absolute path, not {root!r}")
     if not mode:
         off = ""
         if any(importlib.util.find_spec(name) is None for name in ("numpy", "threadpoolctl")):
@@ -185,13 +202,13 @@ def rescue_settings(
             # A root an earlier run built under stays registered, so a forget still erases what it
             # holds (CCA ENV-002).
             kept = root or (str(default_root) if default_root is not None and default_root.is_dir() else "")
-            return ({"RECALL_ATOMIC_RESCUE_MODE": "off", ROOT_ENV: kept} if kept else {}), off
+            return ({MODE_ENV: "off", ROOT_ENV: kept} if kept else {}), off
         mode = "active"
     if mode.lower() == "active" and not root:
         if default_root is None:
             return {}, f"atomic rescue is off: set {ROOT_ENV} to turn it on"
         root = str(default_root)
-    return {"RECALL_ATOMIC_RESCUE_MODE": mode, **({ROOT_ENV: root} if root else {})}, ""
+    return {MODE_ENV: mode, **({ROOT_ENV: root} if root else {})}, ""
 
 
 def ensure_rescue_artifact(
@@ -212,12 +229,8 @@ def ensure_rescue_artifact(
     root = configured_root(store.tenant, env)
     if root is None:
         return None
-    try:
-        import threadpoolctl  # noqa: F401
-    except ImportError as exc:
-        # The loader needs it too: refused here, before any view is embedded, and before an
-        # artifact another environment built could be taken for a damaged one and removed.
-        raise AtomicRescueArtifactError("atomic rescue requires the recall-rag[atomic] optional dependency") from exc
+    # Before an artifact another environment built could be taken for a damaged one and removed.
+    require_atomic_dependency()
     resolution = store.resolve_calibration()
     if resolution.status is not CalibrationStatus.CERTIFIED or resolution.artifact is None:
         return BuildReport(None, f"not built: the calibration is {resolution.status.value}")
@@ -261,13 +274,7 @@ def ensure_rescue_artifact(
         ordinary = sibling.ordinary_chunk_count
         counts = {"parents": sibling.parent_count, "views": sibling.view_count, "embedded_views": 0}
     else:
-        parents: list[tuple[str, str, int, str]] = []
-        for chunk in store.iter_chunks():
-            ordinal = chunk.metadata.get("ord")
-            if not isinstance(ordinal, int) or isinstance(ordinal, bool):
-                raise AtomicRescueArtifactError(f"chunk {chunk.id} has no integer ord, so it cannot be a rescue parent")
-            parents.append((chunk.id, chunk.source, ordinal, chunk.text))
-        parents.sort(key=lambda item: (item[1], item[2]))
+        parents = rescue_parents(store.iter_chunks())
         ordinary = len(parents)
         # The root holds view vectors and the sources of memo chunks, like the `.recall` directory.
         root.mkdir(parents=True, exist_ok=True)
@@ -355,7 +362,8 @@ def erase_forgotten(
     folder is removed except the one the store resolves now: each other one was built from a
     corpus that held the forgotten chunks, and keeps their view vectors and sources. An artifact
     left at the top of the root by the layout before per-store folders has no known owner, so it is
-    removed only when its `views.json` names one of `sources`. The root is read whatever the rescue
+    removed only when its `views.json` names one of `sources`, or cannot be read, since such an
+    artifact can never serve (`recall.atomic_rescue.artifact_names_any`). The root is read whatever the rescue
     mode, since a rescue turned off keeps what it built. Raises when something is left.
     """
     from recall.atomic_view_store import AtomicViewStore, chunk_view_digest
@@ -379,29 +387,9 @@ def erase_forgotten(
     doomed += [
         entry for entry in root.iterdir()
         if entry.name != keep and entry.is_dir() and _ARTIFACT_NAME.fullmatch(entry.name)
-        and _names_any(entry, set(sources))
+        and artifact_names_any(entry, set(sources))
     ]
-    if doomed:
-        # This process's cache maps the matrix it last loaded, and Windows refuses to delete it.
-        clear_atomic_rescue_artifact_cache()
-    for entry in doomed:
-        shutil.rmtree(entry, ignore_errors=True)
-    left = [entry.name for entry in doomed if entry.exists()]
-    if left:
-        raise AtomicRescueArtifactError(
-            f"atomic rescue artifact(s) {', '.join(left)} under {root} could not be removed while a "
-            "process has their matrix open"
-        )
-    return erased, len(doomed)
-
-
-def _names_any(artifact: Path, sources: set[str]) -> bool:
-    """Whether the artifact's `views.json` names one of `sources`; False when it cannot be read."""
-    try:
-        views = json.loads((artifact / "views.json").read_text(encoding="utf-8"))["views"]
-    except (OSError, ValueError, KeyError, TypeError):
-        return False
-    return any(isinstance(view, dict) and view.get("source") in sources for view in views)
+    return erased, remove_artifact_directories(doomed, root)
 
 
 def _key_in_force(store: LiteStore) -> str | None:
@@ -412,6 +400,18 @@ def _key_in_force(store: LiteStore) -> str | None:
     if resolution.status is not CalibrationStatus.CERTIFIED or resolution.artifact is None:
         return None
     return f"{store.generation_binding()['generation_id']}.{resolution.artifact.calibration_id}"
+
+
+def artifact_in_force(store: LiteStore, root: Path) -> bool:
+    """Whether the artifact a search of `store` loads now is on disk (the trust gate checks its
+    lineage when it loads it); False without a certified calibration."""
+    from recall.calibration_v2 import CalibrationStatus
+
+    resolution = store.resolve_calibration()
+    if resolution.status is not CalibrationStatus.CERTIFIED or resolution.artifact is None:
+        return False
+    generation_id = store.generation_binding()["generation_id"]
+    return serving_manifest(root, store, generation_id, resolution.artifact.calibration_id).is_file()
 
 
 def _remove_others(folder: Path, *, keep: Container[str | None]) -> None:

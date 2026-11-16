@@ -44,6 +44,7 @@ import pytest
 
 from recall.lite import LiteStore
 from recall.lite.setup import SERVER_NAME, run_lite_setup
+from tests.test_lite_atomic_rescue import _blank_rescue_environment
 from tests.test_lite_calibration import DIM, ContentWordEmbedder, _write_memos
 
 
@@ -123,11 +124,6 @@ def test_the_gitignore_note_appears_only_when_needed(tmp_path: Path) -> None:
     (other / "project" / ".gitignore").write_text("node_modules/\n.recall/\n", encoding="utf-8")
     _p, _c, again = _setup(other, register=False)
     assert not any(".gitignore" in note for note in again.notes), "the note repeats advice already followed"
-
-
-def _blank_rescue_environment(monkeypatch: pytest.MonkeyPatch) -> None:
-    for name in ("RECALL_ATOMIC_RESCUE_MODE", "RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT", "RECALL_ATOMIC_RESCUE_MODE_BY_TENANT"):
-        monkeypatch.delenv(name, raising=False)
 
 
 def test_setup_turns_the_atomic_rescue_on_and_builds_its_first_artifact(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

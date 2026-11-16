@@ -114,7 +114,7 @@
       "readOnlyHint": false,
       "title": "Publish corpus calibration"
     },
-    "description": "Publish one certified calibration artifact for the caller's tenant.\n\nRequires the `recall:admin` scope: publishing an ARBITRARY existing calibration\nchanges the serve/abstain decision for every query the tenant runs, which is\ndeliberately not implied by write. Note the invariant this enforces is exactly that\nand no wider: a write-scoped `recall_ingest` in generation mode can still\ncertify-and-activate the calibration for ITS OWN upload (via `_certify_upload`), so\nwrite scope is not \"can never change what the tenant serves\" — it is \"cannot publish\na calibration the caller did not just produce\".",
+    "description": "Publish one certified calibration artifact for the caller's tenant.\n\nUnder an active atomic rescue it also rebuilds the generation's rescue artifact for the new\ncalibration; the result's `atomic_rescue` field reports the build, or a WARNING with the\nretry command when it failed, and the publication stands.\n\nRequires the `recall:admin` scope: publishing an ARBITRARY existing calibration\nchanges the serve/abstain decision for every query the tenant runs, which is\ndeliberately not implied by write. Note the invariant this enforces is exactly that\nand no wider: a write-scoped `recall_ingest` in generation mode can still\ncertify-and-activate the calibration for ITS OWN upload (via `_certify_upload`), so\nwrite scope is not \"can never change what the tenant serves\" — it is \"cannot publish\na calibration the caller did not just produce\".",
     "inputSchema": {
       "properties": {
         "calibration_id": {
