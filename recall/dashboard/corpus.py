@@ -50,7 +50,7 @@ __all__ = [
 #: `(chunk_id, ordinal, source_uri, text, metadata, indexed_at, first indexed, file)`, with the
 #: times as each store holds them; an entity `(name, kind, mentions)`; a relation `(relation,
 #: status, subject, subject kind, object, object kind)`.
-DetailChunk = tuple[str, int | None, str, str, Any, Any, Any, str]
+DetailChunk = tuple[str, int | None, str, str, dict[str, Any] | None, date | str | None, date | str | None, str]
 DetailEntity = tuple[str, str, int]
 DetailRelation = tuple[str, str, str, str, str, str]
 
@@ -531,8 +531,8 @@ def assemble_detail(
     canonical: str,
     chunks: Sequence[DetailChunk],
     total: int,
-    first_indexed: Any,
-    last_indexed: Any,
+    first_indexed: date | str | None,
+    last_indexed: date | str | None,
     graph: SupersessionGraph,
     successor: str | None,
     replaced: list[str],

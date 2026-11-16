@@ -57,6 +57,7 @@
   let cameraAdjusted = false;
   let panX = 0, panY = 0;
   let viewWidth = 0, viewHeight = 0;
+  let resizeScale = null;
   const canInteract = () => data !== null;
 
   // Camera: orbit around a pivot point, perspective projection.
@@ -302,6 +303,7 @@
     const view = Math.min(canvas.clientWidth, canvas.clientHeight) || 600;
     cam.dist = Math.max(160, r * 2.6);
     cam.zoom = clampZoom((view * 0.38) / r);
+    resizeScale = null;
     panX = panY = 0;
   }
 
@@ -345,7 +347,11 @@
     const width = Math.round(w * ratio), height = Math.round(h * ratio);
     if (canvas.width === width && canvas.height === height && viewWidth === w && viewHeight === h) return;
     if (viewWidth && selected) {
-      cam.zoom = clampZoom(cam.zoom * Math.min(w, h) / Math.min(viewWidth, viewHeight));
+      // Retain the viewport-relative scale while the displayed zoom is clamped.
+      if (resizeScale === null) resizeScale = cam.zoom / Math.min(viewWidth, viewHeight);
+      cam.zoom = clampZoom(resizeScale * Math.min(w, h));
+    } else {
+      resizeScale = null;
     }
     viewWidth = w;
     viewHeight = h;
@@ -623,6 +629,7 @@
   function zoom(factor) {
     if (!canInteract()) return;
     cam.zoom = clampZoom(cam.zoom * factor);
+    resizeScale = null;
     steer();
   }
 
@@ -660,9 +667,14 @@
       pointers.set(ev.pointerId, { x: ev.clientX, y: ev.clientY });
       if (pointers.size === 2) {
         const next = gesture();
-        panX += next.x - drag.gesture.x;
-        panY += next.y - drag.gesture.y;
+        const anchorX = drag.gesture.x - box.left - canvas.clientWidth / 2 - panX;
+        const anchorY = drag.gesture.y - box.top - canvas.clientHeight / 2 - panY;
+        const before = cam.zoom;
         zoom(next.distance / Math.max(1, drag.gesture.distance));
+        // Keep the same world point under the fingers, including at the zoom limits.
+        const scale = cam.zoom / before;
+        panX += next.x - drag.gesture.x + anchorX * (1 - scale);
+        panY += next.y - drag.gesture.y + anchorY * (1 - scale);
         drag.gesture = next;
         return;
       }
