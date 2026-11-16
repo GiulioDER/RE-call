@@ -660,7 +660,7 @@ They are observations, not automatic failures.
 | `recall.fix` | 7 | 30 |
 | `recall.frontmatter` | 1 | 1 |
 | `recall.generation_build` | 8 | 139 |
-| `recall.generation_rescue` | 9 | 139 |
+| `recall.generation_rescue` | 11 | 139 |
 | `recall.generation_store` | 16 | 138 |
 | `recall.generation_types` | 2 | 13 |
 | `recall.generations` | 27 | 138 |

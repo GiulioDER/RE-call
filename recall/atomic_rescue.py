@@ -1145,12 +1145,18 @@ def rescue_parents(chunks: Iterable[Any]) -> list[tuple[str, str, int, str]]:
     return parents
 
 
+#: The files `write_atomic_rescue_artifact` publishes in an artifact's directory.
+_ARTIFACT_FILES = frozenset({"manifest.json", "views.json", "matrix.npy"})
+
+
 def artifact_names_any(directory: Path, sources: set[str]) -> bool:
     """Whether the artifact in `directory` names one of `sources` in its `views.json`.
 
-    True as well when the directory exists and its `views.json` cannot be read: such an artifact
-    can never serve, since the loader verifies it, and it may still hold the matrix of the
-    forgotten chunks, as a removal Windows left half done does (CCA STAKES-005).
+    True as well when its `views.json` cannot be read and the directory holds nothing but artifact
+    files: such an artifact can never serve, since the loader verifies it, and it may still hold
+    the matrix of the forgotten chunks, as a removal Windows left half done does (CCA STAKES-005).
+    Anything else in it means it is not an artifact, so a forged root or generation id cannot make
+    a forget remove an unrelated directory (CCA SEC-002).
     """
     if not directory.is_dir():
         return False
@@ -1158,7 +1164,11 @@ def artifact_names_any(directory: Path, sources: set[str]) -> bool:
         views = json.loads((directory / "views.json").read_text(encoding="utf-8"))["views"]
         return any(isinstance(view, dict) and view.get("source") in sources for view in views)
     except (OSError, ValueError, KeyError, TypeError):
-        return True
+        try:
+            names = {entry.name for entry in directory.iterdir()}
+        except OSError:
+            return False
+        return bool(names) and names <= _ARTIFACT_FILES
 
 
 def remove_artifact_directories(directories: Sequence[Path], root: Path) -> int:

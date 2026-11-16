@@ -36,12 +36,17 @@ from recall.atomic_rescue import (
     write_atomic_rescue_artifact,
 )
 from recall.lite.atomic import ROOT_ENV, VIEW_STORE_NAME, artifact_root, configured_root, rescue_active
+from recall.observability import get_logger
 from recall.state_dir import write_ignore
 
 if TYPE_CHECKING:
     from recall.embeddings import Embedder
 
-__all__ = ["after_publish", "build_artifact", "ensure_for_promotion", "erase_forgotten", "remove_artifacts"]
+_log = get_logger("generation_rescue")
+
+__all__ = [
+    "after_publish", "build_artifact", "ensure_for_promotion", "erase_forgotten", "forget_roots", "remove_artifacts",
+]
 
 
 def _active_root(tenant: str, env: Mapping[str, str] | None) -> Path | None:
@@ -121,6 +126,7 @@ def build_artifact(dsn: str, tenant: str, generation_id: str, embedder: Embedder
     from recall.embedding_core import profile_lineage_mismatch
     from recall.embeddings import embed_document_groups, embedding_profile, embedding_profile_id
     from recall.generation_store import GenerationStore
+    from recall.generations import GenerationManager
 
     require_atomic_dependency()
     calibration_id = _published_calibration(dsn, tenant, generation_id)
@@ -149,6 +155,11 @@ def build_artifact(dsn: str, tenant: str, generation_id: str, embedder: Embedder
             "pipeline_fingerprint": binding.get("pipeline_fingerprint"),
             "corpus_fingerprint": binding.get("corpus_fingerprint"),
         }
+        # Before anything is written under the root (the view store first), so nothing the rescue
+        # keeps is ever there that a forget run without the root variable cannot learn of
+        # (`forget_roots`); an artifact already in force is recorded too, since one built before
+        # the record existed has none.
+        GenerationManager(dsn, tenant, actor="recall-atomic-rescue").record_rescue_root(generation_id, str(root))
         # Before the scan, which an artifact already in force (a rollback, a repeated rescue) would
         # make for nothing (CCA PERF-002).
         if _serves(manifest, lineage, embedder):
@@ -320,6 +331,65 @@ def _root(env: Mapping[str, str] | None) -> Path | None:
     """The configured root whatever the mode, since a rescue turned off keeps what it built."""
     root = artifact_root(env)
     return root if root is not None and root.is_dir() else None
+
+
+def forget_roots(
+    dsn: str, tenant: str, *, env: Mapping[str, str] | None = None
+) -> tuple[list[Path], list[str], bool]:
+    """The roots a forget of `tenant` erases under, the recorded ones this process cannot reach,
+    and whether the record could not be read.
+
+    The configured root, and every root a build of the tenant recorded (`build_artifact`): the
+    wizard writes the root to the project `.env` and the server blocks only, so a CLI forget run
+    elsewhere would otherwise erase nothing the rescue keeps (CCA SEC-003). A recorded root that is
+    a directory here is used when it holds the view store or a generation folder, and skipped
+    when it holds neither, since then a forget has nothing to erase there; one that is no
+    directory here, or cannot be read, is reported. The configured root is returned whatever the
+    record. Never raises for a root it cannot read: the forget runs this before deleting anything.
+    """
+    from recall.generations import GenerationManager
+
+    usable: list[Path] = []
+    unreachable: list[str] = []
+    try:
+        configured = _root(env)
+    except OSError:  # Python before 3.14 raises PermissionError from `is_dir`
+        unreachable.append(str(artifact_root(env)))
+        configured = None
+    if configured is not None:
+        usable.append(configured)
+    try:
+        recorded = sorted(GenerationManager(dsn, tenant, actor="recall-atomic-rescue").rescue_roots())
+    except Exception:  # BROAD-CATCH: fail-closed  # the configured root is still erased, and the caller warns
+        _log.exception("the atomic rescue roots of tenant %r could not be read", tenant)
+        return usable, unreachable, True
+    for raw in recorded:
+        if raw.replace("\\", "/").startswith("//"):
+            # A UNC or device path: probing it would open a connection to whatever host the
+            # database names (CCA SEC-001), so it is reported without being touched.
+            unreachable.append(raw)
+            continue
+        path = Path(raw)
+        if path in usable:
+            continue
+        held = _holds_rescue(path) if path.is_absolute() else None
+        if held is None:
+            unreachable.append(raw)
+        elif held:
+            usable.append(path)
+    return usable, unreachable, False
+
+
+def _holds_rescue(path: Path) -> bool | None:
+    """Whether the directory `path` holds anything a forget erases (the view store, or a generation
+    folder); None when it is no directory here or cannot be read (CCA review NEW-001: Python before
+    3.14 raises PermissionError from `is_dir`)."""
+    try:
+        if not path.is_dir():
+            return None
+        return (path / VIEW_STORE_NAME).is_file() or any(entry.is_dir() for entry in path.iterdir())
+    except OSError:
+        return None
 
 
 def remove_artifacts(generation_ids: Collection[str], *, env: Mapping[str, str] | None = None) -> int:

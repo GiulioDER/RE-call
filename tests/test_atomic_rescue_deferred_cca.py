@@ -21,7 +21,9 @@ from recall.atomic_rescue import (
     load_atomic_rescue_artifact,
 )
 from recall.lite.atomic import MODE_BY_TENANT_ENV, MODE_ENV, ROOT_ENV
+from tests.conftest import TEST_DSN, requires_db
 from tests.test_atomic_rescue_default_on_cca import _Corpus, _publish, corpus  # noqa: F401  # a fixture
+from tests.test_generation_rescue import rescue_tenant  # noqa: F401  # a fixture
 from tests.test_calibration_carry_forward import _CarryEmbedder
 
 def test_a_cli_publish_whose_rebuild_cannot_build_the_embedder_warns(tmp_path: Path, monkeypatch, capsys) -> None:
@@ -152,55 +154,61 @@ def forget_without_a_root(monkeypatch):  # noqa: ANN001, ANN201
     return lifecycle
 
 
-def test_a_postgres_forget_without_the_root_says_it_erased_nothing_of_the_rescue(forget_without_a_root, monkeypatch) -> None:
-    """SEC-003: a CLI `recall forget` run where RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT is not set (the
-    wizard writes it to the project `.env` and the server blocks only) skipped the rescue erasure
-    and reported success with no word of it. Invariant: the message names the variable.
+def _manager(recorded: set[str], listed: list[str]):  # noqa: ANN202
+    """A `GenerationManager` double: the roots builds recorded, and one generation, `gen_1`."""
+
+    def manager(*args: object, **kwargs: object) -> SimpleNamespace:
+        def generations() -> list[SimpleNamespace]:
+            listed.append("listed")
+            return [SimpleNamespace(generation_id="gen_1")]
+
+        return SimpleNamespace(
+            rescue_roots=lambda: set(recorded),
+            list_generations=generations,
+            collected_generation_ids=lambda: set(),
+        )
+
+    return manager
+
+
+def test_a_build_records_the_root_it_builds_under(corpus: _Corpus, tmp_path: Path, monkeypatch) -> None:  # noqa: F811
+    """SEC-003, the record: a forget run where RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT is not set could
+    not know that the tenant had a rescue, or where. Invariant: a build records its root before it
+    writes anything under it (the view store first, review BUG-001), and a build that finds its
+    artifact in force records it too, since one built before the record existed has none (BUG-004).
     """
     import recall.generations as generations
+    from recall.generation_rescue import build_artifact
 
-    monkeypatch.setattr(generations, "GenerationManager", lambda *args, **kwargs: SimpleNamespace(
-        list_generations=lambda: [], collected_generation_ids=lambda: set()
-    ))
+    real = generations.GenerationManager
+    stores_at_record: list[bool] = []
 
-    result = forget_without_a_root._forget_memory_unlocked(
-        _generation_store([]), ["memo.md"], erase_memo_requests=False
-    )
+    class _Spy(real):  # type: ignore[misc, valid-type]
+        def record_rescue_root(self, generation_id: str, root: str) -> None:
+            stores_at_record.append((Path(root) / "micro-views.sqlite").exists())
+            super().record_rescue_root(generation_id, root)
 
-    assert result.chunks_removed == 1
-    assert "RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT is not set" in result.message, result.message
+    monkeypatch.setattr(generations, "GenerationManager", _Spy)
+    embedder = _CarryEmbedder()
 
+    assert build_artifact("postgresql://x", "t", "gen_1", embedder, tmp_path).startswith("built for gen_1")
+    assert build_artifact("postgresql://x", "t", "gen_1", embedder, tmp_path) == "in force for gen_1"
 
-def test_a_postgres_forget_with_a_relative_root_says_it_is_not_absolute(forget_without_a_root, monkeypatch) -> None:
-    """SEC-003, follow-up: a relative root, which no builder writes under, was reported as not set.
-    Invariant: the note says the root is not an absolute path.
-
-    Red proof (recorded in the pull request): with `state` in `_forget_memory_unlocked` mutated to
-    always read "is not set", this fails at the assertion below.
-    """
-    monkeypatch.setenv(ROOT_ENV, "relative/atomic")
-
-    result = forget_without_a_root._forget_memory_unlocked(
-        _generation_store([]), ["memo.md"], erase_memo_requests=False
-    )
-
-    assert "RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT is not an absolute path" in result.message, result.message
+    assert corpus.recorded == [("gen_1", str(tmp_path))] * 2
+    assert stores_at_record[0] is False, "the root was recorded after views were stored under it"
 
 
-def test_a_postgres_forget_without_the_root_reads_nothing_for_the_rescue(forget_without_a_root, monkeypatch) -> None:
-    """PERF-005: with no root the rescue keeps nothing to erase, yet every PostgreSQL forget read
-    the forgotten texts and listed the generation history for it. Invariant: only the embedding
-    cache's read of the texts happens, and no generation is listed.
+def test_a_postgres_forget_of_a_tenant_with_no_rescue_says_and_reads_nothing_of_it(
+    forget_without_a_root, monkeypatch
+) -> None:
+    """SEC-003 and PERF-005: with no root configured and none recorded, the tenant never built a
+    rescue, yet every forget appended a note about one. Invariant: no note, no read of the
+    forgotten texts beyond the embedding cache's, and no listing of the generations.
     """
     import recall.generations as generations
 
     listed: list[str] = []
-
-    def manager(*args: object, **kwargs: object) -> SimpleNamespace:
-        listed.append("listed")
-        return SimpleNamespace(list_generations=lambda: [], collected_generation_ids=lambda: set())
-
-    monkeypatch.setattr(generations, "GenerationManager", manager)
+    monkeypatch.setattr(generations, "GenerationManager", _manager(set(), listed))
     read: list[list[str]] = []
 
     result = forget_without_a_root._forget_memory_unlocked(
@@ -208,8 +216,51 @@ def test_a_postgres_forget_without_the_root_reads_nothing_for_the_rescue(forget_
     )
 
     assert result.chunks_removed == 1
-    assert listed == [], "the generation history was listed for a rescue with no root"
-    assert read == [["memo.md"]], f"the texts were read again for a rescue with no root: {read}"
+    assert "atomic rescue" not in result.message.lower(), result.message
+    assert listed == [], "the generation history was listed for a tenant with no rescue"
+    assert read == [["memo.md"]], f"the texts were read again for a tenant with no rescue: {read}"
+
+
+def test_a_postgres_forget_without_the_root_erases_under_the_recorded_one(
+    forget_without_a_root, monkeypatch, tmp_path: Path
+) -> None:
+    """SEC-003: a CLI forget run where RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT is not set (the wizard
+    writes it to the project `.env` and the server blocks only) left the forgotten text's views
+    and the artifact naming its source. Invariant: both are erased under the root a build recorded.
+    """
+    import recall.generations as generations
+    from recall.atomic_view_store import AtomicViewStore, chunk_view_digest
+
+    root = tmp_path / "atomic"
+    _publish(root / "gen_1", "cal_1")  # names a.md
+    with AtomicViewStore(root / "micro-views.sqlite") as views:
+        views.put("profile", chunk_view_digest("the forgotten memo's text"), [[1.0, 0.0, 0.0, 0.0]])
+        views.commit()
+    monkeypatch.setattr(generations, "GenerationManager", _manager({str(root)}, []))
+
+    result = forget_without_a_root._forget_memory_unlocked(
+        _generation_store([]), ["a.md"], erase_memo_requests=False
+    )
+
+    assert not (root / "gen_1").exists(), result.message
+    with AtomicViewStore(root / "micro-views.sqlite") as views:
+        assert views.count() == 0, "the forgotten text's views were kept"
+    assert "Erased 1 atomic rescue view set(s) and removed 1" in result.message, result.message
+
+
+def test_a_postgres_forget_names_a_recorded_root_it_cannot_reach(forget_without_a_root, monkeypatch, tmp_path: Path) -> None:
+    """SEC-003: when the rescue was built under a root this process cannot reach (another host, a
+    container), nothing there is erased and a re-run finds no rows. Invariant: the note names it."""
+    import recall.generations as generations
+
+    elsewhere = str(tmp_path / "on-another-host")
+    monkeypatch.setattr(generations, "GenerationManager", _manager({elsewhere}, []))
+
+    result = forget_without_a_root._forget_memory_unlocked(
+        _generation_store([]), ["memo.md"], erase_memo_requests=False
+    )
+
+    assert f"built under {elsewhere}, which this process cannot reach" in result.message, result.message
 
 
 def test_a_wizard_rerun_builds_under_the_mode_it_registers(tmp_path: Path, monkeypatch) -> None:
@@ -293,3 +344,188 @@ def test_a_damaged_lite_flat_artifact_is_removed_by_a_forget(tmp_path: Path) -> 
     erase_forgotten(store, [], ["forgotten.md"], env={ROOT_ENV: str(tmp_path)})  # type: ignore[arg-type]
 
     assert not flat.exists()
+
+
+def test_forget_roots_never_probes_a_network_root_from_the_record(tmp_path: Path, monkeypatch) -> None:
+    """Review SEC-001: a root read from the database was probed before its kind was checked, and on
+    Windows a UNC root opens a connection to the host it names. Invariant: UNC and device roots
+    are reported unreachable without any filesystem call on them.
+    """
+    import recall.generations as generations
+    from recall.generation_rescue import forget_roots
+
+    forged = {"//attacker/share", "\\\\attacker\\share", "\\\\?\\C:\\atomic"}
+    probed: list[str] = []
+    for name in ("is_dir", "is_file", "exists"):
+        real = getattr(Path, name)
+
+        def spy(self: Path, *args: object, _real=real, **kwargs: object) -> bool:  # noqa: ANN001
+            probed.append(str(self))
+            return _real(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, name, spy)
+    monkeypatch.setattr(generations, "GenerationManager", _manager(forged, []))
+
+    usable, unreachable, unread = forget_roots("postgresql://x", "t", env={})
+
+    assert (usable, sorted(unreachable), unread) == ([], sorted(forged), False)
+    assert not any("attacker" in path or "?" in path for path in probed), probed
+
+
+def test_a_forget_keeps_a_damaged_folder_that_is_not_an_artifact(tmp_path: Path) -> None:
+    """Review SEC-002: an unreadable `views.json` made any folder removable, so a forged root or
+    generation id could reach an unrelated directory. Invariant: a folder holding anything but
+    artifact files is kept, while a damaged artifact (STAKES-005) is still removed.
+    """
+    from recall.generation_rescue import erase_forgotten
+
+    unrelated, damaged = tmp_path / "gen_1", tmp_path / "gen_2"
+    unrelated.mkdir()
+    (unrelated / "views.json").write_text("{", encoding="utf-8")
+    (unrelated / "thesis.docx").write_bytes(b"not an artifact")
+    _publish(damaged, "cal_1")
+    (damaged / "views.json").write_text("{", encoding="utf-8")
+
+    _erased, removed = erase_forgotten(["gen_1", "gen_2"], [], ["forgotten.md"], env={ROOT_ENV: str(tmp_path)})
+
+    assert (unrelated / "thesis.docx").exists(), "a folder that is not an artifact was removed"
+    assert not damaged.exists() and removed == 1
+
+
+def test_an_unreadable_record_still_erases_under_the_configured_root(tmp_path: Path, monkeypatch) -> None:
+    """Review BUG-002: when the record could not be read, the configured root was dropped with it,
+    so a forget that always erased under RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT erased nothing.
+    Invariant: the configured root is returned, with the record flagged unread.
+    """
+    import recall.generations as generations
+    from recall.generation_rescue import forget_roots
+
+    def unreadable(*args: object, **kwargs: object) -> SimpleNamespace:
+        def fail() -> set[str]:
+            raise OSError("the database is unreachable")
+
+        return SimpleNamespace(rescue_roots=fail)
+
+    monkeypatch.setattr(generations, "GenerationManager", unreadable)
+
+    assert forget_roots("postgresql://x", "t", env={ROOT_ENV: str(tmp_path)}) == ([tmp_path], [], True)
+
+
+def test_a_recorded_root_left_empty_here_is_not_reported(forget_without_a_root, monkeypatch, tmp_path: Path) -> None:
+    """Review BUG-004: a recorded root whose view store was deleted, as the note advises, was
+    reported unreachable on every later forget, and an audit row cannot be retired. Invariant: a
+    recorded root that is a directory here without the view store holds nothing and is not named.
+    """
+    import recall.generations as generations
+
+    emptied = tmp_path / "atomic"
+    emptied.mkdir()
+    monkeypatch.setattr(generations, "GenerationManager", _manager({str(emptied)}, []))
+
+    result = forget_without_a_root._forget_memory_unlocked(
+        _generation_store([]), ["memo.md"], erase_memo_requests=False
+    )
+
+    assert "atomic rescue" not in result.message.lower(), result.message
+
+
+def test_a_root_whose_erasure_fails_does_not_stop_the_others(forget_without_a_root, monkeypatch, tmp_path: Path) -> None:
+    """Review BUG-003: one root's failure ended the erasure under every later root and replaced
+    the counts with a warning that named only the variable. Invariant: the other roots are erased
+    and the failing one is named.
+    """
+    import recall.generation_rescue as rescue
+    import recall.generations as generations
+    from recall.atomic_view_store import AtomicViewStore
+
+    roots = [tmp_path / "a-fails", tmp_path / "b-erased"]
+    for root in roots:
+        _publish(root / "gen_1", "cal_1")  # names a.md
+        with AtomicViewStore(root / "micro-views.sqlite") as views:
+            views.commit()
+    real = rescue.erase_forgotten
+
+    def erase(generation_ids, texts, sources, *, env):  # noqa: ANN001, ANN202
+        if env[ROOT_ENV] == str(roots[0]):
+            raise OSError("the matrix is held open")
+        return real(generation_ids, texts, sources, env=env)
+
+    monkeypatch.setattr(rescue, "erase_forgotten", erase)
+    monkeypatch.setattr(generations, "GenerationManager", _manager({str(root) for root in roots}, []))
+
+    result = forget_without_a_root._forget_memory_unlocked(
+        _generation_store([]), ["a.md"], erase_memo_requests=False
+    )
+
+    assert not (roots[1] / "gen_1").exists(), "the root after the failing one was not erased"
+    assert f"under {roots[0]} failed" in result.message, result.message
+
+
+@requires_db
+def test_a_postgres_forget_without_the_root_finds_it_in_the_audit_trail(rescue_tenant, tmp_path: Path, monkeypatch) -> None:  # noqa: F811
+    """Review TEST-001: the record's INSERT and SELECT against a real database. Build with the
+    root, forget with it unset; the artifact naming the source is removed.
+
+    Red proof: not established. It needs PostgreSQL, which runs in CI only while the test host is
+    frozen; the doubles above carry the proof for the forget's use of the record.
+    """
+    from recall.generation_rescue import build_artifact
+    from recall.generation_store import GenerationStore
+    from recall_mcp.lifecycle import forget_memory
+    from tests.test_generation_rescue import _certified_ready
+
+    tenant, manager = rescue_tenant
+    embedder = _CarryEmbedder()
+    generation_id = _certified_ready(manager, embedder)
+    build_artifact(TEST_DSN, tenant, generation_id, embedder, tmp_path)
+    manager.promote(generation_id, unsafe_development=True)
+    monkeypatch.delenv(ROOT_ENV, raising=False)
+
+    with GenerationStore(TEST_DSN, embedder.dim, tenant=tenant) as store:
+        forget_memory(store, [f"s3://approved/corpora/{tenant}/memo-0.md"])
+
+    assert not (tmp_path / generation_id).exists()
+
+
+def test_a_root_the_forget_may_not_read_is_reported_not_raised(tmp_path: Path, monkeypatch) -> None:
+    """Review NEW-001: Python before 3.14 raises PermissionError from `Path.is_dir`, and the forget
+    reads the roots before it deletes anything, so one unreadable root refused every forget of the
+    tenant. Invariant: such a root, recorded or configured, is reported unreachable.
+    """
+    import recall.generations as generations
+    from recall.generation_rescue import forget_roots
+
+    locked_recorded, locked_configured = tmp_path / "recorded", tmp_path / "configured"
+    real = Path.is_dir
+
+    def is_dir(self: Path) -> bool:
+        if self in (locked_recorded, locked_configured):
+            raise PermissionError(13, "Permission denied", str(self))
+        return real(self)
+
+    monkeypatch.setattr(Path, "is_dir", is_dir)
+    monkeypatch.setattr(generations, "GenerationManager", _manager({str(locked_recorded)}, []))
+
+    usable, unreachable, unread = forget_roots("postgresql://x", "t", env={ROOT_ENV: str(locked_configured)})
+
+    assert (usable, sorted(unreachable), unread) == ([], sorted([str(locked_recorded), str(locked_configured)]), False)
+
+
+def test_a_recorded_root_without_its_view_store_still_has_its_artifacts_erased(
+    forget_without_a_root, monkeypatch, tmp_path: Path
+) -> None:
+    """Review NEW-002: a recorded root whose view store was deleted was skipped although its
+    generation folders still held the forgotten chunks' vectors. Invariant: the artifact naming the
+    forgotten source is removed there.
+    """
+    import recall.generations as generations
+
+    root = tmp_path / "atomic"
+    _publish(root / "gen_1", "cal_1")  # names a.md; no micro-views.sqlite
+    monkeypatch.setattr(generations, "GenerationManager", _manager({str(root)}, []))
+
+    result = forget_without_a_root._forget_memory_unlocked(
+        _generation_store([]), ["a.md"], erase_memo_requests=False
+    )
+
+    assert not (root / "gen_1").exists(), result.message

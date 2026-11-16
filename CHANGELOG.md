@@ -26,9 +26,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   publish rebuilds it, reporting a failed rebuild with the command that retries it. New
   `recall generation rescue [generation]` builds one by hand, whatever the mode. A forget erases the
   forgotten text's views and every artifact naming it; gc removes the artifacts of what it collects.
-  A forget also removes an artifact whose `views.json` cannot be read, which can never serve, and
-  says so when RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT is not set where it runs, since it then erased
-  nothing the rescue keeps. A build overtaken by a newer calibration's publish refuses rather than
+  A forget also removes an artifact whose `views.json` cannot be read, which can never serve. Each
+  build records its root in the audit trail, so a forget run where
+  RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT is not set still erases under it, and names a recorded root
+  it cannot reach. A build overtaken by a newer calibration's publish refuses rather than
   replacing that calibration's artifact with its own.
 - The `fastembed` extra installs `numpy` and `threadpoolctl`, which the rescue needs.
 - `recall_remember`'s `supersedes` accepts another assistant's memo of the same index root by the

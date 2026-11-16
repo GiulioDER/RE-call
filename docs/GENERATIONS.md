@@ -132,8 +132,14 @@ every unscoped search on that generation refuses. Views already embedded are reu
 artifact already in force is reported and kept.
 
 `gc` removes the artifacts of the generations it collects, and a forget removes every artifact of
-the tenant's generations that names the forgotten source and erases its views, whenever
-`RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT` is set, whatever the mode.
+the tenant's generations that names the forgotten source and erases its views, whatever the mode.
+It does so under `RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT` when it is set, and under every root a build
+of the tenant recorded in the audit trail (event `atomic_rescue_built`), so a `recall forget` run
+outside the project directory, which does not load its `.env`, still erases them. A recorded root
+this process cannot reach (another host, a container, a folder it may not read) is named in the
+forget's result, since a re-run finds no rows to erase by. A recorded root that no longer exists
+anywhere is named on every forget, because nothing here can tell it from one on another host:
+create an empty folder at that path to retire it. An empty folder there is skipped.
 
 ## Retention and erasure
 
