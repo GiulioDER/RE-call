@@ -43,7 +43,11 @@ main { width:100%; max-width:1580px; margin-inline:auto; padding:28px clamp(20px
 .head p { margin:0; color:var(--ink-muted); max-width:80ch; }
 .card { background:linear-gradient(135deg,#261b2059,transparent 65%) var(--surface-1);
   border:1px solid var(--line); border-radius:8px; padding:16px 18px; margin:12px 0; min-width:0; }
- .claim .names em { font-style:normal; color:var(--ink-muted); font-weight:400; }
+.claim { display:grid; grid-template-columns:auto minmax(0,1fr) auto; gap:6px 16px; align-items:start; color:inherit; }
+a.claim:hover { text-decoration:none; border-color:var(--line-strong); background:var(--surface-2); }
+.claim .arrow { grid-row:span 2; align-self:center; font:20px var(--font-mono); color:var(--rust); }
+.claim .names { font-weight:560; }
+.claim .names em { font-style:normal; color:var(--ink-muted); font-weight:400; }
 .claim .quote { grid-column:2; color:var(--ink-muted); font-size:13.5px; }
 .claim .quote s { color:var(--rust); text-decoration-thickness:1px; } .claim .go { grid-row:span 2; align-self:center; color:var(--signal); font:12px var(--font-mono); }
 .tag { font:500 10.5px/1 var(--font-mono); letter-spacing:.1em; text-transform:uppercase; border:1px solid var(--line-strong); border-radius:999px; padding:4px 8px; color:var(--ink-soft); }

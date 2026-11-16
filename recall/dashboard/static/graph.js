@@ -239,6 +239,7 @@
     if (hops > 0 && selected) fitDistance();
     updateCounts();
     renderLegend();
+    needsDraw = true;
   }
 
   function tick() {
@@ -285,6 +286,10 @@
     alpha *= 0.985;
   }
 
+  function clampZoom(value) {
+    return Math.max(0.1, Math.min(14, value));
+  }
+
   function fitDistance() {
     if (!active.length) return;
     // Orbit the middle of the memory, not the origin, and fit its body rather than its strays:
@@ -296,7 +301,7 @@
     const r = ds[Math.floor(ds.length * 0.96)] || 200;
     const view = Math.min(canvas.clientWidth, canvas.clientHeight) || 600;
     cam.dist = Math.max(160, r * 2.6);
-    cam.zoom = Math.max(0.1, (view * 0.38) / r);
+    cam.zoom = clampZoom((view * 0.38) / r);
     panX = panY = 0;
   }
 
@@ -340,7 +345,7 @@
     const width = Math.round(w * ratio), height = Math.round(h * ratio);
     if (canvas.width === width && canvas.height === height && viewWidth === w && viewHeight === h) return;
     if (viewWidth && selected) {
-      cam.zoom *= Math.min(w, h) / Math.min(viewWidth, viewHeight);
+      cam.zoom = clampZoom(cam.zoom * Math.min(w, h) / Math.min(viewWidth, viewHeight));
     }
     viewWidth = w;
     viewHeight = h;
@@ -453,7 +458,7 @@
       const f = fog(n);
       const state = stateAt(n);
       const superseded = state === "superseded";
-      const colour = superseded ? palette.superseded : colourOf(n, state);
+      const colour = colourOf(n, state);
       if (lit && !superseded && state !== "expired" && (r > 2.5 || n === selected)) {
         const pending = state === "pending" && lensEl.value === "state";
         const breathe = pending && moving() ? 3.5 + 0.6 * Math.sin(t * 2.2 + n.phase) : 3.5;
@@ -463,9 +468,15 @@
       ctx.beginPath();
       ctx.arc(n.sx, n.sy, r, 0, Math.PI * 2);
       if (superseded) {
-        ctx.strokeStyle = colour;
+        ctx.strokeStyle = palette.superseded;
         ctx.lineWidth = 1.8;
         ctx.stroke();
+        if (lensEl.value !== "state") {
+          ctx.beginPath();
+          ctx.arc(n.sx, n.sy, r + 3, Math.PI * 1.1, Math.PI * 1.9);
+          ctx.strokeStyle = colour;
+          ctx.stroke();
+        }
       } else {
         ctx.fillStyle = colour;
         ctx.fill();
@@ -480,7 +491,8 @@
       }
     }
     ctx.globalAlpha = 1;
-    drawLabels(w, h, focus);
+    // Hover can change emphasis without moving the label that the pointer is over.
+    drawLabels(w, h, hover && !selected ? matches : focus);
   }
 
   function drawLabels(width, height, focus) {
@@ -488,14 +500,19 @@
     ctx.font = '500 12px "Geist Mono", monospace';
     ctx.textBaseline = "middle";
     ctx.lineJoin = "round";
-    const priority = (n) => n === hover ? 5 : n === selected ? 4 : matches?.has(n.id) ? 3 :
-      stateAt(n) === "superseded" ? 2 : 1;
-    const candidates = projected.filter((n) => n.title && (!focus || focus.has(n.id) || n === hover)
-      && n.sx > 0 && n.sx < width && n.sy > 0 && n.sy < height);
-    candidates.sort((a, b) => priority(b) - priority(a) || a.depth - b.depth);
     const limit = Math.min(18, Math.max(6, Math.floor(width * height / 17000)));
-    const foreground = candidates.slice(0, limit * 4);
-    for (const n of foreground) {
+    const capacity = limit * 4;
+    const buckets = [[], [], [], []];
+    // Projection already orders nodes by depth. Keep the nearest candidates in each priority.
+    for (let i = projected.length - 1; i >= 0; i--) {
+      const n = projected[i];
+      if (!n.title || (focus && !focus.has(n.id)) || n.sx <= 0 || n.sx >= width || n.sy <= 0 || n.sy >= height) continue;
+      const superseded = stateAt(n) === "superseded";
+      const priority = n === selected ? 3 : matches?.has(n.id) ? 2 : superseded ? 1 : 0;
+      if (buckets[priority].length < capacity) buckets[priority].push({ n, superseded });
+    }
+    const foreground = buckets.reverse().flat().slice(0, capacity);
+    for (const { n, superseded } of foreground) {
       if (labelBoxes.length >= limit) break;
       const chars = Math.max(16, Math.min(31, Math.floor(width / 15)));
       const text = n.title.length > chars ? n.title.slice(0, chars - 1).trimEnd() + "…" : n.title;
@@ -507,11 +524,11 @@
         if (x < 5 || y < 5 || x + w > width - 5 || y + h > height - 5) continue;
         if (x + w > width - 130 && y < 52) continue;
         if (labelBoxes.some((b) => x < b.x + b.w + 3 && x + w + 3 > b.x && y < b.y + b.h && y + h > b.y)) continue;
-        if (foreground.some((other) => other.sx >= x - 3 && other.sx <= x + w + 3
+        if (foreground.some(({ n: other }) => other.sx >= x - 3 && other.sx <= x + w + 3
           && other.sy >= y - 3 && other.sy <= y + h + 3)) continue;
         ctx.strokeStyle = palette.ground;
         ctx.lineWidth = 4;
-        ctx.fillStyle = stateAt(n) === "superseded" ? palette.superseded : palette.ink;
+        ctx.fillStyle = superseded ? palette.superseded : palette.ink;
         ctx.strokeText(text, x + 4, y + h / 2);
         ctx.fillText(text, x + 4, y + h / 2);
         labelBoxes.push({ x, y, w, h, n });
@@ -552,7 +569,7 @@
     }
     if (moving()) {
       // Drift slowly while nobody is steering; stop the moment someone is.
-      if (!drag && time - lastInteraction > 2500) cam.yaw += 0.0011;
+      if (!drag && !hover && time - lastInteraction > 2500) cam.yaw += 0.0011;
       needsDraw = true;
     }
     if (needsDraw) {
@@ -602,7 +619,7 @@
 
   function zoom(factor) {
     if (!canInteract()) return;
-    cam.zoom = Math.max(0.1, Math.min(14, cam.zoom * factor));
+    cam.zoom = clampZoom(cam.zoom * factor);
     steer();
   }
 
@@ -745,7 +762,7 @@
     }
     const n = selected;
     const head = el("div", "panel-head");
-    head.append(el("span", "state state-" + stateAt(n), STATE_LABEL[stateAt(n)]));
+    head.append(el("span", "state"));
     if (n.type) head.append(el("span", "chip", n.type));
     const close = el("button", "close", "×");
     close.type = "button";
@@ -802,7 +819,8 @@
       const list = el("ul");
       for (const other of items.slice(0, 40)) {
         const li = el("li");
-        const btn = el("button", "linkbtn state-dot-" + stateAt(other), other.title);
+        const btn = el("button", "linkbtn", other.title);
+        btn.dataset.memo = other.id;
         btn.type = "button";
         btn.addEventListener("click", (ev) => {
           if (!active.includes(other)) { toggles.hubs.checked = true; rebuild(); }
@@ -816,6 +834,17 @@
       parts.push(section);
     }
     panel.replaceChildren(...parts);
+    updatePanelStates();
+  }
+
+  function updatePanelStates() {
+    const state = stateAt(selected);
+    const badge = panel.querySelector(".state");
+    badge.className = "state state-" + state;
+    badge.textContent = STATE_LABEL[state];
+    for (const button of panel.querySelectorAll(".linkbtn")) {
+      button.className = "linkbtn state-dot-" + stateAt(byId.get(button.dataset.memo));
+    }
   }
 
   function updateCounts() {
@@ -907,7 +936,8 @@
     timeLabel.textContent = asOf || "today";
     rebuild();
     if (selected) {
-      if (active.includes(selected)) renderPanel();
+      if (active.includes(selected)) updatePanelStates();
+      else if (panel.contains(document.activeElement)) closeDetails();
       else select(null);
     }
     needsDraw = true;
