@@ -196,3 +196,85 @@ def test_a_memo_only_an_index_page_links_to_is_isolated(tmp_path: Path) -> None:
     assert by_id["m0"+".md"]["isolated"] is False and by_id["m1.md"]["isolated"] is False
     assert by_id["m2.md"]["isolated"] is True
     assert by_id["index.md"]["isolated"] is False
+
+
+@pytest.mark.parametrize("case", ["modified keyboard", "empty wheel", "hover frames"])
+def test_graph_input_and_frame_regressions(case: str) -> None:
+    """Execute the shipped handlers and frame loop with controlled graph state.
+
+    Red proof at ac67de930, each parameter failed its intended Node assertion.
+    Modified Home was consumed, empty wheel scrolling was trapped, and a stable
+    hovered graph produced 30 draws. The same nodes pass after FIX-002 to FIX-004.
+    """
+    import shutil
+    import subprocess
+
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node.js is required to execute graph renderer regressions")
+    script = r"""
+
+const assert = require('node:assert/strict');
+const vm = require('node:vm');
+const fs = require('node:fs');
+const src = fs.readFileSync(process.argv[1], 'utf8');
+const pick = (start, end) => {
+  const i = src.indexOf(start);
+  assert(i >= 0 && src.indexOf(end, i) > i);
+  return src.slice(i, src.indexOf(end, i));
+};
+const handlers = {};
+const input = {
+  canvas: {addEventListener(name, callback) {handlers[name] = callback;}},
+  canInteract: () => true, active: [{}], panX: 0, panY: 0, steer() {},
+  zoom() {}, fits: 0, fitGraph: () => {input.fits++;},
+};
+vm.runInNewContext(pick('  canvas.addEventListener("wheel"', '  document.getElementById("zoom-in")'), input);
+function prevented(name, props) {
+  let result = false;
+  handlers[name]({...props, preventDefault() {result = true;}});
+  return result;
+}
+function rendered(overrides) {
+  const ctx = {
+    alpha:0, selected:null, flight:null, cameraAdjusted:false, drag:null, hover:{},
+    lastInteraction:0, cam:{yaw:0}, activeEdges:[], active:[{state:"current"}],
+    stateAt:node=>node.state, lensEl:{value:"state"}, moving:()=>true,
+    draw:()=>{ctx.draws++;}, draws:0, requestAnimationFrame() {}, ...overrides,
+  };
+  vm.runInNewContext(pick('  let needsDraw = true;', '  function flyTo(')
+    + '\nneedsDraw=false; for (let i = 0; i < 30; i++) frameLoop(3000 + i*16);', ctx);
+  return ctx.draws;
+}
+let failures = 0;
+function check(name, fn) {
+  if (name !== process.argv[2]) return;
+  try {fn(); console.log(name + ': passed');}
+  catch (error) {failures++; console.error(name + ': ' + error.message);}
+}
+check('modified keyboard',()=>{
+  assert(prevented('keydown',{key:'Home'}),'bare Home did not fit');
+  assert.equal(input.fits,1);
+  for(const key of ['ctrlKey','metaKey','altKey']) assert(!prevented('keydown',{key:'Home',[key]:true}),key+'+Home was consumed');
+  assert.equal(input.fits,1);
+});
+check('empty wheel',()=>{
+  assert(prevented('wheel',{deltaY:30}),'a populated graph did not zoom');
+  input.active = [];
+  assert(!prevented('wheel',{deltaY:30}),'the empty canvas trapped wheel scrolling');
+});
+check('hover frames',()=>{
+  assert.equal(rendered({hover:null}),30,'camera drift must redraw');
+  assert.equal(rendered({activeEdges:[{kind:'supersedes'}]}),30,'supersession pulses must redraw');
+  assert.equal(rendered({activeEdges:[{kind:'pending'}]}),30,'pending edge dashes must redraw');
+  assert.equal(rendered({active:[{state:'pending'}]}),30,'pending nodes must glow');
+  assert.equal(rendered({}),0,'steady hovered graph redrew');
+});
+process.exitCode = failures ? 1 : 0;
+
+"""
+    result = subprocess.run(
+        [node, "-e", script, str(STATIC / "graph.js"), case],
+        capture_output=True, text=True, timeout=30,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr

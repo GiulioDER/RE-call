@@ -569,8 +569,11 @@
     }
     if (moving()) {
       // Drift slowly while nobody is steering; stop the moment someone is.
-      if (!drag && !hover && time - lastInteraction > 2500) cam.yaw += 0.0011;
-      needsDraw = true;
+      const drifting = !drag && !hover && time - lastInteraction > 2500;
+      if (drifting) cam.yaw += 0.0011;
+      needsDraw ||= drifting
+        || activeEdges.some((e) => e.kind === "pending" || e.kind === "supersedes")
+        || (lensEl.value === "state" && active.some((n) => stateAt(n) === "pending"));
     }
     if (needsDraw) {
       needsDraw = false;
@@ -706,13 +709,13 @@
   });
   canvas.addEventListener("dblclick", fitGraph);
   canvas.addEventListener("wheel", (ev) => {
-    if (!canInteract()) return;
+    if (!canInteract() || !active.length) return;
     ev.preventDefault();
     zoom(Math.exp(-ev.deltaY * 0.0015));
   }, { passive: false });
   const panKeys = { ArrowLeft: [-28, 0], ArrowRight: [28, 0], ArrowUp: [0, -28], ArrowDown: [0, 28] };
   canvas.addEventListener("keydown", (ev) => {
-    if (!canInteract()) return;
+    if (!canInteract() || ev.ctrlKey || ev.metaKey || ev.altKey) return;
     if (Object.hasOwn(panKeys, ev.key)) {
       const [x, y] = panKeys[ev.key];
       panX += x;

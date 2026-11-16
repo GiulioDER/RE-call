@@ -650,3 +650,53 @@ def test_every_corpus_query_runs_under_the_tenant_setting() -> None:
         assert db.statements and db.statements[0] == ("select set_config(%s, %s, false)", (TENANT_GUC, "acme")), (
             "a corpus query ran before the tenant was set"
         )
+
+
+def test_lite_graph_does_not_return_a_forgotten_source(tmp_path: Path) -> None:
+    """The same app must stop plotting a deleted source immediately after erasure.
+
+    Red proof at ac67de930: DashboardApp._graph_json reused the warm response.
+    """
+    import json
+
+    from recall.lite import LiteStore
+    from recall.types import Chunk
+
+    with LiteStore(tmp_path / "lite.db", dim=2) as store:
+        store.upsert([Chunk("file-0", "forgotten.md", "Synthetic note", {"file": "forgotten.md"})], [[1.0, 0.0]])
+        app = DashboardApp(tmp_path, port=8765, token="tok", db=DashboardDB("sqlite:///" + store.path.as_posix()))
+        url = "/api/graph.json?corpus=" + store.tenant
+        first = app.handle("GET", url, SIGNED)
+        assert first.status == 200
+        assert [node["id"] for node in json.loads(first.body)["nodes"]] == ["forgotten.md"]
+        with store.erasing():
+            store.delete_sources(["forgotten.md"])
+        after = app.handle("GET", url, SIGNED)
+        assert after.status == 200
+        assert json.loads(after.body)["nodes"] == [], "the warm graph kept a forgotten source"
+
+
+def test_lite_graph_switch_opens_the_configured_tenant(tmp_path: Path) -> None:
+    """The emitted link must select a valid Lite tenant containing a slash.
+
+    Red proof at ac67de930: DashboardApp._corpus_param selected the memo graph.
+    """
+    import json
+
+    from recall.dashboard.lite_db import file_tenant
+    from recall.lite import LiteStore
+    from recall.types import Chunk
+
+    with LiteStore(tmp_path / "lite.db", dim=2, tenant="team/core") as store:
+        store.upsert([Chunk("file-0", "audit.md", "Synthetic note", {"file": "audit.md"})], [[1.0, 0.0]])
+        dsn = "sqlite:///" + store.path.as_posix()
+        app = DashboardApp(tmp_path, port=8765, token="tok", db=DashboardDB(dsn), default_tenant=file_tenant(dsn))
+        link = "/graph?corpus=team%2Fcore"
+        assert f"href='{link}'".encode() in app.handle("GET", "/graph", SIGNED).body
+        page = app.handle("GET", link, SIGNED)
+        assert b"data-corpus='team/core'" in page.body, "the Lite switch opened the memo-files graph"
+        graph = app.handle("GET", "/api" + link.replace("/graph?", "/graph.json?"), SIGNED)
+        assert graph.status == 200
+        payload = json.loads(graph.body)
+        assert payload["tenant"] == store.tenant
+        assert [node["id"] for node in payload["nodes"]] == ["audit.md"]
