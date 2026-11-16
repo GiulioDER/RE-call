@@ -5,7 +5,8 @@ a generation without its artifact refuses every unscoped search (`recall.trust`)
 that makes a generation serve must build first (`recall.generation_rescue`).
 
 Red proofs (RP-n below), each a deliberate mutation of the production line named, run against the
-test named, then reverted. The DB tests ran red in CI on a DO NOT MERGE commit; see the PR.
+test named, then reverted. The DB tests ran red in CI on DO NOT MERGE commits: RP-11, RP-13 and
+RP-14 on 629586d87, RP-12 alone on da0392051 (with RP-11 beside it, RP-12 failed for RP-11's reason).
 """
 
 from __future__ import annotations
@@ -482,8 +483,8 @@ def _search(tenant: str, embedder, root: Path):
 def test_a_generation_built_before_promotion_serves_under_an_active_rescue(rescue_tenant, tmp_path: Path) -> None:
     """The end-to-end claim: build, promote, and the active search is served rather than refused.
 
-    RP-11 (CI): `ensure_for_promotion` returning None before `build_artifact` made this fail at the
-    search, with `AtomicRescueArtifactError` on the missing manifest.
+    RP-11 (CI, commit 629586d87): `ensure_for_promotion` returning None before `build_artifact`
+    made this fail at `report is not None`: nothing was built for the generation it then promoted.
     """
     from recall.generation_rescue import ensure_for_promotion
     from tests.test_calibration_carry_forward import _CarryEmbedder
@@ -508,8 +509,9 @@ def test_a_generation_built_before_promotion_serves_under_an_active_rescue(rescu
 def test_a_recalibrated_generation_gets_a_new_artifact(rescue_tenant, tmp_path: Path) -> None:
     """An artifact names its calibration, so a new one must replace it or every search refuses.
 
-    RP-12 (CI): `build_artifact` returning "in force" whenever the manifest file exists, without the
-    lineage check, made this fail at the search with `AtomicRescueLineageError` (calibration_id).
+    RP-12 (CI, commit da0392051): `build_artifact` returning "in force" whenever the manifest file
+    exists, without the lineage check, made this fail at the report: the artifact of the replaced
+    calibration was kept as "in force", and the search behind it would refuse on calibration_id.
     """
     from recall.calibration_v2 import CalibrationRepository
     from recall.generation_rescue import after_publish, build_artifact
