@@ -34,6 +34,8 @@ from recall.security_policy import AccessContext, SourceSecurityPolicy
 from recall.supersession import ReferenceIndex, reference_stem_key, stored_supersession_graph
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from recall.control_plane import ControlPlane
     from recall.current_state import CurrentStateProjection
     from recall.store import PgVectorStore
@@ -464,11 +466,24 @@ def _forget_memory_unlocked(
     cached_digests = _embedded_text_digests((store, shadow_store), to_delete)
     from recall.generation_store import GenerationStore
     from recall.lite import LiteStore
+    from recall_mcp.settings import runtime_environment
 
+    # A PostgreSQL rescue keeps nothing outside its roots: the configured one and those its builds
+    # recorded, so with neither there is nothing to read or list for it (CCA PERF-005, SEC-003); a
+    # lite store falls back to the root setup chose.
+    rescue_roots: list[Path] = []
+    unreached_roots: list[str] = []
+    roots_unread = False
+    if isinstance(store, GenerationStore) and to_delete:
+        from recall.generation_rescue import forget_roots
+
+        rescue_roots, unreached_roots, roots_unread = forget_roots(
+            store._dsn, store.tenant, env=runtime_environment()
+        )
     # The same read for the atomic rescue, whose view store is keyed by chunk text.
     rescue_texts: list[str] = (
         [text for text, _ in store.texts_for_sources(to_delete)]
-        if isinstance(store, (LiteStore, GenerationStore)) and to_delete
+        if (isinstance(store, LiteStore) or rescue_roots) and to_delete
         else []
     )
     if erase_memo_requests:
@@ -527,9 +542,9 @@ def _forget_memory_unlocked(
         )
         cache_entries_erased = -1
     rescue_views_erased = rescue_artifacts_removed = 0
+    failed_roots: list[str] = []
     if isinstance(store, LiteStore) and chunks_removed:
         from recall.lite.atomic import erase_forgotten
-        from recall_mcp.settings import runtime_environment
 
         try:
             rescue_views_erased, rescue_artifacts_removed = erase_forgotten(
@@ -540,10 +555,10 @@ def _forget_memory_unlocked(
                 "atomic rescue erasure failed after chunk deletion for tenant %r", store.tenant
             )
             rescue_views_erased = -1
-    elif isinstance(store, GenerationStore) and chunks_removed:
+    elif isinstance(store, GenerationStore) and chunks_removed and rescue_roots:
         from recall.generation_rescue import erase_forgotten as erase_generation_rescue
         from recall.generations import GenerationManager
-        from recall_mcp.settings import runtime_environment
+        from recall.lite.atomic import ROOT_ENV
 
         try:
             manager = GenerationManager(store._dsn, store.tenant)
@@ -552,14 +567,23 @@ def _forget_memory_unlocked(
                 {record.generation_id for record in manager.list_generations()}
                 | manager.collected_generation_ids()
             )
-            rescue_views_erased, rescue_artifacts_removed = erase_generation_rescue(
-                generations, rescue_texts, to_delete, env=runtime_environment()
-            )
         except Exception:  # BROAD-CATCH: error-translation
             _log.exception(
                 "atomic rescue erasure failed after chunk deletion for tenant %r", store.tenant
             )
             rescue_views_erased = -1
+        else:
+            for root in rescue_roots:
+                try:
+                    erased, removed = erase_generation_rescue(
+                        generations, rescue_texts, to_delete, env={ROOT_ENV: str(root)}
+                    )
+                except Exception:  # BROAD-CATCH: error-translation  # the other roots are still erased; this one is named
+                    _log.exception("atomic rescue erasure under %s failed for tenant %r", root, store.tenant)
+                    failed_roots.append(str(root))
+                    continue
+                rescue_views_erased += erased
+                rescue_artifacts_removed += removed
     memo_requests_erased = 0
     if erase_memo_requests:
         from recall.lite.assistant_memos import forget_memo_requests
@@ -647,6 +671,28 @@ def _forget_memory_unlocked(
         message += (
             f" Erased {rescue_views_erased} atomic rescue view set(s) and removed "
             f"{rescue_artifacts_removed} rescue artifact(s) built with the deleted text."
+        )
+    if failed_roots:
+        message += (
+            f" WARNING: the chunk deletion succeeded but erasing them from the atomic rescue under "
+            f"{', '.join(failed_roots)} failed, so its micro-views.sqlite or a generation folder "
+            "there still holds their vectors, and a re-run finds no rows to erase them by; delete "
+            "them there, which costs only a rebuild."
+        )
+    if isinstance(store, GenerationStore) and chunks_removed and roots_unread:
+        message += (
+            " WARNING: the record of where this tenant's atomic rescue was built could not be read, "
+            "so it may still hold the deleted text's vectors in micro-views.sqlite and the generation "
+            "folders under its root; delete them there, which costs only a rebuild."
+        )
+    if isinstance(store, GenerationStore) and chunks_removed and unreached_roots:
+        # A re-run finds no rows to erase them by, so the operator is told where they are.
+        message += (
+            f" NOTE: an atomic rescue of this tenant was built under {', '.join(unreached_roots)}, "
+            "which this process cannot reach, so nothing the rescue keeps there was erased: its "
+            "micro-views.sqlite and the generation folders under it still hold the deleted text's "
+            "vectors; delete them there, which costs only a rebuild. A root gone for good is named "
+            "here until an empty folder exists at that path."
         )
     if memo_requests_erased < 0:
         message += (

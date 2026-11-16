@@ -2503,6 +2503,28 @@ class GenerationManager:
         with self._connect() as conn:
             return self._collected_ids(conn)
 
+    def record_rescue_root(self, generation_id: str, root: str) -> None:
+        """Record that an atomic rescue artifact of `generation_id` is built under `root`.
+
+        So a forget run where RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT is not set still finds what the
+        rescue keeps (`recall.generation_rescue.forget_roots`).
+        """
+        with self._connect() as conn:
+            self._audit(conn, "atomic_rescue_built", generation_id=generation_id, payload={"root": root})
+
+    def rescue_roots(self) -> set[str]:
+        """Every root an atomic rescue of this tenant was built under, read from the audit trail."""
+        with self._connect() as conn:
+            return {
+                str(root)
+                for (root,) in conn.execute(
+                    "SELECT DISTINCT payload->>'root' FROM recall_audit_events "
+                    "WHERE tenant_id = %s AND event_type = 'atomic_rescue_built'",
+                    (self.tenant_id,),
+                ).fetchall()
+                if root
+            }
+
     def _collected_ids(self, conn: psycopg.Connection) -> set[str]:
         return {
             str(generation_id)

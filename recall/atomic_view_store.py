@@ -235,7 +235,10 @@ def assemble(
             )
     if not rows:
         raise RuntimeError("no parent chunk yields a micro view")
-    full: Any = np.concatenate(rows, axis=0).astype(np.float32)
+    # The rows are float32 already (`get`), so this is the one copy; dropping them as soon as it
+    # exists keeps the peak at about two matrices rather than three (CCA PERF-004).
+    full: Any = np.concatenate(rows, axis=0, dtype=np.float32)
+    rows.clear()
     norms = np.linalg.norm(full, axis=1, keepdims=True)
     if not np.all(norms > 0):
         raise RuntimeError("a view vector has zero norm")

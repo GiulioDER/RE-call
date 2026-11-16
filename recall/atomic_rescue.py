@@ -19,13 +19,13 @@ import secrets
 import shutil
 import threading
 import time
-from typing import Any, Callable, Mapping, Sequence
+from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from recall.atomic_write import _flush_directory
 from recall.embeddings import Embedder, embedding_profile, embedding_profile_id
 from recall.lineage import is_sha256_hex
 from recall.errors import RecallError
-from recall.types import ScoredChunk, TrustedResult
+from recall.types import ScoredChunk, TrustedResult, metadata_ordinal
 
 
 ATOMIC_RESCUE_SCHEMA_VERSION = 1
@@ -1121,6 +1121,74 @@ def _write_durable(path: Path, text: str) -> None:
         os.fsync(handle.fileno())
 
 
+def require_atomic_dependency() -> None:
+    """Refuse a build without `threadpoolctl`: the loader needs it too, so without it every active
+    search would refuse. Checked before any view is embedded."""
+    try:
+        import threadpoolctl  # noqa: F401
+    except ImportError as exc:
+        raise AtomicRescueArtifactError(
+            'atomic rescue requires the atomic optional dependency: pip install "recall-rag[atomic]"'
+        ) from exc
+
+
+def rescue_parents(chunks: Iterable[Any]) -> list[tuple[str, str, int, str]]:
+    """The parents an artifact is assembled from, ``(chunk id, source, ordinal, text)`` in source
+    and ordinal order; refuses a chunk without an integer `ord`. Shared by both builders."""
+    parents: list[tuple[str, str, int, str]] = []
+    for chunk in chunks:
+        ordinal = metadata_ordinal(chunk.metadata)
+        if ordinal is None:
+            raise AtomicRescueArtifactError(f"chunk {chunk.id} has no integer ord, so it cannot be a rescue parent")
+        parents.append((chunk.id, chunk.source, ordinal, chunk.text))
+    parents.sort(key=lambda item: (item[1], item[2]))
+    return parents
+
+
+#: The files `write_atomic_rescue_artifact` publishes in an artifact's directory.
+_ARTIFACT_FILES = frozenset({"manifest.json", "views.json", "matrix.npy"})
+
+
+def artifact_names_any(directory: Path, sources: set[str]) -> bool:
+    """Whether the artifact in `directory` names one of `sources` in its `views.json`.
+
+    True as well when its `views.json` cannot be read and the directory holds nothing but artifact
+    files: such an artifact can never serve, since the loader verifies it, and it may still hold
+    the matrix of the forgotten chunks, as a removal Windows left half done does (CCA STAKES-005).
+    Anything else in it means it is not an artifact, so a forged root or generation id cannot make
+    a forget remove an unrelated directory (CCA SEC-002).
+    """
+    if not directory.is_dir():
+        return False
+    try:
+        views = json.loads((directory / "views.json").read_text(encoding="utf-8"))["views"]
+        return any(isinstance(view, dict) and view.get("source") in sources for view in views)
+    except (OSError, ValueError, KeyError, TypeError):
+        try:
+            names = {entry.name for entry in directory.iterdir()}
+        except OSError:
+            return False
+        return bool(names) and names <= _ARTIFACT_FILES
+
+
+def remove_artifact_directories(directories: Sequence[Path], root: Path) -> int:
+    """Remove the artifact `directories` that exist, returning how many; raises when one is left,
+    which happens on Windows while a process has its matrix open."""
+    doomed = [entry for entry in directories if entry.is_dir()]
+    if doomed:
+        # This process's cache maps the matrix it last loaded, and Windows refuses to delete it.
+        clear_atomic_rescue_artifact_cache()
+    for entry in doomed:
+        shutil.rmtree(entry, ignore_errors=True)
+    left = [entry.name for entry in doomed if entry.exists()]
+    if left:
+        raise AtomicRescueArtifactError(
+            f"atomic rescue artifact(s) {', '.join(left)} under {root} could not be removed while a "
+            "process has their matrix open"
+        )
+    return len(doomed)
+
+
 __all__ = [
     "ATOMIC_RESCUE_PLACEMENTS",
     "ATOMIC_RESCUE_SCHEMA_VERSION",
@@ -1131,6 +1199,7 @@ __all__ = [
     "AtomicRescueSelectionError",
     "AtomicRescueView",
     "GatedAtomicRescueSelection",
+    "artifact_names_any",
     "clear_atomic_rescue_artifact_cache",
     "atomic_rescue_expectation_parity",
     "atomic_rescue_reference_parity",
@@ -1141,6 +1210,9 @@ __all__ = [
     "load_atomic_rescue_artifact",
     "place_atomic_selection_dense",
     "place_atomic_selection_fused",
+    "remove_artifact_directories",
+    "require_atomic_dependency",
+    "rescue_parents",
     "resolve_atomic_rescue_manifest",
     "select_atomic_rescue",
     "select_gated_atomic_rescue",

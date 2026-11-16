@@ -253,10 +253,10 @@ store built them: delete them by hand once every store using the root has built 
 
 With the rescue on, every write that keeps a calibration in force (a refresh, `recall index`,
 `recall_index`, a background refit landing) builds an artifact for the memory and calibration then
-in force, under the root, and the refresh report prints an `atomic` line. A refresh of memos that
-have not changed does nothing, so on a store that already exists, run `recall lite refresh --force`
-(or `recall index`) once after setting the variables; until then every search with the rescue on
-fails on the missing artifact. Nothing is built until the store has a certified calibration, and
+in force, under the root, and the refresh report prints an `atomic` line. On a store that already
+exists, the next refresh run with the variables set builds the artifact even when no memo changed,
+and the MCP server starts that refresh at its next check; until it ends every search with the
+rescue on fails on the missing artifact. Nothing is built until the store has a certified calibration, and
 until then every search with the rescue on refuses, in development trust mode too, where search
 would otherwise answer uncalibrated. The views of each chunk text are kept in
 `micro-views.sqlite` under the root, so a later build embeds only the views of new or edited

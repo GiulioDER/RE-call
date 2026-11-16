@@ -43,6 +43,7 @@ class _Corpus:
             for index, (source, text) in enumerate(sorted(_TEXTS.items()))
         ]
         self.fingerprint = "corpus-1"
+        self.recorded: list[tuple[str, str]] = []  # (generation, root) a build recorded
 
     def forget(self, source: str) -> None:
         self.chunks = [chunk for chunk in self.chunks if chunk.source != source]
@@ -53,6 +54,7 @@ class _Corpus:
 def corpus(monkeypatch) -> _Corpus:
     import recall.calibration_v2 as calibration
     import recall.generation_store as generation_store
+    import recall.generations as generations
     from recall.calibration_v2 import CalibrationStatus
 
     db = _Corpus()
@@ -96,7 +98,15 @@ def corpus(monkeypatch) -> _Corpus:
             )
 
     monkeypatch.setattr(generation_store, "GenerationStore", _Store)
+    class _Manager:
+        def __init__(self, dsn: str, tenant: str, **_: object) -> None:
+            pass
+
+        def record_rescue_root(self, generation_id: str, root: str) -> None:
+            db.recorded.append((generation_id, root))
+
     monkeypatch.setattr(calibration, "CalibrationRepository", _Repository)
+    monkeypatch.setattr(generations, "GenerationManager", _Manager)
     db.repository = _Repository  # type: ignore[attr-defined]
     clear_atomic_rescue_artifact_cache()
     yield db
