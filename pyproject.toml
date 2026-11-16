@@ -265,6 +265,10 @@ desktop = [
     # import name; the metapackage also installs PySide6-Addons, which nothing here imports.
     "PySide6-Essentials>=6.7", "keyring>=25", "mcp~=2.2.0", "psycopg-pool>=3.2", "fastembed>=0.9.1,<1",
     "onnxruntime>=1.17,<2", "tokenizers>=0.13,<1", "pillow>=13",
+    # The `atomic` extra's two packages (owner decision 2026-11-16, CCA DEP-001), as in `fastembed`:
+    # without them the rescue cannot be turned on in this environment at all. They do not turn it
+    # on by themselves: beside the Docker stack the wizard keeps it off (`recall.wizard.headless`).
+    "numpy>=1.26", "threadpoolctl>=3.1",
 ]
 
 # Declared LAST among the `[project]` sub-tables: every bare key above (`dependencies`,
