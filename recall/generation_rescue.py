@@ -157,12 +157,8 @@ def build_artifact(dsn: str, tenant: str, generation_id: str, embedder: Embedder
         "corpus_fingerprint": binding.get("corpus_fingerprint"),
     }
     manifest = resolve_atomic_rescue_manifest(root, generation_id)
-    if manifest.is_file():
-        try:
-            load_atomic_rescue_artifact(manifest).assert_lineage(**lineage, embedder=embedder)
-            return f"in force for {generation_id}"
-        except AtomicRescueArtifactError:
-            pass  # another calibration's, or damaged: replaced below
+    if _serves(manifest, lineage, embedder):
+        return f"in force for {generation_id}"
     root.mkdir(parents=True, exist_ok=True)
     # The root holds view vectors of the corpus, like the `.recall` directory.
     write_ignore(root)
@@ -171,8 +167,13 @@ def build_artifact(dsn: str, tenant: str, generation_id: str, embedder: Embedder
         matrix, metadata, counts = assemble(
             parents, views, profile, int(embedder.dim), lambda groups: embed_document_groups(embedder, groups)
         )
+    if _serves(manifest, lineage, embedder):
+        # A concurrent build of this generation published while this one assembled: removing its
+        # artifact would leave a window with none, or on Windows a half-removed one.
+        return f"in force for {generation_id}"
     if manifest.parent.exists():
-        # This process's cache maps the matrix it last loaded, and Windows refuses to delete it.
+        # Another calibration's, or damaged. This process's cache maps the matrix it last loaded,
+        # and Windows refuses to delete it.
         clear_atomic_rescue_artifact_cache()
         shutil.rmtree(manifest.parent, ignore_errors=True)
         if manifest.parent.exists():
@@ -204,6 +205,17 @@ def build_artifact(dsn: str, tenant: str, generation_id: str, embedder: Embedder
         f"built for {generation_id}: {counts['views']} view(s) of {counts['parents']} chunk(s), "
         f"{counts['embedded_views']} newly embedded"
     )
+
+
+def _serves(manifest: Path, lineage: Mapping[str, str | None], embedder: Embedder) -> bool:
+    """Whether `manifest` is an artifact with exactly this lineage, verified by the serving loader."""
+    if not manifest.is_file():
+        return False
+    try:
+        load_atomic_rescue_artifact(manifest).assert_lineage(**lineage, embedder=embedder)
+    except AtomicRescueArtifactError:
+        return False
+    return True
 
 
 def _root(env: Mapping[str, str] | None) -> Path | None:
