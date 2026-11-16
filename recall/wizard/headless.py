@@ -269,6 +269,8 @@ class HeadlessReport:
     #: `project_root`. Each step APPENDS. A step that assigns drops the steps before it, which is
     #: how the compose file and the desktop profile went unreported on every ordinary install.
     files_written: tuple[Path, ...] = ()
+    #: Why the atomic rescue is off for every tenant, or "" when it was decided per tenant.
+    atomic_note: str = ""
 
     @property
     def unserved(self) -> tuple[str, ...]:
@@ -342,6 +344,10 @@ class HeadlessReport:
                 lines.append(
                     detail("note: no verifiable embedder identity, generation is unverified")
                 )
+            if outcome.atomic:
+                lines.append(detail(f"atomic rescue: {outcome.atomic}"))
+        if self.atomic_note:
+            lines.append(f"{' ' * _GUTTER}{self.atomic_note}")
         for refusal in self.refused:
             lines.append(f"{' ' * _GUTTER}{refusal.tenant:<{width}} REFUSED")
             lines.append(detail(refusal.reason))
@@ -530,6 +536,8 @@ class _RealServices:
     #: `init=False` so it is not a public constructor keyword, and `compare=False` so two services
     #: built from one config do not start equal and become unequal the moment one is used.
     _embedder: Embedder | None = field(default=None, repr=False, compare=False, init=False)
+    #: The atomic rescue settings the corpora are built and served under (`_atomic_rescue_env`).
+    atomic_env: dict[str, str] = field(default_factory=dict, compare=False, init=False)
 
     def embedder(self) -> Embedder:
         if self._embedder is None:
@@ -797,7 +805,9 @@ class _RealServices:
                 # would have answered it; the check was testing a configuration nobody runs, while
                 # its own message says "a query through this server's own configuration".
                 result = trusted_search(
-                    store, embedder, query, k=5, policy=TrustPolicy.from_env(block.env)
+                    store, embedder, query, k=5, policy=TrustPolicy.from_env(block.env),
+                    # And its atomic rescue, which reads the environment the same way.
+                    env={**os.environ, **block.env},
                 )
         except Exception as exc:  # noqa: BLE001 - THIS is the failure the smoke test exists for  # BROAD-CATCH: error-translation
             return _failed_smoke(self.config, block.tenant, query, exc)
@@ -843,6 +853,18 @@ class _RealServices:
             corpus_version=self.config.corpus_version,
             project=self.config.project,
             progress=progress,
+            rescue=self._rescue_builder(spec.tenant),
+        )
+
+    def _rescue_builder(self, tenant: str) -> Callable[[str], str | None] | None:
+        """Build a certified generation's atomic rescue under the settings its server gets."""
+        if self.atomic_env.get("RECALL_ATOMIC_RESCUE_MODE", "").lower() != "active":
+            return None
+        from recall.generation_rescue import ensure_for_promotion
+
+        env = {**os.environ, **self.atomic_env}
+        return lambda generation_id: ensure_for_promotion(
+            self.config.resolved_dsn, tenant, generation_id, self.embedder, env=env
         )
 
 
@@ -1399,6 +1421,90 @@ def _step_reporter(
     return lambda message: progress(f"{tenant}: {message}")
 
 
+def _atomic_rescue_env(config: HeadlessConfig) -> tuple[dict[str, str], str]:
+    """The atomic rescue settings to build and serve the corpora under, and a note when it is off.
+
+    On by default (owner decision 2026-11-15), because the rescue finds a one-sentence answer
+    inside a long chunk: active, its artifacts under `<project_root>/.recall/atomic`. A mode or root
+    this shell sets is used as it is; a mistyped mode is refused before anything is built, since a
+    server refuses to start on it. Without the `atomic` dependencies, or without a place for the
+    artifacts, the rescue stays off, because active without an artifact refuses every search.
+
+    It also stays off, unless this shell asks for it, when `data_root` provisions the Docker stack:
+    the desktop app's uploads, forgets and calibrations run in those containers, which cannot reach
+    a host artifact root (a bind mount is how a database here was corrupted, `recall.wizard.stack`),
+    so an upload there would promote a generation the host servers then refuse to search.
+    """
+    from recall._env import _ATOMIC_RESCUE_MODES
+    from recall.lite.atomic import ROOT_ENV
+
+    mode = os.environ.get("RECALL_ATOMIC_RESCUE_MODE", "").strip()
+    root = os.environ.get(ROOT_ENV, "").strip()
+    if mode and mode.lower() not in _ATOMIC_RESCUE_MODES:
+        raise ConfigRefusal(
+            f"RECALL_ATOMIC_RESCUE_MODE must be off, shadow, or active, not {mode!r}",
+            ("RECALL_ATOMIC_RESCUE_MODE",),
+        )
+    if root and not Path(root).expanduser().is_absolute():
+        # The servers start in another directory, so they would read another root.
+        raise ConfigRefusal(f"{ROOT_ENV} must be an absolute path, not {root!r}", (ROOT_ENV,))
+    if not mode:
+        if any(importlib.util.find_spec(name) is None for name in ("numpy", "threadpoolctl")):
+            return {}, 'atomic rescue is off: pip install "recall-rag[atomic]" and run again to turn it on'
+        if config.data_root is not None:
+            return {}, (
+                "atomic rescue is off: the desktop app's Docker services cannot reach a host "
+                "artifact root, so an upload there would leave the host servers refusing"
+            )
+        mode = "active"
+    if mode.lower() == "active" and not root:
+        if config.project_root is None:
+            return {}, f"atomic rescue is off: set {ROOT_ENV} or project_root to turn it on"
+        root = str((config.project_root / ".recall" / "atomic").resolve())
+    return {"RECALL_ATOMIC_RESCUE_MODE": mode, **({ROOT_ENV: root} if root else {})}, ""
+
+
+def _with_rescue(
+    blocks: tuple[ServerBlock, ...], outcomes: list[CorpusOutcome], atomic_env: dict[str, str]
+) -> None:
+    """Register the rescue on each server whose generation this run built an artifact for.
+
+    Every other server that would be active is pinned off, whatever the client's environment
+    says: the memory tenant has no generation, a tenant served by an earlier generation may have no
+    artifact, and active mode refuses every search on either. Another mode (`shadow`, `off`) is
+    registered as this shell set it. The root is registered on all of them, so a forget through any
+    server erases what the rescue keeps.
+    """
+    from recall.lite.atomic import ROOT_ENV
+
+    built = {outcome.tenant for outcome in outcomes if outcome.atomic}
+    configured = atomic_env.get("RECALL_ATOMIC_RESCUE_MODE", "off")
+    for block in blocks:
+        active = configured.lower() == "active"
+        block.env["RECALL_ATOMIC_RESCUE_MODE"] = "off" if active and block.tenant not in built else configured
+        if ROOT_ENV in atomic_env:
+            block.env[ROOT_ENV] = atomic_env[ROOT_ENV]
+
+
+def _cli_rescue_env(blocks: tuple[ServerBlock, ...]) -> dict[str, str]:
+    """The rescue settings for the project `.env`, so a `recall generation promote` run there builds.
+
+    Per tenant, since one `.env` serves every tenant of the project and only some are active.
+    """
+    from recall.lite.atomic import ROOT_ENV
+
+    modes = ",".join(
+        f"{block.tenant}:{block.env['RECALL_ATOMIC_RESCUE_MODE']}"
+        for block in blocks
+        if block.env.get("RECALL_ATOMIC_RESCUE_MODE", "off") != "off"
+    )
+    root = next((block.env[ROOT_ENV] for block in blocks if ROOT_ENV in block.env), "")
+    return {
+        **({"RECALL_ATOMIC_RESCUE_MODE_BY_TENANT": modes} if modes else {}),
+        **({ROOT_ENV: root} if root else {}),
+    }
+
+
 def run_headless(
     config: HeadlessConfig,
     *,
@@ -1472,6 +1578,9 @@ def run_headless(
             f"RECALL_EMBED_PROFILE cannot be reproduced in the registered servers: {exc}",
             ("embedder",),
         ) from exc
+    atomic_env, atomic_note = _atomic_rescue_env(config)
+    if isinstance(wiring, _RealServices):
+        wiring.atomic_env = atomic_env
 
     # Resumable state, keyed on a digest of the config fields that would invalidate finished work.
     # `WizardState(digest=...)` with no recorded corpora is the no-state case, so the loops below do
@@ -1619,6 +1728,7 @@ def run_headless(
         fact_write_dsn=config.fact_write_dsn,
         embedding_env=embedding_env,
     )
+    _with_rescue(blocks, outcomes, atomic_env)
     files: tuple[Path, ...] = ()
 
     # Rewrite the stack with the REAL trust posture, now that it is known, and hand the desktop UI
@@ -1710,6 +1820,7 @@ def run_headless(
                 dsn=config.resolved_dsn,
                 embedder=config.embedder,
                 memory_dir=config.memory_root,
+                rescue_env=_cli_rescue_env(blocks),
             )
             # APPENDED, never assigned. This line read `files = tuple(wrote)` from the commit that
             # introduced it, when the wiring was the only thing that wrote anything and replacing an
@@ -1774,4 +1885,5 @@ def run_headless(
         unservable=unservable,
         files_written=files,
         smoke=smoke,
+        atomic_note=atomic_note,
     )

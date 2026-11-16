@@ -2092,13 +2092,26 @@ class GenerationManager:
             withdraw=False,
         )
 
-    def rollback(self, *, provisional_reason: str | None = None) -> str:
+    def rollback(
+        self, *, provisional_reason: str | None = None, expected_target: str | None = None
+    ) -> str:
+        """Restore the previous generation; with `expected_target`, only if it is still that one.
+
+        The CLI builds the target's atomic rescue artifact before it calls this, outside the lock,
+        and a promote landing meanwhile moves the previous pointer to a generation nothing built
+        for; `expected_target` turns that into a refusal (`recall.generation_rescue`).
+        """
         with self._connect() as conn, conn.transaction():
             state = self._lock_tenant_state(conn)
             if not state or not state[1]:
                 raise NoActiveGeneration("no previous generation is available for rollback")
             active = str(state[0]) if state[0] else None
             previous = str(state[1])
+            if expected_target is not None and previous != expected_target:
+                raise InvalidGenerationTransition(
+                    f"the rollback target changed from {expected_target} to {previous} while it was "
+                    "being prepared (a promote landed); nothing was rolled back, run it again"
+                )
             target = self._require_generation(conn, previous, lock=True)
             if target.state not in {GenerationState.RETIRED, GenerationState.READY}:
                 raise InvalidGenerationTransition(
@@ -2182,6 +2195,15 @@ class GenerationManager:
         if not row or not row[0]:
             raise NoActiveGeneration(f"tenant {self.tenant_id!r} has no active generation")
         return str(row[0])
+
+    def previous_generation_id(self) -> str | None:
+        """The generation `rollback` would restore, or None when there is none."""
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT previous_generation_id FROM recall_tenant_state WHERE tenant_id = %s",
+                (self.tenant_id,),
+            ).fetchone()
+        return str(row[0]) if row and row[0] else None
 
     def servable_manifest(self) -> IndexManifestV1:
         """Continue a pending build or the active corpus, never a rolled-back generation.

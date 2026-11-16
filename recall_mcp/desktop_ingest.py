@@ -349,6 +349,15 @@ def generation_ingest(
                 uncertified = _certify_upload(
                     store._dsn, store.tenant, generation.generation_id, embedder
                 )
+                if uncertified is None:
+                    # Before the promotion, which an active rescue would leave refusing every
+                    # unscoped search without the artifact; a failed build fails the upload.
+                    from recall.generation_rescue import ensure_for_promotion
+
+                    ensure_for_promotion(
+                        store._dsn, store.tenant, generation.generation_id, lambda: embedder,
+                        env=values,
+                    )
             try:
                 manager.promote(
                     generation.generation_id,
@@ -473,9 +482,29 @@ def run_calibration(
     return artifact.to_dict()
 
 
-def publish_calibration(store: PgVectorStore, calibration_id: str) -> dict[str, object]:
-    """Publish a certified artifact after the user explicitly confirms the action."""
+def publish_calibration(
+    store: PgVectorStore,
+    calibration_id: str,
+    *,
+    embedder: Embedder | None = None,
+    env: Mapping[str, str] | None = None,
+) -> dict[str, object]:
+    """Publish a certified artifact after the user explicitly confirms the action.
+
+    With the server's `embedder`, the generation's atomic rescue artifact is rebuilt for the new
+    calibration when the rescue is active (`recall.generation_rescue.after_publish`).
+    """
     artifact = CalibrationRepository(store._dsn, store.tenant, actor="recall-mcp").publish(
         calibration_id
     )
-    return artifact.to_dict()
+    result = artifact.to_dict()
+    if embedder is not None:
+        from recall.generation_rescue import after_publish
+
+        rescue = after_publish(
+            store._dsn, store.tenant, artifact.generation_id, lambda: embedder,
+            env=runtime_environment() if env is None else env,
+        )
+        if rescue:
+            result["atomic_rescue"] = rescue
+    return result

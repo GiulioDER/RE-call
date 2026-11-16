@@ -97,8 +97,43 @@ instead of refusing (`docs/UNCALIBRATED_FIRST_RUN_DESIGN.md`, section 6):
 recall --tenant acme generation rollback
 ```
 
+The one exception is an active atomic rescue: rollback then builds the target's artifact first and
+refuses when it cannot, since the target would refuse every unscoped search without one
+([below](#atomic-rescue)).
+
 What is still deferred is strict refusal at **read** time: an active generation whose calibration is
 absent or stale still answers, marked uncalibrated.
+
+## Atomic rescue
+
+When `RECALL_ATOMIC_RESCUE_MODE` resolves to `active` for a tenant (`RECALL_ATOMIC_RESCUE_MODE_BY_TENANT`
+overrides it per tenant), an unscoped search loads
+`<RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT>/<generation_id>/manifest.json` and refuses when it is missing or
+was built for another calibration. So under an active rescue `recall generation promote` and
+`recall generation rollback` build the target generation's artifact first, and refuse, saying how
+to turn the rescue off, when they cannot: the generation needs a published certified calibration,
+and the embedder must be the one that built it. An upload through an MCP server does the same and
+fails instead of activating. Publishing a calibration (`recall calibration calibrate --publish`,
+`carry-forward --publish`, `auto --publish`, the MCP publish tool) rebuilds the artifact for it,
+since the artifact names its calibration; a rebuild that fails is reported with the command that
+retries it, and the publication stands. The mode is read from the environment of the process doing
+this, so the CLI must see the same settings as the server (the wizard writes them into the
+project's `.env`). `recall wizard` does it between publish and promote ([WIZARD.md](WIZARD.md#atomic-rescue)).
+
+```bash
+recall --tenant acme generation rescue                  # the active generation
+recall --tenant acme generation rescue <generation-id>  # any generation
+```
+
+`rescue` builds whatever the mode, with only the root set, so an existing deployment can build the
+artifacts of its active and previous generations before it turns the rescue on, the order in which
+no search refuses. Run it when a publish reported that its rebuild failed: until the artifact is rebuilt
+every unscoped search on that generation refuses. Views already embedded are reused from `<root>/micro-views.sqlite`, so a rebuild for a new calibration embeds nothing. An
+artifact already in force is reported and kept.
+
+`gc` removes the artifacts of the generations it collects, and a forget removes every artifact of
+the tenant's generations that names the forgotten source and erases its views, whenever
+`RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT` is set, whatever the mode.
 
 ## Retention and erasure
 
