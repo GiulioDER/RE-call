@@ -80,9 +80,9 @@ from recall.semantic_graph import (
     SemanticGraphProjection,
     build_semantic_graph,
     marker_schema_version,
+    semantic_graph_marker as _semantic_graph_marker,
     write_semantic_graph,
 )
-from recall.semantic_graph import semantic_graph_marker as _semantic_graph_marker
 from recall.supersession_records import pg_delete_removals, pg_record_removals, pg_records
 from recall.supersession import resolve_supersession_graph, supersession_rows_sql
 from recall.types import Chunk, EvidenceCard
@@ -2182,6 +2182,15 @@ class GenerationManager:
         if not row or not row[0]:
             raise NoActiveGeneration(f"tenant {self.tenant_id!r} has no active generation")
         return str(row[0])
+
+    def previous_generation_id(self) -> str | None:
+        """The generation `rollback` would restore, or None when there is none."""
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT previous_generation_id FROM recall_tenant_state WHERE tenant_id = %s",
+                (self.tenant_id,),
+            ).fetchone()
+        return str(row[0]) if row and row[0] else None
 
     def servable_manifest(self) -> IndexManifestV1:
         """Continue a pending build or the active corpus, never a rolled-back generation.

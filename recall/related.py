@@ -4,7 +4,7 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
-from typing import Any, Literal, Protocol, get_args
+from typing import Literal, Protocol, get_args
 
 from recall.calibration import Calibration
 from recall.frontmatter import RECORD_KEY
@@ -14,13 +14,15 @@ from recall.security_policy import AccessContext, SourceSecurityPolicy
 from recall.supersession import EdgeCandidates, SupersessionGraph, store_supersession_graph
 from recall.trust_gate import evaluate
 from recall.trust_policy import TrustFailureCode, TrustPolicy, TrustRefusal, TrustState, code_for_status
-from recall.types import (
+from recall.types import (  # ORDINAL_WINDOW, metadata_ordinal: re-exported, defined in recall.types
+    ORDINAL_WINDOW,
     Chunk,
     RetrievalDiagnostics,
     RetrievalResult,
     ScoredChunk,
     StalenessReport,
     TrustedHit,
+    metadata_ordinal,
 )
 
 RelatedRelation = Literal["source", "ordinal", "supersession", "caused_by"]
@@ -49,18 +51,6 @@ class RelatedEvidenceResult:
     rejected_count: int
     generation_id: str
     explanation: dict[str, object] | None = None
-
-
-#: How far, in ordinals, an `ordinal` neighbour may sit from the seed: the stores' bounded reads use
-#: it too (`recall.lite.store.LiteStore.related_chunks`).
-ORDINAL_WINDOW = 2
-
-
-def metadata_ordinal(metadata: dict[str, Any]) -> int | None:
-    """A chunk's ordinal from its metadata: an integer `ord`, never a boolean; the one reader of it
-    for the related reads and the lite dashboard (CCA CODE-006)."""
-    value = metadata.get("ord")
-    return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
 def _ordinal(chunk: Chunk) -> int | None:

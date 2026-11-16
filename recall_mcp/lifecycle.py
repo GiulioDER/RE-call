@@ -462,12 +462,13 @@ def _forget_memory_unlocked(
         raise
     # Read before the rows go: their texts are how the cache entries are found.
     cached_digests = _embedded_text_digests((store, shadow_store), to_delete)
+    from recall.generation_store import GenerationStore
     from recall.lite import LiteStore
 
-    # The same read for a lite store's atomic rescue, whose view store is keyed by chunk text.
+    # The same read for the atomic rescue, whose view store is keyed by chunk text.
     rescue_texts: list[str] = (
         [text for text, _ in store.texts_for_sources(to_delete)]
-        if isinstance(store, LiteStore) and to_delete
+        if isinstance(store, (LiteStore, GenerationStore)) and to_delete
         else []
     )
     if erase_memo_requests:
@@ -515,11 +516,11 @@ def _forget_memory_unlocked(
             "staged upload cleanup failed after chunk deletion for tenant %r", store.tenant
         )
         staged_files_removed = -1
-    cache_entries_erased = 0
+    cache_entries_erased = cache_entries_undigested = 0
     try:
         # The vectors of the deleted text, which the content-addressed embedding cache would
         # otherwise keep until eviction, under every embedder identity that embedded it.
-        cache_entries_erased = erase_cached_digests(cached_digests)
+        cache_entries_erased, cache_entries_undigested = erase_cached_digests(cached_digests)
     except Exception:  # BROAD-CATCH: error-translation
         _log.exception(
             "embedding cache erasure failed after chunk deletion for tenant %r", store.tenant
@@ -533,6 +534,24 @@ def _forget_memory_unlocked(
         try:
             rescue_views_erased, rescue_artifacts_removed = erase_forgotten(
                 store, rescue_texts, to_delete, env=runtime_environment()
+            )
+        except Exception:  # BROAD-CATCH: error-translation
+            _log.exception(
+                "atomic rescue erasure failed after chunk deletion for tenant %r", store.tenant
+            )
+            rescue_views_erased = -1
+    elif isinstance(store, GenerationStore) and chunks_removed:
+        from recall.generation_rescue import erase_forgotten as erase_generation_rescue
+        from recall.generations import GenerationManager
+        from recall_mcp.settings import runtime_environment
+
+        try:
+            generations = [
+                record.generation_id
+                for record in GenerationManager(store._dsn, store.tenant).list_generations()
+            ]
+            rescue_views_erased, rescue_artifacts_removed = erase_generation_rescue(
+                generations, rescue_texts, to_delete, env=runtime_environment()
             )
         except Exception:  # BROAD-CATCH: error-translation
             _log.exception(
@@ -606,13 +625,21 @@ def _forget_memory_unlocked(
         )
     elif cache_entries_erased:
         message += f" Erased {cache_entries_erased} cached embedding(s) of the deleted text."
+    if cache_entries_undigested:
+        message += (
+            f" WARNING: the embedding cache holds {cache_entries_undigested} embedding(s) that "
+            "record no digest of their text (written by 0.15.0 or earlier), which a forget cannot "
+            "find, so the deleted text's vectors may be among them; delete the cache file "
+            "(RECALL_EMBED_CACHE, or the platform default) once to clear them, which costs only "
+            "a re-embed."
+        )
     if rescue_views_erased < 0:
         message += (
             " WARNING: the chunk deletion succeeded but erasing them from the atomic rescue failed, "
             "so its view store or an artifact under RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT still holds "
             "their vectors, and a re-run finds no rows to erase them by; delete micro-views.sqlite "
-            "and the artifact folders there (store-* and lite-*), which costs only a rebuild at "
-            "the next write."
+            "and the artifact folders there (store-* and lite-* on a lite store, one per generation on "
+            "PostgreSQL), which costs only a rebuild."
         )
     elif rescue_views_erased or rescue_artifacts_removed:
         message += (

@@ -150,9 +150,12 @@ answers say so. To change models cleanly, build a separate store, as described u
 (`RECALL_EMBED_CACHE`, on by default under the platform cache directory), under every embedder that
 embedded its text, so they do not stay there until eviction. They erase the cache file the
 forgetting process would use; a cache another setting of the variable pointed at is not reached.
-Entries written by 0.15.0 and earlier record no digest of their text, so a forget cannot find them:
-delete the cache file once to clear them, which costs only a re-embed. With the cache off or absent,
-a forget creates none.
+Entries written by 0.15.0 and earlier record no digest of their text, so a forget cannot find them
+until the next index or search that embeds the same text through the cache records one. While any
+remain, a forget's message says so with a WARNING: delete the cache file once to clear them, which
+costs only a re-embed. A forget whose closing checkpoint another reader of the cache blocked also
+reports a WARNING, since the erased vectors may then stay in the file and its write-ahead log. With
+the cache off or absent, a forget creates none.
 
 With `--check`, exit code `0` means current and `1` means changed, never refreshed, or missing input. It compares the memo files, the store and the policy; it does not detect a change to the facts a refresh would state (an upgraded stating rule with no memo edited), which only a refresh records.
 A writing refresh returns `0` for refreshed, unchanged, or coalesced work, `1` for failure, and `3`

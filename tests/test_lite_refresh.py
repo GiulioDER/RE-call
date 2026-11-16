@@ -709,10 +709,13 @@ def _setup_with_model_name(project: Path, monkeypatch: pytest.MonkeyPatch) -> tu
             raise ValueError(f"unknown embedder: {name!r}")
         return embedder
 
-    monkeypatch.setattr(embeddings, "resolve_embedder", resolve)
     # Refresh builds through the shared CLI helper (CODE-029), which binds the name at import.
+    # Import it BEFORE patching `embeddings`: a first import inside the patch binds the fake, so
+    # monkeypatch records the fake as the original and teardown leaves it in `_shared` for every
+    # later test in the worker (`unknown embedder: 'hashing'` in an unrelated lite CLI test).
     from recall.cli_commands import _shared
 
+    monkeypatch.setattr(embeddings, "resolve_embedder", resolve)
     monkeypatch.setattr(_shared, "resolve_embedder", resolve)
     return report.store, asked
 

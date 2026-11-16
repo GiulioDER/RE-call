@@ -70,15 +70,19 @@ def _lite_graph(args: argparse.Namespace) -> GraphReadiness:
     if meta.get("tenant") != args.tenant:
         held = terminal_safe(meta.get("tenant"))
         raise SystemExit(f"{command}: {lite_dsn_path(args.dsn)} holds tenant {held!r}; pass --tenant {held} to read it")
-    # `lite_read_meta` has refused a table other than the file's one.
+
     def refuse_another(current: str) -> None:
         if args.generation and args.generation != current:
             raise SystemExit(
                 f"{command}: a lite store has one corpus, {current}; --generation {terminal_safe(args.generation)} is not it"
             )
 
+    # `lite_read_meta` has refused a table other than the file's one.
     with LiteStore.from_dsn(args.dsn, dim=int(meta["dim"]), tenant=args.tenant) as store:
         if args.graph_cmd == "rebuild":
+            # Hash the corpus before the lane, so the check under it is a cache hit unless a write
+            # moved the version meanwhile, and the lane is not held for a load (CCA PERF-001).
+            store.lite_generation_id()
             with write_session(store, "graph rebuild"):
                 # Under the lane, so no write lands between this check and the build (CCA BUG-004).
                 refuse_another(store.lite_generation_id())

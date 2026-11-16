@@ -9,14 +9,9 @@ describes, so a reader can check every claim against the code.
 | [recall-overview.html](recall-overview.html) | The system overview: entry points, the generation build, trusted retrieval and the trust gate. |
 | [recall-search.html](recall-search.html) | One `recall_search` call from start to finish, with its three outcomes: refuse, abstain or answer. |
 
-GitHub shows an HTML file as source rather than as a page, so the same two files are also
-published on the project site, where they open in place:
-
-- [System overview](https://giulioder.github.io/RE-call/diagrams/recall-overview.html)
-- [One recall_search call](https://giulioder.github.io/RE-call/diagrams/recall-search.html)
-
-A downloaded copy works too: it needs no install and works offline, apart from the source links.
-Each page has light and dark themes, path tracing, and export to PNG and SVG.
+Open the diagram's file on GitHub and use Download raw file. Then open the downloaded HTML in a
+browser. Each page works offline apart from its source links and offers light and dark themes,
+path tracing, and export to PNG and SVG.
 
 ## What they describe
 
@@ -46,19 +41,17 @@ node <archify>/bin/archify.mjs finalize architecture docs/diagrams/recall-overvi
 node <archify>/bin/archify.mjs finalize sequence docs/diagrams/recall-search.sequence.json docs/diagrams/recall-search.html --repo-root . --quality showcase --json
 ```
 
-Then copy both pages to `site/diagrams/`, which GitHub Pages publishes from master. The two
-copies must stay byte identical:
+To update the legacy site source as well, copy both pages to `site/diagrams/`:
 
 ```bash
 cp docs/diagrams/recall-overview.html docs/diagrams/recall-search.html site/diagrams/
 ```
 
-The project README shows `recall-overview-light.png` and `recall-overview-dark.png`, and the
+The architecture guide shows `recall-overview-light.png` and `recall-overview-dark.png`, and the
 site's landing page shows the dark one as `site/assets/recall-overview.png`. They are the
 overview's diagram alone, without the page around it, captured at twice the resolution with the
 page open as `recall-overview.html?embed=1&theme=light` and `?embed=1&theme=dark`. Replace all three files when the
-overview changes. The site's [How it works](https://giulioder.github.io/RE-call/how-it-works.html)
-page embeds both diagrams with `?embed=1&theme=dark`.
+overview changes. The [legacy site page](../../site/how-it-works.html) embeds both diagrams.
 
 To move to a newer commit, update `meta.repository.revision` in the JSON, re-check every cited
 line range against that commit, and run the commands again. Archify writes receipts beside each

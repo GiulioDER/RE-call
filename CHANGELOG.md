@@ -36,8 +36,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   and `recall_withdraw` tools, left the forgotten text's vectors in the content-addressed embedding
   cache, which is on by default, until least recently used eviction. They now erase them under every
   embedder identity, with SQLite `secure_delete` and a truncating checkpoint, and report a cache
-  that could not be erased. Entries written by 0.15.0 and earlier record no digest of their text
-  and are not found; delete the cache file once to clear them.
+  that could not be erased, including one whose closing checkpoint another reader blocked. Entries
+  written by 0.15.0 and earlier record no digest of their text and are not found until a cache hit on
+  the same text records one; while any remain a forget warns, and deleting the cache file once
+  clears them.
 - `recall forget` and `recall withdraw` on a Lite store with the opt-in atomic rescue left the
   forgotten memo's view vectors in `micro-views.sqlite` and in the rescue artifacts under
   `RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT`, which also name its source. They now erase its views with

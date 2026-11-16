@@ -388,10 +388,13 @@ jobs:
       # The locked set, as in `test` (it carries the pinned mypy), plus mutmut. mutmut is pinned by
       # version only, not hashed: it shares dependencies with the locked set, so a separate hashed
       # file would drift from uv.lock and could downgrade them, and this job is report-only.
+      # 3.8.1, not 3.8.0: 3.8.0's stats collector reads `item._nodeid`, which pytest 9.2.0 removed,
+      # so every run whose selected tests reached a mutated function died at "failed to collect
+      # stats" (boxed/mutmut#615, fixed in 3.8.1 by #616).
       - name: Install
         run: |
           bash .github/scripts/locked_install.sh dev documents
-          pip install mutmut==3.8.0
+          pip install mutmut==3.8.1
 
       - name: Mutate the changed shipped code
         env:

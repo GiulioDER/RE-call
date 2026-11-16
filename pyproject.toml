@@ -272,7 +272,7 @@ desktop = [
 # reparent whatever followed it.
 [project.urls]
 Homepage = "https://github.com/GiulioDER/RE-call"
-Documentation = "https://giulioder.github.io/RE-call/"
+Documentation = "https://github.com/GiulioDER/RE-call/blob/master/docs/README.md"
 Source = "https://github.com/GiulioDER/RE-call"
 License = "https://www.gnu.org/licenses/agpl-3.0.html"
 Commercial = "https://github.com/GiulioDER/RE-call/blob/master/COMMERCIAL_LICENSE.md"
