@@ -3181,7 +3181,11 @@ def _register_calibration_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         if replay is not None:
             return replay
         assert store is not None
-        result = await _to_thread(lambda: publish_calibration(store, calibration_id))
+        result = await _to_thread(
+            lambda: publish_calibration(
+                store, calibration_id, embedder=state["embedder"], env=_runtime_env_for(state)
+            )
+        )
         payload = json.dumps(result, indent=2, default=str)
         await _record_mutation_result(
             state,

@@ -401,9 +401,12 @@ def tenant_service(base_env: dict[str, str], *, image: str) -> dict[str, object]
         if k
         not in {
             "RECALL_DSN", "RECALL_MIGRATION_DSN", "RECALL_FACT_WRITE_DSN", "RECALL_INDEX_ROOT",
-            "RECALL_EMBED_CACHE", "RECALL_EMBED_CACHE_MAX_MB",
+            "RECALL_EMBED_CACHE", "RECALL_EMBED_CACHE_MAX_MB", "RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT",
         }
     }
+    # The atomic rescue's artifacts are in a HOST folder too, and active mode without them refuses
+    # every search, so the container serves with the rescue off.
+    environment["RECALL_ATOMIC_RESCUE_MODE"] = "off"
     environment["RECALL_DSN"] = container_dsn()
     environment["RECALL_MIGRATION_DSN"] = container_dsn()
     fact_write_dsn = base_env.get("RECALL_FACT_WRITE_DSN")

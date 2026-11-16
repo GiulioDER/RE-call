@@ -73,11 +73,17 @@ def run_calibration(
     return desktop_ingest.run_calibration(store, embedder, generation_id, queries)
 
 
-def publish_calibration(store: PgVectorStore, calibration_id: str) -> dict[str, object]:
-    """Publish a previously measured calibration artifact."""
+def publish_calibration(
+    store: PgVectorStore,
+    calibration_id: str,
+    *,
+    embedder: Embedder | None = None,
+    env: Mapping[str, str] | None = None,
+) -> dict[str, object]:
+    """Publish a previously measured calibration artifact, rebuilding its atomic rescue."""
     from recall_mcp import desktop_ingest
 
-    return desktop_ingest.publish_calibration(store, calibration_id)
+    return desktop_ingest.publish_calibration(store, calibration_id, embedder=embedder, env=env)
 
 
 __all__ = ["generation_ingest", "publish_calibration", "run_calibration"]

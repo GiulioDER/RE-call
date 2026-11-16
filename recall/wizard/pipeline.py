@@ -1,6 +1,9 @@
 """Drive one corpus from a directory to a calibrated, promoted generation.
 
-The sequence is build, validate, calibrate, publish, promote.
+The sequence is build, validate, calibrate, publish, rescue, promote. `rescue` builds the
+generation's atomic rescue artifact when the caller passes a builder (`recall.generation_rescue`),
+because a generation promoted without one refuses every unscoped search under an active rescue; a
+build that fails therefore refuses the promotion, exactly as a failed publish does.
 
 **Promote is last because it is the irreversible step**, and because it retires whatever the tenant
 was serving. Between promotion and a published calibration the tenant is live with no calibration
@@ -127,6 +130,8 @@ class CorpusOutcome:
     answerable: int = 0
     unanswerable: int = 0
     steps: tuple[str, ...] = field(default_factory=tuple)
+    #: What the atomic rescue build reported, or "" when no builder was passed or it was not needed.
+    atomic: str = ""
 
     def __post_init__(self) -> None:
         # Coerced for the same reason `CorpusPlan.corpora` is: this is written into resumable state
@@ -292,12 +297,17 @@ def run_corpus(
     per_class: int = DEFAULT_PER_CLASS,
     seed: int = 0,
     progress: Callable[[str], None] | None = None,
+    rescue: Callable[[str], str | None] | None = None,
 ) -> CorpusOutcome:
     """Take one calibrated corpus from a directory to a calibrated generation.
 
     `progress` is called with each step name as it starts. Without it the wizard is silent through a
     build measured in minutes, three times over, and a user cannot tell a running install from a
     hung one.
+
+    `rescue` is called with the generation id of a certified build before it is promoted, and
+    returns what it built (None when the rescue is off for the tenant); it raises to refuse the
+    promotion.
     """
     announce = progress or (lambda _step: None)
 
@@ -437,6 +447,17 @@ def run_corpus(
         _fail("active generation lookup", exc)
         raise
 
+    atomic = ""
+    if certified and rescue is not None:
+        try:
+            announce("rescue")
+            atomic = rescue(generation_id) or ""
+        except BaseException as exc:
+            _fail("rescue", exc)
+            raise
+        if atomic:
+            steps.append("rescue")
+
     if certified:
         try:
             announce("promote")
@@ -476,4 +497,5 @@ def run_corpus(
         answerable=answerable,
         unanswerable=unanswerable,
         steps=tuple(steps),
+        atomic=atomic,
     )

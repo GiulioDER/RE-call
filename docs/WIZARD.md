@@ -13,8 +13,9 @@ run the PostgreSQL wizard or its automatic Codex integration.
 `recall wizard` takes a JSON config and drives every corpus from a directory to a calibrated,
 promoted generation, then writes the MCP servers that serve them. It exists because the calibrated
 path has enough load-bearing ordering in it that assembling it by hand is a research project:
-build → validate → **calibrate → publish** → promote, with promotion last because it is irreversible
-and because promoting first gives a fresh corpus fingerprint that makes the calibration stale.
+build → validate → **calibrate → publish** → rescue → promote, with promotion last because it is
+irreversible and because promoting first gives a fresh corpus fingerprint that makes the calibration
+stale. `rescue` builds the generation's atomic rescue artifact ([below](#atomic-rescue)).
 
 ```bash
 python -m recall.cli wizard --headless --config wizard.json
@@ -204,11 +205,57 @@ With `project_root` set:
   Restart Claude Code afterwards. It reads this file at startup.
 - **`.env`** — the serving DSN and embedder, for the CLI. **Not** for the MCP servers: a stdio server
   launched with an explicit `env` block inherits nothing, so each server carries its own variables.
+  It also carries the atomic rescue settings, `RECALL_ATOMIC_RESCUE_MODE_BY_TENANT` and
+  `RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT`, so a `recall generation promote` run in the project builds
+  the artifact its server needs.
 - **`CLAUDE.md`** and **`memory/MEMORY.md`** — block-scoped edits between markers, so your own file
   content is preserved.
 
 Without `project_root` nothing is written or registered and the report says so. The wizard will not
 guess which project these servers belong to.
+
+## Atomic rescue
+
+Atomic rescue finds a document whose answer is one sentence inside a long chunk. Each chunk is
+split into overlapping 24 word views, the views are embedded, and an unscoped search moves at most
+one parent chunk, the one whose best view matches the query most closely outside the dense top
+five, to rank six, scored by its own cosine. It is on by default: the wizard builds each certified
+generation's artifact after publishing its calibration and before promoting it, then registers
+`RECALL_ATOMIC_RESCUE_MODE=active` and an absolute `RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT` on that
+tenant's server. The report's `atomic rescue:` line under each corpus says what it built.
+
+- **Where the artifacts go.** `<project_root>/.recall/atomic`. A `RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT`
+  set in the shell that runs the wizard is used instead, and must be absolute. One root can serve
+  several tenants.
+- **Not with the Docker stack.** When `data_root` provisions it, the rescue stays off unless the
+  shell sets `RECALL_ATOMIC_RESCUE_MODE`: the desktop app's uploads, forgets and calibrations run in
+  those containers, which do not mount the host's artifact root, so an upload there would promote a
+  generation without an artifact and the host servers would refuse to search it. With the mode set
+  in the shell anyway, do uploads from the CLI or the agent, not the desktop app.
+- **Only a tenant this run built an artifact for is served active.** Every other server is pinned to
+  `RECALL_ATOMIC_RESCUE_MODE=off`: the memory tenant has no generation, and a tenant left on an
+  earlier generation may have no artifact. In active mode either would refuse every unscoped search.
+- **A mode set in the shell is kept.** Run the wizard with `RECALL_ATOMIC_RESCUE_MODE=off` to leave
+  the rescue off. A mistyped mode is refused before anything is built, because the server would
+  refuse to start on it.
+- **Without `numpy` and `threadpoolctl`** (the `atomic` extra), or with neither `project_root` nor
+  a root in the shell, the rescue stays off and the report says why.
+- **The Docker services themselves serve with the rescue off**, for the same reason.
+- **A failed build refuses the promotion**, as a failed publish does: the generation is left
+  unpromoted and released for `recall generation gc`.
+
+What it costs: the first build embeds every view, about one per 12 words of the corpus, so it takes
+longer than the index build; later builds embed only the views of chunk texts no earlier generation
+held. **Not measured on PostgreSQL.** The one measurement is on the SQLite store with the default
+local model on a loaded host (2026-11-15): 1,776 chunks took about 35 minutes to index and about two
+hours to build the first artifact. With a hosted embedder the cost is the provider's, per view.
+
+After install, every path that makes a generation serve builds its artifact first when the rescue
+is active for the tenant: `recall generation promote` and `rollback`, an upload through an MCP
+server, and publishing a new calibration. **The CLI learns the mode from the project's `.env`**, so
+run those commands from the project directory: from anywhere else the rescue reads as off, nothing
+is built, and the server, which is active, refuses the promoted generation. See
+[GENERATIONS.md](GENERATIONS.md#atomic-rescue).
 
 **Docker autostart is not configured.** Making a container start on login is a change to the machine
 rather than the project; on Windows it is a Docker Desktop setting.
