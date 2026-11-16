@@ -25,7 +25,7 @@ from recall.atomic_write import _flush_directory
 from recall.embeddings import Embedder, embedding_profile, embedding_profile_id
 from recall.lineage import is_sha256_hex
 from recall.errors import RecallError
-from recall.types import ScoredChunk, TrustedResult
+from recall.types import ScoredChunk, TrustedResult, metadata_ordinal
 
 
 ATOMIC_RESCUE_SCHEMA_VERSION = 1
@@ -1135,8 +1135,6 @@ def require_atomic_dependency() -> None:
 def rescue_parents(chunks: Iterable[Any]) -> list[tuple[str, str, int, str]]:
     """The parents an artifact is assembled from, ``(chunk id, source, ordinal, text)`` in source
     and ordinal order; refuses a chunk without an integer `ord`. Shared by both builders."""
-    from recall.types import metadata_ordinal
-
     parents: list[tuple[str, str, int, str]] = []
     for chunk in chunks:
         ordinal = metadata_ordinal(chunk.metadata)

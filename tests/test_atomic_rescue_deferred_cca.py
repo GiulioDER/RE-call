@@ -20,13 +20,9 @@ from recall.atomic_rescue import (
     clear_atomic_rescue_artifact_cache,
     load_atomic_rescue_artifact,
 )
-from recall.lite.atomic import ROOT_ENV
+from recall.lite.atomic import MODE_BY_TENANT_ENV, MODE_ENV, ROOT_ENV
 from tests.test_atomic_rescue_default_on_cca import _Corpus, _publish, corpus  # noqa: F401  # a fixture
 from tests.test_calibration_carry_forward import _CarryEmbedder
-
-_ACTIVE = "RECALL_ATOMIC_RESCUE_MODE"
-_BY_TENANT = "RECALL_ATOMIC_RESCUE_MODE_BY_TENANT"
-
 
 def test_a_cli_publish_whose_rebuild_cannot_build_the_embedder_warns(tmp_path: Path, monkeypatch, capsys) -> None:
     """BUG-005: the CLI embedder factory exits on a failed construction, and `after_publish`
@@ -39,8 +35,8 @@ def test_a_cli_publish_whose_rebuild_cannot_build_the_embedder_warns(tmp_path: P
         raise SystemExit("the embedding provider is unreachable")
 
     monkeypatch.setattr(calibration_cmd, "_make_embedder", unbuildable)
-    monkeypatch.setenv(_ACTIVE, "active")
-    monkeypatch.delenv(_BY_TENANT, raising=False)
+    monkeypatch.setenv(MODE_ENV, "active")
+    monkeypatch.delenv(MODE_BY_TENANT_ENV, raising=False)
     monkeypatch.setenv(ROOT_ENV, str(tmp_path))
 
     calibration_cmd._rescue_after_publish(
@@ -148,7 +144,7 @@ def forget_without_a_root(monkeypatch):  # noqa: ANN001, ANN201
     """`_forget_memory_unlocked` on a `GenerationStore`, in a shell with no rescue settings."""
     import recall_mcp.lifecycle as lifecycle
 
-    for name in (_ACTIVE, _BY_TENANT, ROOT_ENV):
+    for name in (MODE_ENV, MODE_BY_TENANT_ENV, ROOT_ENV):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setattr(lifecycle, "_fact_ledger_for", lambda store: None)
     monkeypatch.setattr(lifecycle, "delete_staged_sources", lambda tenant, sources: 0)
@@ -173,6 +169,22 @@ def test_a_postgres_forget_without_the_root_says_it_erased_nothing_of_the_rescue
 
     assert result.chunks_removed == 1
     assert "RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT is not set" in result.message, result.message
+
+
+def test_a_postgres_forget_with_a_relative_root_says_it_is_not_absolute(forget_without_a_root, monkeypatch) -> None:
+    """SEC-003, follow-up: a relative root, which no builder writes under, was reported as not set.
+    Invariant: the note says the root is not an absolute path.
+
+    Red proof (recorded in the pull request): with `state` in `_forget_memory_unlocked` mutated to
+    always read "is not set", this fails at the assertion below.
+    """
+    monkeypatch.setenv(ROOT_ENV, "relative/atomic")
+
+    result = forget_without_a_root._forget_memory_unlocked(
+        _generation_store([]), ["memo.md"], erase_memo_requests=False
+    )
+
+    assert "RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT is not an absolute path" in result.message, result.message
 
 
 def test_a_postgres_forget_without_the_root_reads_nothing_for_the_rescue(forget_without_a_root, monkeypatch) -> None:
@@ -210,11 +222,11 @@ def test_a_wizard_rerun_builds_under_the_mode_it_registers(tmp_path: Path, monke
     from recall.lite.atomic import rescue_active
     from recall.wizard.headless import _RealServices
 
-    monkeypatch.setenv(_BY_TENANT, "t:shadow")
+    monkeypatch.setenv(MODE_BY_TENANT_ENV, "t:shadow")
     seen: list[dict[str, str]] = []
     monkeypatch.setattr(rescue, "ensure_for_promotion", lambda *args, env, **_: seen.append(dict(env)) or "built")
     services = _RealServices(config=SimpleNamespace(resolved_dsn="postgresql://x"))  # type: ignore[arg-type]
-    services.atomic_env = {_ACTIVE: "active", ROOT_ENV: str(tmp_path)}
+    services.atomic_env = {MODE_ENV: "active", ROOT_ENV: str(tmp_path)}
 
     builder = services._rescue_builder("t")
     assert builder is not None

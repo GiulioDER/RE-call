@@ -654,9 +654,12 @@ def _forget_memory_unlocked(
     elif isinstance(store, GenerationStore) and chunks_removed and rescue_root is None:
         # The wizard writes the root to the project `.env` and the server blocks only, so a CLI
         # forget run elsewhere erased nothing the rescue keeps, and a re-run finds no rows to erase
-        # it by (CCA SEC-003).
+        # it by (CCA SEC-003). A relative root is one no builder wrote under, so it says so.
+        state = "is not an absolute path" if runtime_environment().get(
+            "RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT", ""
+        ).strip() else "is not set"
         message += (
-            " NOTE: RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT is not set here, so nothing the atomic rescue "
+            f" NOTE: RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT {state} here, so nothing the atomic rescue "
             "keeps was erased. If this tenant uses the rescue (the setup wizard turns it on), its "
             "micro-views.sqlite and the generation folders under that root still hold the deleted "
             "text's vectors; delete them, which costs only a rebuild."
