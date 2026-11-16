@@ -60,7 +60,8 @@ if TYPE_CHECKING:
     from recall.lite.store import LiteStore
 
 __all__ = [
-    "BuildReport", "configured_root", "ensure_rescue_artifact", "erase_forgotten", "manifest_path", "serving_manifest"
+    "BuildReport", "configured_root", "ensure_rescue_artifact", "erase_forgotten", "manifest_path",
+    "rescue_settings", "serving_manifest",
 ]
 
 ROOT_ENV = "RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT"
@@ -123,6 +124,43 @@ def configured_root(tenant: str, env: Mapping[str, str] | None = None) -> Path |
     if not root or values.get("RECALL_ATOMIC_RESCUE_MODE", "off").strip().lower() != "active":
         return None
     return Path(root).expanduser()
+
+
+def rescue_settings(
+    default_root: Path | None, *, off_reason: str = "", env: Mapping[str, str] | None = None
+) -> tuple[dict[str, str], str]:
+    """The atomic rescue settings an installer registers, and a note when the rescue stays off.
+
+    Shared by `recall setup --lite` and the PostgreSQL wizard. On by default (owner decision
+    2026-11-15): active, with its artifacts under `default_root`. A mode or root the shell sets is
+    used as it is, and a root is kept with `off` or `shadow` too, so a forget still erases what it
+    holds. A mistyped mode or a relative root raises ValueError: the server refuses to start on the
+    first, and under the second the build and the server would resolve different roots. With no
+    mode set, the rescue stays off, with a note, without the `atomic` dependencies, when the
+    caller gives an `off_reason`, or when there is no `default_root`.
+    """
+    import importlib.util
+
+    from recall._env import _ATOMIC_RESCUE_MODES
+
+    source = os.environ if env is None else env
+    mode = source.get("RECALL_ATOMIC_RESCUE_MODE", "").strip()
+    root = source.get(ROOT_ENV, "").strip()
+    if mode and mode.lower() not in _ATOMIC_RESCUE_MODES:
+        raise ValueError(f"RECALL_ATOMIC_RESCUE_MODE must be off, shadow, or active, not {mode!r}")
+    if root and not Path(root).expanduser().is_absolute():
+        raise ValueError(f"{ROOT_ENV} must be an absolute path, not {root!r}")
+    if not mode:
+        if any(importlib.util.find_spec(name) is None for name in ("numpy", "threadpoolctl")):
+            return {}, 'atomic rescue is off: pip install "recall-rag[atomic]" and run it again to turn it on'
+        if off_reason:
+            return {}, f"atomic rescue is off: {off_reason}"
+        mode = "active"
+    if mode.lower() == "active" and not root:
+        if default_root is None:
+            return {}, f"atomic rescue is off: set {ROOT_ENV} to turn it on"
+        root = str(default_root)
+    return {"RECALL_ATOMIC_RESCUE_MODE": mode, **({ROOT_ENV: root} if root else {})}, ""
 
 
 def ensure_rescue_artifact(

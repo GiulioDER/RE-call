@@ -185,3 +185,16 @@ def test_an_unknown_mode_in_the_shell_is_refused_before_anything_is_written(tmp_
     with pytest.raises(ValueError, match="RECALL_ATOMIC_RESCUE_MODE"):
         _setup(tmp_path)
     assert not (tmp_path / "project" / ".recall").exists(), "setup wrote a store before refusing the mode"
+
+
+def test_a_relative_root_in_the_shell_is_refused_before_anything_is_written(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """E9: the server and the CLI resolve a relative root against their own working directories.
+
+    Red proof: removing the relative-root check from `recall.lite.atomic.rescue_settings` made this
+    fail on the last assertion: setup indexed the store and only then refused, in the build.
+    """
+    _blank_rescue_environment(monkeypatch)
+    monkeypatch.setenv("RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT", "relative/atomic")
+    with pytest.raises(ValueError, match="RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT"):
+        _setup(tmp_path)
+    assert not (tmp_path / "project" / ".recall").exists(), "setup wrote a store before refusing the root"

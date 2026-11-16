@@ -22,8 +22,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from recall._env import _ATOMIC_RESCUE_MODES
 from recall.lite import LITE_DSN_PREFIX, LiteStore
+from recall.lite.atomic import rescue_settings
 
 if TYPE_CHECKING:
     from recall.embeddings import Embedder
@@ -85,31 +85,6 @@ def _embedding_environment(
             raise
         return None  # indexing an explicit model does not require reproducible server settings
     return values
-
-
-def _atomic_environment(path: Path) -> tuple[dict[str, str], str | None]:
-    """The atomic rescue settings to register for the store at `path`, and a note when it stays off.
-
-    On by default, since the rescue is what finds a one-sentence answer inside a long memo: active,
-    its artifacts beside the store (`<store>.atomic`, which the store's own .gitignore advice
-    covers). A mode this shell sets, `off` included, is registered as it is. Without the `atomic`
-    dependencies the rescue stays off, because with it on every search would refuse.
-    """
-    mode = os.environ.get("RECALL_ATOMIC_RESCUE_MODE", "").strip()
-    root = os.environ.get("RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT", "").strip()
-    if not mode:
-        if any(importlib.util.find_spec(name) is None for name in ("numpy", "threadpoolctl")):
-            return {}, 'atomic rescue is off: pip install "recall-rag[atomic]" and run setup again to turn it on'
-        mode = "active"
-    if mode.lower() not in _ATOMIC_RESCUE_MODES:
-        # The server refuses to start on it, which a client shows as a server with no tools.
-        raise ValueError(f"RECALL_ATOMIC_RESCUE_MODE must be off, shadow, or active, not {mode!r}")
-    values = {"RECALL_ATOMIC_RESCUE_MODE": mode}
-    if mode.lower() == "active":
-        values["RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT"] = root or str(path.with_name(path.name + ".atomic"))
-    elif root:
-        values["RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT"] = root  # a forget still erases what it holds
-    return values, None
 
 
 def _followup_commands(env: dict[str, str], memory: Path) -> list[str]:
@@ -215,7 +190,8 @@ def run_lite_setup(
     # Setup indexes under the embedding cache settings of this shell; the server's refreshes must
     # too, or a cache the user switched off or moved here comes back at the default there.
     local_env.update({key: os.environ[key] for key in ("RECALL_EMBED_CACHE", "RECALL_EMBED_CACHE_MAX_MB") if key in os.environ})
-    atomic_env, atomic_note = _atomic_environment(path)
+    # Its artifacts beside the store (`<store>.atomic`, which the store's own .gitignore advice covers).
+    atomic_env, atomic_note = rescue_settings(path.with_name(path.name + ".atomic"))
     local_env.update(atomic_env)
     if model_env is not None:
         local_env.update(model_env)
