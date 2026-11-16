@@ -28,7 +28,7 @@ CARDS = (
     ("Hybrid RAG", "Two ways to search.", "One ranked list.",
      "Dense and full-text results fused with RRF."),
     ("Atomic rescue", "Find the fact", "inside the note.",
-     "An opt-in retrieval path for individual facts."),
+     "A retrieval path for individual facts."),
     ("Semantic graph", "Follow the links", "between memories.",
      "See which memos link to or replace each other."),
     ("Calibrated abstention", "Say when you", "don’t know.",

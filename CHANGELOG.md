@@ -17,8 +17,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   desktop app's Docker services, it stays off with a note. The code default of
   `RECALL_ATOMIC_RESCUE_MODE` is still `off`, so an existing deployment changes only when it sets it.
   On a Lite store with the rescue active, every write that keeps a calibration in force builds the
-  artifact the trust gate serves, and a search can move one parent chunk to rank six as on
-  PostgreSQL. A search the rescue applies to refuses while its artifact is missing, as between a
+  artifact the trust gate serves, and a search can move one parent chunk to dense rank six before
+  fusion as on PostgreSQL. Fusion can move it into the final top five. A search the rescue applies
+  to refuses while its artifact is missing, as between a
   write and its build or after `recall forget` until the next refresh. See
   [docs/LITE.md](docs/LITE.md#atomic-rescue) and [docs/GENERATIONS.md](docs/GENERATIONS.md#atomic-rescue).
 - On PostgreSQL under an active rescue, `recall generation promote` and `rollback` and a certified
