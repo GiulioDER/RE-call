@@ -1624,6 +1624,24 @@ def run_headless(
             if recorded is not None:
                 # Only a PROMOTED outcome is recorded, so this cannot silently reuse a degraded
                 # corpus: that one was left unpromoted precisely so re-running would retry it.
+                if isinstance(wiring, _RealServices):
+                    # Its `atomic` says what the earlier run built, under that run's root and mode,
+                    # which the digest does not cover: built again under this run's (an artifact in
+                    # force costs a lookup), so `_with_rescue` registers what holds now (CCA DAT-004).
+                    builder = wiring._rescue_builder(spec.tenant)
+                    try:
+                        atomic = (builder(recorded.generation_id) or "") if builder else ""
+                    except Exception as exc:  # BROAD-CATCH: fail-closed
+                        # The generation is already serving: dropped to `failures`, whatever the
+                        # cause, it would lose its server. Served with the rescue pinned off instead
+                        # (`_with_rescue`). Named by type only: a psycopg error can quote the
+                        # password, and progress is printed.
+                        atomic = ""
+                        if progress:
+                            progress(
+                                f"{spec.tenant}: atomic rescue not rebuilt ({type(exc).__name__}), so it stays off"
+                            )
+                    recorded = replace(recorded, atomic=atomic)
                 outcomes.append(recorded)
                 reused.append(spec.tenant)
                 if progress:

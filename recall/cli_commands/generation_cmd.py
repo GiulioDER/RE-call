@@ -285,16 +285,12 @@ def _cmd_rescue(args: argparse.Namespace, manager: GenerationManager) -> None:
     Whatever the mode, so an operator can build the artifacts of the active and the previous
     generation BEFORE turning the rescue on, which is the order that never refuses a search.
     """
-    import os
-    from pathlib import Path
-
     from recall.atomic_rescue import AtomicRescueArtifactError
     from recall.generation_rescue import build_artifact
-    from recall.lite.atomic import ROOT_ENV
+    from recall.lite.atomic import ROOT_ENV, artifact_root
 
-    value = os.environ.get(ROOT_ENV, "").strip()
-    root = Path(value).expanduser() if value else None
-    if root is None or not root.is_absolute():
+    root = artifact_root()
+    if root is None:
         raise SystemExit(f"recall generation rescue needs {ROOT_ENV} set to an absolute path")
     generation_id = args.generation_id or manager.active_generation_id()
     try:
@@ -350,7 +346,9 @@ def _cmd_generation(args: argparse.Namespace) -> None:
         from recall.generation_rescue import remove_artifacts
 
         try:
-            removed = remove_artifacts(collected)
+            # Every generation any gc of this tenant collected, not only this one's, so an artifact
+            # an earlier gc could not remove is retried: its row is gone, and no forget lists it.
+            removed = remove_artifacts(set(collected) | manager.collected_generation_ids())
         except AtomicRescueArtifactError as exc:
             # The generations are gone; their artifacts are what is left, and the next gc retries.
             print(f"WARNING: {exc}; the next gc removes them")

@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from recall.lite import LITE_DSN_PREFIX, LiteStore
-from recall.lite.atomic import rescue_settings
+from recall.lite.atomic import rescue_settings, store_default_root
 
 if TYPE_CHECKING:
     from recall.embeddings import Embedder
@@ -191,7 +191,7 @@ def run_lite_setup(
     # too, or a cache the user switched off or moved here comes back at the default there.
     local_env.update({key: os.environ[key] for key in ("RECALL_EMBED_CACHE", "RECALL_EMBED_CACHE_MAX_MB") if key in os.environ})
     # Its artifacts beside the store (`<store>.atomic`, which the store's own .gitignore advice covers).
-    atomic_env, atomic_note = rescue_settings(path.with_name(path.name + ".atomic"))
+    atomic_env, atomic_note = rescue_settings(store_default_root(path))
     local_env.update(atomic_env)
     if model_env is not None:
         local_env.update(model_env)
