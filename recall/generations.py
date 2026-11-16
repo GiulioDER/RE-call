@@ -2494,6 +2494,26 @@ class GenerationManager:
             self.last_gc_facts_retracted = -1
         return tuple(delete)
 
+    def collected_generation_ids(self) -> set[str]:
+        """Every generation any gc of this tenant deleted, read from the audit trail.
+
+        What a gc cannot finish (a fact retraction, an atomic rescue artifact Windows would not
+        delete) is retried from this, since the generation rows are gone by then.
+        """
+        with self._connect() as conn:
+            return self._collected_ids(conn)
+
+    def _collected_ids(self, conn: psycopg.Connection) -> set[str]:
+        return {
+            str(generation_id)
+            for (payload,) in conn.execute(
+                "SELECT payload FROM recall_audit_events "
+                "WHERE tenant_id = %s AND event_type = 'generation_gc'",
+                (self.tenant_id,),
+            ).fetchall()
+            for generation_id in (payload or {}).get("generation_ids", ())
+        }
+
     def retract_collected_facts(
         self, *, env: Mapping[str, str] | None = None, collected: Collection[str] | None = None
     ) -> int:
@@ -2528,15 +2548,7 @@ class GenerationManager:
             return 0
         with self._connect() as conn:
             if collected is None:
-                collected = {
-                    str(generation_id)
-                    for (payload,) in conn.execute(
-                        "SELECT payload FROM recall_audit_events "
-                        "WHERE tenant_id = %s AND event_type = 'generation_gc'",
-                        (self.tenant_id,),
-                    ).fetchall()
-                    for generation_id in (payload or {}).get("generation_ids", ())
-                }
+                collected = self._collected_ids(conn)
             if not collected:
                 return 0
             # Every memo the remaining generations hold, by each of its names and its bytes. A

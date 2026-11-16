@@ -10,12 +10,23 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ### Added
 
-- Atomic rescue on a Lite store, opt-in: with `RECALL_ATOMIC_RESCUE_MODE=active` and an absolute
-  `RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT`, every write that keeps a calibration in force builds the
+- The atomic rescue is on at first install. `recall setup --lite` and the PostgreSQL wizard register
+  it `active`, with its artifacts beside the Lite store or under `<project_root>/.recall/atomic`,
+  and build the first artifact before they finish, which on Lite takes most of the install (the
+  first build embeds about ten views per 120 word chunk). Without the `atomic` dependencies, or beside the
+  desktop app's Docker services, it stays off with a note. The code default of
+  `RECALL_ATOMIC_RESCUE_MODE` is still `off`, so an existing deployment changes only when it sets it.
+  On a Lite store with the rescue active, every write that keeps a calibration in force builds the
   artifact the trust gate serves, and a search can move one parent chunk to rank six as on
-  PostgreSQL. Off by default; the first build embeds about ten views per 120 word chunk. A search
-  the rescue applies to refuses while its artifact is missing, as between a write and its build or
-  after `recall forget` until the next refresh. See [docs/LITE.md](docs/LITE.md#atomic-rescue).
+  PostgreSQL. A search the rescue applies to refuses while its artifact is missing, as between a
+  write and its build or after `recall forget` until the next refresh. See
+  [docs/LITE.md](docs/LITE.md#atomic-rescue) and [docs/GENERATIONS.md](docs/GENERATIONS.md#atomic-rescue).
+- On PostgreSQL under an active rescue, `recall generation promote` and `rollback` and a certified
+  MCP upload build the generation's artifact first and refuse when they cannot, and every calibration
+  publish rebuilds it, reporting a failed rebuild with the command that retries it. New
+  `recall generation rescue [generation]` builds one by hand, whatever the mode. A forget erases the
+  forgotten text's views and every artifact naming it; gc removes the artifacts of what it collects.
+- The `fastembed` extra installs `numpy` and `threadpoolctl`, which the rescue needs.
 - `recall_remember`'s `supersedes` accepts another assistant's memo of the same index root by the
   id search names it by (`agent-b/note-0001`), so agents with memo folders of their own can retire
   each other's memos. Its folder's ledger decides authorship; `recall_forget_memo` is unchanged.
@@ -40,7 +51,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   written by 0.15.0 and earlier record no digest of their text and are not found until a cache hit on
   the same text records one; while any remain a forget warns, and deleting the cache file once
   clears them.
-- `recall forget` and `recall withdraw` on a Lite store with the opt-in atomic rescue left the
+- `recall forget` and `recall withdraw` on a Lite store with the atomic rescue left the
   forgotten memo's view vectors in `micro-views.sqlite` and in the rescue artifacts under
   `RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT`, which also name its source. They now erase its views with
   SQLite `secure_delete` and a truncating checkpoint, remove every artifact built before it, and

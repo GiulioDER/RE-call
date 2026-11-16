@@ -546,10 +546,12 @@ def _forget_memory_unlocked(
         from recall_mcp.settings import runtime_environment
 
         try:
-            generations = [
-                record.generation_id
-                for record in GenerationManager(store._dsn, store.tenant).list_generations()
-            ]
+            manager = GenerationManager(store._dsn, store.tenant)
+            # The collected ones too: an artifact a gc could not remove outlives its row.
+            generations = sorted(
+                {record.generation_id for record in manager.list_generations()}
+                | manager.collected_generation_ids()
+            )
             rescue_views_erased, rescue_artifacts_removed = erase_generation_rescue(
                 generations, rescue_texts, to_delete, env=runtime_environment()
             )

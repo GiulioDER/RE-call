@@ -112,8 +112,8 @@ overrides it per tenant), an unscoped search loads
 was built for another calibration. So under an active rescue `recall generation promote` and
 `recall generation rollback` build the target generation's artifact first, and refuse, saying how
 to turn the rescue off, when they cannot: the generation needs a published certified calibration,
-and the embedder must be the one that built it. An upload through an MCP server does the same and
-fails instead of activating. Publishing a calibration (`recall calibration calibrate --publish`,
+and the embedder must be the one that built it. A certified upload through an MCP server does the
+same and fails instead of activating; a development-mode upload promotes without building one. Publishing a calibration (`recall calibration calibrate --publish`,
 `carry-forward --publish`, `auto --publish`, the MCP publish tool) rebuilds the artifact for it,
 since the artifact names its calibration; a rebuild that fails is reported with the command that
 retries it, and the publication stands. The mode is read from the environment of the process doing

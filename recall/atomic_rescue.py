@@ -211,7 +211,10 @@ def resolve_atomic_rescue_manifest(
 
 
 _ARTIFACT_CACHE_MAX_ENTRIES = 2
-_ARTIFACT_CACHE: OrderedDict[Path, AtomicRescueArtifact] = OrderedDict()
+# Keyed by path and stamped with the SHA256 of the manifest's bytes, because a PostgreSQL artifact
+# is rebuilt in place for a new calibration (`recall.generation_rescue`): a path-only key served
+# every other process the replaced artifact until it restarted (CCA BUG-001).
+_ARTIFACT_CACHE: OrderedDict[Path, tuple[str, AtomicRescueArtifact]] = OrderedDict()
 _ARTIFACT_CACHE_LOCK = threading.Lock()
 _ARTIFACT_LOAD_LOCKS: dict[Path, threading.Lock] = {}
 # Upper bound on the matrix bytes one load-time validation step reads at once, and so on the
@@ -472,8 +475,9 @@ def load_atomic_rescue_artifact(path: str | Path) -> AtomicRescueArtifact:
     """Load and validate an artifact, caching the two most recently used."""
 
     resolved = Path(path).expanduser().resolve()
+    stamp = _manifest_stamp(resolved)
     with _ARTIFACT_CACHE_LOCK:
-        cached = _cached_artifact(resolved)
+        cached = _cached_artifact(resolved, stamp)
         if cached is not None:
             return cached
         load_lock = _ARTIFACT_LOAD_LOCKS.setdefault(resolved, threading.Lock())
@@ -481,7 +485,7 @@ def load_atomic_rescue_artifact(path: str | Path) -> AtomicRescueArtifact:
     # behind it; the per-path lock still makes concurrent callers of one path share a load.
     with load_lock:
         with _ARTIFACT_CACHE_LOCK:
-            cached = _cached_artifact(resolved)
+            cached = _cached_artifact(resolved, stamp)
             if cached is not None:
                 return cached
         try:
@@ -491,7 +495,9 @@ def load_atomic_rescue_artifact(path: str | Path) -> AtomicRescueArtifact:
                 _release_load_lock(resolved, load_lock)
             raise
         with _ARTIFACT_CACHE_LOCK:
-            _ARTIFACT_CACHE[resolved] = loaded
+            # Stamped with the bytes read before the load: a manifest replaced in between only
+            # costs the next call a reload.
+            _ARTIFACT_CACHE[resolved] = (stamp or "", loaded)
             _ARTIFACT_CACHE.move_to_end(resolved)
             while len(_ARTIFACT_CACHE) > _ARTIFACT_CACHE_MAX_ENTRIES:
                 # Drop only the cache reference; in-flight callers still own their mappings.
@@ -507,13 +513,24 @@ def _release_load_lock(resolved: Path, load_lock: threading.Lock) -> None:
         del _ARTIFACT_LOAD_LOCKS[resolved]
 
 
-def _cached_artifact(resolved: Path) -> AtomicRescueArtifact | None:
-    """The cached artifact for ``resolved``, marked most recently used; the caller holds the lock."""
+def _manifest_stamp(resolved: Path) -> str | None:
+    """The SHA256 of the manifest's bytes, or None when it cannot be read (the load then reports why)."""
 
-    cached = _ARTIFACT_CACHE.get(resolved)
-    if cached is not None:
-        _ARTIFACT_CACHE.move_to_end(resolved)
-    return cached
+    try:
+        return hashlib.sha256(resolved.read_bytes()).hexdigest()
+    except OSError:
+        return None
+
+
+def _cached_artifact(resolved: Path, stamp: str | None) -> AtomicRescueArtifact | None:
+    """The cached artifact for ``resolved`` if its manifest is still ``stamp``, marked most recently
+    used; the caller holds the lock."""
+
+    entry = _ARTIFACT_CACHE.get(resolved)
+    if entry is None or stamp is None or entry[0] != stamp:
+        return None
+    _ARTIFACT_CACHE.move_to_end(resolved)
+    return entry[1]
 
 
 def _protected_parent_ids(dense: Sequence[ScoredChunk]) -> list[str]:

@@ -274,6 +274,9 @@ class _CliManager:
     def retract_collected_facts(self) -> int:
         return 0
 
+    def collected_generation_ids(self) -> set[str]:
+        return set()
+
 
 def _args(command: str, **values: object) -> argparse.Namespace:
     values.setdefault("generation_cmd", command)

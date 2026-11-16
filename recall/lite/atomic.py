@@ -60,8 +60,8 @@ if TYPE_CHECKING:
     from recall.lite.store import LiteStore
 
 __all__ = [
-    "BuildReport", "configured_root", "ensure_rescue_artifact", "erase_forgotten", "manifest_path",
-    "rescue_settings", "serving_manifest",
+    "BuildReport", "artifact_root", "configured_root", "ensure_rescue_artifact", "erase_forgotten",
+    "manifest_path", "rescue_active", "rescue_settings", "serving_manifest", "store_default_root",
 ]
 
 ROOT_ENV = "RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT"
@@ -121,9 +121,34 @@ def configured_root(tenant: str, env: Mapping[str, str] | None = None) -> Path |
 
     values = tenant_retrieval_environment(os.environ if env is None else env, tenant)
     root = values.get(ROOT_ENV, "").strip()
-    if not root or values.get("RECALL_ATOMIC_RESCUE_MODE", "off").strip().lower() != "active":
+    if not root or not rescue_active(tenant, env):
         return None
     return Path(root).expanduser()
+
+
+def rescue_active(tenant: str, env: Mapping[str, str] | None = None) -> bool:
+    """Whether RECALL_ATOMIC_RESCUE_MODE resolves to `active` for `tenant`, with or without a root."""
+    from recall._env import tenant_retrieval_environment
+
+    values = tenant_retrieval_environment(os.environ if env is None else env, tenant)
+    return values.get("RECALL_ATOMIC_RESCUE_MODE", "off").strip().lower() == "active"
+
+
+def artifact_root(env: Mapping[str, str] | None = None) -> Path | None:
+    """The configured root whatever the mode, when it is absolute; None otherwise.
+
+    The one reading of the root for the paths that act on what a rescue built, which a rescue
+    turned off keeps (a forget, gc, `recall generation rescue`). The builders refuse a relative
+    root, so nothing was written under one.
+    """
+    value = (os.environ if env is None else env).get(ROOT_ENV, "").strip()
+    root = Path(value).expanduser() if value else None
+    return root if root is not None and root.is_absolute() else None
+
+
+def store_default_root(store_path: Path) -> Path:
+    """Where `recall setup --lite` puts a store's rescue artifacts: beside the store file."""
+    return store_path.with_name(store_path.name + ".atomic")
 
 
 def rescue_settings(
@@ -151,10 +176,16 @@ def rescue_settings(
     if root and not Path(root).expanduser().is_absolute():
         raise ValueError(f"{ROOT_ENV} must be an absolute path, not {root!r}")
     if not mode:
+        off = ""
         if any(importlib.util.find_spec(name) is None for name in ("numpy", "threadpoolctl")):
-            return {}, 'atomic rescue is off: pip install "recall-rag[atomic]" and run it again to turn it on'
-        if off_reason:
-            return {}, f"atomic rescue is off: {off_reason}"
+            off = 'atomic rescue is off: pip install "recall-rag[atomic]" and run it again to turn it on'
+        elif off_reason:
+            off = f"atomic rescue is off: {off_reason}"
+        if off:
+            # A root an earlier run built under stays registered, so a forget still erases what it
+            # holds (CCA ENV-002).
+            kept = root or (str(default_root) if default_root is not None and default_root.is_dir() else "")
+            return ({"RECALL_ATOMIC_RESCUE_MODE": "off", ROOT_ENV: kept} if kept else {}), off
         mode = "active"
     if mode.lower() == "active" and not root:
         if default_root is None:
@@ -329,10 +360,10 @@ def erase_forgotten(
     """
     from recall.atomic_view_store import AtomicViewStore, chunk_view_digest
 
-    value = (os.environ if env is None else env).get(ROOT_ENV, "").strip()
-    root = Path(value).expanduser() if value else None
-    # The builder refuses a relative root, so nothing was written under one.
-    if root is None or not root.is_absolute() or not root.is_dir():
+    # Without the variable, the root `recall setup --lite` chose: it registers the root only on the
+    # MCP server, so a CLI forget would otherwise erase nothing and say nothing (CCA ENV-001).
+    root = artifact_root(env) or store_default_root(store.path)
+    if not root.is_dir():
         return 0, 0
     erased = 0
     views_path = root / VIEW_STORE_NAME
