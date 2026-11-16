@@ -1271,9 +1271,15 @@ class GenerationStore(PgVectorStore):
     ) -> int:
         raise ImmutableGenerationError("active generations are read only")
 
-    def delete_sources(self, sources: list[str], *, withdraw: bool = False) -> int:
+    def delete_sources(
+        self, sources: list[str], *, withdraw: bool = False,
+        erased_texts: list[tuple[str, dict[str, Any]]] | None = None,
+    ) -> int:
         """Erase `sources` through `GenerationManager.forget`, which tombstones each one and
-        writes its `SupersessionRecord` (`withdraw`: a withdrawal rather than a forget)."""
+        writes its `SupersessionRecord` (`withdraw`: a withdrawal rather than a forget).
+
+        `erased_texts` receives the committed deleted rows for operation-local cleanup.
+        """
         from recall.generations import GenerationManager
 
         manager = GenerationManager(
@@ -1283,7 +1289,7 @@ class GenerationStore(PgVectorStore):
         )
         return sum(
             manager.forget(
-                source, legacy_table=self._migration_target, withdraw=withdraw
+                source, legacy_table=self._migration_target, withdraw=withdraw, erased_texts=erased_texts,
             ).chunks_removed
             for source in sources
         )
