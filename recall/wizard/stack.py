@@ -389,6 +389,8 @@ def tenant_service(base_env: dict[str, str], *, image: str) -> dict[str, object]
     one — a second construction site would drift, and the drift would only show up as a service
     that starts differently from its siblings.
     """
+    from recall.lite.atomic import MODE_ENV, ROOT_ENV
+
     # The tenant's own env, minus the DSN: inside the network the database is `db`, not a host
     # port. Same store, and taking the rest verbatim is what keeps one trust decision per
     # tenant rather than two that can drift.
@@ -401,12 +403,12 @@ def tenant_service(base_env: dict[str, str], *, image: str) -> dict[str, object]
         if k
         not in {
             "RECALL_DSN", "RECALL_MIGRATION_DSN", "RECALL_FACT_WRITE_DSN", "RECALL_INDEX_ROOT",
-            "RECALL_EMBED_CACHE", "RECALL_EMBED_CACHE_MAX_MB", "RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT",
+            "RECALL_EMBED_CACHE", "RECALL_EMBED_CACHE_MAX_MB", ROOT_ENV,
         }
     }
     # The atomic rescue's artifacts are in a HOST folder too, and active mode without them refuses
     # every search, so the container serves with the rescue off.
-    environment["RECALL_ATOMIC_RESCUE_MODE"] = "off"
+    environment[MODE_ENV] = "off"
     environment["RECALL_DSN"] = container_dsn()
     environment["RECALL_MIGRATION_DSN"] = container_dsn()
     fact_write_dsn = base_env.get("RECALL_FACT_WRITE_DSN")

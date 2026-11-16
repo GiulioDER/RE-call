@@ -807,7 +807,7 @@ class _RealServices:
                 result = trusted_search(
                     store, embedder, query, k=5, policy=TrustPolicy.from_env(block.env),
                     # And its atomic rescue, which reads the environment the same way.
-                    env={**os.environ, **block.env},
+                    env={**_rescue_base_env(), **block.env},
                 )
         except Exception as exc:  # noqa: BLE001 - THIS is the failure the smoke test exists for  # BROAD-CATCH: error-translation
             return _failed_smoke(self.config, block.tenant, query, exc)
@@ -858,14 +858,26 @@ class _RealServices:
 
     def _rescue_builder(self, tenant: str) -> Callable[[str], str | None] | None:
         """Build a certified generation's atomic rescue under the settings its server gets."""
-        if self.atomic_env.get("RECALL_ATOMIC_RESCUE_MODE", "").lower() != "active":
+        from recall.lite.atomic import MODE_ENV
+
+        if self.atomic_env.get(MODE_ENV, "").lower() != "active":
             return None
         from recall.generation_rescue import ensure_for_promotion
 
-        env = {**os.environ, **self.atomic_env}
+        env = {**_rescue_base_env(), **self.atomic_env}
         return lambda generation_id: ensure_for_promotion(
             self.config.resolved_dsn, tenant, generation_id, self.embedder, env=env
         )
+
+
+def _rescue_base_env() -> dict[str, str]:
+    """This process's environment without RECALL_ATOMIC_RESCUE_MODE_BY_TENANT: the base of the
+    rescue builder's and the smoke test's. A re-run from the project directory holds the previous
+    run's, from the `.env` the CLI loads, and it would override the mode this run registers (CCA
+    ENV-003)."""
+    from recall.lite.atomic import MODE_BY_TENANT_ENV
+
+    return {key: value for key, value in os.environ.items() if key != MODE_BY_TENANT_ENV}
 
 
 def _failed_smoke(config: HeadlessConfig, tenant: str, query: str, exc: Exception) -> SmokeResult:
@@ -1435,7 +1447,7 @@ def _atomic_rescue_env(config: HeadlessConfig) -> tuple[dict[str, str], str]:
     a host artifact root (a bind mount is how a database here was corrupted, `recall.wizard.stack`),
     so an upload there would promote a generation the host servers then refuse to search.
     """
-    from recall.lite.atomic import ROOT_ENV, rescue_settings
+    from recall.lite.atomic import RescueSettingError, rescue_settings
 
     try:
         values, note = rescue_settings(
@@ -1447,9 +1459,9 @@ def _atomic_rescue_env(config: HeadlessConfig) -> tuple[dict[str, str], str]:
                 else ""
             ),
         )
-    except ValueError as exc:
+    except RescueSettingError as exc:
         # Named by key, as every other config refusal is.
-        raise ConfigRefusal(str(exc), (ROOT_ENV if ROOT_ENV in str(exc) else "RECALL_ATOMIC_RESCUE_MODE",)) from exc
+        raise ConfigRefusal(str(exc), (exc.key,)) from exc
     return values, note
 
 
@@ -1464,13 +1476,13 @@ def _with_rescue(
     registered as this shell set it. The root is registered on all of them, so a forget through any
     server erases what the rescue keeps.
     """
-    from recall.lite.atomic import ROOT_ENV
+    from recall.lite.atomic import MODE_ENV, ROOT_ENV
 
     built = {outcome.tenant for outcome in outcomes if outcome.atomic}
-    configured = atomic_env.get("RECALL_ATOMIC_RESCUE_MODE", "off")
+    configured = atomic_env.get(MODE_ENV, "off")
     for block in blocks:
         active = configured.lower() == "active"
-        block.env["RECALL_ATOMIC_RESCUE_MODE"] = "off" if active and block.tenant not in built else configured
+        block.env[MODE_ENV] = "off" if active and block.tenant not in built else configured
         if ROOT_ENV in atomic_env:
             block.env[ROOT_ENV] = atomic_env[ROOT_ENV]
 
@@ -1480,16 +1492,16 @@ def _cli_rescue_env(blocks: tuple[ServerBlock, ...]) -> dict[str, str]:
 
     Per tenant, since one `.env` serves every tenant of the project and only some are active.
     """
-    from recall.lite.atomic import ROOT_ENV
+    from recall.lite.atomic import MODE_BY_TENANT_ENV, MODE_ENV, ROOT_ENV
 
     modes = ",".join(
-        f"{block.tenant}:{block.env['RECALL_ATOMIC_RESCUE_MODE']}"
+        f"{block.tenant}:{block.env[MODE_ENV]}"
         for block in blocks
-        if block.env.get("RECALL_ATOMIC_RESCUE_MODE", "off") != "off"
+        if block.env.get(MODE_ENV, "off") != "off"
     )
     root = next((block.env[ROOT_ENV] for block in blocks if ROOT_ENV in block.env), "")
     return {
-        **({"RECALL_ATOMIC_RESCUE_MODE_BY_TENANT": modes} if modes else {}),
+        **({MODE_BY_TENANT_ENV: modes} if modes else {}),
         **({ROOT_ENV: root} if root else {}),
     }
 

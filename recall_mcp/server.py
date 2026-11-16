@@ -3159,6 +3159,10 @@ def _register_calibration_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
     ) -> str:
         """Publish one certified calibration artifact for the caller's tenant.
 
+        Under an active atomic rescue it also rebuilds the generation's rescue artifact for the new
+        calibration; the result's `atomic_rescue` field reports the build, or a WARNING with the
+        retry command when it failed, and the publication stands.
+
         Requires the `recall:admin` scope: publishing an ARBITRARY existing calibration
         changes the serve/abstain decision for every query the tenant runs, which is
         deliberately not implied by write. Note the invariant this enforces is exactly that

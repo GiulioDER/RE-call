@@ -114,7 +114,7 @@ was built for another calibration. So under an active rescue `recall generation 
 to turn the rescue off, when they cannot: the generation needs a published certified calibration,
 and the embedder must be the one that built it. A certified upload through an MCP server does the
 same and fails instead of activating; a development-mode upload promotes without building one. Publishing a calibration (`recall calibration calibrate --publish`,
-`carry-forward --publish`, `auto --publish`, the MCP publish tool) rebuilds the artifact for it,
+`carry-forward --publish`, `auto` unless `--no-publish`, the MCP publish tool) rebuilds the artifact for it,
 since the artifact names its calibration; a rebuild that fails is reported with the command that
 retries it, and the publication stands. The mode is read from the environment of the process doing
 this, so the CLI must see the same settings as the server (the wizard writes them into the
