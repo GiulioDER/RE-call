@@ -1171,13 +1171,30 @@ def artifact_names_any(directory: Path, sources: set[str]) -> bool:
         return bool(names) and names <= _ARTIFACT_FILES
 
 
+def evict_atomic_rescue_artifacts(directories: Sequence[Path]) -> None:
+    """Drop this process's cached artifacts that live under `directories`, and only those.
+
+    The cache maps each artifact's matrix, and Windows refuses to delete a mapped file, so a
+    directory is evicted before it is removed. Clearing the whole cache instead made the next search
+    reload and re-hash the artifact still serving.
+    """
+
+    resolved = [Path(directory).expanduser().resolve() for directory in directories]
+    with _ARTIFACT_CACHE_LOCK:
+        # Not an access decision: it picks which cache keys (manifest paths `load_atomic_rescue_artifact`
+        # already resolved) to drop, and reads no file. `within` would resolve them again and refuse a
+        # UNC root, leaving its entries cached and its directory undeletable on Windows.
+        # ast-grep-ignore: containment-via-confined
+        for path in [path for path in _ARTIFACT_CACHE if any(path.is_relative_to(d) for d in resolved)]:
+            del _ARTIFACT_CACHE[path]
+
+
 def remove_artifact_directories(directories: Sequence[Path], root: Path) -> int:
     """Remove the artifact `directories` that exist, returning how many; raises when one is left,
     which happens on Windows while a process has its matrix open."""
     doomed = [entry for entry in directories if entry.is_dir()]
     if doomed:
-        # This process's cache maps the matrix it last loaded, and Windows refuses to delete it.
-        clear_atomic_rescue_artifact_cache()
+        evict_atomic_rescue_artifacts(doomed)
     for entry in doomed:
         shutil.rmtree(entry, ignore_errors=True)
     left = [entry.name for entry in doomed if entry.exists()]
@@ -1201,6 +1218,7 @@ __all__ = [
     "GatedAtomicRescueSelection",
     "artifact_names_any",
     "clear_atomic_rescue_artifact_cache",
+    "evict_atomic_rescue_artifacts",
     "atomic_rescue_expectation_parity",
     "atomic_rescue_reference_parity",
     "insert_atomic_rescue_dense",

@@ -13,6 +13,8 @@ runs) and then removes superseded artifacts. A lock file under the root, taken w
 lets one process build at a time: several servers of one tenant (Claude Code, Codex, each open
 session) see the same gap, and the others leave it to the holder. A failed build is retried after
 a backoff, MIN_BACKOFF_S doubling to MAX_BACKOFF_S, so a broken build does not run on every search.
+The backoff is recorded beside the lock (`recall.generation_rescue.build_backoff`), on the wall
+clock, so every server of the tenant waits it out rather than each retrying on its own.
 """
 
 from __future__ import annotations
@@ -25,7 +27,15 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from recall.generation_rescue import artifact_manifest, build_artifact, build_lock, prune_superseded
+from recall.generation_rescue import (
+    artifact_manifest,
+    artifact_serves,
+    build_artifact,
+    build_backoff,
+    build_lock,
+    prune_superseded,
+    set_build_backoff,
+)
 
 if TYPE_CHECKING:
     from recall.embeddings import Embedder
@@ -43,15 +53,13 @@ MAX_BACKOFF_S = 600.0
 def _artifact_serves(root: Path, binding: Mapping[str, str], calibration_id: str, embedder: Embedder) -> bool:
     """Whether an artifact under `root` serves this generation beside `calibration_id`, verified by
     the serving loader (its cache makes a repeated check cheap)."""
-    from recall.generation_rescue import _serves
-
     lineage = {
         "generation_id": binding.get("generation_id"),
         "calibration_id": calibration_id,
         "pipeline_fingerprint": binding.get("pipeline_fingerprint"),
         "corpus_fingerprint": binding.get("corpus_fingerprint"),
     }
-    return _serves(artifact_manifest(root, str(binding["generation_id"]), calibration_id), lineage, embedder)
+    return artifact_serves(artifact_manifest(root, str(binding["generation_id"]), calibration_id), lineage, embedder)
 
 
 class RescueBuilder:
@@ -65,14 +73,13 @@ class RescueBuilder:
         *,
         build: Callable[..., str] = build_artifact,
         prune: Callable[[str, str, Path], int] | None = None,
-        clock: Callable[[], float] = time.monotonic,
+        clock: Callable[[], float] = time.time,
     ) -> None:
         self._store, self._embedder, self._root = store, embedder, root
         self._build, self._prune, self._clock = build, prune, clock
         self._lock = threading.Lock()
         self._thread: threading.Thread | None = None
         self._last_check = -math.inf
-        self._retry_at: dict[tuple[str, str], tuple[float, float]] = {}  # key -> (retry at, backoff)
         self._stopped = False
 
     @classmethod
@@ -105,7 +112,9 @@ class RescueBuilder:
         try:
             with self._lock:
                 now = self._clock()
-                if self._stopped or now - self._last_check < CHECK_INTERVAL_S:
+                # `0 <=`: the clock is the wall clock, which can go back, and checks must not stop
+                # until it catches up.
+                if self._stopped or 0 <= now - self._last_check < CHECK_INTERVAL_S:
                     return
                 self._last_check = now
                 if self._thread is not None and self._thread.is_alive():
@@ -115,10 +124,8 @@ class RescueBuilder:
                 return  # strict search refuses an uncalibrated generation before the rescue
             binding = self._store.generation_binding()
             key = (str(binding["generation_id"]), str(resolution.artifact.calibration_id))
-            with self._lock:
-                retry_at, _backoff = self._retry_at.get(key, (-math.inf, 0.0))
-                if now < retry_at:
-                    return
+            if self._backing_off(key, now):
+                return
             if _artifact_serves(self._root, binding, key[1], self._embedder):
                 return
             with self._lock:
@@ -139,24 +146,38 @@ class RescueBuilder:
         if thread is not None:
             thread.join(timeout_s)
 
+    def _backing_off(self, key: tuple[str, str], now: float) -> bool:
+        """Whether a failed build of `key`, by any server, is inside its backoff."""
+        recorded = build_backoff(self._root, *key)
+        if recorded is None:
+            return False
+        retry_at, backoff = recorded
+        # A retry further off than the backoff itself means the wall clock went back; waiting it
+        # out could hold the build off for as long as the clock moved.
+        return now < retry_at <= now + backoff
+
     def _run(self, key: tuple[str, str]) -> None:
-        generation_id = key[0]
+        generation_id, calibration_id = key
         try:
             with build_lock(self._root, generation_id) as held:
                 if not held:
                     return  # another process builds it; its artifact serves this server too
-                report = self._build(
-                    self._store._dsn, self._store.tenant, generation_id, self._embedder, self._root
-                )
+                if self._backing_off(key, self._clock()):
+                    return  # a server that failed it since this one checked has recorded its backoff
+                try:
+                    report = self._build(
+                        self._store._dsn, self._store.tenant, generation_id, self._embedder, self._root
+                    )
+                except Exception as exc:  # BROAD-CATCH: fail-open  # logged and retried after the backoff
+                    _log.warning("atomic rescue build for %s failed: %s", generation_id, exc)
+                    previous = build_backoff(self._root, generation_id, calibration_id)
+                    backoff = MIN_BACKOFF_S if previous is None else min(previous[1] * 2, MAX_BACKOFF_S)
+                    # Under the build lock, so servers failing one after another double one record.
+                    set_build_backoff(self._root, generation_id, calibration_id, (self._clock() + backoff, backoff))
+                    return
+                set_build_backoff(self._root, generation_id, calibration_id, None)
                 _log.info("atomic rescue for %s: %s", generation_id, report)
                 if self._prune is not None:
                     self._prune(self._store._dsn, self._store.tenant, self._root)
-        except Exception as exc:  # BROAD-CATCH: fail-open  # logged and retried after the backoff
+        except Exception as exc:  # BROAD-CATCH: fail-open  # a rescue problem must never fail a search
             _log.warning("atomic rescue build for %s failed: %s", generation_id, exc)
-            with self._lock:
-                _retry, backoff = self._retry_at.get(key, (-math.inf, 0.0))
-                backoff = MIN_BACKOFF_S if backoff == 0.0 else min(backoff * 2, MAX_BACKOFF_S)
-                self._retry_at[key] = (self._clock() + backoff, backoff)
-            return
-        with self._lock:
-            self._retry_at.pop(key, None)
