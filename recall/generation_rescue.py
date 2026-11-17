@@ -162,7 +162,7 @@ def build_artifact(dsn: str, tenant: str, generation_id: str, embedder: Embedder
 
     require_atomic_dependency()
     calibration_id = _published_calibration(dsn, tenant, generation_id)
-    manifest = resolve_atomic_rescue_manifest(root, f"{generation_id}.{calibration_id}")
+    manifest = resolve_atomic_rescue_manifest(root, generation_id)
     # Entered as a name, not bound by `as`: `__enter__` is typed on the base store.
     store = GenerationStore(dsn, embedder.dim, tenant=tenant)
     with store:
