@@ -108,8 +108,10 @@ absent or stale still answers, marked uncalibrated.
 
 When `RECALL_ATOMIC_RESCUE_MODE` resolves to `active` for a tenant (`RECALL_ATOMIC_RESCUE_MODE_BY_TENANT`
 overrides it per tenant), an unscoped search loads
-`<RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT>/<generation_id>/manifest.json` and refuses when it is missing or
-was built for another calibration. So under an active rescue `recall generation promote` and
+`<RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT>/<generation_id>.<calibration_id>/manifest.json` (or, for an
+artifact built before 2026-11-17, `<generation_id>/manifest.json`) and refuses when it is missing or
+was built for another calibration, unless `RECALL_ATOMIC_RESCUE_WHEN_MISSING=skip` (a desktop install,
+[WIZARD.md](WIZARD.md#atomic-rescue)) lets it answer without the rescue. So under an active rescue `recall generation promote` and
 `recall generation rollback` build the target generation's artifact first, and refuse, saying how
 to turn the rescue off, when they cannot: the generation needs a published certified calibration,
 and the embedder must be the one that built it. A certified upload through an MCP server does the
