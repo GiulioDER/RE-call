@@ -139,9 +139,13 @@ root, so it is the same build `recall generation rescue` runs.
 - **One build at a time per tenant and generation**, across processes: a lock file under the root,
   taken without waiting (the non-blocking OS lock `recall.lite.writer_lock` already implements for
   Windows and POSIX). A server that cannot take it does nothing; the holder's build serves both.
-- **One attempt per key per server, then back off**: a failed build is logged and not retried for
+- **One attempt per key, then back off**: a failed build is logged and not retried for
   that `(generation_id, calibration_id)` until a backoff passes (same doubling backoff as the Lite
-  auto-refresh, from 60 s to 600 s), so a broken build does not run on every search.
+  auto-refresh, from 60 s to 600 s), so a broken build does not run on every search. The backoff is
+  recorded beside the lock, under it, so every server of the tenant waits it out (added after the
+  final review of #1339: kept per process, N servers each ran a failing build once per window).
+  A prune removes the lock file and the record of each generation it removes, unless a process
+  holds its lock.
 - **A build for a key no longer current is not started**: the key is the search's generation and
   calibration at the time of the search.
 - A forget erases under the recorded roots as today (`build_artifact` records its root). Removal

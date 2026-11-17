@@ -58,6 +58,8 @@ __all__ = [
     "lite_lane",
     "lite_lane_status",
     "queued_notice",
+    "try_lock",
+    "unlock",
 ]
 
 _log = logging.getLogger(__name__)
@@ -102,6 +104,20 @@ else:
 
     def _unlock(fh: IO[bytes]) -> None:
         fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+
+
+def try_lock(fh: IO[bytes]) -> bool:
+    """Try, without waiting, to take the exclusive OS lock on the open file `fh`; whether it is held.
+
+    Public for the other modules that lock a file this way (`recall.generation_rescue`), so a rename
+    here fails their import rather than a background build that swallows its exceptions.
+    """
+    return _try_lock(fh)
+
+
+def unlock(fh: IO[bytes]) -> None:
+    """Release the lock `try_lock` took on `fh`."""
+    _unlock(fh)
 
 
 class LiteWriterBusy(LiteStoreError):

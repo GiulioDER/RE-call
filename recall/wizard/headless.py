@@ -1473,9 +1473,12 @@ def _with_rescue(
 
     Every other server that would be active is pinned off, whatever the client's environment
     says: the memory tenant has no generation, a tenant served by an earlier generation may have no
-    artifact, and active mode refuses every search on either. Another mode (`shadow`, `off`) is
-    registered as this shell set it. The root is registered on all of them, so a forget through any
-    server erases what the rescue keeps.
+    artifact, and active mode refuses every search on either. Under
+    RECALL_ATOMIC_RESCUE_WHEN_MISSING=skip a missing artifact does not refuse, so every server with
+    a generation is registered active, with or without one: its searches answer without the rescue
+    until the server builds it (`recall_mcp.rescue_builder`), and only the memory tenant is pinned
+    off. Another mode (`shadow`, `off`) is registered as this shell set it. The root is registered
+    on all of them, so a forget through any server erases what the rescue keeps.
     """
     from recall.lite.atomic import MODE_ENV, ROOT_ENV, WHEN_MISSING_ENV
 
@@ -1655,13 +1658,21 @@ def run_headless(
                         atomic = (builder(recorded.generation_id) or "") if builder else ""
                     except Exception as exc:  # BROAD-CATCH: fail-closed
                         # The generation is already serving: dropped to `failures`, whatever the
-                        # cause, it would lose its server. Served with the rescue pinned off instead
-                        # (`_with_rescue`). Named by type only: a psycopg error can quote the
-                        # password, and progress is printed.
+                        # cause, it would lose its server. Served with the rescue pinned off instead,
+                        # or under `skip` active, built by its server (`_with_rescue`). Named by type
+                        # only: a psycopg error can quote the password, and progress is printed.
                         atomic = ""
                         if progress:
+                            from recall.lite.atomic import WHEN_MISSING_ENV
+
+                            skip = wiring.atomic_env.get(WHEN_MISSING_ENV, "refuse").lower() == "skip"
+                            consequence = (
+                                "its searches answer without it until its server builds it"
+                                if skip
+                                else "it stays off"
+                            )
                             progress(
-                                f"{spec.tenant}: atomic rescue not rebuilt ({type(exc).__name__}), so it stays off"
+                                f"{spec.tenant}: atomic rescue not rebuilt ({type(exc).__name__}); {consequence}"
                             )
                     recorded = replace(recorded, atomic=atomic)
                 outcomes.append(recorded)

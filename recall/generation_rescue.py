@@ -19,8 +19,11 @@ more than the index build. Generation ids are unique across tenants, so one root
 
 from __future__ import annotations
 
+import json
+import os
 import shutil
-from contextlib import contextmanager
+import sys
+from contextlib import contextmanager, suppress
 from datetime import UTC, datetime
 from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 from pathlib import Path
@@ -29,7 +32,7 @@ from typing import TYPE_CHECKING
 from recall.atomic_rescue import (
     AtomicRescueArtifactError,
     artifact_names_any,
-    clear_atomic_rescue_artifact_cache,
+    evict_atomic_rescue_artifacts,
     load_atomic_rescue_artifact,
     remove_artifact_directories,
     require_atomic_dependency,
@@ -38,6 +41,7 @@ from recall.atomic_rescue import (
     write_atomic_rescue_artifact,
 )
 from recall.lite.atomic import ROOT_ENV, VIEW_STORE_NAME, artifact_root, configured_root, rescue_active
+from recall.lite.writer_lock import try_lock, unlock
 from recall.observability import get_logger
 from recall.state_dir import write_ignore
 
@@ -47,8 +51,9 @@ if TYPE_CHECKING:
 _log = get_logger("generation_rescue")
 
 __all__ = [
-    "after_publish", "artifact_manifest", "build_artifact", "build_lock", "ensure_for_promotion", "erase_forgotten", "forget_roots",
-    "generation_artifact_dirs", "prune_superseded", "remove_artifacts",
+    "after_publish", "artifact_manifest", "artifact_serves", "build_artifact", "build_backoff", "build_lock",
+    "ensure_for_promotion", "erase_forgotten", "forget_roots", "generation_artifact_dirs", "prune_superseded",
+    "remove_artifacts", "set_build_backoff",
 ]
 
 
@@ -194,8 +199,11 @@ def build_artifact(dsn: str, tenant: str, generation_id: str, embedder: Embedder
         GenerationManager(dsn, tenant, actor="recall-atomic-rescue").record_rescue_root(generation_id, str(root))
         # Before the scan, which an artifact already in force (a rollback, a repeated rescue) would
         # make for nothing (CCA PERF-002).
-        if _serves(artifact_manifest(root, generation_id, calibration_id), lineage, embedder):
+        if artifact_serves(artifact_manifest(root, generation_id, calibration_id), lineage, embedder):
             return f"in force for {generation_id}"
+        # Before the scan: on Windows the removal fails while another process has the damaged
+        # matrix mapped, and the build would then refuse only after a full scan and assembly.
+        _remove_damaged(manifest)
         reused = _recalibrated(root, generation_id, lineage, embedder)
         parents = rescue_parents(store.iter_chunks()) if reused is None else []
     root.mkdir(parents=True, exist_ok=True)
@@ -211,7 +219,7 @@ def build_artifact(dsn: str, tenant: str, generation_id: str, embedder: Embedder
             )
         ordinary = len(parents)
         _refuse_if_corpus_moved(dsn, tenant, generation_id, embedder.dim, lineage, root, parents)
-    if _serves(artifact_manifest(root, generation_id, calibration_id), lineage, embedder):
+    if artifact_serves(artifact_manifest(root, generation_id, calibration_id), lineage, embedder):
         # A concurrent build of this generation published while this one assembled: removing its
         # artifact would leave a window with none, or on Windows a half-removed one.
         return f"in force for {generation_id}"
@@ -224,16 +232,7 @@ def build_artifact(dsn: str, tenant: str, generation_id: str, embedder: Embedder
             "was built, so it was not built; the build for the calibration now published replaces it, "
             f"or run `recall --tenant {tenant} generation rescue {generation_id}`"
         )
-    if manifest.parent.exists():
-        # Damaged: a directory of this very key that does not serve. This process's cache maps the
-        # matrix it last loaded, and Windows refuses to delete it.
-        clear_atomic_rescue_artifact_cache()
-        shutil.rmtree(manifest.parent, ignore_errors=True)
-        if manifest.parent.exists():
-            raise AtomicRescueArtifactError(
-                f"{manifest.parent} holds a damaged artifact and cannot be replaced "
-                "while a process has its matrix open; stop that server and run `recall generation rescue`"
-            )
+    _remove_damaged(manifest)
     try:
         write_atomic_rescue_artifact(
             manifest.parent,
@@ -262,6 +261,22 @@ def build_artifact(dsn: str, tenant: str, generation_id: str, embedder: Embedder
     )
 
 
+def _remove_damaged(manifest: Path) -> None:
+    """Remove the directory of `manifest`, which the caller found serves nothing: a damaged
+    artifact of this very key. Raises when it stays, which Windows makes it do while a process has
+    its matrix mapped."""
+    if not manifest.parent.exists():
+        return
+    # This process's cache maps the matrix it last loaded, and Windows refuses to delete it.
+    evict_atomic_rescue_artifacts([manifest.parent])
+    shutil.rmtree(manifest.parent, ignore_errors=True)
+    if manifest.parent.exists():
+        raise AtomicRescueArtifactError(
+            f"{manifest.parent} holds a damaged artifact and cannot be replaced "
+            "while a process has its matrix open; stop that server and run `recall generation rescue`"
+        )
+
+
 def _published_calibration(dsn: str, tenant: str, generation_id: str) -> str:
     """The id of `generation_id`'s certified published calibration; refuses one that is not."""
     from recall.calibration_v2 import CalibrationRepository, CalibrationStatus
@@ -275,7 +290,7 @@ def _published_calibration(dsn: str, tenant: str, generation_id: str) -> str:
     return resolution.artifact.calibration_id
 
 
-def _serves(manifest: Path, lineage: Mapping[str, str | None], embedder: Embedder) -> bool:
+def artifact_serves(manifest: Path, lineage: Mapping[str, str | None], embedder: Embedder) -> bool:
     """Whether `manifest` is an artifact with exactly this lineage, verified by the serving loader."""
     if not manifest.is_file():
         return False
@@ -356,7 +371,7 @@ def _refuse_if_corpus_moved(
         with AtomicViewStore(root / VIEW_STORE_NAME) as views:
             views.erase_digests(stale)
     if written is not None:
-        clear_atomic_rescue_artifact_cache()
+        evict_atomic_rescue_artifacts([written])
         shutil.rmtree(written, ignore_errors=True)
     raise AtomicRescueArtifactError(
         f"the corpus of generation {generation_id} changed while its atomic rescue was built (a "
@@ -438,16 +453,79 @@ def build_lock(root: Path, generation_id: str) -> Iterator[bool]:
     a time: one that cannot take it leaves the build to the holder, whose artifact serves it too.
     An OS lock, so it dies with its process.
     """
-    from recall.lite.writer_lock import _try_lock, _unlock
-
     root.mkdir(parents=True, exist_ok=True)
-    with open(root / f".rescue-{generation_id}.lock", "ab") as fh:
-        held = _try_lock(fh)
+    with open(_lock_path(root, generation_id), "ab") as fh:
+        held = try_lock(fh)
         try:
             yield held
         finally:
             if held:
-                _unlock(fh)
+                unlock(fh)
+
+
+def _lock_path(root: Path, generation_id: str) -> Path:
+    return root / f".rescue-{generation_id}.lock"
+
+
+def _backoff_path(root: Path, generation_id: str) -> Path:
+    return root / f".rescue-{generation_id}.backoff.json"
+
+
+def build_backoff(root: Path, generation_id: str, calibration_id: str) -> tuple[float, float] | None:
+    """The backoff after a failed build of `generation_id`'s artifact for `calibration_id`, as
+    ``(retry at, backoff seconds)`` on the wall clock, or None when none is recorded.
+
+    Kept in a file beside the build lock, so every host server of the tenant waits it out: held per
+    process, N servers each retried a build that always fails, N builds per window. A record for
+    another calibration, or one that cannot be read, is no backoff.
+    """
+    try:
+        record = json.loads(_backoff_path(root, generation_id).read_text(encoding="utf-8"))
+        if record["calibration_id"] != calibration_id:
+            return None
+        return float(record["retry_at"]), float(record["backoff_s"])
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
+def set_build_backoff(
+    root: Path, generation_id: str, calibration_id: str, backoff: tuple[float, float] | None
+) -> None:
+    """Record ``(retry at, backoff seconds)`` for `build_backoff`, or clear it with None. The caller
+    holds `build_lock`, so two writers never race; the file is replaced whole, so a reader never
+    sees half of one."""
+    path = _backoff_path(root, generation_id)
+    if backoff is None:
+        path.unlink(missing_ok=True)
+        return
+    staging = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    staging.write_text(
+        json.dumps({"calibration_id": calibration_id, "retry_at": backoff[0], "backoff_s": backoff[1]}),
+        encoding="utf-8",
+    )
+    os.replace(staging, path)
+
+
+def _remove_build_state(root: Path, generation_id: str) -> None:
+    """Remove the build lock file and backoff record of a generation `prune_superseded` removed,
+    unless a process holds the lock: only one this process can lock itself is removed."""
+    path = _lock_path(root, generation_id)
+    if not path.is_file():
+        return
+    with open(path, "ab") as fh:
+        if not try_lock(fh):
+            return  # a build holds it
+        _backoff_path(root, generation_id).unlink(missing_ok=True)
+        if sys.platform != "win32":
+            # Unlinked while held: a process that opened it already finds it locked until this one
+            # closes it, and one that opens it later creates a new file.
+            path.unlink()
+            return
+        unlock(fh)
+    # Windows refuses to delete a file that is open, so it is released first; a process that opened
+    # it since then makes the removal fail, and it stays for that process to lock.
+    with suppress(OSError):
+        path.unlink()
 
 
 def prune_superseded(dsn: str, tenant: str, root: Path) -> int:
@@ -483,6 +561,7 @@ def prune_superseded(dsn: str, tenant: str, root: Path) -> int:
                 removed += remove_artifact_directories([directory], root)
             except AtomicRescueArtifactError:
                 _log.info("atomic rescue artifact %s is still open; a later prune removes it", directory)
+        _remove_build_state(root, generation_id)
     return removed
 
 
