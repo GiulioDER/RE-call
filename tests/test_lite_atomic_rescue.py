@@ -657,6 +657,56 @@ def test_a_refit_on_an_unchanged_corpus_copies_the_artifact_it_supersedes(tmp_pa
     assert after.matrix_sha256 == before.matrix_sha256 and after.views == before.views, "the copy differs"
 
 
+def test_a_refit_removes_the_artifact_it_copied_despite_this_process_mapping(tmp_path: Path, monkeypatch) -> None:
+    """A refit's build loads the artifact it supersedes to copy it, so this process maps that matrix,
+    through its cache and through the build's own references, and on Windows the removal of the
+    superseded directory then failed silently, leaving it until the next build. The Windows refusal
+    is simulated by an `rmtree` that cannot remove a directory while any matrix loaded from it is
+    still alive in this process. Invariant: the superseded directory goes.
+
+    Red proofs (2026-11-17), failing in the last assertion, "the superseded artifact was kept by this
+    process's own mapping": on Linux against `683ef1a0a`, and with the `del matrix, sibling` before
+    `_remove_others` removed (the cache evicted, the build's references kept). The same check with
+    the real `rmtree` on Windows failed against `683ef1a0a` and with the cache eviction alone, and
+    passed with both.
+    """
+    import shutil
+    import weakref
+
+    import recall.atomic_rescue as rescue
+    from recall.lite.calibration import auto_calibrate
+
+    root = tmp_path / "atomic"
+    store, embedder = _certified(tmp_path)
+    first = ensure_rescue_artifact(store, embedder, env=_env(root))
+    assert first is not None and first.manifest is not None, first
+    auto_calibrate(store, embedder)  # a refit stores a new calibration for the same corpus
+    mapped: list[tuple[Path, weakref.ref]] = []
+    load = rescue._load_atomic_rescue_artifact
+
+    def loaded(path: Path):  # noqa: ANN202
+        artifact = load(path)
+        mapped.append((Path(path).resolve().parent, weakref.ref(artifact.matrix)))
+        return artifact
+
+    monkeypatch.setattr(rescue, "_load_atomic_rescue_artifact", loaded)
+    real = shutil.rmtree
+
+    def windows(path, ignore_errors=False, *args, **kwargs):  # noqa: ANN001, ANN002, ANN003, ANN202
+        # Windows refuses to delete a matrix this process still maps.
+        if any(directory == Path(path).resolve() and ref() is not None for directory, ref in mapped):
+            if not ignore_errors:
+                raise PermissionError(f"{path}/matrix.npy is mapped")
+            return None
+        return real(path, ignore_errors, *args, **kwargs)
+
+    monkeypatch.setattr(atomic.shutil, "rmtree", windows)
+    second = ensure_rescue_artifact(store, embedder, env=_env(root))
+
+    assert second is not None and second.manifest is not None and second.manifest != first.manifest, second
+    assert not first.manifest.parent.exists(), "the superseded artifact was kept by this process's own mapping"
+
+
 def test_a_build_does_not_reload_the_artifact_it_just_published(tmp_path: Path, monkeypatch) -> None:
     store, embedder = _certified(tmp_path)
     loads: list[Path] = []
