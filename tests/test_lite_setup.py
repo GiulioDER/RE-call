@@ -160,6 +160,35 @@ def test_a_mode_set_in_the_shell_is_registered_as_it_is(tmp_path: Path, monkeypa
     assert not (project / ".recall" / "memory.db.atomic").exists()
 
 
+def test_a_per_tenant_mode_in_the_shell_does_not_skip_the_registered_build(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """E9: setup registers no `RECALL_ATOMIC_RESCUE_MODE_BY_TENANT`, so the build must not follow
+    one in the shell either: a `default:off` there skipped the artifact of a server registered
+    `active`, whose first search then found none.
+
+    Red proof (2026-11-18): with the setup refresh given `rescue_env={**os.environ, **atomic_env}`
+    again in `recall/lite/setup.py::run_lite_setup`, this test failed at "setup built no artifact".
+    """
+    from recall.lite.atomic import manifest_path
+
+    _blank_rescue_environment(monkeypatch)
+    monkeypatch.setenv("RECALL_ATOMIC_RESCUE_MODE_BY_TENANT", "default:off")
+    project, config, report = _setup(tmp_path)
+    env = _servers(config)[SERVER_NAME]["env"]
+    assert isinstance(env, dict)
+    assert env.get("RECALL_ATOMIC_RESCUE_MODE") == "active"
+    assert "RECALL_ATOMIC_RESCUE_MODE_BY_TENANT" not in env
+    assert report.atomic.startswith("built for "), f"setup built no artifact: {report.atomic!r}"
+    store_path = (project / ".recall" / "memory.db").resolve()
+    with LiteStore(store_path, dim=DIM) as store:
+        resolution = store.resolve_calibration()
+        assert resolution.artifact is not None
+        root = Path(str(env.get("RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT")))
+        manifest = manifest_path(root, store, store.lite_generation_id(), resolution.artifact.calibration_id)
+        assert manifest.is_file(), "the registered server's first search would find no artifact"
+
+
 def test_without_the_atomic_packages_setup_leaves_the_rescue_off(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """E7: with the rescue on, every search would refuse without numpy and threadpoolctl."""
     import importlib.util
