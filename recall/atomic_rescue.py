@@ -1181,6 +1181,10 @@ def evict_atomic_rescue_artifacts(directories: Sequence[Path]) -> None:
 
     resolved = [Path(directory).expanduser().resolve() for directory in directories]
     with _ARTIFACT_CACHE_LOCK:
+        # Not an access decision: it picks which cache keys (manifest paths `load_atomic_rescue_artifact`
+        # already resolved) to drop, and reads no file. `within` would resolve them again and refuse a
+        # UNC root, leaving its entries cached and its directory undeletable on Windows.
+        # ast-grep-ignore: containment-via-confined
         for path in [path for path in _ARTIFACT_CACHE if any(path.is_relative_to(d) for d in resolved)]:
             del _ARTIFACT_CACHE[path]
 
