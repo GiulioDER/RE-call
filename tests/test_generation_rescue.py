@@ -689,6 +689,11 @@ def test_a_build_that_loses_the_race_keeps_the_winners_artifact(rescue_tenant, t
 
     Red against 6fa3c8306 (the pre-fix `build_artifact`): the second build removed the first's
     artifact and returned "built for", so the published `constructed_at` changed.
+
+    Its path is the keyed `<generation_id>.<calibration_id>` one since 2026-11-17. Red in CI
+    (run 44125888491, DO NOT MERGE commit 5f6ab43cc, reverted by 6afc6e98b) with `build_artifact`
+    writing the old `<generation_id>` key again: FileNotFoundError on the winner's keyed manifest,
+    since the build wrote it elsewhere.
     """
     import json
 
