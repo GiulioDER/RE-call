@@ -150,8 +150,11 @@ def report_use(
     elif access_context is None:
         raise UseReportRefused("source policy requires an access context")
     else:
-        named = tuple(aliases.get(str(n).strip(), n) for n in (*used, *wrong))
-        known = set(authorized_report_rows(store, named, security_policy, access_context, include_text=False))
+        original = (*used, *wrong)
+        named = tuple(aliases.get(str(n).strip(), n) for n in original)
+        known = set(authorized_report_rows(store, original, security_policy, access_context, include_text=False))
+        known.update(authorized_report_rows(store, named, security_policy, access_context, include_text=False))
+        aliases = {name: source for name, source in aliases.items() if source in known}
     used_sources = resolve_sources(used, known, "used", aliases)
     wrong_sources = resolve_sources(wrong, known, "wrong", aliases)
     both = sorted(set(used_sources) & set(wrong_sources))

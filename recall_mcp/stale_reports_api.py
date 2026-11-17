@@ -113,10 +113,15 @@ def _record_served(
             elif access_context is None:
                 raise StaleReportRefused("source policy requires an access context")
             else:
-                named = tuple(aliases.get(str(n).strip(), n) for n in (stale_source, replacing_source))
+                original = (stale_source, replacing_source)
+                named = tuple(aliases.get(str(n).strip(), n) for n in original)
                 known = set(authorized_report_rows(
+                    store, original, security_policy, access_context, include_text=False,
+                ))
+                known.update(authorized_report_rows(
                     store, named, security_policy, access_context, include_text=False,
                 ))
+                aliases = {name: source for name, source in aliases.items() if source in known}
             stale = resolve_sources([stale_source], known, "stale_source", aliases)[0]
             replacing = resolve_sources([replacing_source], known, "replacing_source", aliases)[0]
             if security_policy is not None:

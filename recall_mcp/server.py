@@ -2011,12 +2011,15 @@ def _register_fact_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
 def _paths_named(store: Any, names: Sequence[object]) -> dict[str, str]:
     """`{name: stored source}` for each name that search shows (a memo's file under the index
     root) and that names exactly one served memo; the ledger knows a memo only by its stored
-    source (an absolute path, or a generation's URI). The lookup reaches every generation, so
-    only the matches the served set holds count. A bare name is left out, since the ledger
+    source (an absolute path, or a generation's URI). Both sides of the association belong to
+    the served generation. A bare name is left out, since the ledger
     already matches it among the memos the caller may read; resolving it here, unscoped, would
     let a hidden namesake change the answer."""
-    lookup, present = getattr(store, "sources_for_identifiers", None), getattr(store, "sources_present", None)
+    lookup = getattr(store, "served_sources_for_identifiers", None)
     paths = [n for n in (str(raw).strip() for raw in names) if n != _basename(n)]
+    if callable(lookup):
+        return {name: hits[0] for name, hits in lookup(paths).items() if len(hits) == 1}
+    lookup, present = getattr(store, "sources_for_identifiers", None), getattr(store, "sources_present", None)
     # The ledger recognises a store by its methods (`stale_reports_api._database_backed`); one
     # without this lookup has nothing to resolve, and the ledger judges the names as written.
     if not paths or not callable(lookup) or not callable(present):
@@ -2570,14 +2573,23 @@ def _register_reasoning_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         sidecar = state.get("stores") is None
         assistant = deps.assistant
 
-        def run() -> dict[str, Any]:
-            names = (stale_source, replacing_source)
-            named = (
-                assistant.files_named(cast(LiteStore, store), list(names))
-                if assistant is not None
-                # The queue reads plain search's name as it is; the ledger gets its stored source.
-                else {n: (n, s) for n, s in _paths_named(store, names).items()}
+        names = (stale_source, replacing_source)
+        try:
+            named = await _to_thread(
+                lambda: (
+                    assistant.files_named(cast(LiteStore, store), list(names))
+                    if assistant is not None
+                    else {n: (n, s) for n, s in _paths_named(store, names).items()}
+                )
             )
+        except Exception:  # BROAD-CATCH: pre-write cleanup; plain local names still reach the sidecar
+            if sidecar and assistant is None and not report_access:
+                named = {}
+            else:
+                await _release_mutation_reservation(state, store.tenant, idempotency_key)
+                raise
+
+        def run() -> dict[str, Any]:
             # The queue reads a memo's file under the root, and runs only with no source policy,
             # where nothing is hidden from the caller. Under a policy the caller's names go to the
             # ledger as written, so a refusal names them and an unreadable memo reads as absent.
@@ -2679,6 +2691,17 @@ def _register_reasoning_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         assert store is not None
         assistant = deps.assistant
         names: list[object] = [*(used or []), *(wrong or [])]
+        try:
+            aliases = await _to_thread(
+                lambda: (
+                    None if len(names) > 2 * MAX_SOURCES
+                    else _paths_named(store, names) if assistant is None
+                    else {n: s for n, (_, s) in assistant.files_named(cast(LiteStore, store), names).items()}
+                )
+            )
+        except Exception:  # BROAD-CATCH: only the unwritten alias phase releases its reservation
+            await _release_mutation_reservation(state, store.tenant, idempotency_key)
+            raise
         with METRICS.timer("recall_tool_latency_ms", tool="report_use"):
             try:
                 result = await _to_thread(
@@ -2691,12 +2714,7 @@ def _register_reasoning_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
                         task_succeeded=task_succeeded,
                         query=query,
                         note=note,
-                        # A list past the cap is refused by report_use; it is not resolved first.
-                        aliases=(
-                            None if len(names) > 2 * MAX_SOURCES
-                            else _paths_named(store, names) if assistant is None
-                            else {n: s for n, (_, s) in assistant.files_named(cast(LiteStore, store), names).items()}
-                        ),
+                        aliases=aliases,
                         **report_access,
                     )
                 )
@@ -3848,17 +3866,24 @@ def build_server(settings: Settings | None = None) -> MCPServer:
         try:
             tenant = authorize(token.scopes, token.claims, scope)
         except PermissionError:
-            record_access(principal=principal, tenant=None, scope=scope, tool=tool,
-                          session=session, client=client, outcome="denied")
+            await _to_thread(
+                lambda: record_access(principal=principal, tenant=(token.claims or {}).get("tenant"),
+                                      scope=scope, tool=tool, session=session, client=client,
+                                      outcome="denied")
+            )
             raise
         if requested_tenant is not None and requested_tenant != tenant:
-            record_access(principal=principal, tenant=tenant, scope=scope, tool=tool,
-                          session=session, client=client, outcome="denied")
+            await _to_thread(
+                lambda: record_access(principal=principal, tenant=tenant, scope=scope, tool=tool,
+                                      session=session, client=client, outcome="denied")
+            )
             raise PermissionError(
                 f"the authenticated token is scoped to tenant {tenant!r}, not {requested_tenant!r}"
             )
-        record_access(principal=principal, tenant=tenant, scope=scope, tool=tool,
-                      session=session, client=client, outcome="allowed")
+        await _to_thread(
+            lambda: record_access(principal=principal, tenant=tenant, scope=scope, tool=tool,
+                                  session=session, client=client, outcome="allowed")
+        )
         # After authorisation, so an unauthorised caller cannot burn the tenant's budget by
         # hammering a scope it does not hold.
         limiter = state.get("limiter")
