@@ -20,7 +20,9 @@ more than the index build. Generation ids are unique across tenants, so one root
 from __future__ import annotations
 
 import shutil
-from collections.abc import Callable, Collection, Mapping, Sequence
+from contextlib import contextmanager
+from datetime import UTC, datetime
+from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -45,7 +47,8 @@ if TYPE_CHECKING:
 _log = get_logger("generation_rescue")
 
 __all__ = [
-    "after_publish", "build_artifact", "ensure_for_promotion", "erase_forgotten", "forget_roots", "remove_artifacts",
+    "after_publish", "artifact_manifest", "build_artifact", "build_lock", "ensure_for_promotion", "erase_forgotten", "forget_roots",
+    "generation_artifact_dirs", "prune_superseded", "remove_artifacts",
 ]
 
 
@@ -114,10 +117,39 @@ def after_publish(
     return f"atomic rescue: {built}" if built else ""
 
 
+def artifact_manifest(root: str | Path, generation_id: str, calibration_id: str | None) -> Path:
+    """The manifest serving `generation_id` beside `calibration_id` under `root`.
+
+    An artifact is keyed by both, `<generation_id>.<calibration_id>`, so a new calibration is built
+    beside the old one instead of replacing a directory another server may still have mapped, which
+    Windows refuses (docs/DESKTOP_ATOMIC_RESCUE_DESIGN.md). One built before that, at the old
+    `<generation_id>` key, is returned when it exists and the keyed one does not, so it keeps serving;
+    the loader's lineage check decides whether it serves this calibration. Otherwise the keyed path,
+    which is where a build writes.
+    """
+    if calibration_id is None:
+        raise AtomicRescueArtifactError("an atomic rescue artifact on PostgreSQL requires a certified calibration")
+    keyed = resolve_atomic_rescue_manifest(root, f"{generation_id}.{calibration_id}")
+    if keyed.is_file():
+        return keyed
+    legacy = resolve_atomic_rescue_manifest(root, generation_id)
+    return legacy if legacy.is_file() else keyed
+
+
+def generation_artifact_dirs(root: str | Path, generation_id: str) -> list[Path]:
+    """Every artifact directory of `generation_id` under `root` that exists: the old `<generation_id>`
+    key and each `<generation_id>.<calibration_id>`, sorted."""
+    legacy = resolve_atomic_rescue_manifest(root, generation_id).parent
+    found = [legacy] if legacy.is_dir() else []
+    found.extend(entry for entry in legacy.parent.glob(f"{generation_id}.*") if entry.is_dir())
+    return sorted(found)
+
+
 def build_artifact(dsn: str, tenant: str, generation_id: str, embedder: Embedder, root: Path) -> str:
     """Build the artifact `generation_id` serves beside its published calibration, and describe it.
 
-    An artifact already in force is kept; one built for another calibration is replaced. The
+    An artifact already in force is kept; one for another calibration is left in place, and this one
+    is written beside it (`artifact_manifest`). The
     calibration must be certified and published, as the trust gate requires before it reaches the
     rescue, and the embedder must be the one the generation was built with.
     """
@@ -130,7 +162,7 @@ def build_artifact(dsn: str, tenant: str, generation_id: str, embedder: Embedder
 
     require_atomic_dependency()
     calibration_id = _published_calibration(dsn, tenant, generation_id)
-    manifest = resolve_atomic_rescue_manifest(root, generation_id)
+    manifest = resolve_atomic_rescue_manifest(root, f"{generation_id}.{calibration_id}")
     # Entered as a name, not bound by `as`: `__enter__` is typed on the base store.
     store = GenerationStore(dsn, embedder.dim, tenant=tenant)
     with store:
@@ -162,9 +194,9 @@ def build_artifact(dsn: str, tenant: str, generation_id: str, embedder: Embedder
         GenerationManager(dsn, tenant, actor="recall-atomic-rescue").record_rescue_root(generation_id, str(root))
         # Before the scan, which an artifact already in force (a rollback, a repeated rescue) would
         # make for nothing (CCA PERF-002).
-        if _serves(manifest, lineage, embedder):
+        if _serves(artifact_manifest(root, generation_id, calibration_id), lineage, embedder):
             return f"in force for {generation_id}"
-        reused = _recalibrated(manifest, lineage, embedder)
+        reused = _recalibrated(root, generation_id, lineage, embedder)
         parents = rescue_parents(store.iter_chunks()) if reused is None else []
     root.mkdir(parents=True, exist_ok=True)
     # The root holds view vectors of the corpus, like the `.recall` directory.
@@ -179,7 +211,7 @@ def build_artifact(dsn: str, tenant: str, generation_id: str, embedder: Embedder
             )
         ordinary = len(parents)
         _refuse_if_corpus_moved(dsn, tenant, generation_id, embedder.dim, lineage, root, parents)
-    if _serves(manifest, lineage, embedder):
+    if _serves(artifact_manifest(root, generation_id, calibration_id), lineage, embedder):
         # A concurrent build of this generation published while this one assembled: removing its
         # artifact would leave a window with none, or on Windows a half-removed one.
         return f"in force for {generation_id}"
@@ -193,13 +225,13 @@ def build_artifact(dsn: str, tenant: str, generation_id: str, embedder: Embedder
             f"or run `recall --tenant {tenant} generation rescue {generation_id}`"
         )
     if manifest.parent.exists():
-        # Another calibration's, or damaged. This process's cache maps the matrix it last loaded,
-        # and Windows refuses to delete it.
+        # Damaged: a directory of this very key that does not serve. This process's cache maps the
+        # matrix it last loaded, and Windows refuses to delete it.
         clear_atomic_rescue_artifact_cache()
         shutil.rmtree(manifest.parent, ignore_errors=True)
         if manifest.parent.exists():
             raise AtomicRescueArtifactError(
-                f"{manifest.parent} holds an artifact for another calibration and cannot be replaced "
+                f"{manifest.parent} holds a damaged artifact and cannot be replaced "
                 "while a process has its matrix open; stop that server and run `recall generation rescue`"
             )
     try:
@@ -255,10 +287,10 @@ def _serves(manifest: Path, lineage: Mapping[str, str | None], embedder: Embedde
 
 
 def _recalibrated(
-    manifest: Path, lineage: Mapping[str, str | None], embedder: Embedder
+    root: Path, generation_id: str, lineage: Mapping[str, str | None], embedder: Embedder
 ) -> tuple[object, list[dict[str, object]], int, dict[str, int]] | None:
-    """The views of the artifact in place when only its calibration differs, else None:
-    ``(matrix, views, ordinary chunk count, counts)``.
+    """The views of an artifact of `generation_id` whose only difference is its calibration, else
+    None: ``(matrix, views, ordinary chunk count, counts)``.
 
     A new calibration of an unchanged corpus leaves every view as it was, so they are copied rather
     than assembled again from a full scan, as the Lite builder copies a sibling (CCA PERF-001).
@@ -267,18 +299,23 @@ def _recalibrated(
 
     import numpy as np
 
-    if not manifest.is_file():
-        return None
-    try:
-        artifact = load_atomic_rescue_artifact(manifest)
-        if artifact.calibration_id == lineage["calibration_id"]:
-            return None
-        artifact.assert_lineage(**{**lineage, "calibration_id": artifact.calibration_id}, embedder=embedder)
-    except AtomicRescueArtifactError:
+    for directory in generation_artifact_dirs(root, generation_id):
+        manifest = directory / "manifest.json"
+        if not manifest.is_file():
+            continue
+        try:
+            artifact = load_atomic_rescue_artifact(manifest)
+            if artifact.calibration_id == lineage["calibration_id"]:
+                continue
+            artifact.assert_lineage(**{**lineage, "calibration_id": artifact.calibration_id}, embedder=embedder)
+        except AtomicRescueArtifactError:
+            continue
+        break
+    else:
         return None
     counts = {"parents": artifact.parent_count, "views": artifact.view_count, "embedded_views": 0}
-    # Copied, because this artifact's own directory is replaced, and Windows refuses to delete a
-    # matrix that is still mapped.
+    # Copied, because that artifact's directory is removed by a later prune, and Windows refuses to
+    # delete a matrix that is still mapped.
     return (
         np.array(artifact.matrix),
         [dataclasses.asdict(view) for view in artifact.views],
@@ -392,6 +429,63 @@ def _holds_rescue(path: Path) -> bool | None:
         return None
 
 
+@contextmanager
+def build_lock(root: Path, generation_id: str) -> Iterator[bool]:
+    """Try, without waiting, to hold the lock on building `generation_id`'s artifact under `root`,
+    and yield whether it is held; released on exit.
+
+    The host servers of one tenant (`recall_mcp.rescue_builder`) take it so one process builds at
+    a time: one that cannot take it leaves the build to the holder, whose artifact serves it too.
+    An OS lock, so it dies with its process.
+    """
+    from recall.lite.writer_lock import _try_lock, _unlock
+
+    root.mkdir(parents=True, exist_ok=True)
+    with open(root / f".rescue-{generation_id}.lock", "ab") as fh:
+        held = _try_lock(fh)
+        try:
+            yield held
+        finally:
+            if held:
+                _unlock(fh)
+
+
+def prune_superseded(dsn: str, tenant: str, root: Path) -> int:
+    """Remove the artifacts under `root` of this tenant's generations that cannot serve again,
+    returning how many directories went.
+
+    Run by the host server after it builds one (`recall_mcp.rescue_builder`): a desktop install runs
+    no gc, and each upload promotes a generation with a full-size artifact. Kept: the active
+    generation, the most recently retired one (a rollback's target), and every generation not yet
+    retired or failed (one about to be promoted). Removed: older retired, failed, and those gc has
+    already deleted. Best effort: a directory a process still has mapped (Windows) stays, and a later
+    prune removes it. Only this tenant's generation ids are considered, though tenants share a root.
+    """
+    from recall.generations import GenerationManager
+    from recall.lineage import GenerationState
+
+    manager = GenerationManager(dsn, tenant, actor="recall-atomic-rescue")
+    records = manager.list_generations()
+    retired = sorted(
+        (record for record in records if record.state is GenerationState.RETIRED),
+        key=lambda record: record.retired_at or datetime.min.replace(tzinfo=UTC),
+    )
+    doomed = {record.generation_id for record in retired[:-1]}
+    doomed |= {record.generation_id for record in records if record.state is GenerationState.FAILED}
+    doomed |= manager.collected_generation_ids()
+    removed = 0
+    for generation_id in sorted(doomed):
+        # A server killed while it wrote an artifact leaves its staging directory, `.<key>.<hex>`
+        # (`write_atomic_rescue_artifact`), which no build of a removed generation will reuse.
+        staging = [entry for entry in root.glob(f".{generation_id}.*") if entry.is_dir()]
+        for directory in [*generation_artifact_dirs(root, generation_id), *staging]:
+            try:
+                removed += remove_artifact_directories([directory], root)
+            except AtomicRescueArtifactError:
+                _log.info("atomic rescue artifact %s is still open; a later prune removes it", directory)
+    return removed
+
+
 def remove_artifacts(generation_ids: Collection[str], *, env: Mapping[str, str] | None = None) -> int:
     """Remove the artifacts of `generation_ids` (collected or forgotten), returning how many.
 
@@ -401,7 +495,7 @@ def remove_artifacts(generation_ids: Collection[str], *, env: Mapping[str, str] 
     if root is None:
         return 0
     return remove_artifact_directories(
-        [resolve_atomic_rescue_manifest(root, gid).parent for gid in sorted(generation_ids)], root
+        [directory for gid in sorted(generation_ids) for directory in generation_artifact_dirs(root, gid)], root
     )
 
 
@@ -432,7 +526,8 @@ def erase_forgotten(
             erased = views.erase_digests({chunk_view_digest(text) for text in texts})
     named = set(sources)
     doomed = [
-        gid for gid in generation_ids
-        if artifact_names_any(resolve_atomic_rescue_manifest(root, gid).parent, named)
+        directory for gid in sorted(generation_ids)
+        for directory in generation_artifact_dirs(root, gid)
+        if artifact_names_any(directory, named)
     ]
-    return erased, remove_artifacts(doomed, env=env)
+    return erased, remove_artifact_directories(doomed, root)

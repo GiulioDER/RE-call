@@ -13,6 +13,11 @@ from pydantic import BaseModel, Field
 from recall.support import CalibrationCoverage, QuerySupport
 from recall.types import DecisionState
 
+_ATOMIC_RESCUE_SKIPPED_DESCRIPTION = (
+    "Why an active atomic rescue was not applied to this search under "
+    "RECALL_ATOMIC_RESCUE_WHEN_MISSING=skip: missing, lineage or damaged (its artifact is being "
+    "built); empty when it was applied or not configured."
+)
 _UNKNOWN_TERM_CHECK_DESCRIPTION = (
     "Vocabulary check: checked | unavailable | disabled | not_run. Unavailable means "
     "the backend or constrained scope cannot safely check vocabulary, not that a term "
@@ -145,6 +150,7 @@ class SearchResult(BaseModel):
     corpus_fingerprint: str | None = None
     query_set_digest: str | None = None
     unknown_term_check: str = Field(default="not_run", description=_UNKNOWN_TERM_CHECK_DESCRIPTION)
+    atomic_rescue_skipped: str = Field(default="", description=_ATOMIC_RESCUE_SKIPPED_DESCRIPTION)
     unknown_terms: list[str] = Field(
         default_factory=list, description="Entity-like query tokens the completed vocabulary check found absent."
     )
@@ -349,6 +355,7 @@ class EvidenceResult(BaseModel):
         description="Index generation identity, or null when the caller supplied no generation.",
     )
     unknown_term_check: str = Field(default="not_run", description=_UNKNOWN_TERM_CHECK_DESCRIPTION)
+    atomic_rescue_skipped: str = Field(default="", description=_ATOMIC_RESCUE_SKIPPED_DESCRIPTION)
     unknown_terms: list[str] = Field(
         default_factory=list, description="Entity-like query tokens the completed vocabulary check found absent."
     )

@@ -52,6 +52,7 @@ from recall.backends import is_lite_dsn, lite_route_refusal, open_legacy_store
 from recall.lite import LiteStore, LiteWriterBusy
 from recall.lite.refresh import read_state as read_refresh_state, refresh_access_context
 from recall_mcp.lite_refresh import LiteAutoRefresher
+from recall_mcp.rescue_builder import RescueBuilder
 from recall_mcp.assistant import (
     ASSISTANT_TOOLS,
     FORGET_DESCRIPTION,
@@ -1100,6 +1101,7 @@ def _make_lifespan(
         source_policy = config.source_policy
         settings_token = None
         lite_refresher: LiteAutoRefresher | None = None
+        rescue_builder: RescueBuilder | None = None
         try:
             runtime_state = _assemble_runtime_state(
                 config, backend, probe, health_probes, limiter, enterprise_readiness_ok
@@ -1123,6 +1125,10 @@ def _make_lifespan(
             if lite_refresher is not None:
                 lite_refresher.start()
             runtime_state["lite_refresher"] = lite_refresher
+            # A PostgreSQL store whose rescue answers without a missing artifact (`skip`, a desktop
+            # install) builds that artifact in the background after a search (`recall_mcp.rescue_builder`).
+            rescue_builder = RescueBuilder.from_env(store, backend.embedder, config.runtime_env)
+            runtime_state["rescue_builder"] = rescue_builder
             settings_token = activate_runtime_settings(config.runtime_settings)
             if health is not None:
                 health.mark_started(runtime_state)
@@ -1132,6 +1138,9 @@ def _make_lifespan(
                 # Before the store closes: a refresh cut off by the close would record a
                 # closed-database failure as the last refresh (CCA BUG-006).
                 await _to_thread(lite_refresher.stop)
+            if rescue_builder is not None:
+                # Before the store closes, for the same reason.
+                await _to_thread(rescue_builder.stop)
             if limiter is not None:
                 await limiter.close()
             if store is not None:
@@ -1566,7 +1575,13 @@ def _register_search_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
                         embedder_cache=state.get("federation_embedders"),
                         embedder_cache_lock=state.get("federation_embedder_lock"),
                     )
-                    return run(execution, state), federation_diagnostics(execution)
+                    outcome = run(execution, state)
+                    builder = state.get("rescue_builder")
+                    if builder is not None:
+                        # At most once per interval: an artifact the search had to skip is built in
+                        # the background, never in this request.
+                        builder.after_retrieval()
+                    return outcome, federation_diagnostics(execution)
 
                 result, federation = await _to_thread(execute)
                 plan_payload = retrieval_plan.as_dict()

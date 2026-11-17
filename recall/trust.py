@@ -23,6 +23,7 @@ import time
 from collections.abc import Callable, Mapping
 from dataclasses import replace
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from recall import eval_clock
@@ -47,9 +48,11 @@ from recall.calibration import Calibration
 from recall.atomic_rescue import (
     ATOMIC_RESCUE_PLACEMENTS,
     AtomicRescueArtifactError,
+    AtomicRescueLineageError,
     insert_atomic_rescue_dense,
     insert_atomic_rescue_fused,
     load_atomic_rescue_artifact,
+    require_atomic_dependency,
     resolve_atomic_rescue_manifest,
 )
 from recall.dependency_invalidation import (
@@ -601,6 +604,11 @@ def _trusted_search(
     )
     if atomic_placement not in ATOMIC_RESCUE_PLACEMENTS:
         raise AtomicRescueArtifactError("RECALL_ATOMIC_RESCUE_PLACEMENT is invalid")
+    when_missing = environment_source.get("RECALL_ATOMIC_RESCUE_WHEN_MISSING", "refuse").strip().lower()
+    if when_missing not in {"refuse", "skip"}:
+        raise AtomicRescueArtifactError("RECALL_ATOMIC_RESCUE_WHEN_MISSING must be refuse or skip")
+    # Why the rescue was not applied under `skip`; empty when it was, or when it was not asked for.
+    atomic_skipped = ""
     # A scope a bare `source=` can express: the retrieval dispatch below and the atomic rescue
     # gate must agree on this, so it is written once.
     source_only_scope = (
@@ -624,21 +632,47 @@ def _trusted_search(
             raise AtomicRescueArtifactError(
                 "active atomic rescue requires an artifact root and generation identity"
             )
-        # A lite store's calibration can change while its corpus does not (a background refit
-        # lands), so it keys an artifact by both and names the path itself (`recall.lite.atomic`).
-        store_manifest = getattr(store, "atomic_rescue_manifest", None)
-        artifact = load_atomic_rescue_artifact(
-            store_manifest(artifact_root, generation_id, calibration_id)
-            if callable(store_manifest)
-            else resolve_atomic_rescue_manifest(artifact_root, generation_id)
-        )
-        artifact.assert_lineage(
-            generation_id=generation_id,
-            calibration_id=calibration_id,
-            pipeline_fingerprint=binding.get("pipeline_fingerprint"),
-            corpus_fingerprint=binding.get("corpus_fingerprint"),
-            embedder=embedder,
-        )
+        if when_missing == "skip":
+            # Configuration errors a build cannot fix, so `skip` must not hide them: the root must be
+            # absolute, and without the `atomic` packages no artifact can ever be built or loaded.
+            if not Path(artifact_root).expanduser().is_absolute():
+                raise AtomicRescueArtifactError("RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT must be an absolute path")
+            require_atomic_dependency()
+        if when_missing == "skip" and calibration_id is None:
+            # No calibration resolved (development trust over a STALE or missing one): an artifact
+            # is keyed by one, so there is nothing to load, and the search answers as with the rescue
+            # off, as it would without this setting's rescue.
+            atomic_skipped = "uncalibrated"
+        else:
+            # A store keys its artifacts by generation and calibration and names the path itself (a
+            # lite store's calibration can change while its corpus does not, and so can a PostgreSQL
+            # one's); a store without the method uses the generation alone.
+            store_manifest = getattr(store, "atomic_rescue_manifest", None)
+            manifest = (
+                store_manifest(artifact_root, generation_id, calibration_id)
+                if callable(store_manifest)
+                else resolve_atomic_rescue_manifest(artifact_root, generation_id)
+            )
+            try:
+                artifact = load_atomic_rescue_artifact(manifest)
+                artifact.assert_lineage(
+                    generation_id=generation_id,
+                    calibration_id=calibration_id,
+                    pipeline_fingerprint=binding.get("pipeline_fingerprint"),
+                    corpus_fingerprint=binding.get("corpus_fingerprint"),
+                    embedder=embedder,
+                )
+            except AtomicRescueArtifactError as exc:
+                if when_missing != "skip":
+                    raise
+                # The artifact for this generation and calibration is not usable yet (a promotion or
+                # recalibration the builder has not caught up with): answer as with the rescue off.
+                if isinstance(exc, AtomicRescueLineageError):
+                    atomic_skipped = "lineage"
+                elif not manifest.is_file() and not manifest.parent.exists():
+                    atomic_skipped = "missing"
+                else:
+                    atomic_skipped = "damaged"
         scored_loader = getattr(store, "scored_chunk_by_id", None)
         parent_cosines = getattr(store, "cosines_for", None)
         if not callable(scored_loader) or not callable(parent_cosines):
@@ -704,6 +738,8 @@ def _trusted_search(
                     parent_loader(query_vector, dense),
                 )
 
+    if atomic_skipped:
+        dense_transform = post_fusion_transform = None
     query_embedder = _RequestQueryMemo(embedder)
     retriever = HybridRetriever(
         store,
@@ -827,6 +863,8 @@ def _trusted_search(
     trusted = evaluate(result, **verdict_inputs)
     trusted = replace(trusted, calibration_coverage=calibration_coverage(store, calibration_id))
     trusted = _with_stage_ms(trusted, "trust_evaluation", trust_started)
+    if atomic_skipped:
+        trusted = replace(trusted, diagnostics=replace(trusted.diagnostics, atomic_rescue_skipped=atomic_skipped))
     if successor_expansion is not None and successor_expansion.ordering != "pool":
         # `result` is the POST-expansion pool and is still in pool order here, which is exactly
         # what `order_promoted` needs and what `trusted.hits` no longer carries.

@@ -405,6 +405,9 @@ class RetrievalDiagnostics:
     #: (RECALL_UNKNOWN_TERM_GATE=0), or `not_run` (a path that never reached the gate).
     unknown_term_check: str = "not_run"
     unknown_terms: tuple[str, ...] = ()
+    #: Why an active atomic rescue was not applied under RECALL_ATOMIC_RESCUE_WHEN_MISSING=skip:
+    #: `missing`, `lineage` or `damaged`; empty when it was applied or not asked for.
+    atomic_rescue_skipped: str = ""
 
 
 @dataclass(frozen=True)

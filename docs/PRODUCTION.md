@@ -214,7 +214,8 @@ Existing deployments keep atomic fact rescue off by default. Eligible fresh Lite
 wizard installs enable it and build the initial artifacts, as described in [WIZARD.md](WIZARD.md#atomic-rescue).
 Leave `RECALL_ATOMIC_RESCUE_MODE=off` unless every generation
 that may serve, including the immediate rollback generation, has a validated manifest at
-`<RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT>/<generation_id>/manifest.json`. A process serving several
+`<RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT>/<generation_id>.<calibration_id>/manifest.json` (an artifact
+built before 2026-11-17 at `<generation_id>/manifest.json` keeps serving). A process serving several
 tenants can set a tenant's mode with `RECALL_ATOMIC_RESCUE_MODE_BY_TENANT=tenant:mode,...`, which
 overrides the process mode for that tenant in either direction; the manifest rule then applies to
 the generations of each tenant whose resolved mode is `active`. Active mode applies only to

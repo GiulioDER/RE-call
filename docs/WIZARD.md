@@ -228,20 +228,27 @@ tenant's server. The report's `atomic rescue:` line under each corpus says what 
 - **Where the artifacts go.** `<project_root>/.recall/atomic`. A `RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT`
   set in the shell that runs the wizard is used instead, and must be absolute. One root can serve
   several tenants.
-- **Not with the Docker stack.** When `data_root` provisions it, the rescue stays off unless the
-  shell sets `RECALL_ATOMIC_RESCUE_MODE`: the desktop app's uploads, forgets and calibrations run in
-  those containers, which do not mount the host's artifact root, so an upload there would promote a
-  generation without an artifact and the host servers would refuse to search it. With the mode set
-  in the shell anyway, do uploads from the CLI or the agent, not the desktop app.
-- **Only a tenant this run built an artifact for is served active.** Every other server is pinned to
-  `RECALL_ATOMIC_RESCUE_MODE=off`: the memory tenant has no generation, and a tenant left on an
-  earlier generation may have no artifact. In active mode either would refuse every unscoped search.
+- **With the Docker stack, a missing artifact is answered without it.** When `data_root` provisions
+  the stack, the desktop app's uploads and calibrations run in those containers, which do not mount
+  the host's artifact root, so they promote a generation, or publish a calibration, without an
+  artifact. The wizard therefore also registers `RECALL_ATOMIC_RESCUE_WHEN_MISSING=skip` on the host
+  servers: a search whose artifact is missing, for another calibration, or damaged answers exactly as
+  with the rescue off and says why in `atomic_rescue_skipped`, and the server builds the artifact in
+  the background (at most one build at a time across servers, retried after 60 s doubling to 600 s
+  when it fails), then removes the artifacts of generations that cannot serve again. Everywhere else
+  the setting stays `refuse`, today's behaviour. See
+  [DESKTOP_ATOMIC_RESCUE_DESIGN.md](DESKTOP_ATOMIC_RESCUE_DESIGN.md).
+- **Only a tenant this run built an artifact for is served active**, without the Docker stack. Every
+  other server is pinned to `RECALL_ATOMIC_RESCUE_MODE=off`: the memory tenant has no generation, and
+  a tenant left on an earlier generation may have no artifact; in active mode either would refuse
+  every unscoped search. With the Docker stack (`skip`), only the memory tenant is pinned off.
 - **A mode set in the shell is kept.** Run the wizard with `RECALL_ATOMIC_RESCUE_MODE=off` to leave
   the rescue off. A mistyped mode is refused before anything is built, because the server would
   refuse to start on it.
 - **Without `numpy` and `threadpoolctl`** (the `atomic` extra), or with neither `project_root` nor
   a root in the shell, the rescue stays off and the report says why.
-- **The Docker services themselves serve with the rescue off**, for the same reason.
+- **The Docker services themselves serve with the rescue off**, since they cannot reach the root;
+  they serve only the desktop app, and the host servers build what their promotions leave missing.
 - **A failed build refuses the promotion**, as a failed publish does: the generation is left
   unpromoted and released for `recall generation gc`.
 
