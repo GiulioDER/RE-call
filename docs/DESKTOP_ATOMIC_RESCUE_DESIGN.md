@@ -50,8 +50,8 @@ that still turns it off (`recall.wizard.headless._atomic_rescue_env`, its `off_r
 ## Anti-goals (a failure even if it works)
 
 - Any install other than a desktop one answering without the rescue when its artifact is missing.
-  Everywhere else a missing artifact keeps refusing, as today: VPS2, the PostgreSQL CLI path and
-  Lite are unchanged.
+  Everywhere else a missing artifact keeps refusing, as today: production deployments, the
+  PostgreSQL CLI path and Lite are unchanged.
 - A rescue that changes an answer's trust: the fallback serves exactly what the same search with
   the rescue `off` serves.
 - Two host processes building the same artifact at once, or a build blocking a search.
@@ -110,7 +110,7 @@ would then never recover until every server restarted, which breaks goal 2.
 So a build writes `<root>/<generation_id>.<calibration_id>/`, as the Lite layout already keys by
 both, and never replaces a directory another calibration's artifact occupies. Readers try that key
 first and fall back to the old `<root>/<generation_id>/` with the same lineage check, so every
-artifact built before this change (VPS2's included) keeps serving with no rebuild. `remove_artifacts`,
+artifact built before this change (a production deployment's included) keeps serving with no rebuild. `remove_artifacts`,
 gc, `erase_forgotten` and `forget_roots` handle both forms. The other options were rejected: evicting
 a mismatched mapping in each server still fails builds until every server has searched once, and
 "restart after a recalibration" fails goal 2.
@@ -173,7 +173,7 @@ and is corrected in the same change.
 
 ## Constraints
 
-- No new PostgreSQL on VPS2 during the AML validation window; PostgreSQL tests run in CI, with red
+- No new PostgreSQL on the maintainer's server during the AML validation window; PostgreSQL tests run in CI, with red
   proof by a throwaway mutation commit.
 - Every new behaviour test is red-proved (project `CLAUDE.md`).
 - No new dependency: the desktop extra already carries `numpy` and `threadpoolctl` (PR 1335).
