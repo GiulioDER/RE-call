@@ -430,7 +430,8 @@ def _remove_others(folder: Path, *, keep: Container[str | None]) -> None:
     has mapped, and that artifact is then removed by the next build. A part left behind is never
     served: a build of its key checks every member on disk before reusing it. This process's own
     cached artifacts in them are evicted first: a refit's build loads the artifact it supersedes to
-    copy it (`_sibling`), and that mapping alone kept the directory on Windows.
+    copy it (`_sibling`), and on Windows that mapping kept the directory, as did the build's own
+    references to it, which it drops before calling this.
     """
     doomed = [
         entry for entry in folder.iterdir()
