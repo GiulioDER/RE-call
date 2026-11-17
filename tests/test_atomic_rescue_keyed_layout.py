@@ -91,3 +91,49 @@ def test_generation_artifact_dirs_ignores_other_generations(tmp_path: Path) -> N
     found = [path.name for path in generation_artifact_dirs(tmp_path, "gen_1")]
 
     assert found == ["gen_1", "gen_1.cal_1"], f"another generation's directory was taken for this one's: {found}"
+
+
+def test_prune_keeps_the_active_and_the_rollback_target(tmp_path: Path, monkeypatch) -> None:
+    """K5: after a host build, the artifacts of generations that cannot serve again are removed (a
+    desktop install runs no gc), while the active generation, the newest retired one (a rollback's
+    target), a ready one (about to be promoted) and another tenant's generation keep theirs.
+
+    Red proof: with `prune_superseded` keeping every generation, "removed 0, expected the older
+    retired, the failed and the collected generations' 3".
+    """
+    from datetime import UTC, datetime, timedelta
+    from types import SimpleNamespace
+
+    import recall.generations as generations
+    from recall.generation_rescue import prune_superseded
+    from recall.lineage import GenerationState
+
+    start = datetime(2026, 11, 1, tzinfo=UTC)
+    records = [
+        SimpleNamespace(generation_id="gen_active", state=GenerationState.ACTIVE, retired_at=None),
+        SimpleNamespace(generation_id="gen_old", state=GenerationState.RETIRED, retired_at=start),
+        SimpleNamespace(generation_id="gen_prev", state=GenerationState.RETIRED, retired_at=start + timedelta(days=1)),
+        SimpleNamespace(generation_id="gen_ready", state=GenerationState.READY, retired_at=None),
+        SimpleNamespace(generation_id="gen_failed", state=GenerationState.FAILED, retired_at=None),
+    ]
+
+    class _Manager:
+        def __init__(self, dsn: str, tenant: str, **_: object) -> None:
+            pass
+
+        def list_generations(self):  # noqa: ANN202
+            return tuple(records)
+
+        def collected_generation_ids(self) -> set[str]:
+            return {"gen_collected"}
+
+    monkeypatch.setattr(generations, "GenerationManager", _Manager)
+    for name in ("gen_active.cal_1", "gen_old.cal_1", "gen_prev", "gen_ready.cal_1", "gen_failed.cal_1",
+                 "gen_collected.cal_1", "gen_other_tenant.cal_1"):
+        _publish(tmp_path / name, "cal_1")
+
+    removed = prune_superseded("postgresql://x", "t", tmp_path)
+
+    left = sorted(path.name for path in tmp_path.iterdir() if path.is_dir())
+    assert removed == 3, f"removed {removed}, expected the older retired, the failed and the collected generations' 3"
+    assert left == ["gen_active.cal_1", "gen_other_tenant.cal_1", "gen_prev", "gen_ready.cal_1"], left

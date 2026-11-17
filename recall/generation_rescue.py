@@ -20,6 +20,7 @@ more than the index build. Generation ids are unique across tenants, so one root
 from __future__ import annotations
 
 import shutil
+from datetime import UTC, datetime
 from collections.abc import Callable, Collection, Mapping, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -46,7 +47,7 @@ _log = get_logger("generation_rescue")
 
 __all__ = [
     "after_publish", "artifact_manifest", "build_artifact", "ensure_for_promotion", "erase_forgotten", "forget_roots",
-    "generation_artifact_dirs", "remove_artifacts",
+    "generation_artifact_dirs", "prune_superseded", "remove_artifacts",
 ]
 
 
@@ -425,6 +426,39 @@ def _holds_rescue(path: Path) -> bool | None:
         return (path / VIEW_STORE_NAME).is_file() or any(entry.is_dir() for entry in path.iterdir())
     except OSError:
         return None
+
+
+def prune_superseded(dsn: str, tenant: str, root: Path) -> int:
+    """Remove the artifacts under `root` of this tenant's generations that cannot serve again,
+    returning how many directories went.
+
+    Run by the host server after it builds one (`recall_mcp.rescue_builder`): a desktop install runs
+    no gc, and each upload promotes a generation with a full-size artifact. Kept: the active
+    generation, the most recently retired one (a rollback's target), and every generation not yet
+    retired or failed (one about to be promoted). Removed: older retired, failed, and those gc has
+    already deleted. Best effort: a directory a process still has mapped (Windows) stays, and a later
+    prune removes it. Only this tenant's generation ids are considered, though tenants share a root.
+    """
+    from recall.generations import GenerationManager
+    from recall.lineage import GenerationState
+
+    manager = GenerationManager(dsn, tenant, actor="recall-atomic-rescue")
+    records = manager.list_generations()
+    retired = sorted(
+        (record for record in records if record.state is GenerationState.RETIRED),
+        key=lambda record: record.retired_at or datetime.min.replace(tzinfo=UTC),
+    )
+    doomed = {record.generation_id for record in retired[:-1]}
+    doomed |= {record.generation_id for record in records if record.state is GenerationState.FAILED}
+    doomed |= manager.collected_generation_ids()
+    removed = 0
+    for generation_id in sorted(doomed):
+        for directory in generation_artifact_dirs(root, generation_id):
+            try:
+                removed += remove_artifact_directories([directory], root)
+            except AtomicRescueArtifactError:
+                _log.info("atomic rescue artifact %s is still open; a later prune removes it", directory)
+    return removed
 
 
 def remove_artifacts(generation_ids: Collection[str], *, env: Mapping[str, str] | None = None) -> int:

@@ -25,7 +25,7 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from recall.generation_rescue import artifact_manifest, build_artifact
+from recall.generation_rescue import artifact_manifest, build_artifact, prune_superseded
 
 if TYPE_CHECKING:
     from recall.embeddings import Embedder
@@ -97,6 +97,7 @@ class RescueBuilder:
             or not root
         ):
             return None
+        kwargs.setdefault("prune", prune_superseded)  # a desktop install runs no gc
         return cls(store, embedder, Path(root).expanduser(), **kwargs)  # type: ignore[arg-type]
 
     def after_retrieval(self) -> None:

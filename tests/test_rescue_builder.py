@@ -14,6 +14,8 @@ Red proofs, each run on Linux and failing in its own assertion:
 - B6 with `from_env` ignoring RECALL_ATOMIC_RESCUE_WHEN_MISSING: "a builder for refuse".
 - B7 with the `after_retrieval()` call removed from `_run_retrieval_tool`: "the search did not
   ask the builder".
+- B6, its prune half, with the `prune` default removed from `from_env`: "a host build would never
+  remove superseded artifacts".
 """
 
 from __future__ import annotations
@@ -199,7 +201,11 @@ def test_from_env_builds_for_the_desktop_path(tmp_path: Path) -> None:
         "RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT": str(tmp_path),
     }
 
-    assert isinstance(rb.RescueBuilder.from_env(_Store(), _CarryEmbedder(), values), rb.RescueBuilder)
+    builder = rb.RescueBuilder.from_env(_Store(), _CarryEmbedder(), values)
+    assert isinstance(builder, rb.RescueBuilder)
+    from recall.generation_rescue import prune_superseded
+
+    assert builder._prune is prune_superseded, "a host build would never remove superseded artifacts"
     with LiteStore(tmp_path / "memory.db", dim=8) as lite:
         assert rb.RescueBuilder.from_env(lite, _CarryEmbedder(), values) is None
 
