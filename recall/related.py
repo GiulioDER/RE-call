@@ -4,12 +4,14 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
+from heapq import nsmallest
 from typing import Literal, Protocol, get_args
 
 from recall.calibration import Calibration
 from recall.frontmatter import RECORD_KEY
 from recall.lineage import canonical_sha256
 from recall.records import RecordsQueryError, _file_of, _record_chunks, record_causes
+from recall.scope import Scope
 from recall.security_policy import AccessContext, SourceSecurityPolicy
 from recall.supersession import EdgeCandidates, SupersessionGraph, store_supersession_graph
 from recall.trust_gate import evaluate
@@ -123,8 +125,8 @@ def _lineage(graph: SupersessionGraph, seed: str) -> frozenset[str]:
 
 
 def _widen_past_denied(
-    query: Callable[[str, RelatedRelation, int], tuple[Chunk, list[Chunk]] | None],
-    seed_chunk_id: str,
+    store: RelatedStore,
+    seed: Chunk,
     relation: RelatedRelation,
     max_items: int,
     candidates: list[Chunk],
@@ -134,13 +136,40 @@ def _widen_past_denied(
 
     The store's LIMIT counts rows before the policy sees them, so denied rows next to the seed (a
     stale digest, a narrower rule) filled it and the allowed chunks one step further out were
-    never read. The window doubles until enough are allowed or the store returns fewer rows than
-    asked, which means the relation is exhausted: bounded by the relation, never the corpus.
+    never read. Native stores stream that source's metadata once and hydrate the nearest allowed
+    rows. Other stores retain the bounded-window fallback until the relation is exhausted.
     """
     window = max_items
+    if len(candidates) < window or sum(1 for c in candidates if allowed(c)) >= max_items:
+        return candidates
+    reader = getattr(store, "iter_scoped_chunks", None)
+    by_ids = getattr(store, "chunks_by_ids", None)
+    by_id = getattr(store, "chunk_by_id", None)
+    if relation in {"source", "ordinal"} and callable(reader) and (callable(by_ids) or callable(by_id)):
+        seed_ordinal = _ordinal(seed)
+        rows = (
+            chunk for chunk in reader(Scope(), sources=[seed.source], include_text=False)
+            if chunk.source == seed.source and chunk.id != seed.id and allowed(chunk)
+        )
+        if relation == "ordinal":
+            rows = (
+                chunk for chunk in rows
+                if seed_ordinal is not None and (ordinal := _ordinal(chunk)) is not None
+                and abs(ordinal - seed_ordinal) <= ORDINAL_WINDOW
+            )
+        nearest = nsmallest(
+            max_items, rows,
+            key=lambda chunk: (abs((_ordinal(chunk) or 0) - (seed_ordinal or 0)), chunk.id),
+        )
+        ids = [chunk.id for chunk in nearest]
+        if callable(by_ids):
+            found = by_ids(ids) if ids else {}
+            return [found[chunk_id] for chunk_id in ids if chunk_id in found]
+        assert callable(by_id), "a metadata stream needs a supported chunk reader"
+        return [chunk for chunk_id in ids if (chunk := by_id(chunk_id)) is not None]
     while len(candidates) >= window and sum(1 for c in candidates if allowed(c)) < max_items:
         window *= 2
-        bounded = query(seed_chunk_id, relation, window)
+        bounded = store.related_chunks(seed.id, relation, window)
         assert bounded is not None, "the store answered this relation for the first window"
         candidates = bounded[1]
     return candidates
@@ -256,8 +285,8 @@ def trusted_related(
             # Bound here: a closure does not keep the narrowing from None.
             source_policy, context = security_policy, access_context
             candidates_iter = _widen_past_denied(
-                store_query,
-                seed_chunk_id,
+                store,
+                seed,
                 relation,
                 max_items,
                 list(candidates_iter or ()),

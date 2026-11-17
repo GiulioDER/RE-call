@@ -671,6 +671,13 @@ def _refresh_locked(
         # artifact above (CCA STAKES-001, the owner's decision of 2026-11-15).
         if not store.graph_readiness().ready:
             store.rebuild_semantic_graph()
+        with store.snapshot():
+            # Another writer can make the builder discard its projection. A current projection
+            # built by a concurrent refresh is also a valid winner.
+            if not store.graph_readiness().ready:
+                raise RuntimeError("the corpus changed while its semantic graph was built")
+            success_generation = store.lite_generation_id()
+            corpus_version = store.corpus_revision()
     except Exception as exc:  # BROAD-CATCH: fail-closed  # FAILED is not a success, so the next refresh builds again
         _log.warning("semantic graph build for %s failed: %s", db, exc)
         report.outcome, report.reason = Outcome.FAILED, f"semantic graph: {type(exc).__name__}: {exc}"
@@ -691,8 +698,8 @@ def _refresh_locked(
         db,
         roots,
         report,
-        success_generation=store.lite_generation_id(),
-        corpus_version=store.corpus_revision(),
+        success_generation=success_generation,
+        corpus_version=corpus_version,
         policy=policy_key(security_policy, security_context),
         key_root=key_root,
         stated=_stated_marker(store, roots) if report.facts_stated >= 0 else None,

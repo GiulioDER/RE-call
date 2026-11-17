@@ -16,6 +16,7 @@ import hashlib
 import json
 import re
 import sqlite3
+import sys
 import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -406,9 +407,36 @@ def _corpus_stamp(path: Path) -> tuple[tuple[int, ...] | None, ...] | None:
             return None
         else:
             # A read-only connection can create an empty WAL without changing any row.
-            stamps.append(None if file != path and stat.st_size == 0 else
-                          (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns))
+            if file != path and stat.st_size == 0:
+                stamps.append(None)
+                continue
+            changed = _change_time(file, stat.st_ctime_ns)
+            if changed is None:
+                return None
+            stamps.append((stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, changed))
     return tuple(stamps) if stamps[0] is not None else None
+
+
+def _change_time(path: Path, posix_ctime: int) -> int | None:
+    # Windows stat ctime is creation time; copy2 can preserve every other stat field.
+    if sys.platform != "win32":
+        return posix_ctime
+    import ctypes
+    import msvcrt
+
+    try:
+        query = ctypes.WinDLL("kernel32", use_last_error=True).GetFileInformationByHandleEx
+        query.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_uint32]
+        query.restype = ctypes.c_int
+        with path.open("rb") as stream:
+            # FILE_BASIC_INFO: four LARGE_INTEGER times followed by DWORD attributes.
+            info = (ctypes.c_longlong * 5)()
+            if query(msvcrt.get_osfhandle(stream.fileno()), 0, ctypes.byref(info), ctypes.sizeof(info)):
+                return int(info[3])
+    except OSError:
+        pass
+    # An unavailable change stamp disables reuse; the reader still builds a fresh view.
+    return None
 
 
 _CORPUS_LOCK = threading.RLock()

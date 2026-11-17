@@ -64,7 +64,8 @@ def atomic_write_bytes(path: Path, data: bytes) -> None:
             if os.name == "posix":
                 owner = path.stat()
                 # chown can clear special mode bits, so preserve ownership before copymode.
-                os.chown(tmp_name, owner.st_uid, owner.st_gid)
+                chown = getattr(os, "chown")
+                chown(tmp_name, owner.st_uid, owner.st_gid)
             # The temp file is created 0600 by mkstemp; carry the original's permission bits over
             # so the atomic swap does not silently tighten the user's memo.
             shutil.copymode(path, tmp_name)

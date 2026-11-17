@@ -920,3 +920,41 @@ def test_lite_detail_reuses_rows_after_writer_closes(tmp_path: Path, monkeypatch
     assert count > 0
     assert lite_db.source_detail(dsn, tenant, "a.md") is not None
     assert len(calls) == count, "closing the writer disabled warm detail reuse"
+
+
+def test_lite_copied_vectors_change_the_cached_generation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """PERF-002 repair: a timestamp-preserving restore must invalidate a warm detail.
+
+    Red on the owner's c664cbabe cache: Windows stat fields were unchanged after copy2,
+    leaving source_detail's generation stale. The cold read proves vectors changed.
+    """
+    import os
+    import shutil
+    from datetime import UTC, datetime
+
+    from recall import eval_clock
+    from recall.dashboard import lite_db
+    from recall.lite import LiteStore
+    from recall.types import Chunk
+
+    monkeypatch.setattr(eval_clock, "_source", None)
+    eval_clock.install(lambda: datetime(2026, 11, 15, 12, tzinfo=UTC))
+    monkeypatch.setattr(lite_db, "_GRAPHS", {})
+    monkeypatch.setattr(lite_db, "_CORPORA", {})
+    path, replacement = tmp_path / "memory.db", tmp_path / "replacement.db"
+    chunk = Chunk("a", "a.md", "identical text", {"file": "a.md"})
+    for target, vector in ((path, [1.0, 0.0]), (replacement, [0.0, 1.0])):
+        with LiteStore(target, dim=2) as store:
+            store.upsert([chunk], [vector])
+            tenant = store.tenant
+    dsn = "sqlite:///" + path.as_posix()
+    first = lite_db.source_detail(dsn, tenant, "a.md")
+    stat = path.stat()
+    os.utime(replacement, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+    shutil.copy2(replacement, path)
+    served = lite_db.source_detail(dsn, tenant, "a.md")
+    lite_db._CORPORA.clear()
+    lite_db._GRAPHS.clear()
+    fresh = lite_db.source_detail(dsn, tenant, "a.md")
+    assert first is not None and fresh is not None and first["generation"] != fresh["generation"]
+    assert served == fresh, "timestamp-preserving copy2 retained a stale cached generation"

@@ -17,8 +17,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   desktop app's Docker services, it stays off with a note. The code default of
   `RECALL_ATOMIC_RESCUE_MODE` is still `off`, so an existing deployment changes only when it sets it.
   On a Lite store with the rescue active, every write that keeps a calibration in force builds the
-  artifact the trust gate serves, and a search can move one parent chunk to rank six as on
-  PostgreSQL. A search the rescue applies to refuses while its artifact is missing, as between a
+  artifact the trust gate serves, and a search can move one parent chunk to dense rank six before
+  fusion as on PostgreSQL. Fusion can move it into the final top five. A search the rescue applies
+  to refuses while its artifact is missing, as between a
   write and its build or after `recall forget` until the next refresh. See
   [docs/LITE.md](docs/LITE.md#atomic-rescue) and [docs/GENERATIONS.md](docs/GENERATIONS.md#atomic-rescue).
 - On PostgreSQL under an active rescue, `recall generation promote` and `rollback` and a certified
@@ -26,16 +27,22 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   publish rebuilds it, reporting a failed rebuild with the command that retries it. New
   `recall generation rescue [generation]` builds one by hand, whatever the mode. A forget erases the
   forgotten text's views and every artifact naming it; gc removes the artifacts of what it collects.
+  A forget also removes an artifact whose `views.json` cannot be read, which can never serve. Each
+  build records its root in the audit trail, so a forget run where
+  RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT is not set still erases under it, and names a recorded root
+  it cannot reach. A build overtaken by a newer calibration's publish refuses rather than
+  replacing that calibration's artifact with its own.
 - The `fastembed` extra installs `numpy` and `threadpoolctl`, which the rescue needs.
 - `recall_remember`'s `supersedes` accepts another assistant's memo of the same index root by the
   id search names it by (`agent-b/note-0001`), so agents with memo folders of their own can retire
   each other's memos. Its folder's ledger decides authorship; `recall_forget_memo` is unchanged.
 - Lite keeps the semantic graph in its store file, built from what memos state (links,
   `supersedes`, `depends_on`, `recall_graph` front matter, headings) with no model. A refresh builds
-  it, every write clears it in the same transaction, and `recall graph status` and
+  it, every corpus write clears it in the same transaction, and `recall graph status` and
   `recall graph rebuild` now work on a lite store. The dashboard draws the store's corpus graph and
   opens each file's page from it. Search does not read the graph.
-- `recall graph status` reports whether a generation's graph is built, and its counts.
+- `recall graph status` reports the graph build marker and its recorded counts. On PostgreSQL,
+  source removal can invalidate graph members while retaining this marker until a rebuild.
 
 ### Fixed
 

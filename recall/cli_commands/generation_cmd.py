@@ -271,9 +271,10 @@ def _rescue_before_serving(args: argparse.Namespace, generation_id: str, action:
             f"not {action}: the atomic rescue is active for tenant {args.tenant!r} and generation "
             f"{generation_id}'s artifact could not be built: {exc}. Fix that and run this again. To "
             "serve it without the rescue, turn the rescue off for this tenant in its MCP server's "
-            "configuration AND here (RECALL_ATOMIC_RESCUE_MODE=off, or tenant:off in "
-            "RECALL_ATOMIC_RESCUE_MODE_BY_TENANT); turned off here only, the server would refuse "
-            "every unscoped search on it."
+            "configuration AND here, with tenant:off in RECALL_ATOMIC_RESCUE_MODE_BY_TENANT (an "
+            "entry there, which the setup wizard writes to the project .env, overrides "
+            "RECALL_ATOMIC_RESCUE_MODE=off); turned off here only, the server would refuse every "
+            "unscoped search on it."
         ) from exc
     if built:
         print(f"atomic rescue: {built}")

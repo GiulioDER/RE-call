@@ -22,6 +22,7 @@ import psycopg
 import pytest
 
 from recall.atomic_rescue import AtomicRescueArtifactError, write_atomic_rescue_artifact
+from recall.lite.atomic import ROOT_ENV
 from tests.conftest import TEST_DSN, requires_db
 from tests.test_wizard_pipeline import (
     _corpus,
@@ -30,8 +31,6 @@ from tests.test_wizard_pipeline import (
     _FakeManager,
     _Recorder,
 )
-
-ROOT_ENV = "RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT"
 
 
 # ------------------------------------------------------------------------------------- the wizard

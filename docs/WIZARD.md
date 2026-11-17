@@ -219,7 +219,8 @@ guess which project these servers belong to.
 Atomic rescue finds a document whose answer is one sentence inside a long chunk. Each chunk is
 split into overlapping 24 word views, the views are embedded, and an unscoped search moves at most
 one parent chunk, the one whose best view matches the query most closely outside the dense top
-five, to rank six, scored by its own cosine. It is on by default: the wizard builds each certified
+five, to dense rank six before fusion, scored by its own cosine. Fusion can move it into the
+final top five. It is on by default: the wizard builds each certified
 generation's artifact after publishing its calibration and before promoting it, then registers
 `RECALL_ATOMIC_RESCUE_MODE=active` and an absolute `RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT` on that
 tenant's server. The report's `atomic rescue:` line under each corpus says what it built.
@@ -250,9 +251,11 @@ held. **Not measured on PostgreSQL.** The one measurement is on the SQLite store
 local model on a loaded host (2026-11-15): 1,776 chunks took about 35 minutes to index and about two
 hours to build the first artifact. With a hosted embedder the cost is the provider's, per view.
 
-After install, every path that makes a generation serve builds its artifact first when the rescue
-is active for the tenant: `recall generation promote` and `rollback`, an upload through an MCP
-server, and publishing a new calibration. **The CLI learns the mode from the project's `.env`**, so
+After install, `recall generation promote` and `rollback` and an upload through an MCP server
+build the artifact before promotion when the rescue is active for the tenant. Publishing a new
+calibration rebuilds the artifact after publication. If that rebuild fails, the calibration stays
+published and applicable unscoped searches refuse until `recall generation rescue [generation-id]`
+builds a matching artifact. **The CLI learns the mode from the project's `.env`**, so
 run those commands from the project directory: from anywhere else the rescue reads as off, nothing
 is built, and the server, which is active, refuses the promoted generation. See
 [GENERATIONS.md](GENERATIONS.md#atomic-rescue).

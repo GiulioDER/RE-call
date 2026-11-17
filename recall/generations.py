@@ -1347,6 +1347,7 @@ class GenerationManager:
         embedded_objects = 0
         indexed_sources: list[str] = []
         cache = None
+        pending_cache_digests: set[str] = set()
         total_objects = 0
 
         def _counters(done: int) -> BuildCounters:
@@ -1573,12 +1574,14 @@ class GenerationManager:
                     continue
                 if progress is not None:
                     progress.update(_counters(done), stage="embedding", current=entry.uri)
-                embeddings = embed_with_cache(embedder, embedding_texts, cache, purpose="passage")
                 with self._connect() as conn, conn.transaction():
                     self._source_lock(conn, self.tenant_id, entry.uri)
                     if self._is_tombstoned(conn, entry.uri):
                         tombstoned += 1
                         continue
+                    # A forget must wait for cache publication before erasing these vectors.
+                    pending_cache_digests = {text_digest(text) for text in embedding_texts} if cache is not None else set()
+                    embeddings = embed_with_cache(embedder, embedding_texts, cache, purpose="passage")
                     chunks_written += self._write_source(
                         conn,
                         generation_id,
@@ -1591,6 +1594,7 @@ class GenerationManager:
                     )
                     embedded_objects += 1
                     indexed_sources.append(entry.uri)
+                pending_cache_digests.clear()
 
             group_count = len(pending_grouped)
             for group_number, group_key in enumerate(tuple(pending_grouped), start=1):
@@ -1689,9 +1693,14 @@ class GenerationManager:
             raise
         except BaseException as exc:
             try:
-                self.fail(generation_id, _failure(exc))
-            except InvalidGenerationTransition:
-                pass
+                # A failed source transaction leaves no committed rows for forget to discover.
+                if cache is not None and pending_cache_digests:
+                    cache.erase_digests(pending_cache_digests)
+            finally:
+                try:
+                    self.fail(generation_id, _failure(exc))
+                except InvalidGenerationTransition:
+                    pass
             raise
         finally:
             if cache is not None:
@@ -2258,7 +2267,8 @@ class GenerationManager:
         return IndexManifestV1.from_dict(row[0])
 
     def forget(
-        self, source_uri: str, *, legacy_table: str | None = None, withdraw: bool = False
+        self, source_uri: str, *, legacy_table: str | None = None, withdraw: bool = False,
+        erased_texts: list[tuple[str, dict[str, Any]]] | None = None,
     ) -> ErasureResult:
         """Erase a source from every generation, and tombstone it against future builds.
 
@@ -2270,9 +2280,12 @@ class GenerationManager:
         (`recall.supersession_records`), read from the active generation's copy of it, else the
         newest generation's: a forget keeps retired what it retired, `withdraw` gives that back
         and splices its chain, and also covers a source a record already stands in for.
+        `erased_texts` collects exact deleted text and metadata after commit, for the caller's
+        cache and rescue cleanup when a build committed while the source lock was awaited.
         """
         if not source_uri:
             raise ValueError("source_uri must be non-empty")
+        deleted_texts: list[tuple[str, dict[str, Any]]] = []
         event_id = _new_id("evt")
         with self._connect() as conn, conn.transaction():
             self._source_lock(conn, self.tenant_id, source_uri)
@@ -2368,12 +2381,15 @@ class GenerationManager:
             )
             removed = 0
             if selected:
+                returning = "chunk_id, text, metadata" if erased_texts is not None else "chunk_id"
                 rows = conn.execute(
                     "DELETE FROM recall_chunks_v1 WHERE tenant_id = %s "
-                    "AND generation_id = ANY(%s) AND source_uri = %s RETURNING chunk_id",
+                    f"AND generation_id = ANY(%s) AND source_uri = %s RETURNING {returning}",  # noqa: S608  # fixed columns
                     (self.tenant_id, list(selected), source_uri),
                 ).fetchall()
                 removed = len(rows)
+                if erased_texts is not None:
+                    deleted_texts.extend((str(row[1]), row[2] or {}) for row in rows)
                 self._scrub_sparse_rows(conn, [str(row[0]) for row in rows])
                 # Chunk foreign keys remove mentions and relation evidence. Relations and
                 # entities are derived rows, so remove any that no longer have surviving support
@@ -2421,9 +2437,13 @@ class GenerationManager:
                         sources=[source_uri],
                         withdraw=withdraw,
                         quote_table=True,
+                        erased_texts=deleted_texts if erased_texts is not None else None,
                     )
                     removed += len(legacy_ids)
-            return ErasureResult(source_uri, tuple(sorted(selected)), removed, event_id)
+            result = ErasureResult(source_uri, tuple(sorted(selected)), removed, event_id)
+        if erased_texts is not None:
+            erased_texts.extend(deleted_texts)
+        return result
 
     def gc(
         self,
@@ -2502,6 +2522,28 @@ class GenerationManager:
         """
         with self._connect() as conn:
             return self._collected_ids(conn)
+
+    def record_rescue_root(self, generation_id: str, root: str) -> None:
+        """Record that an atomic rescue artifact of `generation_id` is built under `root`.
+
+        So a forget run where RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT is not set still finds what the
+        rescue keeps (`recall.generation_rescue.forget_roots`).
+        """
+        with self._connect() as conn:
+            self._audit(conn, "atomic_rescue_built", generation_id=generation_id, payload={"root": root})
+
+    def rescue_roots(self) -> set[str]:
+        """Every root an atomic rescue of this tenant was built under, read from the audit trail."""
+        with self._connect() as conn:
+            return {
+                str(root)
+                for (root,) in conn.execute(
+                    "SELECT DISTINCT payload->>'root' FROM recall_audit_events "
+                    "WHERE tenant_id = %s AND event_type = 'atomic_rescue_built'",
+                    (self.tenant_id,),
+                ).fetchall()
+                if root
+            }
 
     def _collected_ids(self, conn: psycopg.Connection) -> set[str]:
         return {

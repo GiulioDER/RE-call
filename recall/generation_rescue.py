@@ -19,7 +19,6 @@ more than the index build. Generation ids are unique across tenants, so one root
 
 from __future__ import annotations
 
-import json
 import shutil
 from collections.abc import Callable, Collection, Mapping, Sequence
 from pathlib import Path
@@ -27,18 +26,27 @@ from typing import TYPE_CHECKING
 
 from recall.atomic_rescue import (
     AtomicRescueArtifactError,
+    artifact_names_any,
     clear_atomic_rescue_artifact_cache,
     load_atomic_rescue_artifact,
+    remove_artifact_directories,
+    require_atomic_dependency,
+    rescue_parents,
     resolve_atomic_rescue_manifest,
     write_atomic_rescue_artifact,
 )
 from recall.lite.atomic import ROOT_ENV, VIEW_STORE_NAME, artifact_root, configured_root, rescue_active
+from recall.observability import get_logger
 from recall.state_dir import write_ignore
 
 if TYPE_CHECKING:
     from recall.embeddings import Embedder
 
-__all__ = ["after_publish", "build_artifact", "ensure_for_promotion", "erase_forgotten", "remove_artifacts"]
+_log = get_logger("generation_rescue")
+
+__all__ = [
+    "after_publish", "build_artifact", "ensure_for_promotion", "erase_forgotten", "forget_roots", "remove_artifacts",
+]
 
 
 def _active_root(tenant: str, env: Mapping[str, str] | None) -> Path | None:
@@ -62,7 +70,7 @@ def ensure_for_promotion(
     dsn: str,
     tenant: str,
     generation_id: str,
-    embedder: Callable[[], Embedder],
+    make_embedder: Callable[[], Embedder],
     *,
     env: Mapping[str, str] | None = None,
 ) -> str | None:
@@ -71,20 +79,20 @@ def ensure_for_promotion(
     Raises when it cannot, an active rescue with no root included, so the caller refuses the
     promotion: promoted without one, the
     generation would refuse every unscoped search. `env` is the environment the server resolves
-    its mode from; the default is this process's. `embedder` is called only when a build runs, so
+    its mode from; the default is this process's. `make_embedder` is called only when a build runs, so
     a promotion with the rescue off loads no model.
     """
     root = _active_root(tenant, env)
     if root is None:
         return None
-    return build_artifact(dsn, tenant, generation_id, embedder(), root)
+    return build_artifact(dsn, tenant, generation_id, make_embedder(), root)
 
 
 def after_publish(
     dsn: str,
     tenant: str,
     generation_id: str,
-    embedder: Callable[[], Embedder],
+    make_embedder: Callable[[], Embedder],
     *,
     env: Mapping[str, str] | None = None,
 ) -> str:
@@ -96,7 +104,7 @@ def after_publish(
     "" when the rescue is off for `tenant`.
     """
     try:
-        built = ensure_for_promotion(dsn, tenant, generation_id, embedder, env=env)
+        built = ensure_for_promotion(dsn, tenant, generation_id, make_embedder, env=env)
     except Exception as exc:  # BROAD-CATCH: error-translation  # the publication stands; the operator must see this
         return (
             f"WARNING: the atomic rescue is active for tenant {tenant!r} and its artifact for "
@@ -115,25 +123,13 @@ def build_artifact(dsn: str, tenant: str, generation_id: str, embedder: Embedder
     """
     from recall import __version__
     from recall.atomic_view_store import AtomicViewStore, assemble
-    from recall.calibration_v2 import CalibrationRepository, CalibrationStatus
     from recall.embedding_core import profile_lineage_mismatch
     from recall.embeddings import embed_document_groups, embedding_profile, embedding_profile_id
     from recall.generation_store import GenerationStore
-    from recall.types import metadata_ordinal
+    from recall.generations import GenerationManager
 
-    try:
-        import threadpoolctl  # noqa: F401
-    except ImportError as exc:
-        # The loader needs it too, so without it every active search would refuse.
-        raise AtomicRescueArtifactError(
-            'atomic rescue requires the atomic optional dependency: pip install "recall-rag[atomic]"'
-        ) from exc
-    resolution = CalibrationRepository(dsn, tenant, actor="recall-atomic-rescue").resolve(generation_id)
-    if resolution.status is not CalibrationStatus.CERTIFIED or resolution.artifact is None:
-        raise AtomicRescueArtifactError(
-            f"generation {generation_id} has no certified published calibration "
-            f"({resolution.status.value}), so its atomic rescue cannot be built"
-        )
+    require_atomic_dependency()
+    calibration_id = _published_calibration(dsn, tenant, generation_id)
     manifest = resolve_atomic_rescue_manifest(root, generation_id)
     # Entered as a name, not bound by `as`: `__enter__` is typed on the base store.
     store = GenerationStore(dsn, embedder.dim, tenant=tenant)
@@ -155,20 +151,21 @@ def build_artifact(dsn: str, tenant: str, generation_id: str, embedder: Embedder
             )
         lineage = {
             "generation_id": generation_id,
-            "calibration_id": resolution.artifact.calibration_id,
+            "calibration_id": calibration_id,
             "pipeline_fingerprint": binding.get("pipeline_fingerprint"),
             "corpus_fingerprint": binding.get("corpus_fingerprint"),
         }
+        # Before anything is written under the root (the view store first), so nothing the rescue
+        # keeps is ever there that a forget run without the root variable cannot learn of
+        # (`forget_roots`); an artifact already in force is recorded too, since one built before
+        # the record existed has none.
+        GenerationManager(dsn, tenant, actor="recall-atomic-rescue").record_rescue_root(generation_id, str(root))
+        # Before the scan, which an artifact already in force (a rollback, a repeated rescue) would
+        # make for nothing (CCA PERF-002).
+        if _serves(manifest, lineage, embedder):
+            return f"in force for {generation_id}"
         reused = _recalibrated(manifest, lineage, embedder)
-        parents: list[tuple[str, str, int, str]] = []
-        for chunk in store.iter_chunks() if reused is None else ():
-            ordinal = metadata_ordinal(chunk.metadata)
-            if ordinal is None:
-                raise AtomicRescueArtifactError(f"chunk {chunk.id} has no integer ord, so it cannot be a rescue parent")
-            parents.append((chunk.id, chunk.source, ordinal, chunk.text))
-    parents.sort(key=lambda item: (item[1], item[2]))
-    if _serves(manifest, lineage, embedder):
-        return f"in force for {generation_id}"
+        parents = rescue_parents(store.iter_chunks()) if reused is None else []
     root.mkdir(parents=True, exist_ok=True)
     # The root holds view vectors of the corpus, like the `.recall` directory.
     write_ignore(root)
@@ -186,6 +183,15 @@ def build_artifact(dsn: str, tenant: str, generation_id: str, embedder: Embedder
         # A concurrent build of this generation published while this one assembled: removing its
         # artifact would leave a window with none, or on Windows a half-removed one.
         return f"in force for {generation_id}"
+    if _published_calibration(dsn, tenant, generation_id) != calibration_id:
+        # A calibration published while this one assembled: the build for it replaces the artifact,
+        # which this one, finishing later, would otherwise delete and replace with its own for the
+        # calibration no longer published (CCA STAKES-004).
+        raise AtomicRescueArtifactError(
+            f"the published calibration of generation {generation_id} changed while its atomic rescue "
+            "was built, so it was not built; the build for the calibration now published replaces it, "
+            f"or run `recall --tenant {tenant} generation rescue {generation_id}`"
+        )
     if manifest.parent.exists():
         # Another calibration's, or damaged. This process's cache maps the matrix it last loaded,
         # and Windows refuses to delete it.
@@ -222,6 +228,19 @@ def build_artifact(dsn: str, tenant: str, generation_id: str, embedder: Embedder
         f"built for {generation_id}: {counts['views']} view(s) of {counts['parents']} chunk(s), "
         f"{counts['embedded_views']} newly embedded"
     )
+
+
+def _published_calibration(dsn: str, tenant: str, generation_id: str) -> str:
+    """The id of `generation_id`'s certified published calibration; refuses one that is not."""
+    from recall.calibration_v2 import CalibrationRepository, CalibrationStatus
+
+    resolution = CalibrationRepository(dsn, tenant, actor="recall-atomic-rescue").resolve(generation_id)
+    if resolution.status is not CalibrationStatus.CERTIFIED or resolution.artifact is None:
+        raise AtomicRescueArtifactError(
+            f"generation {generation_id} has no certified published calibration "
+            f"({resolution.status.value}), so its atomic rescue cannot be built"
+        )
+    return resolution.artifact.calibration_id
 
 
 def _serves(manifest: Path, lineage: Mapping[str, str | None], embedder: Embedder) -> bool:
@@ -314,6 +333,65 @@ def _root(env: Mapping[str, str] | None) -> Path | None:
     return root if root is not None and root.is_dir() else None
 
 
+def forget_roots(
+    dsn: str, tenant: str, *, env: Mapping[str, str] | None = None
+) -> tuple[list[Path], list[str], bool]:
+    """The roots a forget of `tenant` erases under, the recorded ones this process cannot reach,
+    and whether the record could not be read.
+
+    The configured root, and every root a build of the tenant recorded (`build_artifact`): the
+    wizard writes the root to the project `.env` and the server blocks only, so a CLI forget run
+    elsewhere would otherwise erase nothing the rescue keeps (CCA SEC-003). A recorded root that is
+    a directory here is used when it holds the view store or a generation folder, and skipped
+    when it holds neither, since then a forget has nothing to erase there; one that is no
+    directory here, or cannot be read, is reported. The configured root is returned whatever the
+    record. Never raises for a root it cannot read: the forget runs this before deleting anything.
+    """
+    from recall.generations import GenerationManager
+
+    usable: list[Path] = []
+    unreachable: list[str] = []
+    try:
+        configured = _root(env)
+    except OSError:  # Python before 3.14 raises PermissionError from `is_dir`
+        unreachable.append(str(artifact_root(env)))
+        configured = None
+    if configured is not None:
+        usable.append(configured)
+    try:
+        recorded = sorted(GenerationManager(dsn, tenant, actor="recall-atomic-rescue").rescue_roots())
+    except Exception:  # BROAD-CATCH: fail-closed  # the configured root is still erased, and the caller warns
+        _log.exception("the atomic rescue roots of tenant %r could not be read", tenant)
+        return usable, unreachable, True
+    for raw in recorded:
+        if raw.replace("\\", "/").startswith("//"):
+            # A UNC or device path: probing it would open a connection to whatever host the
+            # database names (CCA SEC-001), so it is reported without being touched.
+            unreachable.append(raw)
+            continue
+        path = Path(raw)
+        if path in usable:
+            continue
+        held = _holds_rescue(path) if path.is_absolute() else None
+        if held is None:
+            unreachable.append(raw)
+        elif held:
+            usable.append(path)
+    return usable, unreachable, False
+
+
+def _holds_rescue(path: Path) -> bool | None:
+    """Whether the directory `path` holds anything a forget erases (the view store, or a generation
+    folder); None when it is no directory here or cannot be read (CCA review NEW-001: Python before
+    3.14 raises PermissionError from `is_dir`)."""
+    try:
+        if not path.is_dir():
+            return None
+        return (path / VIEW_STORE_NAME).is_file() or any(entry.is_dir() for entry in path.iterdir())
+    except OSError:
+        return None
+
+
 def remove_artifacts(generation_ids: Collection[str], *, env: Mapping[str, str] | None = None) -> int:
     """Remove the artifacts of `generation_ids` (collected or forgotten), returning how many.
 
@@ -322,19 +400,9 @@ def remove_artifacts(generation_ids: Collection[str], *, env: Mapping[str, str] 
     root = _root(env)
     if root is None:
         return 0
-    doomed = [resolve_atomic_rescue_manifest(root, gid).parent for gid in sorted(generation_ids)]
-    doomed = [entry for entry in doomed if entry.is_dir()]
-    if doomed:
-        clear_atomic_rescue_artifact_cache()
-    for entry in doomed:
-        shutil.rmtree(entry, ignore_errors=True)
-    left = [entry.name for entry in doomed if entry.exists()]
-    if left:
-        raise AtomicRescueArtifactError(
-            f"atomic rescue artifact(s) {', '.join(left)} under {root} could not be removed while a "
-            "process has their matrix open"
-        )
-    return len(doomed)
+    return remove_artifact_directories(
+        [resolve_atomic_rescue_manifest(root, gid).parent for gid in sorted(generation_ids)], root
+    )
 
 
 def erase_forgotten(
@@ -348,8 +416,9 @@ def erase_forgotten(
 
     Run by a forget after the chunks are deleted, with their texts read before. The views are
     erased by text digest, and every artifact of the tenant's `generation_ids` whose `views.json`
-    names one of `sources` is removed: the forget changed that generation's corpus fingerprint, so
-    the artifact no longer serves, and it keeps the forgotten chunks' view vectors.
+    names one of `sources`, or cannot be read, is removed: the forget changed that generation's
+    corpus fingerprint, so the artifact no longer serves, and it keeps the forgotten chunks' view
+    vectors.
     """
     from recall.atomic_view_store import AtomicViewStore, chunk_view_digest
 
@@ -364,15 +433,6 @@ def erase_forgotten(
     named = set(sources)
     doomed = [
         gid for gid in generation_ids
-        if _names_any(resolve_atomic_rescue_manifest(root, gid).parent / "views.json", named)
+        if artifact_names_any(resolve_atomic_rescue_manifest(root, gid).parent, named)
     ]
     return erased, remove_artifacts(doomed, env=env)
-
-
-def _names_any(views_json: Path, sources: set[str]) -> bool:
-    """Whether the artifact's `views.json` names one of `sources`; False when it cannot be read."""
-    try:
-        views = json.loads(views_json.read_text(encoding="utf-8"))["views"]
-    except (OSError, ValueError, KeyError, TypeError):
-        return False
-    return any(isinstance(view, dict) and view.get("source") in sources for view in views)
