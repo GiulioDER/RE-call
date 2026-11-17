@@ -7,7 +7,8 @@ Red proofs, each run on Linux and failing in its own assertion (the mutations ar
 the baselines are master at `292127550`):
 - D1 against `292127550`: "a second server re-ran a failed build inside the first one's backoff".
 - D2 with `_backing_off` dropping its `<= now + backoff` bound: "a clock that went back held the
-  build off".
+  build off"; its second half with `after_retrieval`'s debounce dropping its `0 <=`: "a clock that
+  went back stopped the checks".
 - D3 with `_artifact_serves` passing `calibration_id=None` in the lineage: "a build started for
   an artifact that serves" (the check through the real loader, which every other builder test
   replaces, so the public `artifact_serves` is exercised end to end).
@@ -93,6 +94,10 @@ def test_a_backoff_further_off_than_itself_is_ignored(tmp_path: Path, monkeypatc
     _settle(builder)
 
     assert build.calls == ["gen_1"], "a clock that went back held the build off"
+    clock.now -= 3_600  # the clock goes back an hour: the next search still checks
+    builder.after_retrieval()
+    _settle(builder)
+    assert build.calls == ["gen_1", "gen_1"], "a clock that went back stopped the checks"
 
 
 def test_the_serving_check_reads_a_real_artifact(corpus: _Corpus, tmp_path: Path) -> None:  # noqa: F811

@@ -112,7 +112,9 @@ class RescueBuilder:
         try:
             with self._lock:
                 now = self._clock()
-                if self._stopped or now - self._last_check < CHECK_INTERVAL_S:
+                # `0 <=`: the clock is the wall clock, which can go back, and checks must not stop
+                # until it catches up.
+                if self._stopped or 0 <= now - self._last_check < CHECK_INTERVAL_S:
                     return
                 self._last_check = now
                 if self._thread is not None and self._thread.is_alive():
