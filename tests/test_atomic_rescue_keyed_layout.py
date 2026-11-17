@@ -11,7 +11,9 @@ No database: `build_artifact`'s store, calibration repository and manager are th
 
 Red proofs (mutations of the new code, each run on Linux, failing in its own assertion):
 - K1 with `build_artifact` writing `resolve_atomic_rescue_manifest(root, generation_id)` again:
-  "the second calibration's artifact is not beside the first".
+  "the first calibration's artifact was removed" (the build wrote the old key, so no keyed
+  directory exists). Also red against the parent commit `9efff64f7`, at the same assertion.
+- K3 is also red against the parent commit, "removed 1 of 2".
 - K2 with `artifact_manifest` dropping its legacy fallback: "a legacy artifact no longer serves".
 - K3 with `remove_artifacts` resolving only the legacy directory: "removed 1 of 2".
 - K4 with `generation_artifact_dirs` globbing `<generation_id>*`: "another generation's directory
