@@ -74,6 +74,7 @@ __all__ = [
 ROOT_ENV = "RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT"
 MODE_ENV = "RECALL_ATOMIC_RESCUE_MODE"
 MODE_BY_TENANT_ENV = "RECALL_ATOMIC_RESCUE_MODE_BY_TENANT"
+WHEN_MISSING_ENV = "RECALL_ATOMIC_RESCUE_WHEN_MISSING"
 VIEW_STORE_NAME = "micro-views.sqlite"
 #: The directory names of artifacts, in a store's folder and, from the flat layout, at the top of
 #: the root: there a build only counts them, and only a forget naming their sources removes one.

@@ -431,7 +431,7 @@ def write_project_files(
     which is where a cheap check belongs. Passing `parents=True` here would quietly manufacture the
     tree the reader already decided not to, and would do it thirty minutes too late to be useful.
     """
-    from recall.lite.atomic import MODE_BY_TENANT_ENV, ROOT_ENV
+    from recall.lite.atomic import MODE_BY_TENANT_ENV, ROOT_ENV, WHEN_MISSING_ENV
     from recall.setup import _update_env_block, scaffold_claude_md, scaffold_memory_index
 
     # `exist_ok=True` covers the re-run and the ordinary case of an existing project. It does NOT
@@ -446,7 +446,7 @@ def write_project_files(
     # `recall setup` keeps provider API keys, RECALL_CALIBRATION, RECALL_RERANK and more in that
     # same block. Passing only the two keys the wizard owns deleted all of them without a backup.
     managed = _managed_env_values(env_path)
-    for key in (MODE_BY_TENANT_ENV, ROOT_ENV):
+    for key in (MODE_BY_TENANT_ENV, ROOT_ENV, WHEN_MISSING_ENV):
         managed.pop(key, None)
     _update_env_block(
         env_path,

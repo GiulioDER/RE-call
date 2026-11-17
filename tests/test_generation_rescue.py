@@ -140,20 +140,79 @@ def test_a_fresh_install_turns_the_rescue_on_with_an_absolute_root(tmp_path: Pat
 
 
 
-def test_a_docker_stack_install_leaves_the_rescue_off(tmp_path: Path, monkeypatch) -> None:
-    """The desktop app's uploads run in containers that cannot reach a host root, so an upload
-    there would promote without an artifact while the host servers are active.
+def test_a_docker_stack_install_turns_the_rescue_on_with_skip(tmp_path: Path, monkeypatch) -> None:
+    """The desktop app's uploads run in containers that cannot reach a host root, so their promotions
+    carry no artifact; the host servers answer without it and build it (`skip`,
+    docs/DESKTOP_ATOMIC_RESCUE_DESIGN.md). This replaced the test that pinned the rescue OFF beside
+    the Docker stack (owner decision 2026-11-17).
 
-    RP-15: removing the `data_root` branch of `_atomic_rescue_env` made this fail: active was
-    registered.
+    Red proof: against the parent commit `4a073734e`, where the `data_root` branch kept it off:
+    `assert {} == {...}`, nothing was registered.
     """
     from recall.wizard.headless import _atomic_rescue_env
 
-    monkeypatch.delenv("RECALL_ATOMIC_RESCUE_MODE", raising=False)
-    monkeypatch.delenv(ROOT_ENV, raising=False)
+    for name in ("RECALL_ATOMIC_RESCUE_MODE", ROOT_ENV, "RECALL_ATOMIC_RESCUE_WHEN_MISSING"):
+        monkeypatch.delenv(name, raising=False)
 
     env, note = _atomic_rescue_env(_config(tmp_path, data_root=tmp_path / "data"))
-    assert env == {} and "Docker" in note
+    assert env == {
+        "RECALL_ATOMIC_RESCUE_MODE": "active",
+        ROOT_ENV: str((tmp_path / "project" / ".recall" / "atomic").resolve()),
+        "RECALL_ATOMIC_RESCUE_WHEN_MISSING": "skip",
+    }
+    assert note == ""
+
+
+def test_a_host_install_keeps_refuse(tmp_path: Path, monkeypatch) -> None:
+    """A control: only beside the Docker stack may a search answer without its artifact.
+
+    Red proof: with `skip` added on every path, this fails: the setting is registered."""
+    from recall.wizard.headless import _atomic_rescue_env
+
+    for name in ("RECALL_ATOMIC_RESCUE_MODE", ROOT_ENV, "RECALL_ATOMIC_RESCUE_WHEN_MISSING"):
+        monkeypatch.delenv(name, raising=False)
+
+    env, _note = _atomic_rescue_env(_config(tmp_path))
+    assert "RECALL_ATOMIC_RESCUE_WHEN_MISSING" not in env
+
+
+def test_a_shell_mode_off_still_wins_beside_the_docker_stack(tmp_path: Path, monkeypatch) -> None:
+    """A control: a mode the shell sets is registered as it is, and `off` adds no `skip`."""
+    from recall.wizard.headless import _atomic_rescue_env
+
+    monkeypatch.delenv(ROOT_ENV, raising=False)
+    monkeypatch.delenv("RECALL_ATOMIC_RESCUE_WHEN_MISSING", raising=False)
+    monkeypatch.setenv("RECALL_ATOMIC_RESCUE_MODE", "off")
+
+    env, _note = _atomic_rescue_env(_config(tmp_path, data_root=tmp_path / "data"))
+    assert env == {"RECALL_ATOMIC_RESCUE_MODE": "off"}
+
+
+def test_under_skip_every_tenant_with_a_generation_is_active(tmp_path: Path) -> None:
+    """With `skip`, a tenant whose artifact this run did not build registers active and is built on
+    its first search; the memory tenant, which has no generation, stays off, since active with no
+    generation identity raises before any artifact is looked up.
+
+    Red proof: against the parent commit `4a073734e`, where `_with_rescue` pinned every tenant this
+    run did not build for: `['active', 'off', 'off'] == ['active', 'active', 'off']`.
+    """
+    from recall.wizard.headless import _cli_rescue_env, _with_rescue
+    from recall.wizard.pipeline import CorpusOutcome
+    from recall.wizard.wiring import ServerBlock
+
+    blocks = tuple(ServerBlock(name=t, tenant=t, env={}, rationale="r") for t in ("p-docs", "p-code", "p-memory"))
+    outcomes = [
+        CorpusOutcome(tenant="p-docs", generation_id="g1", certified=True, promoted=True, atomic="built for g1"),
+        CorpusOutcome(tenant="p-code", generation_id="g2", certified=True, promoted=True),
+    ]
+    root = str(tmp_path / "atomic")
+    skip = {"RECALL_ATOMIC_RESCUE_MODE": "active", ROOT_ENV: root, "RECALL_ATOMIC_RESCUE_WHEN_MISSING": "skip"}
+
+    _with_rescue(blocks, outcomes, skip)
+
+    assert [b.env["RECALL_ATOMIC_RESCUE_MODE"] for b in blocks] == ["active", "active", "off"]
+    assert [b.env.get("RECALL_ATOMIC_RESCUE_WHEN_MISSING") for b in blocks] == ["skip", "skip", "skip"]
+    assert _cli_rescue_env(blocks)["RECALL_ATOMIC_RESCUE_WHEN_MISSING"] == "skip"
 
 
 def test_a_shell_mode_is_kept_and_a_mistyped_one_is_refused(tmp_path: Path, monkeypatch) -> None:

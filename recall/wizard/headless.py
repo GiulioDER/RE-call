@@ -1442,26 +1442,27 @@ def _atomic_rescue_env(config: HeadlessConfig) -> tuple[dict[str, str], str]:
     server refuses to start on it. Without the `atomic` dependencies, or without a place for the
     artifacts, the rescue stays off, because active without an artifact refuses every search.
 
-    It also stays off, unless this shell asks for it, when `data_root` provisions the Docker stack:
-    the desktop app's uploads, forgets and calibrations run in those containers, which cannot reach
-    a host artifact root (a bind mount is how a database here was corrupted, `recall.wizard.stack`),
-    so an upload there would promote a generation the host servers then refuse to search.
+    When `data_root` provisions the Docker stack, the desktop app's uploads and calibrations run in
+    those containers, which cannot reach a host artifact root (a bind mount is how a database here
+    was corrupted, `recall.wizard.stack`), so they promote generations with no artifact. There the
+    host servers also get RECALL_ATOMIC_RESCUE_WHEN_MISSING=skip: a search answers without a missing
+    artifact, and the server builds it (`recall_mcp.rescue_builder`, docs/DESKTOP_ATOMIC_RESCUE_DESIGN.md).
+    The desktop app never calls `recall_forget`, so forgets come from the host servers and the CLI.
     """
-    from recall.lite.atomic import RescueSettingError, rescue_settings
+    from recall.lite.atomic import MODE_ENV, WHEN_MISSING_ENV, RescueSettingError, rescue_settings
 
     try:
         values, note = rescue_settings(
             (config.project_root / ".recall" / "atomic").resolve() if config.project_root else None,
-            off_reason=(
-                "the desktop app's Docker services cannot reach a host artifact root, so an upload "
-                "there would leave the host servers refusing"
-                if config.data_root is not None
-                else ""
-            ),
         )
     except RescueSettingError as exc:
         # Named by key, as every other config refusal is.
         raise ConfigRefusal(str(exc), (exc.key,)) from exc
+    if config.data_root is not None and values.get(MODE_ENV, "off").lower() == "active":
+        when_missing = os.environ.get(WHEN_MISSING_ENV, "").strip() or "skip"
+        if when_missing.lower() not in {"refuse", "skip"}:
+            raise ConfigRefusal(f"{WHEN_MISSING_ENV} must be refuse or skip, not {when_missing!r}", (WHEN_MISSING_ENV,))
+        values[WHEN_MISSING_ENV] = when_missing
     return values, note
 
 
@@ -1476,15 +1477,22 @@ def _with_rescue(
     registered as this shell set it. The root is registered on all of them, so a forget through any
     server erases what the rescue keeps.
     """
-    from recall.lite.atomic import MODE_ENV, ROOT_ENV
+    from recall.lite.atomic import MODE_ENV, ROOT_ENV, WHEN_MISSING_ENV
 
     built = {outcome.tenant for outcome in outcomes if outcome.atomic}
+    skip = atomic_env.get(WHEN_MISSING_ENV, "refuse").lower() == "skip"
+    if skip:
+        # A missing artifact no longer refuses, so only a tenant with no generation (the memory
+        # tenant) is pinned off: active with no generation identity raises before any artifact.
+        built = {outcome.tenant for outcome in outcomes}
     configured = atomic_env.get(MODE_ENV, "off")
     for block in blocks:
         active = configured.lower() == "active"
         block.env[MODE_ENV] = "off" if active and block.tenant not in built else configured
         if ROOT_ENV in atomic_env:
             block.env[ROOT_ENV] = atomic_env[ROOT_ENV]
+        if WHEN_MISSING_ENV in atomic_env:
+            block.env[WHEN_MISSING_ENV] = atomic_env[WHEN_MISSING_ENV]
 
 
 def _cli_rescue_env(blocks: tuple[ServerBlock, ...]) -> dict[str, str]:
@@ -1492,7 +1500,7 @@ def _cli_rescue_env(blocks: tuple[ServerBlock, ...]) -> dict[str, str]:
 
     Per tenant, since one `.env` serves every tenant of the project and only some are active.
     """
-    from recall.lite.atomic import MODE_BY_TENANT_ENV, MODE_ENV, ROOT_ENV
+    from recall.lite.atomic import MODE_BY_TENANT_ENV, MODE_ENV, ROOT_ENV, WHEN_MISSING_ENV
 
     modes = ",".join(
         f"{block.tenant}:{block.env[MODE_ENV]}"
@@ -1500,9 +1508,11 @@ def _cli_rescue_env(blocks: tuple[ServerBlock, ...]) -> dict[str, str]:
         if block.env.get(MODE_ENV, "off") != "off"
     )
     root = next((block.env[ROOT_ENV] for block in blocks if ROOT_ENV in block.env), "")
+    when_missing = next((block.env[WHEN_MISSING_ENV] for block in blocks if WHEN_MISSING_ENV in block.env), "")
     return {
         **({MODE_BY_TENANT_ENV: modes} if modes else {}),
         **({ROOT_ENV: root} if root else {}),
+        **({WHEN_MISSING_ENV: when_missing} if when_missing else {}),
     }
 
 
