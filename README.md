@@ -8,6 +8,19 @@
 
 <!-- mcp-name: io.github.GiulioDER/re-call -->
 
+**RE-call is persistent memory for agents, built on hybrid retrieval with rank fusion.**
+On SQLite or PostgreSQL, it combines dense vectors and full-text search using reciprocal rank
+fusion (RRF).
+
+**Opt-in atomic rescue** recovers a passage when a single sentence matches the query.
+A **semantic graph** maps the links between your memos.
+
+**The trust layer** abstains when no result clears a threshold calibrated on your own store.
+It ranks superseded memos below their successors, flags memos that have expired or are not yet
+valid, and lets you erase memos from the store.
+
+[Benchmarks and limits](docs/EVIDENCE.md) · [Security policy](SECURITY.md) · [For agents](docs/FOR_AGENTS.md)
+
 <p align="center">
   <b>Memory that abstains when nothing clears its threshold.</b>
 </p>
@@ -19,12 +32,6 @@
   <img src="https://img.shields.io/badge/python-3.11%2B-blue" alt="Python 3.11+">
   <a href="docs/LITE.md"><img src="https://img.shields.io/badge/Lite-SQLite%2C%20no%20server-003B57" alt="Lite: SQLite, no server"></a>
 </p>
-
-RE-call is hybrid retrieval with rank fusion (dense vectors plus full-text search, fused by RRF),
-on SQLite or Postgres. On top of it: atomic rescue, which recovers a passage a single sentence
-points to, and a semantic graph built from the links in your memos. Around it sits a trust layer.
-It abstains below a threshold calibrated on your own store, ranks a superseded memo below its
-successor, flags memos that have expired or are not yet valid, and erases what you forget.
 
 ## Quickstart
 
