@@ -870,6 +870,29 @@ jobs:
       - name: Desktop suite
         run: pytest -q tests/test_desktop.py
 
+  # The image docker-compose.desktop.yml builds for the desktop client. Until 2026-11-17 no job
+  # built it, so a Dependabot bump of its base image (#1345, python:3.15-slim) showed every check
+  # green without the image ever being built. Built here from this checkout, then checked from
+  # inside as the image's own user, with no network: scripts/desktop_image_smoke.py says what each
+  # step proves. Required by merge-gate, so a base-image or dependency bump that breaks the image
+  # cannot merge on a green check.
+  desktop-image:
+    name: Desktop image (build and smoke)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+        with:
+          persist-credentials: false
+
+      - name: Build docker/desktop/Dockerfile
+        run: docker build -f docker/desktop/Dockerfile -t recall-desktop:ci .
+
+      - name: Smoke, inside the image
+        run: >-
+          docker run --rm --network none
+          -v "$PWD/scripts/desktop_image_smoke.py:/smoke.py:ro"
+          recall-desktop:ci python /smoke.py
+
   # The per-checkout test database is contributor tooling, so its tests stay here. Docker is
   # stubbed, so this runs on a runner with no daemon. It covers the orphan classifier, which
   # reported a clean machine while five containers from a removed worktree sat exited on it. The
@@ -1439,6 +1462,7 @@ jobs:
       - upgrade-from-release
       - pgvector-floor
       - desktop
+      - desktop-image
       - session-db
       - citations
       - public-tree
@@ -1468,6 +1492,7 @@ jobs:
             "${{ needs.upgrade-from-release.result }}" \
             "${{ needs.pgvector-floor.result }}" \
             "${{ needs.desktop.result }}" \
+            "${{ needs.desktop-image.result }}" \
             "${{ needs.session-db.result }}" \
             "${{ needs.citations.result }}" \
             "${{ needs.public-tree.result }}" \
