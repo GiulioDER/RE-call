@@ -17,6 +17,21 @@ more things, and each step here fails the way the client would:
    text must come back, from the uploads directory the user must be able to write.
 
 Exit 0 when every step passed, 1 naming the first step that failed.
+
+Red proof, recorded 2026-11-17 in GitHub Actions runs 44181236703 and 44182035657, against images
+built from 7a9af4e55. Each line is one mutation of the image or of its runtime, and what failed;
+the unmodified image passed all four steps in both runs.
+
+- `USER recall` defeated with `docker run --user 0`: step 1, "runs as uid 0 gid 0, expected
+  10001:10001".
+- `/usr/lib/libreoffice` hidden under a tmpfs: step 4, DocumentExtractionError ".ODT needs
+  LibreOffice for extraction".
+- `/opt/recall/uploads` replaced by a root-owned tmpfs: step 4, PermissionError on
+  `/opt/recall/uploads/smoke.odt`.
+- `fastembed` dropped from the Dockerfile's `pip install` extras: step 3, ModuleNotFoundError
+  "No module named 'fastembed'".
+- Base image `python:3.15-slim` (Dependabot #1345): the build itself fails, "No matching
+  distribution found for onnxruntime<2,>=1.17".
 """
 
 from __future__ import annotations
