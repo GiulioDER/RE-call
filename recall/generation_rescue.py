@@ -20,8 +20,9 @@ more than the index build. Generation ids are unique across tenants, so one root
 from __future__ import annotations
 
 import shutil
+from contextlib import contextmanager
 from datetime import UTC, datetime
-from collections.abc import Callable, Collection, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -46,7 +47,7 @@ if TYPE_CHECKING:
 _log = get_logger("generation_rescue")
 
 __all__ = [
-    "after_publish", "artifact_manifest", "build_artifact", "ensure_for_promotion", "erase_forgotten", "forget_roots",
+    "after_publish", "artifact_manifest", "build_artifact", "build_lock", "ensure_for_promotion", "erase_forgotten", "forget_roots",
     "generation_artifact_dirs", "prune_superseded", "remove_artifacts",
 ]
 
@@ -426,6 +427,27 @@ def _holds_rescue(path: Path) -> bool | None:
         return (path / VIEW_STORE_NAME).is_file() or any(entry.is_dir() for entry in path.iterdir())
     except OSError:
         return None
+
+
+@contextmanager
+def build_lock(root: Path, generation_id: str) -> Iterator[bool]:
+    """Try, without waiting, to hold the lock on building `generation_id`'s artifact under `root`,
+    and yield whether it is held; released on exit.
+
+    The host servers of one tenant (`recall_mcp.rescue_builder`) take it so one process builds at
+    a time: one that cannot take it leaves the build to the holder, whose artifact serves it too.
+    An OS lock, so it dies with its process.
+    """
+    from recall.lite.writer_lock import _try_lock, _unlock
+
+    root.mkdir(parents=True, exist_ok=True)
+    with open(root / f".rescue-{generation_id}.lock", "ab") as fh:
+        held = _try_lock(fh)
+        try:
+            yield held
+        finally:
+            if held:
+                _unlock(fh)
 
 
 def prune_superseded(dsn: str, tenant: str, root: Path) -> int:

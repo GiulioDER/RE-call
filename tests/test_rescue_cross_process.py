@@ -13,8 +13,8 @@ Red proof, run on Windows (2026-11-17), each a mutation, failing in its own asse
 - X2 with `build_artifact` writing the old `<generation_id>` key again: "the recalibration could
   not build while another process mapped the old matrix" (Windows refused the replacement:
   "cannot be replaced while a process has its matrix open").
-- X1 with the `_try_lock` check in `RescueBuilder._run` removed: "a second builder built what
-  another process held".
+- X1 with `recall.generation_rescue.build_lock` yielding True whatever `_try_lock` returns: "a
+  second builder built what another process held".
 Both pass on Windows and on Linux with the code as it is.
 """
 

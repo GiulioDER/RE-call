@@ -25,7 +25,7 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from recall.generation_rescue import artifact_manifest, build_artifact, prune_superseded
+from recall.generation_rescue import artifact_manifest, build_artifact, build_lock, prune_superseded
 
 if TYPE_CHECKING:
     from recall.embeddings import Embedder
@@ -140,23 +140,17 @@ class RescueBuilder:
             thread.join(timeout_s)
 
     def _run(self, key: tuple[str, str]) -> None:
-        from recall.lite.writer_lock import _try_lock, _unlock
-
         generation_id = key[0]
         try:
-            self._root.mkdir(parents=True, exist_ok=True)
-            with open(self._root / f".rescue-{generation_id}.lock", "ab") as fh:
-                if not _try_lock(fh):
+            with build_lock(self._root, generation_id) as held:
+                if not held:
                     return  # another process builds it; its artifact serves this server too
-                try:
-                    report = self._build(
-                        self._store._dsn, self._store.tenant, generation_id, self._embedder, self._root
-                    )
-                    _log.info("atomic rescue for %s: %s", generation_id, report)
-                    if self._prune is not None:
-                        self._prune(self._store._dsn, self._store.tenant, self._root)
-                finally:
-                    _unlock(fh)
+                report = self._build(
+                    self._store._dsn, self._store.tenant, generation_id, self._embedder, self._root
+                )
+                _log.info("atomic rescue for %s: %s", generation_id, report)
+                if self._prune is not None:
+                    self._prune(self._store._dsn, self._store.tenant, self._root)
         except Exception as exc:  # BROAD-CATCH: fail-open  # logged and retried after the backoff
             _log.warning("atomic rescue build for %s failed: %s", generation_id, exc)
             with self._lock:

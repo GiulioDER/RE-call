@@ -9,7 +9,7 @@ design violation.
 
 Packages: `recall`, `recall_mcp`, `recall_agent`, `recall_hooks`, `recall_interop`, `recall_consistency`
 Modules: 365
-Cross package edges: 409
+Cross package edges: 408
 
 ## Highest fan in modules
 
@@ -94,12 +94,12 @@ Cross package edges: 409
 | 13 | `recall.cli_commands._shared` |
 | 13 | `recall.dashboard.lite_db` |
 | 13 | `recall.eval.labelled` |
+| 13 | `recall.generation_rescue` |
 | 13 | `recall.reasoning` |
 | 13 | `recall_mcp.assistant` |
 | 12 | `recall.cli_commands.extract_rewrite` |
 | 12 | `recall.desktop.ui` |
 | 12 | `recall.eval.harness` |
-| 12 | `recall.generation_rescue` |
 
 ## Cross package edges
 
@@ -377,7 +377,6 @@ They are observations, not automatic failures.
 | `recall_mcp.rescue_builder` | `recall.embeddings` |
 | `recall_mcp.rescue_builder` | `recall.generation_rescue` |
 | `recall_mcp.rescue_builder` | `recall.generation_store` |
-| `recall_mcp.rescue_builder` | `recall.lite.writer_lock` |
 | `recall_mcp.retrieval` | `recall.calibration` |
 | `recall_mcp.retrieval` | `recall.decision_ledger` |
 | `recall_mcp.retrieval` | `recall.embeddings` |
@@ -665,7 +664,7 @@ They are observations, not automatic failures.
 | `recall.fix` | 7 | 30 |
 | `recall.frontmatter` | 1 | 1 |
 | `recall.generation_build` | 8 | 140 |
-| `recall.generation_rescue` | 12 | 139 |
+| `recall.generation_rescue` | 13 | 139 |
 | `recall.generation_store` | 17 | 139 |
 | `recall.generation_types` | 2 | 13 |
 | `recall.generations` | 27 | 139 |
@@ -873,7 +872,7 @@ They are observations, not automatic failures.
 | `recall_mcp.reasoning_diagnostics` | 15 | 152 |
 | `recall_mcp.reasoning_engine` | 23 | 157 |
 | `recall_mcp.related_api` | 9 | 154 |
-| `recall_mcp.rescue_builder` | 5 | 140 |
+| `recall_mcp.rescue_builder` | 4 | 140 |
 | `recall_mcp.retrieval` | 23 | 153 |
 | `recall_mcp.semantic_graph_cache` | 17 | 144 |
 | `recall_mcp.server` | 62 | 209 |
