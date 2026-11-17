@@ -488,7 +488,7 @@ def test_a_generation_built_before_promotion_serves_under_an_active_rescue(rescu
     RP-11 (CI, commit 629586d87): `ensure_for_promotion` returning None before `build_artifact`
     made this fail at `report is not None`: nothing was built for the generation it then promoted.
     """
-    from recall.generation_rescue import ensure_for_promotion
+    from recall.generation_rescue import ensure_for_promotion, generation_artifact_dirs
     from tests.test_calibration_carry_forward import _CarryEmbedder
 
     tenant, manager = rescue_tenant
@@ -500,7 +500,7 @@ def test_a_generation_built_before_promotion_serves_under_an_active_rescue(rescu
     manager.promote(generation_id, unsafe_development=True)
 
     assert report is not None and report.startswith(f"built for {generation_id}")
-    assert (tmp_path / generation_id / "manifest.json").is_file()
+    assert [path.name.split(".")[0] for path in generation_artifact_dirs(tmp_path, generation_id)] == [generation_id]
     result = _search(tenant, embedder, tmp_path)
     assert result.trust_state == "trusted" and result.generation_id == generation_id
     again = ensure_for_promotion(TEST_DSN, tenant, generation_id, lambda: embedder, env=env)
@@ -634,13 +634,14 @@ def test_a_build_that_loses_the_race_keeps_the_winners_artifact(rescue_tenant, t
     import json
 
     import recall.atomic_view_store as view_store
-    from recall.generation_rescue import build_artifact
+    from recall.generation_rescue import _published_calibration, build_artifact
     from tests.test_calibration_carry_forward import _CarryEmbedder
 
     tenant, manager = rescue_tenant
     embedder = _CarryEmbedder()
     generation_id = _certified_ready(manager, embedder)
-    manifest = tmp_path / generation_id / "manifest.json"
+    calibration_id = _published_calibration(TEST_DSN, tenant, generation_id)
+    manifest = tmp_path / f"{generation_id}.{calibration_id}" / "manifest.json"
     real = view_store.assemble
     winner: list[str] = []
 

@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import os
 import uuid
+from pathlib import Path
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -388,6 +389,13 @@ class GenerationStore(PgVectorStore):
         finally:
             self._pinned_corpus.reset(corpus_token)
             self._pinned_generation.reset(token)
+
+    def atomic_rescue_manifest(self, root: str | Path, generation_id: str, calibration_id: str | None) -> Path:
+        """The atomic rescue manifest the trust gate loads for this generation and calibration
+        (`recall.generation_rescue.artifact_manifest`: keyed by both, with the old key as fallback)."""
+        from recall.generation_rescue import artifact_manifest
+
+        return artifact_manifest(root, generation_id, calibration_id)
 
     def generation_binding(self) -> dict[str, str]:
         """Identity of the generation this store reads, including WHICH MODEL wrote its vectors.

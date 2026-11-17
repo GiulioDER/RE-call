@@ -78,7 +78,7 @@ def test_an_older_calibrations_build_does_not_replace_the_newer_one(corpus: _Cor
         build_artifact("postgresql://x", "t", "gen_1", embedder, tmp_path)
 
     clear_atomic_rescue_artifact_cache()
-    assert load_atomic_rescue_artifact(tmp_path / "gen_1" / "manifest.json").calibration_id == "cal_2"
+    assert load_atomic_rescue_artifact(tmp_path / "gen_1.cal_2" / "manifest.json").calibration_id == "cal_2"
 
 
 class _NoScan:

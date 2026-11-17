@@ -150,7 +150,7 @@ def test_a_forget_during_the_assembly_is_not_undone(corpus: _Corpus, tmp_path: P
         build_artifact("postgresql://x", "t", "gen_1", _CarryEmbedder(), tmp_path)
 
     assert _view_rows(tmp_path) == 2, "the forgotten text's views were stored after its erasure"
-    assert not (tmp_path / "gen_1").exists()
+    assert not (tmp_path / "gen_1.cal_1").exists()
 
 
 def test_a_forget_during_the_write_is_not_undone(corpus: _Corpus, tmp_path: Path, monkeypatch) -> None:
@@ -169,7 +169,7 @@ def test_a_forget_during_the_write_is_not_undone(corpus: _Corpus, tmp_path: Path
     with pytest.raises(AtomicRescueArtifactError, match="changed while"):
         rescue.build_artifact("postgresql://x", "t", "gen_1", _CarryEmbedder(), tmp_path)
 
-    assert not (tmp_path / "gen_1").exists(), "an artifact naming the forgotten source was kept"
+    assert not (tmp_path / "gen_1.cal_1").exists(), "an artifact naming the forgotten source was kept"
 
 
 def _publish(directory: Path, calibration_id: str, *, pipeline: str = "p") -> None:
@@ -226,10 +226,9 @@ def test_a_build_keeps_the_artifact_another_process_published(corpus: _Corpus, t
 
     def published_elsewhere(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
         matrix, metadata, counts = real(*args, **kwargs)
-        # Another process: it replaces the files and cannot clear this process's cache.
-        shutil.rmtree(tmp_path / "gen_1")
+        # Another process publishes the same key first, and cannot clear this process's cache.
         write_atomic_rescue_artifact(
-            tmp_path / "gen_1",
+            tmp_path / "gen_1.cal_2",
             matrix=matrix,
             views=metadata,
             generation_id="gen_1",
@@ -241,7 +240,7 @@ def test_a_build_keeps_the_artifact_another_process_published(corpus: _Corpus, t
             ordinary_chunk_count=len(args[0]),
             source_commit="winner",
         )
-        winner.append(json.loads((tmp_path / "gen_1" / "manifest.json").read_text(encoding="utf-8"))["constructed_at"])
+        winner.append(json.loads((tmp_path / "gen_1.cal_2" / "manifest.json").read_text(encoding="utf-8"))["constructed_at"])
         return matrix, metadata, counts
 
     monkeypatch.setattr(view_store, "assemble", published_elsewhere)
@@ -249,7 +248,7 @@ def test_a_build_keeps_the_artifact_another_process_published(corpus: _Corpus, t
     report = build_artifact("postgresql://x", "t", "gen_1", embedder, tmp_path)
 
     assert report == "in force for gen_1", report
-    manifest = json.loads((tmp_path / "gen_1" / "manifest.json").read_text(encoding="utf-8"))
+    manifest = json.loads((tmp_path / "gen_1.cal_2" / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["constructed_at"] == winner[0]
 
 
@@ -271,7 +270,7 @@ def test_a_recalibration_reuses_the_views_in_place(corpus: _Corpus, tmp_path: Pa
 
     assert build_artifact("postgresql://x", "t", "gen_1", embedder, tmp_path).startswith("built for gen_1")
     clear_atomic_rescue_artifact_cache()
-    assert load_atomic_rescue_artifact(tmp_path / "gen_1" / "manifest.json").calibration_id == "cal_2"
+    assert load_atomic_rescue_artifact(tmp_path / "gen_1.cal_2" / "manifest.json").calibration_id == "cal_2"
 
 
 def test_an_active_rescue_without_a_root_refuses_the_promotion() -> None:
