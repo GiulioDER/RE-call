@@ -2,12 +2,17 @@ name: Python 3.15 readiness
 
 # The newest CPython that RE-call does not yet claim. CI's required jobs stop at 3.14 (the
 # classifiers' upper end), so nothing said when 3.15 became installable or what still blocked it.
-# Measured 2026-11-17 with a wheels-only resolution for Linux: core, `mcp` and `documents`
-# resolve on 3.15; `fastembed` does not, because onnxruntime (1.32.0 at the time) ships no cp315
-# wheel and no sdist, so the locked `dev` set cannot install.
+#
+# Measured 2026-11-17 against uv.lock at e8270d386: of the locked `dev` + `documents` set, nine
+# Linux packages have no cp315 wheel. psycopg-binary 3.3.4, a core dependency, has no sdist
+# either, so nothing can install it. lxml, numpy, orjson, pyyaml, regex, uuid-utils, xxhash and
+# zstandard fall back to sdists, and lxml's fails to build on the runner, which is where this
+# job's first run stopped. The Desktop image's `fastembed` extra is blocked separately, by
+# onnxruntime (no cp315 wheel and no sdist up to 1.32.0). Re-measure: this job's Install step.
 #
 # NOT REQUIRED, and outside ci.yml's merge-gate on purpose: it is red until upstream ships those
-# wheels, and a required job that no pull request can fix would block every merge. It runs weekly,
+# wheels and the lock picks them up, and a required job that no pull request can fix would block
+# every merge. It runs weekly,
 # by hand, and on every pull request that changes the dependency set, so the Dependabot bump that
 # finally makes 3.15 installable shows it as a green check. When this goes green, move the job
 # into ci.yml beside `test-py314`, add it to merge-gate, and add the 3.15 classifier.
