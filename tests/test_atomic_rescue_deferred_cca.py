@@ -135,7 +135,13 @@ def _generation_store(read: list[list[str]]):  # noqa: ANN202
             read.append(list(sources))
             return [("the forgotten memo's text", {})]
 
-        def delete_sources(self, sources: list[str], *, withdraw: bool = False) -> int:
+        def delete_sources(
+            self, sources: list[str], *, withdraw: bool = False,
+            erased_texts: list[tuple[str, dict[str, object]]] | None = None,
+        ) -> int:
+            # Protocol-only fixture update for committed DELETE payloads; root assertions stay unchanged.
+            if erased_texts is not None:
+                erased_texts.extend(("the forgotten memo's text", {}) for _ in sources)
             return len(sources)
 
     return _Store()

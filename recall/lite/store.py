@@ -1895,7 +1895,7 @@ class LiteStore:
 
         None for the other relations, which the shared resolver answers (`recall.related`).
         Ordered by the resolver's own key, distance from the seed's ordinal with an unnumbered row
-        at 0, then id, so the LIMIT keeps the rows it would keep from a scan; for `ordinal` the
+        at 0, then id. Integer distances stay exact in Python; only selected texts are loaded. For `ordinal` the
         Postgres window, `recall.related.ORDINAL_WINDOW` either
         side. `PgVectorStore` ranks both relations by the same key.
         """
@@ -1903,33 +1903,36 @@ class LiteStore:
             return None
         if isinstance(max_items, bool) or not isinstance(max_items, int) or max_items < 1:
             raise ValueError("max_items must be a positive int")
-        seed = self.chunk_by_id(seed_chunk_id)
-        if seed is None:
-            raise ValueError(f"seed chunk not found: {seed_chunk_id!r}")
-        # `recall.related._ordinal`, as Postgres reads it (`recall.store._integer_ord_sql`): any
-        # integer, negative included, never a boolean, a float or a string.
-        ordinal = (
-            "(CASE WHEN json_type(metadata, '$.ord') = 'integer' "
-            "THEN json_extract(metadata, '$.ord') END)"
-        )
-        params: tuple[object, ...]
+        from heapq import nsmallest
+
         from recall.related import ORDINAL_WINDOW, metadata_ordinal
 
-        seed_ord = metadata_ordinal(seed.metadata)
-        if relation == "source":
-            # `recall.related._ordinal(chunk) or 0`: any integer, a boolean or none counting as 0
-            # (CCA BUG-001: ordered by ordinal, a seed deep in a long memo got its first chunks).
-            rank = "(CASE WHEN json_type(metadata, '$.ord') = 'integer' THEN json_extract(metadata, '$.ord') ELSE 0 END)"
-            where, order = "", f"abs({rank} - ?), id"
-            params = (seed.source, seed.id, seed_ord or 0, max_items)
-        else:
-            if seed_ord is None:
+        with self.snapshot():
+            seed = self.chunk_by_id(seed_chunk_id)
+            if seed is None:
+                raise ValueError(f"seed chunk not found: {seed_chunk_id!r}")
+            seed_ord = metadata_ordinal(seed.metadata)
+            if relation == "ordinal" and seed_ord is None:
                 return seed, []
-            where, order = f" AND abs({ordinal} - ?) <= {ORDINAL_WINDOW}", f"abs({ordinal} - ?), id"
-            params = (seed.source, seed_ord, seed.id, seed_ord, max_items)
-        rows = self._metadata_values(
-            f"SELECT id, source, text, metadata FROM chunks WHERE source = ?{where} AND id <> ? "  # noqa: S608  # fixed clauses, bound data
-            f"ORDER BY {order} LIMIT ?",
-            params,
-        )
-        return seed, [Chunk(id=cid, source=src, text=text, metadata=json.loads(metadata)) for cid, src, text, metadata in rows]
+            rows = self._conn.execute(
+                "SELECT id, metadata FROM chunks WHERE source = ? AND id <> ?", (seed.source, seed.id)
+            )
+
+            def ranked() -> Iterator[tuple[int, str]]:
+                for cid, metadata in rows:
+                    ordinal = metadata_ordinal(json.loads(metadata))
+                    distance = abs((ordinal or 0) - (seed_ord or 0))
+                    if relation == "ordinal" and (ordinal is None or distance > ORDINAL_WINDOW):
+                        continue
+                    yield distance, cid
+
+            selected = [cid for _, cid in nsmallest(max_items, ranked())]
+            loaded = self._metadata_values(
+                "SELECT id, source, text, metadata FROM chunks WHERE id IN (SELECT value FROM json_each(?))",
+                (json.dumps(selected),),
+            )
+            chunks = {
+                cid: Chunk(id=cid, source=src, text=text, metadata=json.loads(metadata))
+                for cid, src, text, metadata in loaded
+            }
+            return seed, [chunks[cid] for cid in selected]

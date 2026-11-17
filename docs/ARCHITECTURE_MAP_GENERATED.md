@@ -549,7 +549,7 @@ They are observations, not automatic failures.
 | `recall.cli_commands.doctor_cmd` | 1 | 168 |
 | `recall.cli_commands.extract_rewrite` | 12 | 156 |
 | `recall.cli_commands.generation_cmd` | 15 | 145 |
-| `recall.cli_commands.graph_cmd` | 8 | 140 |
+| `recall.cli_commands.graph_cmd` | 10 | 140 |
 | `recall.cli_commands.idempotency_cmd` | 2 | 40 |
 | `recall.cli_commands.index_search` | 30 | 154 |
 | `recall.cli_commands.lint_check` | 7 | 144 |
@@ -740,7 +740,7 @@ They are observations, not automatic failures.
 | `recall.reasoning_response` | 7 | 138 |
 | `recall.records` | 8 | 41 |
 | `recall.records_files` | 5 | 44 |
-| `recall.related` | 9 | 138 |
+| `recall.related` | 10 | 138 |
 | `recall.rerank` | 5 | 17 |
 | `recall.retrieval_plan` | 1 | 1 |
 | `recall.retrieval_slo` | 0 | 0 |

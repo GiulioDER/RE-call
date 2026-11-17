@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from contextlib import AbstractContextManager, nullcontext
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from datetime import UTC, datetime, timedelta
 import hashlib
 import json
@@ -394,12 +394,46 @@ def _embedded_text_digests(stores: tuple[Any, ...], sources: list[str]) -> set[s
         read = getattr(target, "texts_for_sources", None)
         if not sources or not callable(read):
             continue
-        for text, metadata in read(sources):
-            digests.add(text_digest(text))
-            recorded = metadata.get(EMBEDDING_TEXT_DIGEST_KEY)
-            if isinstance(recorded, str):
-                digests.add(recorded)
+        digests.update(_text_digests(read(sources)))
     return digests
+
+
+def _text_digests(texts: Sequence[tuple[str, dict[str, Any]]]) -> set[str]:
+    digests: set[str] = set()
+    for text, metadata in texts:
+        digests.add(text_digest(text))
+        recorded = metadata.get(EMBEDDING_TEXT_DIGEST_KEY)
+        if isinstance(recorded, str):
+            digests.add(recorded)
+    return digests
+
+
+def _erase_generation_rescue(
+    store: PgVectorStore, texts: list[str], sources: list[str], roots: list[Path],
+) -> tuple[int, int, list[str]]:
+    from recall.generation_rescue import erase_forgotten
+    from recall.generations import GenerationManager
+    from recall.lite.atomic import ROOT_ENV
+
+    if not roots:
+        return 0, 0, []
+    manager = GenerationManager(store._dsn, store.tenant)
+    # Collected generations can still have artifacts whose earlier cleanup failed.
+    generations = sorted(
+        {record.generation_id for record in manager.list_generations()} | manager.collected_generation_ids()
+    )
+    views_erased = artifacts_removed = 0
+    failed_roots: list[str] = []
+    for root in roots:
+        try:
+            erased, removed = erase_forgotten(generations, texts, sources, env={ROOT_ENV: str(root)})
+        except Exception:  # BROAD-CATCH: error-translation  # the other roots are still erased; this one is named
+            _log.exception("atomic rescue erasure under %s failed for tenant %r", root, store.tenant)
+            failed_roots.append(str(root))
+            continue
+        views_erased += erased
+        artifacts_removed += removed
+    return views_erased, artifacts_removed, failed_roots
 
 
 def _forget_memory_unlocked(
@@ -490,7 +524,27 @@ def _forget_memory_unlocked(
         # Before the rows go, for the same reason: the record is how a re-run, which finds no
         # rows, may still name these memos to the journal erasure below.
         _record_memo_journals(store, to_delete)
-    if to_delete and shadow_store is not None:
+    if to_delete and isinstance(store, GenerationStore) and shadow_store is None:
+        erased_texts: list[tuple[str, dict[str, Any]]] = []
+        try:
+            chunks_removed = store.delete_sources(to_delete, withdraw=withdraw, erased_texts=erased_texts)
+        except BaseException:
+            # Sources commit independently. A later failure must not orphan the earlier
+            # committed rows' cache entries, which a retry can no longer discover.
+            if erased_texts:
+                try:
+                    erase_cached_digests(_text_digests(erased_texts))
+                except Exception:  # BROAD-CATCH: error-translation
+                    _log.exception("embedding cache cleanup failed after partial deletion for tenant %r", store.tenant)
+                try:
+                    _erase_generation_rescue(store, [text for text, _ in erased_texts], to_delete, rescue_roots)
+                except Exception:  # BROAD-CATCH: error-translation
+                    _log.exception("atomic rescue cleanup failed after partial deletion for tenant %r", store.tenant)
+            raise
+        # A build can commit while deletion waits for its source lock. Purge those actual rows.
+        cached_digests.update(_text_digests(erased_texts))
+        rescue_texts.extend(text for text, _ in erased_texts)
+    elif to_delete and shadow_store is not None:
         chunks_removed = store.delete_sources_across(
             [store.table, shadow_store.table], to_delete, withdraw=withdraw
         )
@@ -556,34 +610,15 @@ def _forget_memory_unlocked(
             )
             rescue_views_erased = -1
     elif isinstance(store, GenerationStore) and chunks_removed and rescue_roots:
-        from recall.generation_rescue import erase_forgotten as erase_generation_rescue
-        from recall.generations import GenerationManager
-        from recall.lite.atomic import ROOT_ENV
-
         try:
-            manager = GenerationManager(store._dsn, store.tenant)
-            # The collected ones too: an artifact a gc could not remove outlives its row.
-            generations = sorted(
-                {record.generation_id for record in manager.list_generations()}
-                | manager.collected_generation_ids()
+            rescue_views_erased, rescue_artifacts_removed, failed_roots = _erase_generation_rescue(
+                store, rescue_texts, to_delete, rescue_roots,
             )
         except Exception:  # BROAD-CATCH: error-translation
             _log.exception(
                 "atomic rescue erasure failed after chunk deletion for tenant %r", store.tenant
             )
             rescue_views_erased = -1
-        else:
-            for root in rescue_roots:
-                try:
-                    erased, removed = erase_generation_rescue(
-                        generations, rescue_texts, to_delete, env={ROOT_ENV: str(root)}
-                    )
-                except Exception:  # BROAD-CATCH: error-translation  # the other roots are still erased; this one is named
-                    _log.exception("atomic rescue erasure under %s failed for tenant %r", root, store.tenant)
-                    failed_roots.append(str(root))
-                    continue
-                rescue_views_erased += erased
-                rescue_artifacts_removed += removed
     memo_requests_erased = 0
     if erase_memo_requests:
         from recall.lite.assistant_memos import forget_memo_requests

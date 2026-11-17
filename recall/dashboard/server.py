@@ -54,8 +54,8 @@ TENANT_COOKIE = "recall_tenant"
 # Every other RE-call surface (the CLI, the MCP server, lite setup) opens `default`; so does this.
 DEFAULT_TENANT = db_constants.DEFAULT_TENANT
 TENANT_CACHE_SECONDS = 60
-#: A corpus graph is rebuilt at most this often: building one reads every file of the corpus, about
-#: 2 s on the database host and 7 s over a tunnel for the memory tenant (measured 2026-10-08). A
+#: A PostgreSQL corpus graph is rebuilt at most this often: building one reads every corpus file,
+#: about 2 s on the database host and 7 s over a tunnel for the memory tenant (measured 2026-10-08). A
 #: forget or withdraw inside the active generation shows on it only once the entry expires.
 CORPUS_GRAPH_CACHE_SECONDS = 300
 #: At most this many corpus graphs are kept at once.
@@ -1599,7 +1599,11 @@ class DashboardApp:
             return Response(HTTPStatus.SERVICE_UNAVAILABLE, b'{"error": "no corpus database is configured"}', headers)
         from recall.dashboard import corpus as corpus_db
 
+        lite = self.db.lite
+
         def fresh() -> bytes | None:
+            if lite:
+                return None  # The Lite reader validates its projection against the current rows.
             with self._corpus_graph_lock:
                 cached = self._corpus_graphs.get(corpus)
                 if cached and time.monotonic() - cached[0] < CORPUS_GRAPH_CACHE_SECONDS:
@@ -1620,6 +1624,8 @@ class DashboardApp:
             except dbq.DatabaseUnavailable as exc:
                 return Response(HTTPStatus.SERVICE_UNAVAILABLE, json.dumps({"error": str(exc)}).encode("utf-8"), headers)
             body = json.dumps(payload, ensure_ascii=False, default=str).encode("utf-8")
+            if lite:
+                return Response(HTTPStatus.OK, body, headers)
             with self._corpus_graph_lock:
                 now = time.monotonic()
                 # Expired bodies are dropped and the cache is bounded: a body can be megabytes.

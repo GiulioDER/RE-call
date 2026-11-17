@@ -189,6 +189,7 @@ def pg_record_removals(
 
 def pg_delete_removals(
     conn: Any, tenant: str, table: str, sources: list[str], *, withdraw: bool, quote_table: bool = False,
+    erased_texts: list[tuple[str, dict[str, Any]]] | None = None,
 ) -> list[str]:
     """Delete legacy rows and retain claims from exactly the versions DELETE removed.
 
@@ -197,17 +198,22 @@ def pg_delete_removals(
     owns the transaction, so a record-append failure also rolls the deletion back. `quote_table`
     preserves the generation manager's quoted legacy-table contract; ordinary store callers
     retain their existing unquoted identifier semantics. The record scope remains `table`.
+    An `erased_texts` collector belongs to the transaction owner, which propagates it after commit.
     """
     from psycopg import sql
 
     scan = supersession_rows_sql("removed", source_column="source", scope="true")
+    returning_text = ", text" if erased_texts is not None else ""
+    captured_columns = ", text, metadata" if erased_texts is not None else ""
+    empty_columns = ", NULL::text, NULL::jsonb" if erased_texts is not None else ""
     delete = (
         "WITH removed AS (DELETE FROM {} WHERE tenant_id = %s AND source = ANY(%s) "
-        "RETURNING id, metadata, first_indexed_at, indexed_at, source) "
+        "RETURNING id, metadata, first_indexed_at, indexed_at, source" + returning_text + ") "
     )
     select = (
-        "SELECT id, NULL::text, NULL::text, NULL::timestamptz, NULL::text, NULL::text, NULL::text "
-        "FROM removed UNION ALL SELECT NULL, scanned.* FROM (" + scan + ") AS scanned"
+        "SELECT id, NULL::text, NULL::text, NULL::timestamptz, NULL::text, NULL::text, NULL::text"
+        + captured_columns + " FROM removed UNION ALL SELECT NULL, scanned.*" + empty_columns
+        + " FROM (" + scan + ") AS scanned"
     )
     query = (
         sql.SQL(delete).format(sql.Identifier(table)) + sql.SQL(select)
@@ -215,11 +221,13 @@ def pg_delete_removals(
     )
     result = conn.execute(query, (tenant, sources)).fetchall()
     ids = [str(row[0]) for row in result if row[0] is not None]
-    rows = [tuple(row[1:]) for row in result if row[0] is None]
+    rows = [tuple(row[1:7]) for row in result if row[0] is None]
     pg_record_removals(
         conn, tenant=tenant, table=table, source_column="source", scope="true", params=(),
         sources=sources, withdraw=withdraw, rows=rows,
     )
+    if erased_texts is not None:
+        erased_texts.extend((str(row[7]), row[8] or {}) for row in result if row[0] is not None)
     return ids
 
 
