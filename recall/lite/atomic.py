@@ -50,7 +50,7 @@ from recall.atomic_rescue import (
     AtomicRescueArtifact,
     AtomicRescueArtifactError,
     artifact_names_any,
-    clear_atomic_rescue_artifact_cache,
+    evict_atomic_rescue_artifacts,
     load_atomic_rescue_artifact,
     remove_artifact_directories,
     require_atomic_dependency,
@@ -257,8 +257,9 @@ def ensure_rescue_artifact(
             except AtomicRescueArtifactError:
                 pass
         # This process's own cache maps the matrix it last built or loaded, and Windows refuses to
-        # delete a mapped file; searches in flight keep their own references.
-        clear_atomic_rescue_artifact_cache()
+        # delete a mapped file; searches in flight keep their own references. Only this directory
+        # is evicted, so another artifact in force is not reloaded by the next search.
+        evict_atomic_rescue_artifacts([manifest.parent])
         shutil.rmtree(manifest.parent, ignore_errors=True)
         if manifest.parent.exists():
             raise AtomicRescueArtifactError(
@@ -321,6 +322,9 @@ def ensure_rescue_artifact(
             raise
         load_atomic_rescue_artifact(manifest).assert_lineage(**lineage, embedder=embedder)
         written = manifest
+    # A copied sibling's matrix is still mapped through these, and Windows refuses to delete a
+    # mapped file, so the superseded directory would outlive this build.
+    del matrix, sibling
     _remove_others(manifest.parent.parent, keep={manifest.parent.name, _key_in_force(store)})
     # Their owner is unknown, so they are reported rather than removed (docs/LITE.md).
     flat = sum(1 for entry in root.iterdir() if entry.is_dir() and _ARTIFACT_NAME.fullmatch(entry.name))
@@ -424,8 +428,15 @@ def _remove_others(folder: Path, *, keep: Container[str | None]) -> None:
     one, which is a build still staging and is left to it.
     Best effort, for a stated reason: Windows refuses to delete a matrix a serving process still
     has mapped, and that artifact is then removed by the next build. A part left behind is never
-    served: a build of its key checks every member on disk before reusing it.
+    served: a build of its key checks every member on disk before reusing it. This process's own
+    cached artifacts in them are evicted first: a refit's build loads the artifact it supersedes to
+    copy it (`_sibling`), and on Windows that mapping kept the directory, as did the build's own
+    references to it, which it drops before calling this.
     """
-    for entry in folder.iterdir():
-        if entry.is_dir() and not entry.name.startswith(".") and entry.name not in keep:
-            shutil.rmtree(entry, ignore_errors=True)
+    doomed = [
+        entry for entry in folder.iterdir()
+        if entry.is_dir() and not entry.name.startswith(".") and entry.name not in keep
+    ]
+    evict_atomic_rescue_artifacts(doomed)
+    for entry in doomed:
+        shutil.rmtree(entry, ignore_errors=True)
