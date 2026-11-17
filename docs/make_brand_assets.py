@@ -36,6 +36,9 @@ def sync_logos() -> None:
         copyfile(LOGO, destination)
 
     save(logo_layer(1024, opacity=255), project / "plugin/.claude-plugin/icon.png")
+    logo_layer(192, opacity=255).save(
+        project / "recall/dashboard/static/recall-logo.webp", format="WEBP", lossless=True,
+    )
 
 
 if __name__ == "__main__":

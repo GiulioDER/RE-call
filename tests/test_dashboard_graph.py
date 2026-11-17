@@ -196,3 +196,266 @@ def test_a_memo_only_an_index_page_links_to_is_isolated(tmp_path: Path) -> None:
     assert by_id["m0"+".md"]["isolated"] is False and by_id["m1.md"]["isolated"] is False
     assert by_id["m2.md"]["isolated"] is True
     assert by_id["index.md"]["isolated"] is False
+
+
+@pytest.mark.parametrize("case", ["modified keyboard", "empty wheel", "hover frames"])
+def test_graph_input_and_frame_regressions(case: str) -> None:
+    """Execute the shipped handlers and frame loop with controlled graph state.
+
+    Red proof at ac67de930, each parameter failed its intended Node assertion.
+    Modified Home was consumed, empty wheel scrolling was trapped, and a stable
+    hovered graph produced 30 draws. The same nodes pass after FIX-002 to FIX-004.
+    """
+    import shutil
+    import subprocess
+
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node.js is required to execute graph renderer regressions")
+    script = r"""
+
+const assert = require('node:assert/strict');
+const vm = require('node:vm');
+const fs = require('node:fs');
+const src = fs.readFileSync(process.argv[1], 'utf8');
+const pick = (start, end) => {
+  const i = src.indexOf(start);
+  assert(i >= 0 && src.indexOf(end, i) > i);
+  return src.slice(i, src.indexOf(end, i));
+};
+const handlers = {};
+const input = {
+  canvas: {addEventListener(name, callback) {handlers[name] = callback;}},
+  canInteract: () => true, active: [{}], panX: 0, panY: 0, steer() {},
+  zoom() {}, fits: 0, fitGraph: () => {input.fits++;},
+};
+vm.runInNewContext(pick('  canvas.addEventListener("wheel"', '  document.getElementById("zoom-in")'), input);
+function prevented(name, props) {
+  let result = false;
+  handlers[name]({...props, preventDefault() {result = true;}});
+  return result;
+}
+function rendered(overrides) {
+  const ctx = {
+    alpha:0, selected:null, flight:null, cameraAdjusted:false, drag:null, hover:{},
+    lastInteraction:0, cam:{yaw:0}, activeEdges:[], active:[{state:"current"}],
+    stateAt:node=>node.state, lensEl:{value:"state"}, moving:()=>true,
+    draw:()=>{ctx.draws++;}, draws:0, requestAnimationFrame() {}, ...overrides,
+  };
+  vm.runInNewContext(pick('  let needsDraw = true;', '  function flyTo(')
+    + '\nneedsDraw=false; for (let i = 0; i < 30; i++) frameLoop(3000 + i*16);', ctx);
+  return ctx.draws;
+}
+let failures = 0;
+function check(name, fn) {
+  if (name !== process.argv[2]) return;
+  try {fn(); console.log(name + ': passed');}
+  catch (error) {failures++; console.error(name + ': ' + error.message);}
+}
+check('modified keyboard',()=>{
+  assert(prevented('keydown',{key:'Home'}),'bare Home did not fit');
+  assert.equal(input.fits,1);
+  for(const key of ['ctrlKey','metaKey','altKey']) assert(!prevented('keydown',{key:'Home',[key]:true}),key+'+Home was consumed');
+  assert.equal(input.fits,1);
+});
+check('empty wheel',()=>{
+  assert(prevented('wheel',{deltaY:30}),'a populated graph did not zoom');
+  input.active = [];
+  assert(!prevented('wheel',{deltaY:30}),'the empty canvas trapped wheel scrolling');
+});
+check('hover frames',()=>{
+  assert.equal(rendered({hover:null}),30,'camera drift must redraw');
+  assert.equal(rendered({activeEdges:[{kind:'supersedes'}]}),30,'supersession pulses must redraw');
+  assert.equal(rendered({activeEdges:[{kind:'pending'}]}),30,'pending edge dashes must redraw');
+  assert.equal(rendered({active:[{state:'pending'}]}),30,'pending nodes must glow');
+  assert.equal(rendered({}),0,'steady hovered graph redrew');
+});
+process.exitCode = failures ? 1 : 0;
+
+"""
+    result = subprocess.run(
+        [node, "-e", script, str(STATIC / "graph.js"), case],
+        capture_output=True, text=True, timeout=30,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_graph_pinch_keeps_the_world_point_under_its_midpoint() -> None:
+    """Exercise shipped pointer handlers, zoom and projection, in CSS pixels.
+
+    NUM-002 red proof, 2026-11-16: the pre-fix pointermove handler projected the
+    off-centre anchor at x=980 instead of x=730 after a stationary-midpoint pinch.
+    A centred pinch is a control; offsets, existing pan, translation and both
+    zoom clamps must retain the same world point beneath the new midpoint.
+    A requested-ratio mutation failed the clamp anchors at x=580 and x=771.6667.
+    """
+    import shutil
+    import subprocess
+
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node.js is required to execute graph renderer regressions")
+    script = r"""
+const assert = require('node:assert/strict');
+const vm = require('node:vm');
+const src = require('node:fs').readFileSync(process.argv[1], 'utf8');
+function pick(start, end) {
+  const i = src.indexOf(start), j = src.indexOf(end, i);
+  assert(i >= 0 && j > i);
+  return src.slice(i, j);
+}
+const shipped = pick('  function clampZoom(', '  function fitDistance(')
+  + pick('  function project(', '  function fog(')
+  + pick('  function steer(', '  function endDrag(');
+const cases = [
+  {name:'off-centre', a:[680,430], b:[780,430], nextA:[630,430], nextB:[830,430]},
+  {name:'centred control', a:[430,330], b:[530,330], nextA:[380,330], nextB:[580,330]},
+  {name:'offset and pan', a:[680,430], b:[780,430], nextA:[630,430], nextB:[830,430],
+    left:73, top:41, panX:37, panY:-29, zoom:2},
+  {name:'translated midpoint', a:[680,430], b:[780,430], nextA:[650,510], nextB:[850,510],
+    left:73, top:41, panX:37, panY:-29},
+  {name:'upper clamp', a:[680,430], b:[780,430], nextA:[630,430], nextB:[830,430],
+    zoom:10, expectedZoom:14},
+  {name:'lower clamp', a:[680,430], b:[780,430], nextA:[705,430], nextB:[755,430],
+    zoom:0.15, expectedZoom:0.1},
+];
+const failures = [];
+for (const test of cases) {
+  const handlers = {};
+  const left = test.left || 0, top = test.top || 0;
+  const cam = {yaw:0, pitch:0, px:0, py:0, pz:0, dist:900, zoom:test.zoom || 1};
+  const panX = test.panX || 0, panY = test.panY || 0;
+  const x = (test.a[0] + test.b[0]) / 2, y = (test.a[1] + test.b[1]) / 2;
+  const point = {x:(x - 480 - panX) / cam.zoom, y:(y - 330 - panY) / cam.zoom, z:0};
+  const canvas = {
+    clientWidth:960, clientHeight:660, setPointerCapture() {},
+    getBoundingClientRect:()=>({left, top}),
+    addEventListener(name, callback) {handlers[name] = callback;},
+  };
+  const context = vm.createContext({
+    canvas, cam, active:[point], panX, panY, projected:[], resizeScale:null,
+    canInteract:()=>true, at:()=>point, performance:{now:()=>0},
+    flight:null, cameraAdjusted:false, lastInteraction:0, needsDraw:false,
+  });
+  vm.runInContext(shipped, context);
+  function pointer(name, id, pos) {
+    handlers[name]({pointerId:id, button:0, clientX:pos[0] + left, clientY:pos[1] + top});
+  }
+  pointer('pointerdown', 1, test.a);
+  pointer('pointerdown', 2, test.b);
+  pointer('pointermove', 1, test.nextA);
+  pointer('pointermove', 2, test.nextB);
+  vm.runInContext('project();', context);
+  function near(actual, expected, label) {
+    assert(Math.abs(actual - expected) < 1e-8, `${label}: ${actual} != ${expected}`);
+  }
+  try {
+    near(point.sx, (test.nextA[0] + test.nextB[0]) / 2, 'anchor x');
+    near(point.sy, (test.nextA[1] + test.nextB[1]) / 2, 'anchor y');
+    near(cam.zoom, test.expectedZoom || (test.zoom || 1) * 2, 'zoom');
+  } catch (error) {failures.push(test.name + ': ' + error.message);}
+}
+assert.equal(failures.length, 0, failures.join('\n'));
+"""
+    result = subprocess.run(
+        [node, "-e", script, str(STATIC / "graph.js")],
+        capture_output=True, text=True, timeout=30,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_graph_resize_preserves_zoom_intent() -> None:
+    """Execute shipped resize, zoom and fit functions through viewport round trips.
+
+    NUM-001 red proof, 2026-11-16, at 392aa49: resize discarded the scale beyond either clamp,
+    returning 0.2 instead of 0.1 and 7 instead of 14. Interior cycles are a control.
+    Explicit zoom and fit must replace any scale retained by a clamped resize.
+    Removing their scale reset lines separately failed "user zoom was lost" and "fit was lost".
+    """
+    import shutil
+    import subprocess
+
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node.js is required to execute graph renderer regressions")
+    script = r"""
+const assert = require('node:assert/strict');
+const vm = require('node:vm');
+const src = require('node:fs').readFileSync(process.argv[1], 'utf8');
+function pick(start, end) {
+  const i = src.indexOf(start), j = src.indexOf(end, i);
+  assert(i >= 0 && j > i);
+  return src.slice(i, j);
+}
+const canvas = {clientWidth:960, clientHeight:660};
+const shipped = pick('  let cameraAdjusted = false;', '  function readPalette(')
+  + pick('  function clampZoom(', '  // ------------------------------------------------------------ projection')
+  + pick('  function resize(', '  function dotRadius(')
+  + pick('  function steer(', '  let drag = null;');
+vm.runInNewContext(shipped + String.raw`
+const failures = [];
+function check(name, run) {
+  try {run();} catch (error) {failures.push(name + ': ' + error.message);}
+}
+function size(w, h) {
+  canvas.clientWidth = w; canvas.clientHeight = h;
+  resize();
+  assert(cam.zoom >= 0.1 && cam.zoom <= 14, 'effective zoom escaped its bounds');
+}
+function start(value) {
+  selected = {};
+  size(960, 660);
+  zoom(value / cam.zoom);
+}
+check('lower limit', () => {
+  start(0.1);
+  for (let i = 0; i < 3; i++) {
+    size(330, 660); assert.equal(cam.zoom, 0.1);
+    size(960, 660); assert.equal(cam.zoom, 0.1, 'lower limit drifted');
+  }
+});
+check('upper limit', () => {
+  start(14);
+  for (let i = 0; i < 3; i++) {
+    size(1920, 1320); assert.equal(cam.zoom, 14);
+    size(960, 660); assert.equal(cam.zoom, 14, 'upper limit drifted');
+  }
+});
+check('interior control', () => {
+  start(2);
+  for (let i = 0; i < 3; i++) {
+    size(330, 660); assert.equal(cam.zoom, 1);
+    size(960, 660); assert.equal(cam.zoom, 2);
+    size(1920, 1320); assert.equal(cam.zoom, 4);
+    size(960, 660); assert.equal(cam.zoom, 2);
+  }
+});
+check('user zoom replaces resize intent', () => {
+  start(0.1);
+  size(330, 660);
+  zoom(2); assert.equal(cam.zoom, 0.2);
+  size(960, 660); assert.equal(cam.zoom, 0.4, 'user zoom was lost');
+  size(330, 660); assert.equal(cam.zoom, 0.2);
+});
+check('fit replaces resize intent', () => {
+  start(14);
+  size(1920, 1320);
+  fitGraph();
+  selected = {};
+  const fitted = cam.zoom;
+  assert(fitted > 0.2 && fitted < 14);
+  size(960, 660); assert.equal(cam.zoom, fitted / 2, 'fit was lost');
+});
+assert.equal(failures.length, 0, failures.join('\n'));
+`, {
+  assert, canvas, selected:null, data:{}, active:[{x:0, y:0, z:0}],
+  ctx:{setTransform() {}}, window:{devicePixelRatio:1}, hash:()=>0.5,
+  needsDraw:false, stars:[], performance:{now:()=>0},
+  select(value) {this.selected = value;},
+});
+"""
+    result = subprocess.run(
+        [node, "-e", script, str(STATIC / "graph.js")],
+        capture_output=True, text=True, timeout=30,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr

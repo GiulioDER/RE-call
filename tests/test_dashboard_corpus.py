@@ -676,6 +676,32 @@ def test_lite_graph_does_not_return_a_forgotten_source(tmp_path: Path) -> None:
         assert json.loads(after.body)["nodes"] == [], "the warm graph kept a forgotten source"
 
 
+def test_lite_graph_switch_opens_the_configured_tenant(tmp_path: Path) -> None:
+    """The emitted link must select a valid Lite tenant containing a slash.
+
+    Red proof at ac67de930: DashboardApp._corpus_param selected the memo graph.
+    """
+    import json
+
+    from recall.dashboard.lite_db import file_tenant
+    from recall.lite import LiteStore
+    from recall.types import Chunk
+
+    with LiteStore(tmp_path / "lite.db", dim=2, tenant="team/core") as store:
+        store.upsert([Chunk("file-0", "audit.md", "Synthetic note", {"file": "audit.md"})], [[1.0, 0.0]])
+        dsn = "sqlite:///" + store.path.as_posix()
+        app = DashboardApp(tmp_path, port=8765, token="tok", db=DashboardDB(dsn), default_tenant=file_tenant(dsn))
+        link = "/graph?corpus=team%2Fcore"
+        assert f"href='{link}'".encode() in app.handle("GET", "/graph", SIGNED).body
+        page = app.handle("GET", link, SIGNED)
+        assert b"data-corpus='team/core'" in page.body, "the Lite switch opened the memo-files graph"
+        graph = app.handle("GET", "/api" + link.replace("/graph?", "/graph.json?"), SIGNED)
+        assert graph.status == 200
+        payload = json.loads(graph.body)
+        assert payload["tenant"] == store.tenant
+        assert [node["id"] for node in payload["nodes"]] == ["audit.md"]
+
+
 def test_lite_detail_reuses_decoded_rows_until_a_write(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """PERF-001. Warm detail reads avoid decoding the full corpus again.
 
@@ -743,6 +769,22 @@ def test_lite_replaced_vectors_change_the_cached_generation(tmp_path: Path, monk
     fresh = lite_db.source_detail(dsn, tenant, "a.md")
     assert fresh is not None and first["generation"] != fresh["generation"]
     assert served == fresh, "the replaced file kept the prior vector generation"
+
+
+@pytest.mark.parametrize("instruction", ["touch", "shortcut"])
+def test_graph_help_exposes_supported_input(root: Path, instruction: str) -> None:
+    """DOC-001 and DOC-002. The served graph explains its supported input modes.
+
+    Red proof on 392aa49: missing two-finger help and accessible slash shortcut.
+    """
+    app = DashboardApp(root, port=8765, token="tok")
+    body = app.handle("GET", "/graph", SIGNED).body.decode()
+    if instruction == "touch":
+        assert "two fingers" in body and "pinch" in body, "touch navigation is undocumented"
+    else:
+        search = re.search(r"<input[^>]+id='search'[^>]*>", body)
+        assert search is not None
+        assert "aria-keyshortcuts='/'" in search.group(), "slash shortcut is hidden from assistive technology"
 
 
 def test_lite_cache_replacement_during_connection_open(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

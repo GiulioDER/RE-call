@@ -1582,10 +1582,11 @@ class DashboardApp:
             body=body,
         ))
 
-    @staticmethod
-    def _corpus_param(query: Mapping[str, str]) -> str:
-        """`?corpus=` when it names a tenant (a slug), else "" for the memo files."""
+    def _corpus_param(self, query: Mapping[str, str]) -> str:
+        """The configured Lite tenant or a database tenant slug, else the memo files."""
         value = query.get("corpus", "")
+        if self.db is not None and self.db.lite and value == self.default_tenant:
+            return value
         return value if TENANT_NAME.fullmatch(value) else ""
 
     def _graph_json(self, corpus: str) -> Response:
@@ -1793,7 +1794,7 @@ class DashboardApp:
         )
         body = (
             self._corpus_switch(corpus)
-            + "<div class='toolbar'><div class='searchbox'><input type='search' id='search' placeholder='Filter graph by memo' aria-label='Filter graph by memo'><kbd aria-hidden='true'>/</kbd></div>"
+            + "<div class='toolbar'><div class='searchbox'><input type='search' id='search' placeholder='Filter graph by memo' aria-label='Filter graph by memo' aria-keyshortcuts='/' aria-describedby='graph-help'><kbd aria-hidden='true'>/</kbd></div>"
             f"{toggles}</div>"
             "<div class='toolbar lensbar'>"
             f"<label class='select'>colour by <select id='lens'>{lenses}</select></label>"
@@ -1813,7 +1814,7 @@ class DashboardApp:
             "<span id='time-label'>today</span></div></div>"
             "<aside id='panel' aria-label='Memory details' hidden></aside></div>"
             "<p class='graph-help muted' id='graph-help'>Drag to orbit, Shift + drag to pan, and scroll to zoom. "
-            "With the graph focused, use arrow keys to pan and + or − to zoom. Search and press Enter to open a memory.</p>"
+            "Use two fingers to pan and pinch to zoom. Press / to focus search. With the graph focused, use arrow keys to pan and + or − to zoom. Search and press Enter to open a memory.</p>"
         )
         return self._html(
             self._shell(
