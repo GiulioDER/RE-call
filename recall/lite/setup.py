@@ -25,8 +25,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from recall._env import tenant_retrieval_environment
 from recall.lite import LITE_DSN_PREFIX, LiteStore
-from recall.lite.atomic import MODE_ENV, ROOT_ENV, rescue_settings, store_default_root
+from recall.lite.atomic import MODE_BY_TENANT_ENV, MODE_ENV, ROOT_ENV, rescue_settings, store_default_root
 
 if TYPE_CHECKING:
     from recall.embeddings import Embedder
@@ -194,7 +195,11 @@ def run_lite_setup(
     # too, or a cache the user switched off or moved here comes back at the default there.
     local_env.update({key: os.environ[key] for key in ("RECALL_EMBED_CACHE", "RECALL_EMBED_CACHE_MAX_MB") if key in os.environ})
     # Its artifacts beside the store (`<store>.atomic`, which the store's own .gitignore advice covers).
-    atomic_env, atomic_note = rescue_settings(store_default_root(path))
+    atomic_env, atomic_note = rescue_settings(
+        store_default_root(path), env=tenant_retrieval_environment(os.environ, "default")
+    )
+    # Pin the resolved mode for the setup refresh and the clients registered for this store.
+    atomic_env[MODE_BY_TENANT_ENV] = ""
     local_env.update(atomic_env)
     if model_env is not None:
         local_env.update(model_env)
@@ -203,7 +208,7 @@ def run_lite_setup(
             "RECALL_ENV", "RECALL_INDEX_MODE", "RECALL_TRANSPORT",
             "RECALL_TRUST_MODE", "RECALL_EMBEDDER", "RECALL_EMBED_PROFILE", "RECALL_MODEL_CACHE",
             "RECALL_MODEL_SHA256", "RECALL_QWEN_MODEL_PATH", "RECALL_EMBED_CACHE", "RECALL_EMBED_CACHE_MAX_MB",
-            MODE_ENV, ROOT_ENV,
+            MODE_ENV, MODE_BY_TENANT_ENV, ROOT_ENV,
         }
         report.followup_env = {key: value for key, value in local_env.items() if key in safe_keys}
     with LiteStore(path, dim=embedder.dim) as store:

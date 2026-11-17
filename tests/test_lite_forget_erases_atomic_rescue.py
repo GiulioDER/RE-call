@@ -41,7 +41,7 @@ After #1313 moved each store's artifacts into `store-<digest>/`, `erase_forgotte
 folder, and a flat `lite-*` folder at the top of the root only when its `views.json` names a
 forgotten source. Mutations, each red: the store folder not scanned fails the parametrized and
 turned-off cases at "an artifact built with the memo is left" and
-`::test_a_flat_artifact_naming_the_memo_is_removed_and_another_stays` at "the store's own
+`::test_a_flat_artifact_naming_the_memo_reports_unknown_ownership` at "the store's own
 artifact"; the `_names_any` filter dropped fails that test at "a flat artifact of another memory
 was removed"; the top of the root not scanned fails it at "a flat artifact naming the forgotten
 memo is left". `::test_a_forget_in_one_store_leaves_another_store_sharing_the_root` fails at "a
@@ -61,6 +61,8 @@ from pathlib import Path
 import pytest
 
 from recall import atomic_view_store
+from recall.atomic_rescue import AtomicRescueArtifactError
+from recall.lite import atomic as lite_atomic
 from recall.atomic_rescue import clear_atomic_rescue_artifact_cache
 from recall.atomic_view_store import AtomicViewStore, chunk_view_digest
 from recall.lite import LiteStore
@@ -236,11 +238,13 @@ def test_a_build_overtaken_by_a_forget_does_not_keep_the_forgotten_views(
     store.close()
 
 
-def test_a_flat_artifact_naming_the_memo_is_removed_and_another_stays(
+def test_a_flat_artifact_naming_the_memo_reports_unknown_ownership(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Folders at the top of the root, from before per-store folders, have no recorded owner: a
-    forget removes the one that names the forgotten memo and leaves one that does not."""
+    """A matching source alone cannot establish ownership of a flat artifact.
+
+    Red on a7024d569: forget_memory silently removed the matching flat artifact.
+    """
     store, root, source, _texts = _built(tmp_path)
     monkeypatch.setenv(ROOT_ENV, str(root))
     [own] = list(root.glob("store-*/lite-*"))
@@ -255,9 +259,9 @@ def test_a_flat_artifact_naming_the_memo_is_removed_and_another_stays(
 
     result = forget_memory(store, [source])
 
-    assert "WARNING" not in result.message, result.message
+    assert "WARNING" in result.message and "owner is unknown" in result.message, result.message
     assert not own.exists(), "the store's own artifact built with the memo is left"
-    assert not naming.exists(), "a flat artifact naming the forgotten memo is left"
+    assert naming.exists(), "the matching flat artifact had no verified owner"
     assert other.exists(), "a flat artifact of another memory was removed"
     store.close()
 
@@ -297,3 +301,86 @@ def test_a_forget_in_one_store_leaves_another_store_sharing_the_root(
     assert all(p.exists() for p in b_artifacts), "a forget in store A removed store B's artifact"
     store_a.close()
     store_b.close()
+
+
+def test_a_forget_during_publication_leaves_no_stale_artifact(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A forget between the last build check and publication must leave no old artifact."""
+    root = tmp_path / "atomic"
+    store, embedder = _certified(tmp_path)
+    monkeypatch.setenv(ROOT_ENV, str(root))
+    [source] = {chunk.source for chunk in store.iter_chunks() if Path(chunk.source).name == "ops-log.md"}
+    publish = lite_atomic.write_atomic_rescue_artifact
+    from threading import Event, Thread
+
+    rows_deleted = Event()
+    results = []
+    errors = []
+    writer = LiteStore(store.path, dim=embedder.dim)
+    delete = writer.delete_sources
+
+    def deleted(*args, **kwargs):
+        result = delete(*args, **kwargs)
+        rows_deleted.set()
+        return result
+
+    monkeypatch.setattr(writer, "delete_sources", deleted)
+
+    def forgotten():
+        try:
+            results.append(forget_memory(writer, [source]))
+        except Exception as exc:
+            errors.append(exc)
+
+    thread = Thread(target=forgotten)
+
+    def forget_then_publish(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+        thread.start()
+        assert rows_deleted.wait(10), "the concurrent forget did not commit its row deletion"
+        assert not _artifacts(root), "negative control: the artifact was already published"
+        path = publish(*args, **kwargs)
+        assert source in _sources(path.parent), "negative control: the old artifact lacks the forgotten source"
+        return path
+
+    monkeypatch.setattr(lite_atomic, "write_atomic_rescue_artifact", forget_then_publish)
+    try:
+        report = ensure_rescue_artifact(store, embedder, env=_env(root))
+        thread.join(10)
+        assert not thread.is_alive() and not errors, errors
+        assert results and results[0].chunks_removed > 0 and "WARNING" not in results[0].message, results
+        assert not _artifacts(root), "an artifact naming the forgotten source survived erasure"
+        assert report is not None and report.manifest is None, "the overtaken build reported a stale artifact"
+    finally:
+        if thread.ident is not None:
+            thread.join(10)
+        writer.close()
+        store.close()
+
+
+def test_a_failed_assembly_clears_views_written_after_forget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A later assembly error must still clean committed view batches after a forget."""
+    root = tmp_path / "atomic"
+    store, embedder = _certified(tmp_path)
+    monkeypatch.setenv(ROOT_ENV, str(root))
+    needle = [chunk for chunk in store.iter_chunks() if Path(chunk.source).name == "ops-log.md"]
+    assert needle, "negative control: missing test memo"
+    gone = {chunk_view_digest(chunk.text) for chunk in needle}
+    assemble = atomic_view_store.assemble
+
+    def forget_then_fail(parents, views, *args):  # noqa: ANN001, ANN002, ANN202
+        result = forget_memory(store, [needle[0].source])
+        assert result.chunks_removed > 0 and "WARNING" not in result.message, result.message
+        assemble(parents, views, *args)
+        assert gone <= set(_views(root)), "negative control: no forgotten views were committed"
+        raise AtomicRescueArtifactError("synthetic later assembly failure")
+
+    monkeypatch.setattr(atomic_view_store, "assemble", forget_then_fail)
+    try:
+        with pytest.raises(AtomicRescueArtifactError, match="synthetic later assembly failure"):
+            ensure_rescue_artifact(store, embedder, env=_env(root))
+        assert not gone.intersection(_views(root)), "forgotten views survived the failed build"
+    finally:
+        store.close()

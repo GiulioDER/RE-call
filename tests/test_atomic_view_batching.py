@@ -35,6 +35,7 @@ from recall.embedding_core import embed_document_groups
 from recall.lite.atomic import ensure_rescue_artifact
 from tests.test_lite_atomic_rescue import _certified, _env
 from tests.test_lite_calibration import ContentWordEmbedder
+from tests.test_atomic_micro_incremental import DIM, PROFILE, _Embedder, _parents, _text
 
 
 class _Counting:
@@ -91,3 +92,39 @@ def test_no_texts_sends_no_request() -> None:
     assert embed_document_groups(counting, [[], []]) == [[], []]
     assert embed_document_groups(counting, []) == []
     assert not counting.calls, "an empty request reached the embedder"
+
+
+def test_a_later_batch_reuses_views_committed_after_planning(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """PERF-001. A second handle fills a planned miss before its embedding batch.
+
+    Red proof targets assemble's fixed missing list before the per-batch get recheck.
+    The embedding-count assertion catches the repeated work at the exported assembler.
+    """
+    import numpy as np
+
+    from recall import atomic_view_store
+    from recall.atomic_view_store import AtomicViewStore, assemble, chunk_view_digest
+
+    monkeypatch.setattr(atomic_view_store, "EMBED_BATCH_CHUNKS", 2)
+    parents = _parents([_text(index) for index in range(3)])
+    later_views = chunk_micro_views(parents[-1][3])
+    external = [[0.0, 0.0, 0.0, 1.0] for _ in later_views]
+    counting = _Embedder()
+    committed = False
+    path = tmp_path / "views.sqlite"
+    with AtomicViewStore(path) as store, AtomicViewStore(path) as writer:
+        def embed_then_commit(groups: list[list[str]]) -> list[list[list[float]]]:
+            nonlocal committed
+            if not committed:
+                writer.put(PROFILE, chunk_view_digest(parents[-1][3]), external)
+                writer.commit()
+                committed = True
+            return counting(groups)
+
+        matrix, metadata, counts = assemble(parents, store, PROFILE, DIM, embed_then_commit)
+    assert committed and len(later_views) > 0, "the second handle supplied no reusable views"
+    assert counting.groups == 2, "a later batch embedded views another builder had already committed"
+    assert counts["embedded_chunks"] == 2 and counts["reused_chunks"] == 1
+    assert counts["embedded_views"] == sum(len(chunk_micro_views(parent[3])) for parent in parents[:2])
+    assert len(metadata) == len(matrix) == sum(len(chunk_micro_views(parent[3])) for parent in parents)
+    assert np.array_equal(matrix[-len(later_views):], np.asarray(external, dtype=np.float32))

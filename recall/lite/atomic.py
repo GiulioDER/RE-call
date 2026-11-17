@@ -77,7 +77,7 @@ MODE_BY_TENANT_ENV = "RECALL_ATOMIC_RESCUE_MODE_BY_TENANT"
 WHEN_MISSING_ENV = "RECALL_ATOMIC_RESCUE_WHEN_MISSING"
 VIEW_STORE_NAME = "micro-views.sqlite"
 #: The directory names of artifacts, in a store's folder and, from the flat layout, at the top of
-#: the root: there a build only counts them, and only a forget naming their sources removes one.
+#: the root: a build counts them and a forget reports any that may retain erased content.
 _ARTIFACT_NAME = re.compile(r"lite-[0-9a-f]{16}\.cal_[0-9a-f]+")
 #: The files `write_atomic_rescue_artifact` publishes in an artifact's directory.
 _MEMBERS = ("manifest.json", "views.json", "matrix.npy")
@@ -209,6 +209,8 @@ def rescue_settings(
         if default_root is None:
             return {}, f"atomic rescue is off: set {ROOT_ENV} to turn it on"
         root = str(default_root)
+    elif not root and default_root is not None and default_root.is_dir():
+        root = str(default_root)
     return {MODE_ENV: mode, **({ROOT_ENV: root} if root else {})}, ""
 
 
@@ -223,9 +225,10 @@ def ensure_rescue_artifact(
     changes the memory, or `recall lite refresh --force`, builds again.
     """
     from recall import __version__
-    from recall.atomic_view_store import AtomicViewStore, assemble, chunk_view_digest
+    from recall.atomic_view_store import AtomicViewStore, assemble
     from recall.calibration_v2 import CalibrationStatus
     from recall.embeddings import embed_document_groups, embedding_profile, embedding_profile_id
+    from recall.lite.writer_lock import _mutex
 
     root = configured_root(store.tenant, env)
     if root is None:
@@ -245,28 +248,31 @@ def ensure_rescue_artifact(
         "pipeline_fingerprint": binding.get("pipeline_fingerprint"),
         "corpus_fingerprint": corpus_fingerprint,
     }
-    if manifest.parent.exists():
-        # The same corpus and calibration again (a write undone): the artifact already describes
-        # them, unless an interrupted removal left part of it. Checked on disk first, because the
-        # loader answers a key it has cached without reading the directory again; then loaded in
-        # full, since only the verified load can tell a damaged matrix, which must be rebuilt.
-        if all((manifest.parent / name).is_file() for name in _MEMBERS):
-            try:
-                load_atomic_rescue_artifact(manifest).assert_lineage(**lineage, embedder=embedder)
-                return BuildReport(manifest, f"in force for {generation_id}")
-            except AtomicRescueArtifactError:
-                pass
-        # This process's own cache maps the matrix it last built or loaded, and Windows refuses to
-        # delete a mapped file; searches in flight keep their own references. Only this directory
-        # is evicted, so another artifact in force is not reloaded by the next search.
-        evict_atomic_rescue_artifacts([manifest.parent])
-        shutil.rmtree(manifest.parent, ignore_errors=True)
+    folder = manifest.parent.parent
+    folder.mkdir(parents=True, exist_ok=True)
+    with _mutex(folder, "publish"):
         if manifest.parent.exists():
-            raise AtomicRescueArtifactError(
-                f"{manifest.parent} is left from an earlier build and cannot be removed while a process "
-                "(another one, or a search in flight here) has its matrix open; the next write builds "
-                "it once that mapping is released"
-            )
+            # The same corpus and calibration again (a write undone): the artifact already describes
+            # them, unless an interrupted removal left part of it. Checked on disk first, because the
+            # loader answers a key it has cached without reading the directory again; then loaded in
+            # full, since only the verified load can tell a damaged matrix, which must be rebuilt.
+            if all((manifest.parent / name).is_file() for name in _MEMBERS):
+                try:
+                    load_atomic_rescue_artifact(manifest).assert_lineage(**lineage, embedder=embedder)
+                    return BuildReport(manifest, f"in force for {generation_id}")
+                except AtomicRescueArtifactError:
+                    pass
+            # This process's own cache maps the matrix it last built or loaded, and Windows refuses to
+            # delete a mapped file; searches in flight keep their own references. Only this directory
+            # is evicted, so another artifact in force is not reloaded by the next search.
+            evict_atomic_rescue_artifacts([manifest.parent])
+            shutil.rmtree(manifest.parent, ignore_errors=True)
+            if manifest.parent.exists():
+                raise AtomicRescueArtifactError(
+                    f"{manifest.parent} is left from an earlier build and cannot be removed while a process "
+                    "(another one, or a search in flight here) has its matrix open; the next write builds "
+                    "it once that mapping is released"
+                )
     profile = embedding_profile(embedder).fingerprint()
     sibling = _sibling(manifest.parent, generation_id, lineage, embedder)
     if sibling is not None:
@@ -281,51 +287,54 @@ def ensure_rescue_artifact(
         # The root holds view vectors and the sources of memo chunks, like the `.recall` directory.
         root.mkdir(parents=True, exist_ok=True)
         write_ignore(root)
-        with AtomicViewStore(root / VIEW_STORE_NAME) as views:
-            matrix, metadata, counts = assemble(
-                parents, views, profile, int(embedder.dim), lambda groups: embed_document_groups(embedder, groups)
-            )
-    if store.corpus_fingerprint() != corpus_fingerprint or _key_in_force(store) != manifest.parent.name:
-        # A write, or a background refit under its own lane, landed while the views were read;
-        # it builds its own artifact, which this build must neither replace nor remove.
-        if sibling is None and store.corpus_fingerprint() != corpus_fingerprint:
-            # A forget that landed after the chunks were read erased their views before this
-            # build stored them, so they are erased here, by the texts the store no longer holds.
-            # A build that copied a sibling stored no views.
-            current = {chunk.text for chunk in store.iter_chunks()}
-            stale = {chunk_view_digest(text) for *_, text in parents if text not in current}
-            if stale:
-                with AtomicViewStore(root / VIEW_STORE_NAME) as views:
-                    views.erase_digests(stale)
-        return BuildReport(None, "not built: the memory or its calibration changed during the build", counts)
-    try:
-        written = write_atomic_rescue_artifact(
-            manifest.parent,
-            matrix=matrix,
-            views=metadata,
-            generation_id=generation_id,
-            calibration_id=calibration_id,
-            pipeline_fingerprint=str(lineage["pipeline_fingerprint"]),
-            corpus_fingerprint=corpus_fingerprint,
-            embedding_profile=embedding_profile_id(embedder),
-            embedding_fingerprint=profile,
-            ordinary_chunk_count=ordinary,
-            source_commit=f"recall-rag {__version__}",
-        )
-    except OSError:
-        # A concurrent build of the same key (a refresh beside a background refit) published
-        # first: refused before staging (FileExistsError) or at the rename onto its directory
-        # (ENOTEMPTY, or access denied on Windows). With no artifact there, the failure was this
-        # build's own. The winner's is verified here; this build's own was, by the writer, which
-        # loads the staged directory with the serving loader before it publishes it.
-        if not manifest.is_file():
+        try:
+            with AtomicViewStore(root / VIEW_STORE_NAME) as views:
+                matrix, metadata, counts = assemble(
+                    parents, views, profile, int(embedder.dim), lambda groups: embed_document_groups(embedder, groups)
+                )
+        except Exception:  # BROAD-CATCH: cleanup  # a previous view batch may have committed
+            if store.corpus_fingerprint() != corpus_fingerprint:
+                _erase_stale_views(store, root, parents)
             raise
-        load_atomic_rescue_artifact(manifest).assert_lineage(**lineage, embedder=embedder)
-        written = manifest
-    # A copied sibling's matrix is still mapped through these, and Windows refuses to delete a
-    # mapped file, so the superseded directory would outlive this build.
-    del matrix, sibling
-    _remove_others(manifest.parent.parent, keep={manifest.parent.name, _key_in_force(store)})
+    # A refresh and a refit publish under different store lanes. Share this short
+    # lock with forget and pruning so a stale build cannot remove their artifacts.
+    with _mutex(folder, "publish"):
+        current = store.corpus_fingerprint()
+        if current != corpus_fingerprint or _key_in_force(store) != manifest.parent.name:
+            if sibling is None and current != corpus_fingerprint:
+                _erase_stale_views(store, root, parents)
+            return BuildReport(None, "not built: the memory or its calibration changed during the build", counts)
+        try:
+            written = write_atomic_rescue_artifact(
+                manifest.parent,
+                matrix=matrix,
+                views=metadata,
+                generation_id=generation_id,
+                calibration_id=calibration_id,
+                pipeline_fingerprint=str(lineage["pipeline_fingerprint"]),
+                corpus_fingerprint=corpus_fingerprint,
+                embedding_profile=embedding_profile_id(embedder),
+                embedding_fingerprint=profile,
+                ordinary_chunk_count=ordinary,
+                source_commit=f"recall-rag {__version__}",
+            )
+        except OSError:
+            # A concurrent build of the same key (a refresh beside a background refit) published
+            # first: refused before staging (FileExistsError) or at the rename onto its directory
+            # (ENOTEMPTY, or access denied on Windows). With no artifact there, the failure was this
+            # build's own. The winner's is verified here; this build's own was, by the writer, which
+            # loads the staged directory with the serving loader before it publishes it.
+            if not manifest.is_file():
+                raise
+            load_atomic_rescue_artifact(manifest).assert_lineage(**lineage, embedder=embedder)
+            written = manifest
+        # A copied sibling's matrix is still mapped through these, and Windows refuses to delete a
+        # mapped file, so the superseded directory would outlive this build.
+        del matrix, sibling
+        if store.corpus_fingerprint() != corpus_fingerprint:
+            remove_artifact_directories([manifest.parent], root)
+            return BuildReport(None, "not built: the memory changed during publication", counts)
+        _remove_others(folder, keep={manifest.parent.name, _key_in_force(store)})
     # Their owner is unknown, so they are reported rather than removed (docs/LITE.md).
     flat = sum(1 for entry in root.iterdir() if entry.is_dir() and _ARTIFACT_NAME.fullmatch(entry.name))
     left = f"; {flat} artifact folder(s) from before per-store folders remain in {root}" if flat else ""
@@ -335,6 +344,17 @@ def ensure_rescue_artifact(
         f"{counts['embedded_views']} newly embedded{left}",
         counts,
     )
+
+
+def _erase_stale_views(store: LiteStore, root: Path, parents: Sequence[tuple[str, str, int, str]]) -> None:
+    """Erase committed view batches for texts a concurrent forget removed."""
+    from recall.atomic_view_store import AtomicViewStore, chunk_view_digest
+
+    current = {chunk.text for chunk in store.iter_chunks()}
+    stale = {chunk_view_digest(text) for *_, text in parents if text not in current}
+    if stale:
+        with AtomicViewStore(root / VIEW_STORE_NAME) as views:
+            views.erase_digests(stale)
 
 
 def _sibling(
@@ -366,12 +386,12 @@ def erase_forgotten(
     erased by text digest from `<root>/micro-views.sqlite`, and every artifact in the store's own
     folder is removed except the one the store resolves now: each other one was built from a
     corpus that held the forgotten chunks, and keeps their view vectors and sources. An artifact
-    left at the top of the root by the layout before per-store folders has no known owner, so it is
-    removed only when its `views.json` names one of `sources`, or cannot be read, since such an
-    artifact can never serve (`recall.atomic_rescue.artifact_names_any`). The root is read whatever the rescue
-    mode, since a rescue turned off keeps what it built. Raises when something is left.
+    left at the top of the root by the layout before per-store folders has an unknown owner.
+    Reports any such artifact that names a forgotten source or cannot be read. The root is read
+    regardless of mode, since a rescue turned off keeps what it built.
     """
     from recall.atomic_view_store import AtomicViewStore, chunk_view_digest
+    from recall.lite.writer_lock import _mutex
 
     # Without the variable, the root `recall setup --lite` chose: it registers the root only on the
     # MCP server, so a CLI forget would otherwise erase nothing and say nothing (CCA ENV-001).
@@ -383,18 +403,26 @@ def erase_forgotten(
     if texts and views_path.is_file():
         with AtomicViewStore(views_path) as views:
             erased = views.erase_digests({chunk_view_digest(text) for text in texts})
-    keep = _key_in_force(store)
     own = _store_folder(root, store)
-    doomed = [
-        entry for entry in (own.iterdir() if own.is_dir() else ())
-        if entry.name != keep and entry.is_dir() and _ARTIFACT_NAME.fullmatch(entry.name)
-    ]
-    doomed += [
+    own.mkdir(parents=True, exist_ok=True)
+    with _mutex(own, "publish"):
+        keep = _key_in_force(store)
+        doomed = [
+            entry for entry in own.iterdir()
+            if entry.name != keep and entry.is_dir() and _ARTIFACT_NAME.fullmatch(entry.name)
+        ]
+        removed = remove_artifact_directories(doomed, root)
+    named = set(sources)
+    unowned = [
         entry for entry in root.iterdir()
-        if entry.name != keep and entry.is_dir() and _ARTIFACT_NAME.fullmatch(entry.name)
-        and artifact_names_any(entry, set(sources))
+        if entry.is_dir() and _ARTIFACT_NAME.fullmatch(entry.name) and artifact_names_any(entry, named)
     ]
-    return erased, remove_artifact_directories(doomed, root)
+    if unowned:
+        raise AtomicRescueArtifactError(
+            "legacy atomic rescue artifact owner is unknown; confirm ownership before removing "
+            + ", ".join(str(entry) for entry in sorted(unowned))
+        )
+    return erased, removed
 
 
 def _key_in_force(store: LiteStore) -> str | None:
@@ -408,15 +436,18 @@ def _key_in_force(store: LiteStore) -> str | None:
 
 
 def artifact_in_force(store: LiteStore, root: Path) -> bool:
-    """Whether the artifact a search of `store` loads now is on disk (the trust gate checks its
-    lineage when it loads it); False without a certified calibration."""
+    """Whether all files for the current rescue are on disk.
+
+    The trust gate verifies the artifact and its lineage when it loads it.
+    """
     from recall.calibration_v2 import CalibrationStatus
 
     resolution = store.resolve_calibration()
     if resolution.status is not CalibrationStatus.CERTIFIED or resolution.artifact is None:
         return False
     generation_id = store.generation_binding()["generation_id"]
-    return serving_manifest(root, store, generation_id, resolution.artifact.calibration_id).is_file()
+    directory = serving_manifest(root, store, generation_id, resolution.artifact.calibration_id).parent
+    return all((directory / name).is_file() for name in _MEMBERS)
 
 
 def _remove_others(folder: Path, *, keep: Container[str | None]) -> None:

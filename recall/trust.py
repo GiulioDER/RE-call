@@ -623,7 +623,19 @@ def _trusted_search(
         and security_policy is None
         and access_context is None
     )
-    if atomic_mode == "active" and atomic_scope_is_empty:
+    atomic_applies = atomic_mode == "active" and atomic_scope_is_empty
+    if atomic_applies and failure_code is None and calibration_id is not None:
+        # A certified inventory of at most five chunks has no sixth parent to rescue. Count the
+        # actual bound corpus inside its snapshot, since a dense shortlist can omit stored rows.
+        counter = getattr(store, "count", None)
+        bounded = getattr(store, "count_up_to", None)
+        corpus_size = None
+        if callable(counter):
+            corpus_size = bounded(6) if callable(bounded) else counter()
+        atomic_applies = not (
+            isinstance(corpus_size, int) and not isinstance(corpus_size, bool) and 0 <= corpus_size <= 5
+        )
+    if atomic_applies:
         artifact_root = environment_source.get(
             "RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT", ""
         ).strip()

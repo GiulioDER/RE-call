@@ -256,8 +256,10 @@ With the rescue on, every write that keeps a calibration in force (a refresh, `r
 `recall_index`, a background refit landing) builds an artifact for the memory and calibration then
 in force, under the root, and the refresh report prints an `atomic` line. On a store that already
 exists, the next refresh run with the variables set builds the artifact even when no memo changed,
-and the MCP server starts that refresh at its next check; until it ends every search with the
-rescue on fails on the missing artifact. Nothing is built until the store has a certified calibration, and
+and the MCP server starts that refresh at its next check. The refresh also checks the current
+root and calibration when the memos stay the same. A certified store with five or fewer chunks
+has no sixth candidate and serves ordinary trusted results without an artifact. Nothing is built
+until the store has a certified calibration, and
 until then every search with the rescue on refuses, in development trust mode too, where search
 would otherwise answer uncalibrated. The views of each chunk text are kept in
 `micro-views.sqlite` under the root, so a later build embeds only the views of new or edited
@@ -277,14 +279,15 @@ notices such a change at its next check (at most every `RECALL_LITE_REFRESH_INTE
 refreshes, which builds the artifact again, mostly from views it already holds; until that build
 ends such a search fails on the missing artifact.
 A background refit that stores a new calibration and then fails to build only logs the failure, so
-such searches fail until the next write that changes the memory, or `recall lite refresh --force`,
-builds again. A store's older artifacts are removed after each build; on Windows one a running
+searches that need the artifact fail until a write or `recall lite refresh` builds it again. A store's older artifacts are removed after each build; on Windows one a running
 server still has open stays until a later build.
 
 `recall forget` and `recall withdraw` also erase what the rescue keeps of the memo: its views in
 `micro-views.sqlite`, with SQLite `secure_delete` and a truncating checkpoint, and every artifact
-in the store's own folder but one built for the memory as it is after the forget. A `lite-*`
-folder at the top of the root, from before per-store folders, is removed when it names the memo.
+in the store's own folder but one built for the memory as it is after the forget. A legacy
+`lite-*` folder directly under the shared root has no recorded owner. If it names the memo or
+its source list is unreadable, forget reports incomplete cleanup and leaves the folder for
+ownership review.
 Views are shared by text, so another store holding the same text re-embeds it at its next build.
 They do so even with the rescue since turned off, and report an erasure that failed (on Windows,
 an artifact a running server still has open). With `RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT` unset,

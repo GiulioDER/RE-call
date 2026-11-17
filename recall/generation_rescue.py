@@ -216,10 +216,14 @@ def build_artifact(dsn: str, tenant: str, generation_id: str, embedder: Embedder
     if reused is not None:
         matrix, metadata, ordinary, counts = reused
     else:
-        with AtomicViewStore(root / VIEW_STORE_NAME) as views:
-            matrix, metadata, counts = assemble(
-                parents, views, profile, int(embedder.dim), lambda groups: embed_document_groups(embedder, groups)
-            )
+        try:
+            with AtomicViewStore(root / VIEW_STORE_NAME) as views:
+                matrix, metadata, counts = assemble(
+                    parents, views, profile, int(embedder.dim), lambda groups: embed_document_groups(embedder, groups)
+                )
+        except Exception as exc:  # BROAD-CATCH: cleanup  # earlier batches may already have committed
+            _refuse_if_corpus_moved(dsn, tenant, generation_id, embedder.dim, lineage, root, parents, error=exc)
+            raise
         ordinary = len(parents)
         _refuse_if_corpus_moved(dsn, tenant, generation_id, embedder.dim, lineage, root, parents)
     if artifact_serves(artifact_manifest(root, generation_id, calibration_id), lineage, embedder):
@@ -352,6 +356,7 @@ def _refuse_if_corpus_moved(
     parents: Sequence[tuple[str, str, int, str]],
     *,
     written: Path | None = None,
+    error: Exception | None = None,
 ) -> None:
     """Refuse a build whose generation a forget changed while it ran, erasing what it stored.
 
@@ -363,19 +368,28 @@ def _refuse_if_corpus_moved(
     from recall.atomic_view_store import AtomicViewStore, chunk_view_digest
     from recall.generation_store import GenerationStore
 
+    from recall.generation_types import NoActiveGeneration
+
     store = GenerationStore(dsn, dim, tenant=tenant)
-    with store:
-        store.set_fixed_generation(generation_id)
-        if store.generation_binding().get("corpus_fingerprint") == lineage["corpus_fingerprint"]:
-            return
-        current = {chunk.text for chunk in store.iter_chunks()}
+    try:
+        with store:
+            store.set_fixed_generation(generation_id)
+            if store.generation_binding().get("corpus_fingerprint") == lineage["corpus_fingerprint"]:
+                return
+            current = {chunk.text for chunk in store.iter_chunks()}
+    except NoActiveGeneration:
+        # Collection can complete before this build publishes; delete only this build's key.
+        if written is not None:
+            remove_artifact_directories([written], root)
+        raise
     stale = {chunk_view_digest(text) for *_, text in parents if text not in current}
     if stale:
         with AtomicViewStore(root / VIEW_STORE_NAME) as views:
             views.erase_digests(stale)
     if written is not None:
-        evict_atomic_rescue_artifacts([written])
-        shutil.rmtree(written, ignore_errors=True)
+        remove_artifact_directories([written], root)
+    if error is not None:
+        raise error
     raise AtomicRescueArtifactError(
         f"the corpus of generation {generation_id} changed while its atomic rescue was built (a "
         "forget landed), so it was not built; run it again"

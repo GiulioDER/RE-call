@@ -331,9 +331,11 @@ def test_a_lite_write_that_built_its_artifact_starts_no_refresh(tmp_path: Path, 
         refresher.stop()
 
 
-def test_a_damaged_lite_flat_artifact_is_removed_by_a_forget(tmp_path: Path) -> None:
-    """STAKES-005, the Lite twin: a flat `lite-*` artifact at the top of the root whose `views.json`
-    cannot be read is removed by a forget, as one naming the source is; it can never serve."""
+def test_a_damaged_lite_flat_artifact_is_reported_by_a_forget(tmp_path: Path) -> None:
+    """An unreadable legacy Lite artifact cannot establish store ownership.
+
+    On a7024d569, erase_forgotten returned success and deleted the flat folder.
+    """
     from recall.calibration_v2 import CalibrationStatus
     from recall.lite.atomic import erase_forgotten
 
@@ -347,9 +349,13 @@ def test_a_damaged_lite_flat_artifact_is_removed_by_a_forget(tmp_path: Path) -> 
         resolve_calibration=lambda: SimpleNamespace(status=CalibrationStatus.MISSING, artifact=None),
     )
 
-    erase_forgotten(store, [], ["forgotten.md"], env={ROOT_ENV: str(tmp_path)})  # type: ignore[arg-type]
+    warning = ""
+    try:
+        erase_forgotten(store, [], ["forgotten.md"], env={ROOT_ENV: str(tmp_path)})  # type: ignore[arg-type]
+    except AtomicRescueArtifactError as exc:
+        warning = str(exc)
 
-    assert not flat.exists()
+    assert "owner is unknown" in warning and flat.exists(), "unowned cleanup was not reported"
 
 
 def test_forget_roots_never_probes_a_network_root_from_the_record(tmp_path: Path, monkeypatch) -> None:

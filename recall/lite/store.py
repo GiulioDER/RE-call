@@ -1082,6 +1082,22 @@ class LiteStore:
         )
         return {str(source) for (source,) in rows if source}
 
+    def recorded_memo_journal_roots(self, sources: Sequence[str]) -> dict[str, list[str]]:
+        """Verified indexing roots recorded before these exact sources were deleted."""
+        if not sources:
+            return {}
+        rows = self._metadata_values(
+            "SELECT source_uri, payload FROM audit_events WHERE event_type = 'forget_memo_journal' "
+            "AND source_uri IN (SELECT value FROM json_each(?))", (json.dumps(list(sources)),),
+        )
+        roots: dict[str, set[str]] = {}
+        for source, raw in rows:
+            payload = json.loads(raw)
+            for root in payload.get("index_roots", []):
+                if isinstance(root, str):
+                    roots.setdefault(str(source), set()).add(root)
+        return {source: sorted(values) for source, values in roots.items()}
+
     def forgotten_source_aliases(self, sources: Sequence[str]) -> set[str]:
         """Recover card names recorded before these exact sources were forgotten."""
         if not sources:
@@ -1148,6 +1164,10 @@ class LiteStore:
 
     def count(self) -> int:
         return int(self._metadata_values("SELECT count(*) FROM chunks")[0][0])
+
+    def count_up_to(self, limit: int) -> int:
+        """Count at most `limit` chunks in the bound snapshot."""
+        return int(self._metadata_values("SELECT count(*) FROM (SELECT 1 FROM chunks LIMIT ?)", (limit,))[0][0])
 
     def newest_indexed_at(self) -> datetime | None:
         # From the cached rows, not SQL: `trusted_search` asks on every search, and `max(indexed_at)`

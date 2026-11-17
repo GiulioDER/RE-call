@@ -40,7 +40,6 @@ from recall.backends import write_session
 from recall.confinement import within
 from recall.errors import RecallError
 from recall.lite.assistant_memos import ASSISTANT_AUTHOR, MEMO_ID, MemoFolder
-from recall.lite.memo_requests import cancel_requests, restore_requests
 
 if TYPE_CHECKING:
     from recall.embeddings import Embedder
@@ -338,7 +337,7 @@ class AssistantMemos(MemoFolder):
                 return {"deleted": 0}
             # The journal first: a ledger that cannot be read or saved stops the forget before
             # any row is erased, instead of after, with the file left for the next refresh.
-            previous = cancel_requests(self.ledger_path, memo_id)
+            previous = self.cancel_requests(memo_id)
             try:
                 result = forget_memory(
                     store,  # type: ignore[arg-type]  # the shared lifecycle types the Postgres store
@@ -351,7 +350,7 @@ class AssistantMemos(MemoFolder):
                         or (result.sources_not_found and self._indexed_under_another_name(store, path))):
                     raise RuntimeError(f"forget of {memo_id} incomplete: {result.message}")
             except BaseException:
-                restore_requests(self.ledger_path, previous)
+                self.restore_requests(previous)
                 raise
             self.unlink_cancelled(path, previous)
             self.refresh(

@@ -285,22 +285,50 @@ def withdraw_memory(
 MEMO_JOURNAL_EVENT = "forget_memo_journal"
 
 
-def _record_memo_journals(store: PgVectorStore, sources: list[str]) -> None:
-    """Record in `store`'s own audit ledger each assistant memo among `sources`, by its source only.
+def _record_memo_journals(
+    store: PgVectorStore, sources: list[str], shadow_store: PgVectorStore | None = None
+) -> None:
+    """Record assistant memo sources and verified indexing roots before their rows go.
 
     A store with no audit ledger records nothing, and its re-run then erases only what it deletes.
     An append that fails raises before any row is deleted.
     """
+    from pathlib import Path
+
     from recall.lite.assistant_memos import is_assistant_memo
+    from recall.source_identity import nfc, source_identity
+    from recall.uploads import source_location
 
     append = getattr(store, "append_audit_event", None)
     if not callable(append):
         return
-    for source in sorted(source for source in set(sources) if is_assistant_memo(source)):
-        identity = json.dumps([getattr(store, "tenant", None), source], ensure_ascii=False)
+    memos = sorted(source for source in set(sources) if is_assistant_memo(source))
+    if not memos:
+        return
+    roots: dict[str, set[str]] = {}
+    for target in (store, shadow_store):
+        subjects = getattr(target, "erasure_subjects", None)
+        if not callable(subjects):
+            continue
+        for source, files in subjects(memos, recorded=True).items():
+            if source not in memos:
+                continue
+            for file in files:
+                identity = source_identity(source, file)
+                if (
+                    not identity.root or not Path(identity.root).is_absolute() or Path(identity.file).is_absolute()
+                    or Path(identity.root) == Path(nfc(source_location(source)))
+                ):
+                    continue
+                if Path(identity.root) / identity.file != Path(nfc(source_location(source))):
+                    continue
+                roots.setdefault(source, set()).add(str(Path(identity.root)))
+    for source in memos:
+        index_roots = sorted(roots.get(source, ()))
+        event_identity = json.dumps([getattr(store, "tenant", None), source, index_roots], ensure_ascii=False)
         append(
-            MEMO_JOURNAL_EVENT, {}, source_uri=source,
-            event_id="forget_memo_journal_" + hashlib.sha256(identity.encode()).hexdigest(),
+            MEMO_JOURNAL_EVENT, {"index_roots": index_roots}, source_uri=source,
+            event_id="forget_memo_journal_" + hashlib.sha256(event_identity.encode()).hexdigest(),
         )
 
 
@@ -523,7 +551,7 @@ def _forget_memory_unlocked(
     if erase_memo_requests:
         # Before the rows go, for the same reason: the record is how a re-run, which finds no
         # rows, may still name these memos to the journal erasure below.
-        _record_memo_journals(store, to_delete)
+        _record_memo_journals(store, to_delete, shadow_store)
     if to_delete and isinstance(store, GenerationStore) and shadow_store is None:
         erased_texts: list[tuple[str, dict[str, Any]]] = []
         try:
@@ -597,18 +625,22 @@ def _forget_memory_unlocked(
         cache_entries_erased = -1
     rescue_views_erased = rescue_artifacts_removed = 0
     failed_roots: list[str] = []
+    rescue_failure = ""
     if isinstance(store, LiteStore) and chunks_removed:
+        from recall.atomic_rescue import AtomicRescueArtifactError
         from recall.lite.atomic import erase_forgotten
 
         try:
             rescue_views_erased, rescue_artifacts_removed = erase_forgotten(
                 store, rescue_texts, to_delete, env=runtime_environment()
             )
-        except Exception:  # BROAD-CATCH: error-translation
+        except Exception as exc:  # BROAD-CATCH: error-translation
             _log.exception(
                 "atomic rescue erasure failed after chunk deletion for tenant %r", store.tenant
             )
             rescue_views_erased = -1
+            if isinstance(exc, AtomicRescueArtifactError):
+                rescue_failure = str(exc)
     elif isinstance(store, GenerationStore) and chunks_removed and rescue_roots:
         try:
             rescue_views_erased, rescue_artifacts_removed, failed_roots = _erase_generation_rescue(
@@ -626,7 +658,10 @@ def _forget_memory_unlocked(
         try:
             # Only memos this store held: what it deleted now, and requested names it recorded
             # deleting earlier (a re-run after a failure here finds no rows left).
-            memo_requests_erased = forget_memo_requests([*to_delete, *_recorded_memo_journals(store, requested)])
+            journal_sources = sorted({*to_delete, *_recorded_memo_journals(store, requested)})
+            recorded_roots = getattr(store, "recorded_memo_journal_roots", None)
+            index_roots = recorded_roots(journal_sources) if callable(recorded_roots) else {}
+            memo_requests_erased = forget_memo_requests(journal_sources, index_roots=index_roots)
         except Exception:  # BROAD-CATCH: error-translation
             _log.exception(
                 "memo request journal erasure failed after chunk deletion for tenant %r", store.tenant
@@ -697,11 +732,11 @@ def _forget_memory_unlocked(
     if rescue_views_erased < 0:
         message += (
             " WARNING: the chunk deletion succeeded but erasing them from the atomic rescue failed, "
-            "so its view store or an artifact under RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT still holds "
-            "their vectors, and a re-run finds no rows to erase them by; delete micro-views.sqlite "
-            "and the artifact folders there (store-* and lite-* on a lite store, one per generation on "
-            "PostgreSQL), which costs only a rebuild."
+            "so cleanup under RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT remains incomplete. "
+            "Confirm artifact ownership before removing shared folders."
         )
+        if rescue_failure:
+            message += f" {rescue_failure}"
     elif rescue_views_erased or rescue_artifacts_removed:
         message += (
             f" Erased {rescue_views_erased} atomic rescue view set(s) and removed "

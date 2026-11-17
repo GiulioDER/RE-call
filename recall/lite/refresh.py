@@ -390,8 +390,7 @@ def _finish(
     """Write the state file for this run. `success_generation` marks it the new last success.
 
     `stated` is the stating rule the run's reconcile used (`recall.stated_facts.stated_marker`).
-    `rescued` says the run asked for the atomic rescue artifact, so a refresher with the rescue on
-    may skip an unchanged folder only after a run that did.
+    `rescued` records whether the run built or found its rescue artifact.
     """
     report.finished_utc = _utc()
     document: dict[str, Any] = {
@@ -479,9 +478,10 @@ def refresh(
     report.fingerprint, report.files_seen = before.fingerprint, before.count
     # A missing folder is refused under the lane (`_refresh_locked`), where the refusal is written
     # safely; nothing outside the lane writes the state file (CCA BUG-004).
-    from recall.lite.atomic import configured_root
+    from recall.lite.atomic import artifact_in_force, configured_root
 
     last = read_state(db).get("last_success") or {}
+    rescue_root = configured_root(store.tenant, refusal_env)
     if (
         not force
         and not before.missing
@@ -500,7 +500,7 @@ def refresh(
         and store.graph_current()
         # A refresh run without the rescue's settings (a person's `recall lite refresh`) built no
         # artifact, and with the rescue on every unscoped search refuses until one does.
-        and (last.get("rescued") or configured_root(store.tenant, refusal_env) is None)
+        and (rescue_root is None or artifact_in_force(store, rescue_root))
     ):
         # Nothing is written: this path holds no lane, and rewriting the file here could put back
         # a `last_success` that a concurrent refresh has just replaced.
@@ -703,7 +703,7 @@ def _refresh_locked(
         policy=policy_key(security_policy, security_context),
         key_root=key_root,
         stated=_stated_marker(store, roots) if report.facts_stated >= 0 else None,
-        rescued=atomic is not None,
+        rescued=atomic is not None and atomic.manifest is not None,
     )
 
 

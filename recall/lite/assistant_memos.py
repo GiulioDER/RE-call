@@ -22,14 +22,16 @@ or the folder.
 from __future__ import annotations
 
 import json
+import os
 import re
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from datetime import date
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from recall.confinement import within
 from recall.frontmatter import validity_bounds
+from recall.records_files import _is_junction
 from recall.lite.memo_requests import (
     MEMO_ID, cancel_requests, load_ledger, restore_requests, sweep_staged, write_memo,
 )
@@ -56,21 +58,103 @@ def is_assistant_memo(source: str) -> bool:
     return ledger.is_file() and not ledger.is_symlink()
 
 
-def forget_memo_requests(sources: Iterable[str]) -> int:
-    """Erase the request journal hashes of every memo among `sources`, as `MemoFolder.delete` does.
+def _journal_ledgers(root: Path) -> list[Path]:
+    """Assistant ledgers under the owned root, without following directory or file links."""
+    found: list[Path] = []
+    pending = [root]
+    while pending:
+        with os.scandir(pending.pop()) as listing:
+            for entry in listing:
+                if entry.is_symlink():
+                    if entry.name == LEDGER_NAME:
+                        load_ledger(Path(entry.path))
+                    continue
+                path = Path(entry.path)
+                if entry.is_dir(follow_symlinks=False):
+                    if not _is_junction(entry):
+                        pending.append(path)
+                elif entry.name == LEDGER_NAME and entry.is_file(follow_symlinks=False):
+                    found.append(path)
+    return sorted(found)
 
-    For a memo leaving the index by a path other than `recall_forget_memo`: the generic forget
-    (`recall forget`, `recall_forget`), and the indexer's prune of a memo deleted by hand. A source
-    is a memo by `is_assistant_memo`; any other source is left alone. The caller passes only
-    sources its own store held: a path is not proof of ownership, so a name taken on trust would
-    let a forget in one store erase the journal of a memo another store holds. Returns how many
-    journal entries changed.
+
+def restore_memo_requests(previous: Mapping[Path, dict[str, Any]]) -> None:
+    """Restore every journal in a cancellation batch, including after a later save failed."""
+    failure: Exception | None = None
+    for ledger_path, entries in reversed(list(previous.items())):
+        try:
+            restore_requests(ledger_path, entries)
+        except Exception as exc:  # BROAD-CATCH: rollback must attempt every changed ledger
+            if failure is None:
+                failure = exc
+    if failure is not None:
+        raise failure
+
+
+def cancel_memo_requests(
+    source: str | Path, *, index_roots: Sequence[str | Path] | str | Path | None = None,
+) -> dict[Path, dict[str, Any]]:
+    """Cancel a memo's requests and same-root correction identities, preserving rollback data.
+
+    The caller owns the roots and holds its store's write lane. Without explicit roots only
+    the source's own ledger is touched, preserving the sources-only cleanup contract.
     """
-    changed = 0
-    for source in dict.fromkeys(sources):
-        if is_assistant_memo(source):
-            changed += len(cancel_requests(Path(source).parent / LEDGER_NAME, Path(source).stem))
-    return changed
+    path = Path(source)
+    configured = [index_roots] if isinstance(index_roots, (str, Path)) else index_roots or ()
+    roots = list(dict.fromkeys(Path(root).resolve() for root in configured))
+    for root in roots:
+        located = within(root, path)
+        if located is None:
+            raise ValueError("memo source is outside its index root")
+        path = located
+    if roots and path.suffix == ".md" and MEMO_ID.fullmatch(path.stem):
+        # Validate the owned journal before classification can hide a linked or malformed one.
+        load_ledger(path.parent / LEDGER_NAME)
+    if not is_assistant_memo(str(path)):
+        return {}
+    ledgers: dict[Path, list[Path]] = {}
+    for root in roots:
+        for ledger_path in _journal_ledgers(root):
+            ledgers.setdefault(ledger_path, []).append(root)
+    if not roots:
+        ledgers[path.parent / LEDGER_NAME] = []
+    previous: dict[Path, dict[str, Any]] = {}
+    try:
+        for ledger_path, boundaries in sorted(ledgers.items()):
+            entries = cancel_requests(
+                ledger_path, path.stem, target=path if roots else None, index_roots=boundaries,
+            )
+            if entries:
+                previous[ledger_path] = entries
+    except BaseException:
+        restore_memo_requests(previous)
+        raise
+    return previous
+
+
+def forget_memo_requests(
+    sources: Iterable[str], *, index_roots: Mapping[str, Sequence[str | Path] | str | Path] | None = None,
+) -> int:
+    """Erase journal hashes for store-owned sources and their same-root corrections.
+
+    Roots are keyed by exact erased source and supplied by the caller's store metadata.
+    A missing root retains local cancellation. Every successful save is rolled back if a
+    later source cannot be cancelled. Returns the number of changed journal entries.
+    """
+    previous: dict[Path, dict[str, Any]] = {}
+    try:
+        for source in dict.fromkeys(sources):
+            changed = cancel_memo_requests(
+                source, index_roots=None if index_roots is None else index_roots.get(source),
+            )
+            for ledger_path, entries in changed.items():
+                original = previous.setdefault(ledger_path, {})
+                for key, entry in entries.items():
+                    original.setdefault(key, entry)
+    except BaseException:
+        restore_memo_requests(previous)
+        raise
+    return sum(len(entries) for entries in previous.values())
 
 
 def _opens_a_fence(text: str) -> bool:
@@ -188,6 +272,8 @@ class MemoFolder:
             self.folder, self.ledger_path, body, kind=kind, author=author, supersedes=supersedes,
             request_id=request_id, expected_revision=expected_revision, include_receipt=include_receipt,
             has_successor=has_successor, target=target,
+            successor_folders=tuple(ledger.parent for ledger in _journal_ledgers(self.index_root))
+            if target is not None else (),
         )
 
     def target_of(self, ref: str) -> tuple[Path, str] | None:
@@ -228,9 +314,20 @@ class MemoFolder:
         path = self.path_of(memo_id)
         if path is None:
             raise ValueError(f"{memo_id!r} is not a memo id")
-        self.unlink_cancelled(path, cancel_requests(self.ledger_path, memo_id))
+        self.unlink_cancelled(path, self.cancel_requests(memo_id))
 
-    def unlink_cancelled(self, path: Path, previous: dict[str, Any]) -> None:
+    def cancel_requests(self, memo_id: str) -> dict[Path, dict[str, Any]]:
+        """Cancel this memo and its same-root correction identities before erasing its rows."""
+        path = self.path_of(memo_id)
+        if path is None:
+            raise ValueError(f"{memo_id!r} is not a memo id")
+        return cancel_memo_requests(path, index_roots=[self.index_root])
+
+    def restore_requests(self, previous: Mapping[Path, dict[str, Any]]) -> None:
+        """Restore a cancelled batch when the memo or its rows could not be erased."""
+        restore_memo_requests(previous)
+
+    def unlink_cancelled(self, path: Path, previous: Mapping[Path, dict[str, Any]]) -> None:
         """Unlink a memo file whose requests `cancel_requests` already cancelled (`previous`), and
         any staging file a crash left beside it."""
         try:
@@ -239,6 +336,6 @@ class MemoFolder:
             # The file is still there (a Windows editor holding it, say): the request it came from
             # must stay finishable rather than read as forgotten.
             if path.exists():
-                restore_requests(self.ledger_path, previous)
+                self.restore_requests(previous)
             raise
         sweep_staged(self.folder)

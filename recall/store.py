@@ -2616,6 +2616,17 @@ class PgVectorStore(SourceMutationMixin, SupersessionMixin, ReceiptsAuditMixin):
         )
         return int(row[0]) if row else 0
 
+    def count_up_to(self, limit: int) -> int:
+        """Count at most `limit` chunks in the bound tenant and generation."""
+        scope, scope_args = self._row_scope_args()
+        row = self._with_retry(
+            lambda conn: conn.execute(
+                f"SELECT count(*) FROM (SELECT 1 FROM {self._table} WHERE tenant_id = %s{scope} LIMIT %s) AS bounded",
+                (self._tenant, *scope_args, limit),
+            ).fetchone()
+        )
+        return int(row[0]) if row else 0
+
     def authored_graph_relation_count(self) -> int:
         """Count persisted authored semantic relations for this tenant and generation."""
         row = self._with_retry(
