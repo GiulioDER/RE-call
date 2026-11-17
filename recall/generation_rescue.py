@@ -453,7 +453,10 @@ def prune_superseded(dsn: str, tenant: str, root: Path) -> int:
     doomed |= manager.collected_generation_ids()
     removed = 0
     for generation_id in sorted(doomed):
-        for directory in generation_artifact_dirs(root, generation_id):
+        # A server killed while it wrote an artifact leaves its staging directory, `.<key>.<hex>`
+        # (`write_atomic_rescue_artifact`), which no build of a removed generation will reuse.
+        staging = [entry for entry in root.glob(f".{generation_id}.*") if entry.is_dir()]
+        for directory in [*generation_artifact_dirs(root, generation_id), *staging]:
             try:
                 removed += remove_artifact_directories([directory], root)
             except AtomicRescueArtifactError:

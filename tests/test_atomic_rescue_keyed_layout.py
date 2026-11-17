@@ -137,3 +137,40 @@ def test_prune_keeps_the_active_and_the_rollback_target(tmp_path: Path, monkeypa
     left = sorted(path.name for path in tmp_path.iterdir() if path.is_dir())
     assert removed == 3, f"removed {removed}, expected the older retired, the failed and the collected generations' 3"
     assert left == ["gen_active.cal_1", "gen_other_tenant.cal_1", "gen_prev", "gen_ready.cal_1"], left
+
+
+def test_prune_removes_the_staging_left_by_a_killed_build(tmp_path: Path, monkeypatch) -> None:
+    """K6 (final review, Minor 4 re-graded Important): a server killed mid-write leaves a full-size
+    `.<generation_id>.<calibration_id>.<hex>` staging directory that no glob of `<gen>.*` matches.
+    A prune removes those of the generations it removes; a kept generation's staging may belong to a
+    build still running elsewhere, so it stays.
+
+    Red proof: against `898eaf748`, the doomed generation's staging directory was still there.
+    """
+    from types import SimpleNamespace
+
+    import recall.generations as generations
+    from recall.generation_rescue import prune_superseded
+    from recall.lineage import GenerationState
+
+    class _Manager:
+        def __init__(self, dsn: str, tenant: str, **_: object) -> None:
+            pass
+
+        def list_generations(self):  # noqa: ANN202
+            return (
+                SimpleNamespace(generation_id="gen_active", state=GenerationState.ACTIVE, retired_at=None),
+                SimpleNamespace(generation_id="gen_failed", state=GenerationState.FAILED, retired_at=None),
+            )
+
+        def collected_generation_ids(self) -> set[str]:
+            return set()
+
+    monkeypatch.setattr(generations, "GenerationManager", _Manager)
+    (tmp_path / ".gen_failed.cal_1.0123456789abcdef").mkdir()
+    (tmp_path / ".gen_active.cal_1.fedcba9876543210").mkdir()
+
+    prune_superseded("postgresql://x", "t", tmp_path)
+
+    assert not (tmp_path / ".gen_failed.cal_1.0123456789abcdef").exists(), "a killed build's staging was kept"
+    assert (tmp_path / ".gen_active.cal_1.fedcba9876543210").exists(), "a kept generation's staging was removed"

@@ -153,3 +153,47 @@ def test_recall_search_reports_a_skipped_rescue(lite_env: dict[str, str], tmp_pa
         assert found["atomic_rescue_skipped"] == "missing", found
 
     _serve(env, body)
+
+
+def test_a_missing_atomic_extra_still_raises_under_skip(tmp_path: Path, monkeypatch) -> None:
+    """W7 (final review, Important 1): without the `atomic` packages a build can never succeed, so
+    `skip` must not report the artifact `missing` and leave the builder retrying forever.
+
+    Red proof: against `898eaf748`, under skip the search answered with "missing" instead of raising.
+    """
+    import sys
+
+    store, embedder, root = _store(tmp_path, monkeypatch, build=False)
+    monkeypatch.setitem(sys.modules, "threadpoolctl", None)  # import raises ImportError
+
+    with pytest.raises(AtomicRescueArtifactError, match=r"recall-rag\[atomic\]"):
+        trusted_search(store, embedder, QUERY, k=8, candidate_k=20, env={**_env(root), **SKIP})
+
+
+def test_an_uncalibrated_search_answers_as_off_under_skip(tmp_path: Path, monkeypatch) -> None:
+    """W8 (final review, Important 2): a development-trust search with no resolved calibration (a
+    forget left it STALE, or none was ever certified) answered degraded with the rescue off; under
+    `skip` it must answer the same, not raise on the manifest needing a calibration.
+
+    Red proof: against `898eaf748`, the search raised AtomicRescueArtifactError ("requires a
+    certified calibration").
+    """
+    from recall.lite.refresh import refresh as lite_refresh
+    from recall.trust_policy import TrustPolicy
+    from tests.test_lite_calibration import _write_memos
+
+    for name in ("RECALL_ATOMIC_RESCUE_MODE", "RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT", "RECALL_ATOMIC_RESCUE_MODE_BY_TENANT"):
+        monkeypatch.delenv(name, raising=False)
+    store = LiteStore(tmp_path / "memory.db", dim=DIM)
+    embedder = ContentWordEmbedder()
+    _write_memos(tmp_path / "few", 3)  # too few to certify
+    lite_refresh(store, [tmp_path / "few"], embedder)
+    assert store.resolve_calibration().artifact is None, "the fixture calibrated"
+    development = TrustPolicy.from_env({"RECALL_TRUST_MODE": "development"})
+    root = tmp_path / "atomic"
+
+    off = trusted_search(store, embedder, "crew", k=3, policy=development, env={})
+    skipped = trusted_search(store, embedder, "crew", k=3, policy=development, env={**_env(root), **SKIP})
+
+    assert _ids(skipped) == _ids(off)
+    assert skipped.diagnostics.atomic_rescue_skipped == "uncalibrated"

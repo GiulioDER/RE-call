@@ -52,6 +52,7 @@ from recall.atomic_rescue import (
     insert_atomic_rescue_dense,
     insert_atomic_rescue_fused,
     load_atomic_rescue_artifact,
+    require_atomic_dependency,
     resolve_atomic_rescue_manifest,
 )
 from recall.dependency_invalidation import (
@@ -631,38 +632,47 @@ def _trusted_search(
             raise AtomicRescueArtifactError(
                 "active atomic rescue requires an artifact root and generation identity"
             )
-        if not Path(artifact_root).expanduser().is_absolute():
-            # A configuration error a build cannot fix, so `skip` must not hide it.
-            raise AtomicRescueArtifactError("RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT must be an absolute path")
-        # A store keys its artifacts by generation and calibration and names the path itself (a
-        # lite store's calibration can change while its corpus does not, and so can a PostgreSQL
-        # one's); a store without the method uses the generation alone.
-        store_manifest = getattr(store, "atomic_rescue_manifest", None)
-        manifest = (
-            store_manifest(artifact_root, generation_id, calibration_id)
-            if callable(store_manifest)
-            else resolve_atomic_rescue_manifest(artifact_root, generation_id)
-        )
-        try:
-            artifact = load_atomic_rescue_artifact(manifest)
-            artifact.assert_lineage(
-                generation_id=generation_id,
-                calibration_id=calibration_id,
-                pipeline_fingerprint=binding.get("pipeline_fingerprint"),
-                corpus_fingerprint=binding.get("corpus_fingerprint"),
-                embedder=embedder,
+        if when_missing == "skip":
+            # Configuration errors a build cannot fix, so `skip` must not hide them: the root must be
+            # absolute, and without the `atomic` packages no artifact can ever be built or loaded.
+            if not Path(artifact_root).expanduser().is_absolute():
+                raise AtomicRescueArtifactError("RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT must be an absolute path")
+            require_atomic_dependency()
+        if when_missing == "skip" and calibration_id is None:
+            # No calibration resolved (development trust over a STALE or missing one): an artifact
+            # is keyed by one, so there is nothing to load, and the search answers as with the rescue
+            # off, as it would without this setting's rescue.
+            atomic_skipped = "uncalibrated"
+        else:
+            # A store keys its artifacts by generation and calibration and names the path itself (a
+            # lite store's calibration can change while its corpus does not, and so can a PostgreSQL
+            # one's); a store without the method uses the generation alone.
+            store_manifest = getattr(store, "atomic_rescue_manifest", None)
+            manifest = (
+                store_manifest(artifact_root, generation_id, calibration_id)
+                if callable(store_manifest)
+                else resolve_atomic_rescue_manifest(artifact_root, generation_id)
             )
-        except AtomicRescueArtifactError as exc:
-            if when_missing != "skip":
-                raise
-            # The artifact for this generation and calibration is not usable yet (a promotion or
-            # recalibration the builder has not caught up with): answer as with the rescue off.
-            if isinstance(exc, AtomicRescueLineageError):
-                atomic_skipped = "lineage"
-            elif not manifest.is_file() and not manifest.parent.exists():
-                atomic_skipped = "missing"
-            else:
-                atomic_skipped = "damaged"
+            try:
+                artifact = load_atomic_rescue_artifact(manifest)
+                artifact.assert_lineage(
+                    generation_id=generation_id,
+                    calibration_id=calibration_id,
+                    pipeline_fingerprint=binding.get("pipeline_fingerprint"),
+                    corpus_fingerprint=binding.get("corpus_fingerprint"),
+                    embedder=embedder,
+                )
+            except AtomicRescueArtifactError as exc:
+                if when_missing != "skip":
+                    raise
+                # The artifact for this generation and calibration is not usable yet (a promotion or
+                # recalibration the builder has not caught up with): answer as with the rescue off.
+                if isinstance(exc, AtomicRescueLineageError):
+                    atomic_skipped = "lineage"
+                elif not manifest.is_file() and not manifest.parent.exists():
+                    atomic_skipped = "missing"
+                else:
+                    atomic_skipped = "damaged"
         scored_loader = getattr(store, "scored_chunk_by_id", None)
         parent_cosines = getattr(store, "cosines_for", None)
         if not callable(scored_loader) or not callable(parent_cosines):
