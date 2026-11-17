@@ -261,6 +261,7 @@ ENVIRONMENT_SCHEMA: tuple[EnvironmentSpec, ...] = (
     EnvironmentSpec("RECALL_SOURCE_CONDITIONING_SHADOW_POLICY", "Retrieval", "alpha008 or guarded spare slot shadow policy", "alpha008"),
     EnvironmentSpec("RECALL_ATOMIC_RESCUE_MODE", "Retrieval", "off, sampled shadow, or active atomic rescue", "off"),
     EnvironmentSpec("RECALL_ATOMIC_RESCUE_MODE_BY_TENANT", "Retrieval", "per-tenant atomic rescue mode, tenant:mode comma separated; overrides RECALL_ATOMIC_RESCUE_MODE for that tenant"),
+    EnvironmentSpec("RECALL_ATOMIC_RESCUE_WHEN_MISSING", "Retrieval", "refuse, or skip to answer without an active rescue whose artifact is missing, mismatched or damaged (the server then builds it)", "refuse"),
     EnvironmentSpec("RECALL_SEARCH_EVIDENCE", "Retrieval", "on, or off (also 0, false or no) to drop recall_search's evidence and historical fields and their citation advice", "on"),
     EnvironmentSpec("RECALL_PAGED_EVIDENCE", "Retrieval", "off, or on to return the profile's paged evidence depth for PDF and PPTX results when k is unset", "off"),
     EnvironmentSpec("RECALL_ATOMIC_RESCUE_ARTIFACT", "Retrieval", "generation bound atomic rescue artifact manifest"),
@@ -405,6 +406,8 @@ def _validate_runtime_options(source: Mapping[str, str]) -> None:
         "fused",
     }:
         raise ValueError("RECALL_ATOMIC_RESCUE_PLACEMENT must be dense or fused")
+    if source.get("RECALL_ATOMIC_RESCUE_WHEN_MISSING", "refuse").strip().lower() not in {"refuse", "skip"}:
+        raise ValueError("RECALL_ATOMIC_RESCUE_WHEN_MISSING must be refuse or skip")
     source_conditioning_sample_rate = _number(
         source,
         "RECALL_SOURCE_CONDITIONING_SHADOW_SAMPLE_RATE",
