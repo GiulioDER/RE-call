@@ -1,6 +1,6 @@
 # Atomic rescue on desktop installs (the Docker stack)
 
-Status: approved by the owner on 2026-11-17; not built yet.
+Status: approved by the owner on 2026-11-17; built in PR 1339.
 
 ## Why
 
