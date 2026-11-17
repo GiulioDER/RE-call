@@ -50,7 +50,7 @@ from recall.atomic_rescue import (
     AtomicRescueArtifact,
     AtomicRescueArtifactError,
     artifact_names_any,
-    clear_atomic_rescue_artifact_cache,
+    evict_atomic_rescue_artifacts,
     load_atomic_rescue_artifact,
     remove_artifact_directories,
     require_atomic_dependency,
@@ -257,8 +257,9 @@ def ensure_rescue_artifact(
             except AtomicRescueArtifactError:
                 pass
         # This process's own cache maps the matrix it last built or loaded, and Windows refuses to
-        # delete a mapped file; searches in flight keep their own references.
-        clear_atomic_rescue_artifact_cache()
+        # delete a mapped file; searches in flight keep their own references. Only this directory
+        # is evicted, so another artifact in force is not reloaded by the next search.
+        evict_atomic_rescue_artifacts([manifest.parent])
         shutil.rmtree(manifest.parent, ignore_errors=True)
         if manifest.parent.exists():
             raise AtomicRescueArtifactError(

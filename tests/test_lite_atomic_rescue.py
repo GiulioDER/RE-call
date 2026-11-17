@@ -507,6 +507,41 @@ def test_two_stores_sharing_a_root_keep_each_others_artifacts(tmp_path: Path) ->
         pytest.fail(f"a store's active search failed after another store sharing its root built: {exc}")
 
 
+def test_rebuilding_a_damaged_artifact_keeps_another_one_cached(tmp_path: Path, monkeypatch) -> None:
+    """A build that replaces its own damaged directory evicted this process's whole artifact cache,
+    so the next search of another store sharing the root reloaded and re-hashed its matrix.
+    Invariant: only the replaced directory leaves the cache.
+
+    Red proof (2026-11-17, Linux): against `11a61b73b`, "rebuilding one store's damaged artifact
+    made another store's reload" (`assert 2 == 1`).
+    """
+    root = tmp_path / "atomic"
+    env = _env(root)
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    first, embedder = _certified(tmp_path / "a")
+    second, _ = _certified(tmp_path / "b")
+    built_first = ensure_rescue_artifact(first, embedder, env=env)
+    built_second = ensure_rescue_artifact(second, embedder, env=env)
+    assert built_first is not None and built_first.manifest is not None, built_first
+    assert built_second is not None and built_second.manifest is not None, built_second
+    import recall.atomic_rescue as rescue
+
+    loads: list[Path] = []
+    real = rescue._load_atomic_rescue_artifact
+    monkeypatch.setattr(rescue, "_load_atomic_rescue_artifact", lambda path: (loads.append(path), real(path))[1])
+    clear_atomic_rescue_artifact_cache()
+    load_atomic_rescue_artifact(built_second.manifest)
+    built_first.manifest.unlink()  # damaged: the rebuild removes and replaces this directory
+
+    again = ensure_rescue_artifact(first, embedder, env=env)
+    assert again is not None and built_first.manifest.is_file(), again
+    load_atomic_rescue_artifact(built_second.manifest)
+
+    reloaded = [path for path in loads if path == built_second.manifest.resolve()]
+    assert len(reloaded) == 1, "rebuilding one store's damaged artifact made another store's reload"
+
+
 def test_a_flat_layout_artifact_still_serves(tmp_path: Path) -> None:
     root = tmp_path / "atomic"
     env = _env(root)

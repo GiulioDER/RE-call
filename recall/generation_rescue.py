@@ -2,9 +2,12 @@
 
 `recall.trust` applies the rescue to an unscoped search once RECALL_ATOMIC_RESCUE_MODE resolves to
 `active` for the tenant (`recall._env.tenant_retrieval_environment`): it loads
-`<RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT>/<generation_id>/manifest.json`, refuses it unless its lineage
-is the serving one, and refuses the search when it is missing. So in active mode a generation must
-have its artifact before it serves. `ensure_for_promotion` is called before every certified
+`<RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT>/<generation_id>.<calibration_id>/manifest.json`, or one built
+before artifacts were keyed by calibration at `<generation_id>/` (`artifact_manifest`), refuses it
+unless its lineage is the serving one, and refuses the search when it is missing. So in active mode
+a generation must have its artifact before it serves. Under RECALL_ATOMIC_RESCUE_WHEN_MISSING=skip
+(a desktop install) a missing artifact makes the search answer without the rescue instead, and the
+host server builds it (`recall_mcp.rescue_builder`). `ensure_for_promotion` is called before every certified
 promotion in this package (the wizard, `recall generation promote` and `rollback`, a certified
 desktop upload; a development-mode upload promotes without one) and raises when it cannot build,
 which refuses the promotion; `recall generation rescue` builds one by hand, which a recalibrated
