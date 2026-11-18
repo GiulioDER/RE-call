@@ -227,9 +227,10 @@ def test_g6_gc_retracts_holding_the_exclusive_erasure_lock(
     as a forget does, so no application (which holds it shared) can land in between. Probed from
     a second session: the shared lock an application would take must be refused.
 
-    Red proof: to be run in CI with the `erasure_lock_for(ledger, shared=False)` wrapper in
-    `GenerationManager.retract_collected_facts` removed; expected failure "an application could
-    take the shared erasure lock while gc retracted".
+    Red proof (2026-11-18): run in CI on PR 1366 at b017f02d1, the test pushed before the fix,
+    against master's `GenerationManager.retract_collected_facts` (no erasure lock). It failed in
+    all three PostgreSQL test jobs (run 44353800265), the only failure in each, with
+    "an application could take the shared erasure lock while gc retracted".
     """
     import psycopg
 
