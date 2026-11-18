@@ -536,12 +536,19 @@ def _forget_memory_unlocked(
     rescue_roots: list[Path] = []
     unreached_roots: list[str] = []
     roots_unread = False
-    if isinstance(store, GenerationStore) and to_delete:
+
+    def refresh_rescue_roots() -> None:
+        nonlocal rescue_roots, unreached_roots, roots_unread
         from recall.generation_rescue import forget_roots
 
-        rescue_roots, unreached_roots, roots_unread = forget_roots(
+        roots, unreached, roots_unread = forget_roots(
             store._dsn, store.tenant, env=runtime_environment()
         )
+        rescue_roots = sorted(set(rescue_roots) | set(roots))
+        unreached_roots = sorted((set(unreached_roots) | set(unreached)) - {str(root) for root in rescue_roots})
+
+    if isinstance(store, GenerationStore) and to_delete:
+        refresh_rescue_roots()
     # The same read for the atomic rescue, whose view store is keyed by chunk text.
     rescue_texts: list[str] = (
         [text for text, _ in store.texts_for_sources(to_delete)]
@@ -565,6 +572,7 @@ def _forget_memory_unlocked(
                 except Exception:  # BROAD-CATCH: error-translation
                     _log.exception("embedding cache cleanup failed after partial deletion for tenant %r", store.tenant)
                 try:
+                    refresh_rescue_roots()
                     _erase_generation_rescue(store, [text for text, _ in erased_texts], to_delete, rescue_roots)
                 except Exception:  # BROAD-CATCH: error-translation
                     _log.exception("atomic rescue cleanup failed after partial deletion for tenant %r", store.tenant)
@@ -641,8 +649,10 @@ def _forget_memory_unlocked(
             rescue_views_erased = -1
             if isinstance(exc, AtomicRescueArtifactError):
                 rescue_failure = str(exc)
-    elif isinstance(store, GenerationStore) and chunks_removed and rescue_roots:
+    elif isinstance(store, GenerationStore) and chunks_removed:
         try:
+            # A writer can record a new root between the first lookup and committed deletion.
+            refresh_rescue_roots()
             rescue_views_erased, rescue_artifacts_removed, failed_roots = _erase_generation_rescue(
                 store, rescue_texts, to_delete, rescue_roots,
             )
@@ -745,9 +755,9 @@ def _forget_memory_unlocked(
     if failed_roots:
         message += (
             f" WARNING: the chunk deletion succeeded but erasing them from the atomic rescue under "
-            f"{', '.join(failed_roots)} failed, so its micro-views.sqlite or a generation folder "
-            "there still holds their vectors, and a re-run finds no rows to erase them by; delete "
-            "them there, which costs only a rebuild."
+            f"{', '.join(failed_roots)} failed. A view store or artifact folder there may still "
+            "hold the deleted vectors, and a re-run finds no rows to erase them by. Wait for "
+            "active rescue builds to finish and confirm artifact ownership before removing affected files."
         )
     if isinstance(store, GenerationStore) and chunks_removed and roots_unread:
         message += (

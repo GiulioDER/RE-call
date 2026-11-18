@@ -24,9 +24,9 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
-import sys
-from contextlib import contextmanager, suppress
+from contextlib import contextmanager, nullcontext
 from datetime import UTC, datetime
 from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 from pathlib import Path
@@ -137,29 +137,64 @@ def artifact_manifest(root: str | Path, generation_id: str, calibration_id: str 
     """
     if calibration_id is None:
         raise AtomicRescueArtifactError("an atomic rescue artifact on PostgreSQL requires a certified calibration")
-    keyed = resolve_atomic_rescue_manifest(root, f"{generation_id}.{calibration_id}")
+    keyed = _key_manifest(root, f"{generation_id}.{calibration_id}")
     if keyed.is_file():
         return keyed
-    legacy = resolve_atomic_rescue_manifest(root, generation_id)
+    legacy = _key_manifest(root, generation_id)
     return legacy if legacy.is_file() else keyed
+
+
+def _key_manifest(root: str | Path, key: str) -> Path:
+    """Resolve a manifest without letting one artifact key name another."""
+    manifest = resolve_atomic_rescue_manifest(root, key)
+    if manifest != Path(root).expanduser().resolve() / key / "manifest.json":
+        raise AtomicRescueArtifactError("atomic rescue artifact key or manifest is redirected")
+    return manifest
 
 
 def generation_artifact_dirs(root: str | Path, generation_id: str) -> list[Path]:
     """Every artifact directory of `generation_id` under `root` that exists: the old `<generation_id>`
     key and each `<generation_id>.<calibration_id>`, sorted."""
-    legacy = resolve_atomic_rescue_manifest(root, generation_id).parent
+    legacy = _key_manifest(root, generation_id).parent
     found = [legacy] if legacy.is_dir() else []
-    found.extend(entry for entry in legacy.parent.glob(f"{generation_id}.*") if entry.is_dir())
+    found.extend(
+        _key_manifest(root, entry.name).parent
+        for entry in legacy.parent.glob(f"{generation_id}.*")
+        if entry.is_dir()
+    )
     return sorted(found)
 
 
-def build_artifact(dsn: str, tenant: str, generation_id: str, embedder: Embedder, root: Path) -> str:
+def _staging_artifact_dirs(root: Path, generation_id: str) -> list[Path]:
+    """Recognize legacy and calibration-keyed writer stages for this generation."""
+    prefix = f".{generation_id}."
+    return [
+        entry
+        for entry in sorted(root.iterdir())
+        if entry.name.startswith(prefix)
+        and re.fullmatch(r"(?:(?:cal|legacy_cal)_[0-9a-f]+\.)?[0-9a-f]{16}", entry.name[len(prefix):])
+        and entry.is_dir()
+    ]
+
+
+@contextmanager
+def _artifact_write_lock(root: Path, generation_id: str, *, already_held: bool) -> Iterator[None]:
+    with (nullcontext(True) if already_held else build_lock(root, generation_id)) as held:
+        if not held:
+            raise AtomicRescueArtifactError(f"atomic rescue for {generation_id} is already being built or cleaned up")
+        yield
+
+
+def build_artifact(
+    dsn: str, tenant: str, generation_id: str, embedder: Embedder, root: Path, *, _build_lock_held: bool = False,
+) -> str:
     """Build the artifact `generation_id` serves beside its published calibration, and describe it.
 
     An artifact already in force is kept; one for another calibration is left in place, and this one
     is written beside it (`artifact_manifest`). The
     calibration must be certified and published, as the trust gate requires before it reaches the
-    rescue, and the embedder must be the one the generation was built with.
+    rescue, and the embedder must be the one the generation was built with. The host worker passes
+    `_build_lock_held` when it already holds this generation's lock, which is not reentrant.
     """
     from recall import __version__
     from recall.atomic_view_store import AtomicViewStore, assemble
@@ -170,43 +205,40 @@ def build_artifact(dsn: str, tenant: str, generation_id: str, embedder: Embedder
 
     require_atomic_dependency()
     calibration_id = _published_calibration(dsn, tenant, generation_id)
-    manifest = resolve_atomic_rescue_manifest(root, f"{generation_id}.{calibration_id}")
+    manifest = _key_manifest(root, f"{generation_id}.{calibration_id}")
     # Entered as a name, not bound by `as`: `__enter__` is typed on the base store.
     store = GenerationStore(dsn, embedder.dim, tenant=tenant)
     with store:
-        store.set_fixed_generation(generation_id)
-        binding = store.generation_binding()
-        model, dimension = binding.get("embedder_model"), binding.get("embedder_dimension")
-        if (
-            (model is not None and str(embedder.name) != model)
-            or (dimension is not None and str(embedder.dim) != dimension)
-            or profile_lineage_mismatch(
-                embedder, binding.get("embedder_profile_id"), binding.get("embedder_profile_fingerprint")
-            )
-        ):
-            # The trust gate refuses such a server anyway; views from another model would rank nonsense.
-            raise AtomicRescueArtifactError(
-                f"generation {generation_id} was built with {model!r}, not with {embedder.name!r}; "
-                "build its atomic rescue with the embedder that built it"
-            )
-        lineage = {
-            "generation_id": generation_id,
-            "calibration_id": calibration_id,
-            "pipeline_fingerprint": binding.get("pipeline_fingerprint"),
-            "corpus_fingerprint": binding.get("corpus_fingerprint"),
-        }
-        # Before anything is written under the root (the view store first), so nothing the rescue
-        # keeps is ever there that a forget run without the root variable cannot learn of
-        # (`forget_roots`); an artifact already in force is recorded too, since one built before
-        # the record existed has none.
-        GenerationManager(dsn, tenant, actor="recall-atomic-rescue").record_rescue_root(generation_id, str(root))
-        # Before the scan, which an artifact already in force (a rollback, a repeated rescue) would
-        # make for nothing (CCA PERF-002).
-        if artifact_serves(artifact_manifest(root, generation_id, calibration_id), lineage, embedder):
-            return f"in force for {generation_id}"
-        # Before the scan: on Windows the removal fails while another process has the damaged
-        # matrix mapped, and the build would then refuse only after a full scan and assembly.
-        _remove_damaged(manifest)
+        with _artifact_write_lock(root, generation_id, already_held=_build_lock_held):
+            store.set_fixed_generation(generation_id)
+            # Sample the binding under the same lock as the early removal, so a winner
+            # published since an earlier corpus snapshot cannot be mistaken for damage.
+            binding = store.generation_binding()
+            model, dimension = binding.get("embedder_model"), binding.get("embedder_dimension")
+            if (
+                (model is not None and str(embedder.name) != model)
+                or (dimension is not None and str(embedder.dim) != dimension)
+                or profile_lineage_mismatch(
+                    embedder, binding.get("embedder_profile_id"), binding.get("embedder_profile_fingerprint")
+                )
+            ):
+                # The trust gate refuses such a server anyway; views from another model would rank nonsense.
+                raise AtomicRescueArtifactError(
+                    f"generation {generation_id} was built with {model!r}, not with {embedder.name!r}; "
+                    "build its atomic rescue with the embedder that built it"
+                )
+            lineage = {
+                "generation_id": generation_id,
+                "calibration_id": calibration_id,
+                "pipeline_fingerprint": binding.get("pipeline_fingerprint"),
+                "corpus_fingerprint": binding.get("corpus_fingerprint"),
+            }
+            # Record the root before writing vectors, including when a legacy artifact is in force.
+            GenerationManager(dsn, tenant, actor="recall-atomic-rescue").record_rescue_root(generation_id, str(root))
+            if artifact_serves(artifact_manifest(root, generation_id, calibration_id), lineage, embedder):
+                return f"in force for {generation_id}"
+            # On Windows a damaged mapped matrix cannot be removed. Refuse before the scan.
+            _remove_damaged(manifest)
         reused = _recalibrated(root, generation_id, lineage, embedder)
         parents = rescue_parents(store.iter_chunks()) if reused is None else []
     root.mkdir(parents=True, exist_ok=True)
@@ -224,44 +256,44 @@ def build_artifact(dsn: str, tenant: str, generation_id: str, embedder: Embedder
         except Exception as exc:  # BROAD-CATCH: cleanup-only  # earlier batches may already have committed
             _refuse_if_corpus_moved(dsn, tenant, generation_id, embedder.dim, lineage, root, parents, error=exc)
             raise
-        ordinary = len(parents)
+        # Assembly can commit obsolete views even if the publication lock is now busy.
         _refuse_if_corpus_moved(dsn, tenant, generation_id, embedder.dim, lineage, root, parents)
-    if artifact_serves(artifact_manifest(root, generation_id, calibration_id), lineage, embedder):
-        # A concurrent build of this generation published while this one assembled: removing its
-        # artifact would leave a window with none, or on Windows a half-removed one.
-        return f"in force for {generation_id}"
-    if _published_calibration(dsn, tenant, generation_id) != calibration_id:
-        # A calibration published while this one assembled: the build for it replaces the artifact,
-        # which this one, finishing later, would otherwise delete and replace with its own for the
-        # calibration no longer published (CCA STAKES-004).
-        raise AtomicRescueArtifactError(
-            f"the published calibration of generation {generation_id} changed while its atomic rescue "
-            "was built, so it was not built; the build for the calibration now published replaces it, "
-            f"or run `recall --tenant {tenant} generation rescue {generation_id}`"
-        )
-    _remove_damaged(manifest)
-    try:
-        write_atomic_rescue_artifact(
-            manifest.parent,
-            matrix=matrix,
-            views=metadata,
-            generation_id=generation_id,
-            calibration_id=str(lineage["calibration_id"]),
-            pipeline_fingerprint=str(lineage["pipeline_fingerprint"]),
-            corpus_fingerprint=str(lineage["corpus_fingerprint"]),
-            embedding_profile=embedding_profile_id(embedder),
-            embedding_fingerprint=profile,
-            ordinary_chunk_count=ordinary,
-            source_commit=f"recall-rag {__version__}",
-        )
-    except OSError:
-        # A concurrent build of this generation published first; the writer verified this build's
-        # own before publishing, so only the winner's is checked here.
-        if not manifest.is_file():
-            raise
-        load_atomic_rescue_artifact(manifest).assert_lineage(**lineage, embedder=embedder)
-    # A forget that committed after the check above scanned the artifacts before this one existed.
-    _refuse_if_corpus_moved(dsn, tenant, generation_id, embedder.dim, lineage, root, parents, written=manifest.parent)
+        ordinary = len(parents)
+    # Foreground callers must protect their stages too, starting before the writer creates one.
+    with _artifact_write_lock(root, generation_id, already_held=_build_lock_held):
+        # A forget that finished before we entered the lock must not get a stale stage back.
+        _refuse_if_corpus_moved(dsn, tenant, generation_id, embedder.dim, lineage, root, parents)
+        if artifact_serves(artifact_manifest(root, generation_id, calibration_id), lineage, embedder):
+            return f"in force for {generation_id}"
+        if _published_calibration(dsn, tenant, generation_id) != calibration_id:
+            # A newer calibration published while this one assembled (CCA STAKES-004).
+            raise AtomicRescueArtifactError(
+                f"the published calibration of generation {generation_id} changed while its atomic rescue "
+                "was built, so it was not built; the build for the calibration now published replaces it, "
+                f"or run `recall --tenant {tenant} generation rescue {generation_id}`"
+            )
+        _remove_damaged(manifest)
+        try:
+            write_atomic_rescue_artifact(
+                manifest.parent,
+                matrix=matrix,
+                views=metadata,
+                generation_id=generation_id,
+                calibration_id=str(lineage["calibration_id"]),
+                pipeline_fingerprint=str(lineage["pipeline_fingerprint"]),
+                corpus_fingerprint=str(lineage["corpus_fingerprint"]),
+                embedding_profile=embedding_profile_id(embedder),
+                embedding_fingerprint=profile,
+                ordinary_chunk_count=ordinary,
+                source_commit=f"recall-rag {__version__}",
+            )
+        except OSError:
+            # The writer validated its own stage; if another build won, check the winner's lineage.
+            if not manifest.is_file():
+                raise
+            load_atomic_rescue_artifact(manifest).assert_lineage(**lineage, embedder=embedder)
+        # A forget that committed while this build ran may have left its live stage alone.
+        _refuse_if_corpus_moved(dsn, tenant, generation_id, embedder.dim, lineage, root, parents, written=manifest.parent)
     return (
         f"built for {generation_id}: {counts['views']} view(s) of {counts['parents']} chunk(s), "
         f"{counts['embedded_views']} newly embedded"
@@ -466,9 +498,8 @@ def build_lock(root: Path, generation_id: str) -> Iterator[bool]:
     """Try, without waiting, to hold the lock on building `generation_id`'s artifact under `root`,
     and yield whether it is held; released on exit.
 
-    The host servers of one tenant (`recall_mcp.rescue_builder`) take it so one process builds at
-    a time: one that cannot take it leaves the build to the holder, whose artifact serves it too.
-    An OS lock, so it dies with its process.
+    The host holds it for the whole build, and foreground builders hold it while publishing.
+    Prune and forget take it before touching stages. The OS releases it when its process exits.
     """
     root.mkdir(parents=True, exist_ok=True)
     with open(_lock_path(root, generation_id), "ab") as fh:
@@ -523,28 +554,6 @@ def set_build_backoff(
     os.replace(staging, path)
 
 
-def _remove_build_state(root: Path, generation_id: str) -> None:
-    """Remove the build lock file and backoff record of a generation `prune_superseded` removed,
-    unless a process holds the lock: only one this process can lock itself is removed."""
-    path = _lock_path(root, generation_id)
-    if not path.is_file():
-        return
-    with open(path, "ab") as fh:
-        if not try_lock(fh):
-            return  # a build holds it
-        _backoff_path(root, generation_id).unlink(missing_ok=True)
-        if sys.platform != "win32":
-            # Unlinked while held: a process that opened it already finds it locked until this one
-            # closes it, and one that opens it later creates a new file.
-            path.unlink()
-            return
-        unlock(fh)
-    # Windows refuses to delete a file that is open, so it is released first; a process that opened
-    # it since then makes the removal fail, and it stays for that process to lock.
-    with suppress(OSError):
-        path.unlink()
-
-
 def prune_superseded(dsn: str, tenant: str, root: Path) -> int:
     """Remove the artifacts under `root` of this tenant's generations that cannot serve again,
     returning how many directories went.
@@ -570,15 +579,23 @@ def prune_superseded(dsn: str, tenant: str, root: Path) -> int:
     doomed |= manager.collected_generation_ids()
     removed = 0
     for generation_id in sorted(doomed):
-        # A server killed while it wrote an artifact leaves its staging directory, `.<key>.<hex>`
-        # (`write_atomic_rescue_artifact`), which no build of a removed generation will reuse.
-        staging = [entry for entry in root.glob(f".{generation_id}.*") if entry.is_dir()]
-        for directory in [*generation_artifact_dirs(root, generation_id), *staging]:
-            try:
-                removed += remove_artifact_directories([directory], root)
-            except AtomicRescueArtifactError:
-                _log.info("atomic rescue artifact %s is still open; a later prune removes it", directory)
-        _remove_build_state(root, generation_id)
+        try:
+            published = generation_artifact_dirs(root, generation_id)
+        except AtomicRescueArtifactError:
+            _log.info("atomic rescue artifact keys for %s could not be resolved; skipping prune", generation_id)
+            continue
+        with build_lock(root, generation_id) as held:
+            if not held:
+                continue
+            for directory in [*published, *_staging_artifact_dirs(root, generation_id)]:
+                try:
+                    candidate = _key_manifest(root, directory.name).parent
+                    removed += remove_artifact_directories([candidate], root)
+                except AtomicRescueArtifactError:
+                    _log.info("atomic rescue artifact %s could not be pruned", directory)
+            # A process can already have the lock file open without holding the lock yet.
+            # Keep its inode so the next opener cannot take a different lock for this key.
+            _backoff_path(root, generation_id).unlink(missing_ok=True)
     return removed
 
 
@@ -608,7 +625,8 @@ def erase_forgotten(
     erased by text digest, and every artifact of the tenant's `generation_ids` whose `views.json`
     names one of `sources`, or cannot be read, is removed: the forget changed that generation's
     corpus fingerprint, so the artifact no longer serves, and it keeps the forgotten chunks' view
-    vectors.
+    vectors. Abandoned writer stages are subject to the same source check. A live writer's stage is
+    left intact and reported as incomplete cleanup; the writer still checks the corpus at publication.
     """
     from recall.atomic_view_store import AtomicViewStore, chunk_view_digest
 
@@ -621,9 +639,24 @@ def erase_forgotten(
         with AtomicViewStore(views_path) as views:
             erased = views.erase_digests({chunk_view_digest(text) for text in texts})
     named = set(sources)
-    doomed = [
-        directory for gid in sorted(generation_ids)
-        for directory in generation_artifact_dirs(root, gid)
-        if artifact_names_any(directory, named)
-    ]
-    return erased, remove_artifact_directories(doomed, root)
+    removed = 0
+    failures: list[str] = []
+    for gid in sorted(generation_ids):
+        try:
+            _key_manifest(root, gid)
+            with build_lock(root, gid) as held:
+                if not held:
+                    failures.append(f"atomic rescue for {gid} is still being built")
+                    continue
+                directories = generation_artifact_dirs(root, gid)
+                directories.extend(
+                    _key_manifest(root, stage.name).parent for stage in _staging_artifact_dirs(root, gid)
+                )
+                removed += remove_artifact_directories(
+                    [directory for directory in directories if artifact_names_any(directory, named)], root
+                )
+        except (AtomicRescueArtifactError, OSError) as exc:
+            failures.append(str(exc))
+    if failures:
+        raise AtomicRescueArtifactError("; ".join(failures))
+    return erased, removed
