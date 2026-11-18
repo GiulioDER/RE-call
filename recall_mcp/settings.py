@@ -95,6 +95,10 @@ ENVIRONMENT_SCHEMA: tuple[EnvironmentSpec, ...] = (
     EnvironmentSpec("RECALL_TRUST_MODE", "Core runtime", "strict or development trust gate", "strict"),
     EnvironmentSpec("RECALL_INDEX_MODE", "Core runtime", "legacy or generation", "legacy"),
     EnvironmentSpec("RECALL_INDEX_ROOT", "Core runtime", "filesystem indexing root", "."),
+    EnvironmentSpec(
+        "RECALL_STATED_FACT_SOURCES", "Core runtime",
+        "where memos state facts: comma or space separated prefixes (lite: stored names; PostgreSQL: URIs, absolute paths or paths under RECALL_INDEX_ROOT); unset states from a lite store's refresh folders and nothing on PostgreSQL; none disables",
+    ),
     EnvironmentSpec("RECALL_INDEX_BATCH_CHUNKS", "Core runtime", "embedding batch size", "64"),
     EnvironmentSpec("RECALL_FASTEMBED_BATCH", "Core runtime", "fastembed batch size"),
     EnvironmentSpec("RECALL_EMBED_THREADS", "Core runtime", "local embedder thread cap"),

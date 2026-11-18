@@ -7,7 +7,8 @@ import json
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
+from functools import partial
 from typing import TYPE_CHECKING, Any, cast
 
 from recall.provenance_controller import (
@@ -260,6 +261,18 @@ def _cmd_provenance(args: argparse.Namespace) -> None:
         _cmd_rebuild(args, lite)
         return
     if args.provenance_cmd == "current":
+        from recall.security_policy import access_context_from_environment, load_source_policy
+
+        # The source policy `recall_current_facts` applies (RECALL_SOURCE_POLICY_FILE), so the CLI
+        # lists what the MCP tool lists: a memo the caller may not read whole is not named, and a
+        # fact left with no readable memo is not listed (CCA SEC-001 sibling, PR 977).
+        permitted: Callable[[str], bool] | None = None
+        if (security_policy := load_source_policy()) is not None:
+            from recall_mcp.provenance import _readable_whole
+
+            context = access_context_from_environment(args.tenant, purpose="retrieval")
+            permitted = partial(_readable_whole, security_policy, context)
+
         instant = (
             datetime.fromisoformat(args.as_of.replace("Z", "+00:00"))
             if args.as_of
@@ -293,7 +306,7 @@ def _cmd_provenance(args: argparse.Namespace) -> None:
         print(json.dumps({
             "tenant_id": args.tenant,
             "as_of": instant.isoformat(),
-            **listing_payload(*listing),
+            **listing_payload(*listing, permitted),
             "served_state": "unchecked",
         }, ensure_ascii=False, indent=2, sort_keys=True))
         return

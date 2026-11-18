@@ -2582,7 +2582,7 @@ def _register_reasoning_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
                     else {n: (n, s) for n, s in _paths_named(store, names).items()}
                 )
             )
-        except Exception:  # BROAD-CATCH: pre-write cleanup; plain local names still reach the sidecar
+        except Exception:  # BROAD-CATCH: fail-open  # plain local names can still reach the sidecar
             if sidecar and assistant is None and not report_access:
                 named = {}
             else:
@@ -2699,7 +2699,7 @@ def _register_reasoning_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
                     else {n: s for n, (_, s) in assistant.files_named(cast(LiteStore, store), names).items()}
                 )
             )
-        except Exception:  # BROAD-CATCH: only the unwritten alias phase releases its reservation
+        except Exception:  # BROAD-CATCH: cleanup-only  # release the unwritten alias phase's reservation
             await _release_mutation_reservation(state, store.tenant, idempotency_key)
             raise
         with METRICS.timer("recall_tool_latency_ms", tool="report_use"):
