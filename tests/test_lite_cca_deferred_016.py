@@ -23,6 +23,7 @@ behaviour to test.
 from __future__ import annotations
 
 import ast
+import inspect
 from pathlib import Path
 
 import numpy as np
@@ -35,15 +36,19 @@ from recall.lite.refresh import RefreshReport, Outcome, client_reason, read_stat
 from tests.test_lite_calibration import ContentWordEmbedder, _write_memos
 from tests.test_lite_cca_hunt_fixes import _FlatEmbedder, _grow, _uncertified
 
-_REFRESH = Path(__file__).resolve().parents[1] / "recall" / "lite" / "refresh.py"
-
-
 def _exception_reasons_outside_fail() -> list[int]:
     """Lines of refresh.py that assign `report.reason` an f-string quoting `exc`, outside `_fail`."""
-    tree = ast.parse(_REFRESH.read_text(encoding="utf-8"))
+    import recall.lite.refresh as module
+
+    tree = ast.parse(Path(inspect.getfile(module)).read_text(encoding="utf-8"))
     found: list[int] = []
     for func in ast.walk(tree):
         if not isinstance(func, ast.FunctionDef | ast.AsyncFunctionDef) or func.name == "_fail":
+            continue
+        # Under mutation testing the file is mutmut's rewrite, whose mutants (and, by version, the
+        # original body) sit beside each function as `x_<name>__mutmut_N`; `_fail`'s copies are not
+        # handlers, and counting them failed the job's clean stats run (PR 1384).
+        if "__mutmut_" in func.name:
             continue
         for node in ast.walk(func):
             if not isinstance(node, ast.Assign):

@@ -1103,7 +1103,7 @@ def _lite_checks(dsn: str, *, tenant: str, table: str = DEFAULT_TABLE) -> Iterat
         )
     elif found.calibration is CalibrationStatus.STALE and found.uncertified_waiting:
         # Indexing does not refit such a store yet, so `recall index` is not offered (CCA DOC-001).
-        from recall.calibration_v2_bounds import DEFAULT_MAX_CORPUS_DELTA
+        from recall.calibration_v2 import DEFAULT_MAX_CORPUS_DELTA
 
         yield Check(
             "calibration",
