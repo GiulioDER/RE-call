@@ -48,7 +48,7 @@ import pytest
 
 from recall.lite.assistant_memos import MemoFolder
 from recall.security_policy import SourceRule, SourceSecurityPolicy
-from recall_mcp import stale_reports_api
+from recall_mcp import stale_reports_api, use_reports_api
 from recall_mcp.stale_reports_api import report_stale
 from tests.test_assistant_surface import Call, _published, _serve_both
 from tests.test_assistant_surface import envs as envs  # noqa: F401  # the fixture, reused
@@ -151,6 +151,7 @@ def test_under_a_source_policy_an_id_is_authorized_as_its_source(monkeypatch: py
     def authorized(store: Any, names: Any, policy: Any, context: Any, *, include_text: bool, **_: Any) -> Any:
         return {n: [SimpleNamespace(text=texts[n], metadata={}, id=n)] if include_text else [] for n in names if n in texts}
 
+    monkeypatch.setattr(use_reports_api, "authorized_report_rows", authorized)
     monkeypatch.setattr(stale_reports_api, "authorized_report_rows", authorized)
     policy: Any = object()
     result = report_stale(
