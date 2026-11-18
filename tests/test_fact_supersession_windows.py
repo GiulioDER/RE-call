@@ -525,3 +525,37 @@ def test_f17_supersession_receipts_preserve_known_and_unknown_windows(paired: bo
     outside = ["e0"] if paired else []
     assert [e.event_id for e in project_current(history, NOW - timedelta(days=2))] == outside
     assert [e.event_id for e in project_current(history, NOW + timedelta(days=1))] == outside
+
+
+def test_f18_a_reloaded_sqlite_ledger_orders_offset_times_by_instant(tmp_path: Path) -> None:
+    """Node tests/test_fact_supersession_windows.py::test_f18_a_reloaded_sqlite_ledger_orders_offset_times_by_instant.
+
+    CCA NUM-001 (facts hunt, PR 1170), registered 2026-11-18 to settle an UNCERTAIN finding.
+    `SQLiteFactLedger` stores `created_at` as ISO text with the caller's offset and reloads with
+    `ORDER BY created_at`, which sorts the text, not the instant. Paris is applied at 14:00+02:00
+    (12:00 UTC) and Rome, superseding it, at 13:00 UTC: as text, Rome's "13:00" sorts before
+    Paris's "14:00". The reloaded ledger must list its events in time order, and still answer
+    Rome, as the one that wrote it did. A probe on 2026-11-18 showed the current value was right
+    even in text order; the listing was not (owner decision: sort on reload).
+
+    Red proof (2026-11-18): against `SQLiteFactLedger` without `_by_instant` (recall/fact_ledger.py,
+    the reload in its pre-fix SQL text order), this failed with "the reloaded ledger lists its
+    events in text order, not time order".
+    """
+    from datetime import timezone
+
+    path = str(tmp_path / "ledger.db")
+    env = Env(SQLiteFactLedger(path, tenant_id=TENANT))
+    env.clock = NOW.astimezone(timezone(timedelta(hours=2)))
+    assert env.apply(city("Paris"), "m1.md", "r1").code == DecisionCode.APPLIED
+    env.clock = NOW + timedelta(hours=1)
+    assert env.apply(city("Rome"), "m2.md", "r2", links=("m1.md",)).code == DecisionCode.APPLIED
+    later = NOW + timedelta(hours=2)
+    assert env.current(later) == ["Rome"], f"the writing ledger answered {env.current(later)}"
+
+    reloaded = Env(SQLiteFactLedger(path, tenant_id=TENANT))
+    instants = [e.created_at.astimezone(UTC) for e in reloaded.ledger.events]
+    assert instants == sorted(instants), "the reloaded ledger lists its events in text order, not time order"
+    assert reloaded.current(later) == ["Rome"], (
+        f"the reloaded ledger replayed text order and answered {reloaded.current(later)}"
+    )
