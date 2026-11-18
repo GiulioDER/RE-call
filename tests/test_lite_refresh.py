@@ -67,6 +67,9 @@ PERF-003, finished after the deferred pass (2026-10-13), each mutation alone on 
 - MP2b (P2) the safe-default filter dropped from the shared walk: `notes.json` listed
 - MR22 (R2-2, review BUG-002) every stat error read as "not a file": the unreadable memo dropped
 - MR23 (R2-3, review BUG-003) the CLI passes no key root: names relative to the subfolder (`memo-007.md`)
+
+Lite PERF-002 (2026-11-18), red on the test host against the pre-fix `refresh` (master 74bedfab4):
+- MP3 (P3) a forced refresh snapshots before the lane too: "a forced refresh walked the folders 2 time(s)"
 """
 from __future__ import annotations
 
@@ -1298,3 +1301,25 @@ def test_a_store_that_recorded_no_profile_adopts_one(
     forget_profile()
     assert _cli("--dsn", f"sqlite:///{db.as_posix()}", "index", str(project / "memory")) == 0, capsys.readouterr()
     assert _meta(db, "embedder_profile") == ""
+
+
+def test_a_forced_refresh_walks_the_folders_once(store: LiteStore, project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """P3 (Lite PERF-002): a forced refresh, what every assistant memo write runs, never takes the
+    unchanged short-circuit, so it snapshots its folders once, under the lane, and still indexes the
+    new memo. An unforced one keeps both snapshots: the one before the lane is its short-circuit."""
+    real = refresh_mod.snapshot
+    walks: list[int] = []
+
+    def counting(roots: object) -> object:
+        walks.append(1)
+        return real(roots)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(refresh_mod, "snapshot", counting)
+    assert _run(store, project).outcome is Outcome.REFRESHED
+    assert len(walks) == 2, f"an unforced refresh walked the folders {len(walks)} time(s)"
+    walks.clear()
+    _write_memos(project / "memory", 1, start=3)
+    report = _run(store, project, force=True)
+    assert len(walks) == 1, f"a forced refresh walked the folders {len(walks)} time(s)"
+    assert report.outcome is Outcome.REFRESHED and report.indexed_files == 1, report.to_dict()
+    assert report.files_seen == 4 and report.fingerprint, report.to_dict()

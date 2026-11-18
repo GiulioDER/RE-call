@@ -192,6 +192,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   prompt unchanged.
 - The Claude plugin marketplace entry named the license as Apache-2.0; it now says AGPL-3.0-only,
   as the plugin manifest and the package do.
+- On a Lite server with the assistant surface, every `remember` and `delete` walked the memo folder
+  twice before indexing, once for an unchanged check that a memo write always skips; so did
+  `recall lite refresh --force`. A forced refresh now walks it once, which saves about 1.4 s per
+  write on a folder of 3,000 memos.
 
 ### Security
 

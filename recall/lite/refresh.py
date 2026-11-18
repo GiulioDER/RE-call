@@ -473,9 +473,12 @@ def refresh(
     db = Path(store.path).resolve()
     resolved = [Path(r).resolve() for r in roots]
     report = RefreshReport(Outcome.UNCHANGED, "", started_utc=_utc())
-    if before is None:
+    # A forced refresh never takes the short-circuit below, so its folders are walked once, under
+    # the lane: a memo write (`AssistantMemos.refresh`) walked them twice (CCA PERF-002).
+    if before is None and not force:
         before = snapshot(resolved)
-    report.fingerprint, report.files_seen = before.fingerprint, before.count
+    if before is not None:
+        report.fingerprint, report.files_seen = before.fingerprint, before.count
     # A missing folder is refused under the lane (`_refresh_locked`), where the refusal is written
     # safely; nothing outside the lane writes the state file (CCA BUG-004).
     from recall.lite.atomic import artifact_in_force, configured_root
@@ -484,6 +487,7 @@ def refresh(
     rescue_root = configured_root(store.tenant, refusal_env)
     if (
         not force
+        and before is not None
         and not before.missing
         and last.get("fingerprint") == before.fingerprint
         # The store's write counter, not `lite_generation_id()`: that loads every row and
