@@ -4,7 +4,7 @@ import errno
 import hashlib
 import os
 import stat as stat_module
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping, Set as AbstractSet
 from dataclasses import dataclass, replace
 from fnmatch import fnmatch
 from pathlib import Path, PurePosixPath
@@ -1067,34 +1067,7 @@ class Indexer:
         None rather than to `DEFAULT_INDEX_GLOB` so that this check tests whether the argument was
         passed, not whether its value happens to differ from the default.
         """
-        if files is not None and glob is not None:
-            raise ValueError(
-                "pass either `glob` or `files`, not both: `files` is used verbatim, so the "
-                f"glob {glob!r} would be silently ignored"
-            )
-        glob = DEFAULT_INDEX_GLOB if glob is None else glob
-        # resolve() FIRST: `source` is the row key `replace_sources` deletes by, so a corpus
-        # indexed once as `corpus/` and once as `/abs/corpus/` would write two row sets for the
-        # same file instead of replacing them. (Root-relative `file` keys are unaffected —
-        # they are computed against this same root either way.)
-        root = Path(path).resolve()
-        if files is None:
-            files = candidate_files(root, glob)
-            dropped = 0
-        else:
-            # `_confined_to` filters on `is_file()` as well as on the root, so it silently eats a
-            # file that vanished between the caller's walk and this call. That count has to be
-            # carried forward: without it the total-failure check below cannot fire on this path
-            # — every candidate would be gone, and the loop would simply never see one — so a
-            # corpus that disappeared would return "indexed 0 files" instead of raising.
-            requested = len(files)
-            files = _confined_to(root, files)
-            dropped = requested - len(files)
-            if dropped:
-                _log.warning(
-                    "%d of %d supplied file(s) are outside %s, or no longer readable; skipping",
-                    dropped, requested, root,
-                )
+        root, files, dropped = self._resolve_candidates(path, glob, files)
         # Identify each file by its ROOT-RELATIVE path, not its bare basename: two files with the
         # same basename in different directories (a/notes.md, b/notes.md) must not collide in the
         # supersession map or in provenance. Mirrors recall.lint's `rel` keying. A single-file
@@ -1114,70 +1087,9 @@ class Indexer:
         else:
             rel = {f: (f.relative_to(root).as_posix() if root_is_dir else f.name) for f in files}
 
-        if self._security_policy is not None:
-            assert self._security_context is not None
-            base = Path(key_root).resolve() if key_root is not None else root
-            for f, relative in rel.items():
-                decision = self._security_policy.decide(relative, self._security_context)
-                if not decision.allowed:
-                    raise PermissionError(f"source {relative!r} denied: {decision.reason}")
-                # The policy judges the link's path but the read follows the link, and the row is
-                # stored, scoped and served under the link's path (CCA SEC-001). So the target's
-                # own decision must allow it, and the SAME rule must govern both paths: comparing
-                # the two decisions' classification and redactions was not enough, because two
-                # rules can agree on both and still differ in who may read them.
-                target = f.resolve()
-                if target == f or not root_is_dir:
-                    continue
-                # `_confined_to` keeps only targets under `root`, which is under `base`.
-                target_relative = target.relative_to(base).as_posix()
-                target_decision = self._security_policy.decide(target_relative, self._security_context)
-                if not target_decision.allowed:
-                    raise PermissionError(
-                        f"source {relative!r} links to {target_relative!r}, which is denied: "
-                        f"{target_decision.reason}"
-                    )
-                if _governing_rule(self._security_policy, target_relative) != _governing_rule(
-                    self._security_policy, relative
-                ):
-                    raise PermissionError(
-                        f"source {relative!r} links to {target_relative!r}, which a different "
-                        "source policy rule governs; index the target under its own path"
-                    )
+        self._enforce_source_policy(root, root_is_dir, rel, key_root)
 
-        if (
-            not root_is_dir
-            and type(self._store) is PgVectorStore
-            and not self._store.sources_for_identifiers([str(root)])
-        ):
-            # A new legacy source has no hash to load. Existing sources retain the compact hash read.
-            known = {}
-        else:
-            known = self._store.source_content_hashes()
-        # ⛔ **A second, machine-independent view of the same question.** `known` keys on the
-        # absolute path, so a corpus re-indexed from a different root matches nothing: every file
-        # is re-embedded and, because `replace_sources` keys the same way, the new rows land beside
-        # the old instead of over them. Measured on a live corpus that is embedded on a workstation
-        # and shipped to a server which had first indexed the same files under its own paths: 452
-        # duplicate rows in one project, 615 in another, and searches returning a chunk twice.
-        #
-        # Only for a DECLARED project. Two roots with the same relative layout and no project may
-        # be different corpora, and merging them is not a guess this layer may make.
-        project = self.provenance.get("project")
-        known_by_file = (
-            self._store.project_file_hashes(project) if project is not None else {}
-        )
-        # The shadow's own record of what it holds. Read once per run, like the active one: it
-        # decides whether a file can be skipped, and a file the ACTIVE generation already has is
-        # not necessarily a file the shadow has.
-        known_shadow = (
-            {} if self._shadow is None else self._shadow.store.source_content_hashes()
-        )
-        known_sparse = (
-            frozenset()
-            if self._sparse_encoder is None
-            else self._store.sparse_covered_sources(self._sparse_encoder.profile.profile_id)
-        )
+        known, project, known_by_file, known_shadow, known_sparse = self._known_hashes(root, root_is_dir)
         # Pruning stays keyed on the ACTIVE generation, deliberately and incompletely.
         #
         # `_prune_vanished` asks which sources have left the DISK, which is a property of the
@@ -1203,35 +1115,10 @@ class Indexer:
         indexed = skipped = written = vanished_before_read = undecodable = 0
         unrepresentable = 0
 
-        group_for_file = {
-            str(f): (
-                self._context_group_for_file(f)
-                if self._context_group_for_file is not None
-                else rel[f]
-            )
-            for f in files
-        }
-        if any(not value for value in group_for_file.values()):
-            raise ValueError("context group identifiers must be non-empty")
-        # Per-file fingerprints do not describe neighboring files' context. With explicit
-        # groups, re-encode every supplied member on every pass, even when only the shadow
-        # encoder groups passages. This conservatively spends another embedding call for an
-        # unchanged group rather than mixing reused vectors with changed group membership.
-        complete_context_groups = self._context_group_for_file is not None and (
-            callable(getattr(self._embedder, "embed_document_groups", None))
-            or (
-                self._shadow is not None
-                and callable(getattr(self._shadow.embedder, "embed_document_groups", None))
-            )
-        )
-        # The index of each group's LAST file. "No pending group appears in a later file" is then
-        # one lookup per pending group, where rebuilding the set of every later file's group on
-        # each iteration made the scan quadratic in the number of files.
-        last_file_of_group = {group_for_file[str(f)]: index for index, f in enumerate(files)}
+        group_for_file, complete_context_groups, last_file_of_group = self._group_files(files, rel)
 
         for file_index, f in enumerate(files):
             raw: str | None = None
-            extracted = None
             is_markdown = f.suffix.lower() in MARKDOWN_SUFFIXES
             try:
                 str(f).encode("utf-8")
@@ -1357,148 +1244,14 @@ class Indexer:
             ):
                 skipped += 1
                 continue
-            if raw is None:
-                extracted = extract_document(f, source_bytes)
-                raw = _strip_nul(extracted.text, f)
-                # A non-markdown document is chunked from its BLOCKS, not from `raw`, so they need
-                # the same strip: without it one PDF with a NUL aborted the whole directory at the
-                # store's guard. Before redaction, so the policy sees what will be stored.
-                extracted = replace(
-                    extracted, text=raw, blocks=_strip_nul_from_blocks(extracted.blocks, f)
-                )
-                if self._security_policy is not None:
-                    assert self._security_context is not None
-                    _decision = self._security_policy.decide(rel[f], self._security_context)
-                    raw, _decision = self._security_policy.redact_with_decision(raw, _decision)
-                    extracted = replace(
-                        extracted,
-                        text=raw,
-                        blocks=tuple(
-                            replace(
-                                block,
-                                text=self._security_policy.redact_with_decision(
-                                    block.text, _decision
-                                )[0],
-                            )
-                            for block in extracted.blocks
-                        ),
-                    )
-            elif self._security_policy is not None:
-                assert self._security_context is not None
-                _decision = self._security_policy.decide(rel[f], self._security_context)
-                raw, _decision = self._security_policy.redact_with_decision(raw, _decision)
-            if is_markdown:
-                # `body` is the human authored body. Derived blocks are never evidence.
-                document = parse_document(raw)
-                meta, body = admit_record(document.meta, str(f)), document.human_body
-                try:
-                    validity_bounds(meta)
-                except ValueError as exc:
-                    raise ValueError(f"{f}: {exc}") from exc
-                content_blocks = None
-            else:
-                meta = (
-                    {**extracted.metadata, "media_type": extracted.media_type}
-                    if extracted is not None
-                    else {}
-                )
-                body = raw
-                content_blocks = (
-                    chunk_extracted_document(
-                        extracted,
-                        max_chars=DEFAULT_MAX_CHARS,
-                        overlap=DEFAULT_OVERLAP_CHARS,
-                    )
-                    if extracted is not None
-                    else []
-                )
+            raw, meta, body, content_blocks = self._admitted_document(f, raw, source_bytes, is_markdown, rel)
             pending_sources.append(str(f))
             indexed += 1
-            if content_blocks is None:
-                raw_chunks = self._chunker(body)
-                structured, embedding_texts = contextual_passages(
-                    raw, body, raw_chunks, rel[f], self._context_policy
-                )
-                chunk_metadata: list[dict[str, object]] = [{} for _ in raw_chunks]
-            else:
-                raw_chunks = [piece for piece, _ in content_blocks]
-                structured = []
-                embedding_texts = raw_chunks
-                chunk_metadata = [metadata for _, metadata in content_blocks]
-            shadow_structured: list[StructuredChunk] = []
-            shadow_embedding_texts: list[str] = []
-            if self._shadow is not None:
-                if content_blocks is None:
-                    shadow_structured, shadow_embedding_texts = contextual_passages(
-                        raw, body, raw_chunks, rel[f], self._shadow.context_policy
-                    )
-                else:
-                    shadow_embedding_texts = raw_chunks
-
-            def piece_metadata(
-                i: int, extra_metadata: Mapping[str, object], fingerprint: str,
-                embedder: Embedder, policy: ContextPolicy, piece: StructuredChunk | None,
-                embedding_text: str,
-            ) -> dict[str, object]:
-                # One key list for the active and the shadow rows; only the identity terms
-                # differ. They were two hand-kept copies, so a key added to one would have
-                # left the shadow generation, the one promoted at cutover, without it
-                # (CCA CODE-002).
-                return {
-                    "file": rel[f], "ord": i, "content_hash": content_hash,
-                    # Same derivation the skip guard used above, so the value stored here is
-                    # the value the next run compares against.
-                    "index_fingerprint": fingerprint,
-                    "embedding_profile": embedding_profile_id(embedder),
-                    "context_mode": policy.mode,
-                    "context_version": policy.version,
-                    "context_group_id": context_group_id,
-                    "text_start": piece.start if piece is not None else None,
-                    "text_end": piece.end if piece is not None else None,
-                    "heading_hierarchy": list(piece.headings) if piece is not None else [],
-                    # What a forget erases this chunk's cache entry by, when the vector was not
-                    # embedded from the chunk text itself (`recall.cache.EMBEDDING_TEXT_DIGEST_KEY`).
-                    **({EMBEDDING_TEXT_DIGEST_KEY: text_digest(embedding_text)}
-                       if embedding_text != raw_chunks[i] else {}),
-                    **extra_metadata,
-                    **self.apply_provenance(meta),
-                    **({"file": rel[f], "security_policy_digest": self._security_policy.digest}
-                       if self._security_policy is not None else {}),
-                }
-
-            for i, ct in enumerate(raw_chunks):
-                structured_chunk = structured[i] if content_blocks is None else None
-                embedding_text = embedding_texts[i]
-                cid = hashlib.md5(f"{f}:{i}".encode("utf-8"), usedforsecurity=False).hexdigest()
-                extra_metadata = chunk_metadata[i]
-                pending_chunks.append(
-                    Chunk(
-                        id=cid,
-                        source=str(f),
-                        text=ct,
-                        metadata=piece_metadata(
-                            i, extra_metadata, index_fingerprint, self._embedder,
-                            self._context_policy, structured_chunk, embedding_text,
-                        ),
-                    )
-                )
-                pending_embedding_texts.append(embedding_text)
-                if self._shadow is not None:
-                    assert shadow_fingerprint is not None
-                    shadow_piece = shadow_structured[i] if content_blocks is None else None
-                    pending_shadow_chunks.append(
-                        Chunk(
-                            id=cid,
-                            source=str(f),
-                            text=ct,
-                            metadata=piece_metadata(
-                                i, extra_metadata, shadow_fingerprint, self._shadow.embedder,
-                                self._shadow.context_policy, shadow_piece,
-                                shadow_embedding_texts[i],
-                            ),
-                        )
-                    )
-                    pending_shadow_texts.append(shadow_embedding_texts[i])
+            self._queue_chunks(
+                f, rel, raw, body, meta, content_blocks, content_hash, context_group_id,
+                index_fingerprint, shadow_fingerprint, pending_chunks, pending_embedding_texts,
+                pending_shadow_chunks, pending_shadow_texts,
+            )
             # Flush on a whole-file boundary once the batch is big enough. A file's chunks are
             # never split across batches: `replace_sources` deletes the file's rows before
             # inserting, so a half-written file would land as a partial replace.
@@ -1567,6 +1320,311 @@ class Indexer:
             undecodable=undecodable,
             unrepresentable=unrepresentable,
         )
+
+    def _resolve_candidates(
+        self, path: str | Path, glob: str | None, files: list[Path] | None
+    ) -> tuple[Path, list[Path], int]:
+        """`_index_path`'s root and candidate files, and how many supplied files confinement dropped."""
+        if files is not None and glob is not None:
+            raise ValueError(
+                "pass either `glob` or `files`, not both: `files` is used verbatim, so the "
+                f"glob {glob!r} would be silently ignored"
+            )
+        glob = DEFAULT_INDEX_GLOB if glob is None else glob
+        # resolve() FIRST: `source` is the row key `replace_sources` deletes by, so a corpus
+        # indexed once as `corpus/` and once as `/abs/corpus/` would write two row sets for the
+        # same file instead of replacing them. (Root-relative `file` keys are unaffected —
+        # they are computed against this same root either way.)
+        root = Path(path).resolve()
+        if files is None:
+            files = candidate_files(root, glob)
+            dropped = 0
+        else:
+            # `_confined_to` filters on `is_file()` as well as on the root, so it silently eats a
+            # file that vanished between the caller's walk and this call. That count has to be
+            # carried forward: without it the total-failure check below cannot fire on this path
+            # — every candidate would be gone, and the loop would simply never see one — so a
+            # corpus that disappeared would return "indexed 0 files" instead of raising.
+            requested = len(files)
+            files = _confined_to(root, files)
+            dropped = requested - len(files)
+            if dropped:
+                _log.warning(
+                    "%d of %d supplied file(s) are outside %s, or no longer readable; skipping",
+                    dropped, requested, root,
+                )
+        return root, files, dropped
+
+    def _enforce_source_policy(
+        self, root: Path, root_is_dir: bool, rel: dict[Path, str], key_root: str | Path | None
+    ) -> None:
+        """Refuse the run if the source policy denies a file, or a link reaches what another rule governs."""
+        if self._security_policy is not None:
+            assert self._security_context is not None
+            base = Path(key_root).resolve() if key_root is not None else root
+            for f, relative in rel.items():
+                decision = self._security_policy.decide(relative, self._security_context)
+                if not decision.allowed:
+                    raise PermissionError(f"source {relative!r} denied: {decision.reason}")
+                # The policy judges the link's path but the read follows the link, and the row is
+                # stored, scoped and served under the link's path (CCA SEC-001). So the target's
+                # own decision must allow it, and the SAME rule must govern both paths: comparing
+                # the two decisions' classification and redactions was not enough, because two
+                # rules can agree on both and still differ in who may read them.
+                target = f.resolve()
+                if target == f or not root_is_dir:
+                    continue
+                # `_confined_to` keeps only targets under `root`, which is under `base`.
+                target_relative = target.relative_to(base).as_posix()
+                target_decision = self._security_policy.decide(target_relative, self._security_context)
+                if not target_decision.allowed:
+                    raise PermissionError(
+                        f"source {relative!r} links to {target_relative!r}, which is denied: "
+                        f"{target_decision.reason}"
+                    )
+                if _governing_rule(self._security_policy, target_relative) != _governing_rule(
+                    self._security_policy, relative
+                ):
+                    raise PermissionError(
+                        f"source {relative!r} links to {target_relative!r}, which a different "
+                        "source policy rule governs; index the target under its own path"
+                    )
+
+    def _known_hashes(
+        self, root: Path, root_is_dir: bool
+    ) -> tuple[dict[str, str], str | None, dict[str, str], dict[str, str], AbstractSet[str]]:
+        """What the stores already hold, read once per run: the skip predicate compares against it."""
+        if (
+            not root_is_dir
+            and type(self._store) is PgVectorStore
+            and not self._store.sources_for_identifiers([str(root)])
+        ):
+            # A new legacy source has no hash to load. Existing sources retain the compact hash read.
+            known = {}
+        else:
+            known = self._store.source_content_hashes()
+        # ⛔ **A second, machine-independent view of the same question.** `known` keys on the
+        # absolute path, so a corpus re-indexed from a different root matches nothing: every file
+        # is re-embedded and, because `replace_sources` keys the same way, the new rows land beside
+        # the old instead of over them. Measured on a live corpus that is embedded on a workstation
+        # and shipped to a server which had first indexed the same files under its own paths: 452
+        # duplicate rows in one project, 615 in another, and searches returning a chunk twice.
+        #
+        # Only for a DECLARED project. Two roots with the same relative layout and no project may
+        # be different corpora, and merging them is not a guess this layer may make.
+        project = self.provenance.get("project")
+        known_by_file = (
+            self._store.project_file_hashes(project) if project is not None else {}
+        )
+        # The shadow's own record of what it holds. Read once per run, like the active one: it
+        # decides whether a file can be skipped, and a file the ACTIVE generation already has is
+        # not necessarily a file the shadow has.
+        known_shadow = (
+            {} if self._shadow is None else self._shadow.store.source_content_hashes()
+        )
+        known_sparse = (
+            frozenset()
+            if self._sparse_encoder is None
+            else self._store.sparse_covered_sources(self._sparse_encoder.profile.profile_id)
+        )
+        return known, project, known_by_file, known_shadow, known_sparse
+
+    def _group_files(
+        self, files: list[Path], rel: dict[Path, str]
+    ) -> tuple[dict[str, str], bool, dict[str, int]]:
+        """Each file's context group, whether groups are re-encoded whole, and each group's last file."""
+        group_for_file = {
+            str(f): (
+                self._context_group_for_file(f)
+                if self._context_group_for_file is not None
+                else rel[f]
+            )
+            for f in files
+        }
+        if any(not value for value in group_for_file.values()):
+            raise ValueError("context group identifiers must be non-empty")
+        # Per-file fingerprints do not describe neighboring files' context. With explicit
+        # groups, re-encode every supplied member on every pass, even when only the shadow
+        # encoder groups passages. This conservatively spends another embedding call for an
+        # unchanged group rather than mixing reused vectors with changed group membership.
+        complete_context_groups = self._context_group_for_file is not None and (
+            callable(getattr(self._embedder, "embed_document_groups", None))
+            or (
+                self._shadow is not None
+                and callable(getattr(self._shadow.embedder, "embed_document_groups", None))
+            )
+        )
+        # The index of each group's LAST file. "No pending group appears in a later file" is then
+        # one lookup per pending group, where rebuilding the set of every later file's group on
+        # each iteration made the scan quadratic in the number of files.
+        last_file_of_group = {group_for_file[str(f)]: index for index, f in enumerate(files)}
+        return group_for_file, complete_context_groups, last_file_of_group
+
+    def _admitted_document(
+        self, f: Path, raw: str | None, source_bytes: bytes, is_markdown: bool, rel: dict[Path, str]
+    ) -> tuple[str, dict[str, object], str, list[tuple[str, dict[str, Any]]] | None]:
+        """One file's text after extraction and redaction, its admitted metadata, body and blocks."""
+        extracted = None
+        if raw is None:
+            extracted = extract_document(f, source_bytes)
+            raw = _strip_nul(extracted.text, f)
+            # A non-markdown document is chunked from its BLOCKS, not from `raw`, so they need
+            # the same strip: without it one PDF with a NUL aborted the whole directory at the
+            # store's guard. Before redaction, so the policy sees what will be stored.
+            extracted = replace(
+                extracted, text=raw, blocks=_strip_nul_from_blocks(extracted.blocks, f)
+            )
+            if self._security_policy is not None:
+                assert self._security_context is not None
+                _decision = self._security_policy.decide(rel[f], self._security_context)
+                raw, _decision = self._security_policy.redact_with_decision(raw, _decision)
+                extracted = replace(
+                    extracted,
+                    text=raw,
+                    blocks=tuple(
+                        replace(
+                            block,
+                            text=self._security_policy.redact_with_decision(
+                                block.text, _decision
+                            )[0],
+                        )
+                        for block in extracted.blocks
+                    ),
+                )
+        elif self._security_policy is not None:
+            assert self._security_context is not None
+            _decision = self._security_policy.decide(rel[f], self._security_context)
+            raw, _decision = self._security_policy.redact_with_decision(raw, _decision)
+        if is_markdown:
+            # `body` is the human authored body. Derived blocks are never evidence.
+            document = parse_document(raw)
+            meta, body = admit_record(document.meta, str(f)), document.human_body
+            try:
+                validity_bounds(meta)
+            except ValueError as exc:
+                raise ValueError(f"{f}: {exc}") from exc
+            content_blocks = None
+        else:
+            meta = (
+                {**extracted.metadata, "media_type": extracted.media_type}
+                if extracted is not None
+                else {}
+            )
+            body = raw
+            content_blocks = (
+                chunk_extracted_document(
+                    extracted,
+                    max_chars=DEFAULT_MAX_CHARS,
+                    overlap=DEFAULT_OVERLAP_CHARS,
+                )
+                if extracted is not None
+                else []
+            )
+        return raw, meta, body, content_blocks
+
+    def _queue_chunks(
+        self,
+        f: Path,
+        rel: dict[Path, str],
+        raw: str,
+        body: str,
+        meta: dict[str, object],
+        content_blocks: list[tuple[str, dict[str, Any]]] | None,
+        content_hash: str,
+        context_group_id: str,
+        index_fingerprint: str,
+        shadow_fingerprint: str | None,
+        pending_chunks: list[Chunk],
+        pending_embedding_texts: list[str],
+        pending_shadow_chunks: list[Chunk],
+        pending_shadow_texts: list[str],
+    ) -> None:
+        """Append one file's active and shadow chunks, and the texts to embed, to the pending batch."""
+        if content_blocks is None:
+            raw_chunks = self._chunker(body)
+            structured, embedding_texts = contextual_passages(
+                raw, body, raw_chunks, rel[f], self._context_policy
+            )
+            chunk_metadata: list[dict[str, object]] = [{} for _ in raw_chunks]
+        else:
+            raw_chunks = [piece for piece, _ in content_blocks]
+            structured = []
+            embedding_texts = raw_chunks
+            chunk_metadata = [metadata for _, metadata in content_blocks]
+        shadow_structured: list[StructuredChunk] = []
+        shadow_embedding_texts: list[str] = []
+        if self._shadow is not None:
+            if content_blocks is None:
+                shadow_structured, shadow_embedding_texts = contextual_passages(
+                    raw, body, raw_chunks, rel[f], self._shadow.context_policy
+                )
+            else:
+                shadow_embedding_texts = raw_chunks
+
+        def piece_metadata(
+            i: int, extra_metadata: Mapping[str, object], fingerprint: str,
+            embedder: Embedder, policy: ContextPolicy, piece: StructuredChunk | None,
+            embedding_text: str,
+        ) -> dict[str, object]:
+            # One key list for the active and the shadow rows; only the identity terms
+            # differ. They were two hand-kept copies, so a key added to one would have
+            # left the shadow generation, the one promoted at cutover, without it
+            # (CCA CODE-002).
+            return {
+                "file": rel[f], "ord": i, "content_hash": content_hash,
+                # Same derivation the skip guard used above, so the value stored here is
+                # the value the next run compares against.
+                "index_fingerprint": fingerprint,
+                "embedding_profile": embedding_profile_id(embedder),
+                "context_mode": policy.mode,
+                "context_version": policy.version,
+                "context_group_id": context_group_id,
+                "text_start": piece.start if piece is not None else None,
+                "text_end": piece.end if piece is not None else None,
+                "heading_hierarchy": list(piece.headings) if piece is not None else [],
+                # What a forget erases this chunk's cache entry by, when the vector was not
+                # embedded from the chunk text itself (`recall.cache.EMBEDDING_TEXT_DIGEST_KEY`).
+                **({EMBEDDING_TEXT_DIGEST_KEY: text_digest(embedding_text)}
+                   if embedding_text != raw_chunks[i] else {}),
+                **extra_metadata,
+                **self.apply_provenance(meta),
+                **({"file": rel[f], "security_policy_digest": self._security_policy.digest}
+                   if self._security_policy is not None else {}),
+            }
+
+        for i, ct in enumerate(raw_chunks):
+            structured_chunk = structured[i] if content_blocks is None else None
+            embedding_text = embedding_texts[i]
+            cid = hashlib.md5(f"{f}:{i}".encode("utf-8"), usedforsecurity=False).hexdigest()
+            extra_metadata = chunk_metadata[i]
+            pending_chunks.append(
+                Chunk(
+                    id=cid,
+                    source=str(f),
+                    text=ct,
+                    metadata=piece_metadata(
+                        i, extra_metadata, index_fingerprint, self._embedder,
+                        self._context_policy, structured_chunk, embedding_text,
+                    ),
+                )
+            )
+            pending_embedding_texts.append(embedding_text)
+            if self._shadow is not None:
+                assert shadow_fingerprint is not None
+                shadow_piece = shadow_structured[i] if content_blocks is None else None
+                pending_shadow_chunks.append(
+                    Chunk(
+                        id=cid,
+                        source=str(f),
+                        text=ct,
+                        metadata=piece_metadata(
+                            i, extra_metadata, shadow_fingerprint, self._shadow.embedder,
+                            self._shadow.context_policy, shadow_piece,
+                            shadow_embedding_texts[i],
+                        ),
+                    )
+                )
+                pending_shadow_texts.append(shadow_embedding_texts[i])
 
     def _flush(
         self,
