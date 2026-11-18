@@ -97,7 +97,7 @@ ENVIRONMENT_SCHEMA: tuple[EnvironmentSpec, ...] = (
     EnvironmentSpec("RECALL_INDEX_ROOT", "Core runtime", "filesystem indexing root", "."),
     EnvironmentSpec(
         "RECALL_STATED_FACT_SOURCES", "Core runtime",
-        "where memos state facts: comma or space separated prefixes (lite: stored names; PostgreSQL: URIs, absolute paths or paths under RECALL_INDEX_ROOT); unset states from a lite store's refresh folders and nothing on PostgreSQL; none disables",
+        "where memos state facts: comma or space separated prefixes (lite: stored names; PostgreSQL: URIs, absolute paths with symlinks resolved, or paths under RECALL_INDEX_ROOT); unset states from a lite store's refresh folders and nothing on PostgreSQL; none disables",
     ),
     EnvironmentSpec("RECALL_INDEX_BATCH_CHUNKS", "Core runtime", "embedding batch size", "64"),
     EnvironmentSpec("RECALL_FASTEMBED_BATCH", "Core runtime", "fastembed batch size"),

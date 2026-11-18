@@ -112,6 +112,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 - A standalone SQLite fact ledger (`recall provenance --sqlite-path`) reloaded its events in the
   order of their time text, so an event written with a UTC offset other than zero could be
   listed before an earlier one. It now orders them by time. Current facts were not affected.
+- On PostgreSQL, a `RECALL_STATED_FACT_SOURCES` absolute path that runs through a symlink is
+  matched on the path it resolves to, so memos stored under the link's own path stated no facts
+  and nothing said why. That prefix now logs a warning naming both paths. What it admits is
+  unchanged.
 - A Lite forget could report success on a file made before 0.15.0 while the file still held, in
   its free pages, text that earlier deletes had freed, such as an edited memo's old chunks: 0.15.0
   turned `secure_delete` on for every connection, which zeroes later frees but not those. The first
