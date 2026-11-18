@@ -8,8 +8,9 @@ and labelled there as agent-reported.
 
 Every memory named must exist in the tenant's served generation. A report about a source the
 corpus does not hold is refused rather than stored, so a mistyped or invented name cannot inflate
-a memory's counts. A name may be the stored source exactly or, when that is unambiguous, its file
-name, which is how search results usually show it.
+a memory's counts. Reports accept an exact stored source or an unambiguous bare filename.
+The MCP tool also accepts names shown by search, including qualified display paths and assistant
+memo IDs, when they resolve to a unique eligible served source.
 """
 
 from __future__ import annotations
