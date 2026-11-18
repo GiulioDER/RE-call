@@ -10,6 +10,7 @@ from mcp.server.mcpserver.exceptions import ToolError
 from recall.trust_policy import TrustFailureCode, TrustRefusal
 from recall_mcp import server
 from recall_mcp.settings import Settings
+from tests.server_modules import setattr_on_server
 
 
 def test_search_tool_keeps_trust_refusal_payload_visible(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -23,7 +24,7 @@ def test_search_tool_keeps_trust_refusal_payload_visible(monkeypatch: pytest.Mon
     def refuse(*_args, **_kwargs):
         raise refusal
 
-    monkeypatch.setattr(server, "search_memory", refuse)
+    setattr_on_server(monkeypatch, "search_memory", refuse)
     mcp = server.build_server()
     tool = {item.name: item for item in mcp._tool_manager.list_tools()}["recall_search"]
     context = SimpleNamespace(
@@ -85,7 +86,7 @@ def test_every_trusted_retrieval_tool_keeps_the_refusal_payload_visible(
     def refuse(*_args, **_kwargs):
         raise refusal
 
-    monkeypatch.setattr(server, service_name, refuse)
+    setattr_on_server(monkeypatch, service_name, refuse)
     mcp = server.build_server()
     tool = {item.name: item for item in mcp._tool_manager.list_tools()}[tool_name]
     context = SimpleNamespace(

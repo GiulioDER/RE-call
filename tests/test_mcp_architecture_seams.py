@@ -224,6 +224,9 @@ def test_the_facade_contract_lists_every_server_module() -> None:
     package as internal; a module added to `recall_mcp` and not listed would be unchecked.
     Red proof (2026-10-27): removing "recall_mcp.retrieval" from the contract's `source_modules`
     in pyproject.toml fails the equality below with that module missing.
+
+    `server_ingest` and `server_reasoning` are the server: since the server split they hold its two
+    deliberate facade imports (`tenant_scopes`, `query_construction_challenge`).
     """
     import tomllib
     from pathlib import Path
@@ -236,7 +239,7 @@ def test_the_facade_contract_lists_every_server_module() -> None:
     modules = {
         f"recall_mcp.{path.stem}"
         for path in (root / "recall_mcp").glob("*.py")
-        if path.stem not in {"__init__", "server", "service"}
+        if path.stem not in {"__init__", "server", "server_ingest", "server_reasoning", "service"}
     }
 
     assert contract["forbidden_modules"] == ["recall_mcp.service"]

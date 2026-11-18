@@ -52,6 +52,7 @@ from recall_aml.config import HostedSettings
 from recall_aml.storage import PgHostedRepository
 from recall_mcp.federation_adapter import prepare_federated_execution
 from recall_mcp.retrieval import _Retrieval
+from tests.server_modules import server_source
 
 ROOT = Path(__file__).resolve().parents[1]
 NOW = datetime.now(timezone.utc)
@@ -308,8 +309,7 @@ def test_evidence_proof_runs_on_its_own_bounded_pool() -> None:
 
     limiter = getattr(server, "PROOF_THREAD_LIMITER", None)
     assert limiter is not None and limiter.total_tokens == 4
-    source = (ROOT / "recall_mcp" / "server.py").read_text(encoding="utf-8")
-    assert "return await _proof_to_thread(" in source
+    assert "return await _proof_to_thread(" in server_source()
 
 
 def test_setup_script_names_the_required_binding_before_reading_secrets() -> None:

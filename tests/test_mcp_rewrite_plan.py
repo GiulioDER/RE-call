@@ -27,8 +27,8 @@ from pathlib import Path
 
 import pytest
 
-import recall_mcp.server as server
 from recall_mcp.service import _stored_extracted_proposals, reasoning_proposals
+from tests.server_modules import server_source, server_tree
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 MCP_DIR = REPO_ROOT / "recall_mcp"
@@ -41,7 +41,7 @@ def _registered_tools() -> dict[str, dict[str, bool]]:
     fooled by PROSE: the plan tool's own docstring explains why no apply tool exists, and that
     sentence made the assertion fail. Registration is the property; mentioning a name is not.
     """
-    tree = ast.parse(Path(inspect.getfile(server)).read_text(encoding="utf-8"))
+    tree = server_tree()
     tools: dict[str, dict[str, bool]] = {}
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
@@ -81,7 +81,7 @@ def test_the_plan_tool_is_registered_and_annotated_read_only():
 
 def test_every_registered_tool_name_is_unique():
     """A duplicate name would silently shadow one tool with another."""
-    tree = ast.parse(Path(inspect.getfile(server)).read_text(encoding="utf-8"))
+    tree = server_tree()
     names = [
         k.value.value
         for node in ast.walk(tree)
@@ -138,7 +138,7 @@ def test_include_extracted_defaults_to_false_on_the_service():
 
 
 def test_include_extracted_defaults_to_false_on_the_tool():
-    source = inspect.getsource(server)
+    source = server_source()
     start = source.index("async def recall_reasoning_proposals")
     window = source[start : start + 400]
     assert "include_extracted: bool = False" in window

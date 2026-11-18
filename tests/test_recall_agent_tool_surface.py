@@ -22,6 +22,7 @@ import re
 import pytest
 
 from recall_agent import _sdk
+from tests.server_modules import server_source
 
 
 def _server_tool_parameters(name: str) -> set[str]:
@@ -31,9 +32,7 @@ def _server_tool_parameters(name: str) -> set[str]:
     inside `build_server`'s closure and are not module attributes.
     """
     pytest.importorskip("mcp")
-    import recall_mcp.server as server
-
-    source = inspect.getsource(server)
+    source = server_source()
     match = re.search(rf"async def {name}\((.*?)\) -> str:", source, re.DOTALL)
     assert match, f"no tool named {name} found in recall_mcp.server"
     parameters = set()

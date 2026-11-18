@@ -13,6 +13,7 @@ from recall.types import Chunk
 from recall_mcp import stores as stores_module
 from recall_mcp.stores import StoreRegistry
 from tests.conftest import TEST_DSN, requires_db
+from tests.server_modules import setattr_on_server
 
 
 @requires_db
@@ -586,8 +587,8 @@ def test_serving_control_plane_inherits_the_configured_query_timeout(monkeypatch
         "RECALL_INDEX_MODE": "generation", "RECALL_ENTERPRISE_CONTROL_PLANE": "1",
         "RECALL_STATEMENT_TIMEOUT_MS": "73", "RECALL_EMBED_CACHE": "off",
     })
-    monkeypatch.setattr(server, "load_source_policy", lambda _env: object())
-    monkeypatch.setattr(server, "make_embedder", lambda *_args, **_kwargs: HashingEmbedder(dim=8))
+    setattr_on_server(monkeypatch, "load_source_policy", lambda _env: object())
+    setattr_on_server(monkeypatch, "make_embedder", lambda *_args, **_kwargs: HashingEmbedder(dim=8))
     monkeypatch.setattr(recall.schema, "schema_status", lambda *_args, **_kwargs: SimpleNamespace(compatible=True))
     observed = {}
 
@@ -607,7 +608,7 @@ def test_serving_control_plane_inherits_the_configured_query_timeout(monkeypatch
                 observed["cancelled"] = False
         raise StopStartup
 
-    monkeypatch.setattr(server, "StoreRegistry", inspect_registry)
+    setattr_on_server(monkeypatch, "StoreRegistry", inspect_registry)
 
     async def drive():
         async with server._make_lifespan(SimpleNamespace(tenants=frozenset({"acme"})), settings=settings)(None):

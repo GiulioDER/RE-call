@@ -271,11 +271,10 @@ def test_the_search_tool_gates_routing_on_both_halves() -> None:
     checks that the value passed to `search_memory` is bound from both.
     """
     import ast
-    import pathlib
 
-    import recall_mcp.server as server
+    from tests.server_modules import server_tree
 
-    tree = _without_mutant_copies(ast.parse(pathlib.Path(server.__file__).read_text(encoding="utf-8")))
+    tree = _without_mutant_copies(server_tree())
 
     bound: dict[str, ast.expr] = {}
     for node in ast.walk(tree):

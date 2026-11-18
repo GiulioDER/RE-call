@@ -119,12 +119,10 @@ def test_the_search_tool_passes_the_policy_rather_than_defaulting() -> None:
     service accepted a `policy` argument and the server never supplied one.
     """
     import ast
-    import pathlib
 
-    import recall_mcp.server as server
+    from tests.server_modules import server_tree
 
-    source = pathlib.Path(server.__file__).read_text(encoding="utf-8")
-    tree = ast.parse(source)
+    tree = server_tree()
 
     # The gated set is DERIVED from the service's own signatures, never listed here.
     #
@@ -154,6 +152,6 @@ def test_the_search_tool_passes_the_policy_rather_than_defaulting() -> None:
     for name in sorted(gated & called.keys()):
         node = called[name]
         assert any(kw.arg == "policy" for kw in node.keywords), (
-            f"{name} is called at recall_mcp/server.py:{node.lineno} without policy=, so it "
+            f"{name} is called in the server (line {node.lineno} of its module) without policy=, so it "
             "silently falls back to the strict default and RECALL_TRUST_MODE has no effect there."
         )

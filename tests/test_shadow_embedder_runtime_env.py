@@ -26,16 +26,17 @@ call is replaced by a stop that records the shadow embedder it was handed.
 from __future__ import annotations
 
 import asyncio
+import threading
 from types import SimpleNamespace
 
 import pytest
 
-import recall_mcp.server as server_module
 from recall.embedding_registry import find_registered_profile
 from recall.embeddings import HashingEmbedder
 from recall_mcp.auth import SCOPE_WRITE
 from recall_mcp.server import build_server
 from recall_mcp.settings import Settings
+from tests.server_modules import setattr_on_server
 
 _TENANT = "acme"
 _PROFILE = "voyage-4-v1"
@@ -91,9 +92,9 @@ def test_a_hosted_shadow_profile_gets_the_key_from_the_settings_snapshot(monkeyp
     def _stop(store, embedder, path, **kwargs):
         raise _ReachedIndex(kwargs.get("shadow_embedder"))
 
-    monkeypatch.setattr(server_module, "index_memory", _stop)
+    setattr_on_server(monkeypatch, "index_memory", _stop)
     token = SimpleNamespace(scopes=[SCOPE_WRITE], claims={"tenant": _TENANT}, client_id="t")
-    monkeypatch.setattr(server_module, "get_access_token", lambda: token)
+    setattr_on_server(monkeypatch, "get_access_token", lambda: token)
 
     state = {
         "embedder": HashingEmbedder(dim=64),
@@ -103,7 +104,7 @@ def test_a_hosted_shadow_profile_gets_the_key_from_the_settings_snapshot(monkeyp
         "calibration": None,
         "settings": settings,
         "shadow_embedders": {},
-        "shadow_embedder_lock": server_module.threading.Lock(),
+        "shadow_embedder_lock": threading.Lock(),
     }
     tools = {t.name: t for t in build_server(settings)._tool_manager.list_tools()}
     ctx = SimpleNamespace(request_context=SimpleNamespace(lifespan_context=state))
