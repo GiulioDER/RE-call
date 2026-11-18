@@ -255,14 +255,15 @@ def test_authenticated_http_request_preserves_the_whole_security_contract(
     # Every authorization decision names the principal and, when the client sent one, the session.
     # Red proof 2026-11-13: with the `outcome="allowed"` record_access call removed from `_require`,
     # this test failed on the first assert below; with the `outcome="denied"` call in its
-    # PermissionError branch removed, it failed on the second.
+    # PermissionError branch removed, it failed on the second. The release audit's
+    # red check restored tenant=None in that branch and failed the tenant assertion.
     log_text = log_path.read_text(encoding="utf-8")
     assert (
         "access outcome=allowed principal='writer' tenant='tenant-a' scope=recall:write "
         "tool=recall_ingest session=contract-session-1 client=contract-test"
     ) in log_text
     assert (
-        "access outcome=denied principal='reader' tenant=None scope=recall:write "
+        "access outcome=denied principal='reader' tenant='tenant-b' scope=recall:write "
         "tool=recall_ingest session=- client=-"
     ) in log_text
 
