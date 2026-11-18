@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
-import shutil
+import os
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -214,14 +214,22 @@ def test_an_artifact_rebuilt_in_place_is_reloaded(tmp_path: Path) -> None:
 
     Invariant: a load after the files were replaced (without this process clearing its cache, as
     another process's rebuild never does) returns the new artifact.
+
+    Only the manifest is swapped. The cached artifact keeps `matrix.npy` mapped, and Windows refuses
+    to delete a mapped file, so removing the directory here failed there with WinError 32 (a real
+    rebuild on Windows refuses in that state, see `_remove_damaged`). The cache is keyed by the
+    manifest's bytes, so the manifest is what the invariant needs replaced.
     """
     clear_atomic_rescue_artifact_cache()
     directory = tmp_path / "gen_1"
     _publish(directory, "cal_1")
     assert load_atomic_rescue_artifact(directory / "manifest.json").calibration_id == "cal_1"
 
-    shutil.rmtree(directory)
-    _publish(directory, "cal_2")
+    rebuilt = tmp_path / "rebuilt" / "gen_1"
+    _publish(rebuilt, "cal_2")
+    for name in ("matrix.npy", "views.json"):
+        assert (rebuilt / name).read_bytes() == (directory / name).read_bytes(), name
+    os.replace(rebuilt / "manifest.json", directory / "manifest.json")
 
     assert load_atomic_rescue_artifact(directory / "manifest.json").calibration_id == "cal_2"
     clear_atomic_rescue_artifact_cache()
