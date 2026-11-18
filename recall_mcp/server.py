@@ -3656,8 +3656,9 @@ def _register_assistant_tools(mcp: MCPServer, deps: _ToolDeps, held: _HeldTools)
                 refresh = _policy(state, store)
                 for source, memo in memos.items():
                     with METRICS.timer("recall_tool_latency_ms", tool="withdraw"):
+                        # Awaited before the loop moves on, so the closure reads this `memo`.
                         result = await _to_thread(
-                            lambda memo=memo: assistant.withdraw(
+                            lambda: assistant.withdraw(
                                 cast(LiteStore, store),
                                 state["embedder"],
                                 memo,
