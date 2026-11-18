@@ -1646,7 +1646,7 @@ def test_testing_a_connection_never_runs_on_the_gui_thread(
         def _never(*args: object, **kwargs: object) -> object:
             raise AssertionError("probe_database ran on the GUI thread; it must go through the pool")
 
-        monkeypatch.setattr("recall.desktop.ui.probe_database", _never)
+        monkeypatch.setattr("recall.desktop.main_window.probe_database", _never)
         dispatched: list[tuple[object, ...]] = []
         window._run = lambda fn, done, failed=None: dispatched.append((fn, done, failed))  # type: ignore[method-assign]
 
@@ -1694,7 +1694,7 @@ def test_a_database_that_cannot_serve_is_not_saved(
     )
     try:
         saved: list[object] = []
-        monkeypatch.setattr("recall.desktop.ui.save_profile", lambda profile: saved.append(profile))
+        monkeypatch.setattr("recall.desktop.main_window.save_profile", lambda profile: saved.append(profile))
         report = DatabaseReport(
             dsn="postgresql://u:p@h/r",
             findings=(
@@ -1732,7 +1732,7 @@ def test_a_saved_profile_says_a_restart_is_needed(
     )
     try:
         saved: list[Any] = []
-        monkeypatch.setattr("recall.desktop.ui.save_profile", lambda profile: saved.append(profile))
+        monkeypatch.setattr("recall.desktop.main_window.save_profile", lambda profile: saved.append(profile))
 
         window._persist_profile(RuntimeMode.LOCAL_DATABASE, "postgresql://u:p@newhost/r")
 
@@ -1756,7 +1756,7 @@ def test_a_profile_that_cannot_be_written_is_reported_not_swallowed(
         def _boom(profile: object) -> None:
             raise OSError(13, "Permission denied")
 
-        monkeypatch.setattr("recall.desktop.ui.save_profile", _boom)
+        monkeypatch.setattr("recall.desktop.main_window.save_profile", _boom)
 
         window._persist_profile(RuntimeMode.LOCAL_DATABASE, "postgresql://u:p@newhost/r")
 
@@ -1797,7 +1797,7 @@ def test_no_settings_failure_puts_the_password_on_the_label(
         def _boom(profile: object) -> None:
             raise OSError(13, f'refusing to write "{dsn}"')
 
-        monkeypatch.setattr("recall.desktop.ui.save_profile", _boom)
+        monkeypatch.setattr("recall.desktop.main_window.save_profile", _boom)
         window._persist_profile(RuntimeMode.LOCAL_DATABASE, dsn)
         assert marker not in window.database_status.text(), window.database_status.text()
     finally:

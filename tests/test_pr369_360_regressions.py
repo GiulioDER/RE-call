@@ -107,7 +107,7 @@ def test_drop_collection_uses_worker(desktop_window, tmp_path, monkeypatch):
     def collect(paths, _category):
         collected.append(paths)
         return collect_files(paths)
-    monkeypatch.setattr("recall.desktop.ui.collect_files", collect)
+    monkeypatch.setattr("recall.desktop.main_window.collect_files", collect)
     monkeypatch.setattr(window, "_run", lambda *args: dispatched.append(args))
     window._accept_drop([str(source)])
     assert not collected, "directory collection ran on the GUI event thread"

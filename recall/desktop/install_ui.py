@@ -326,7 +326,7 @@ if QApplication is not None:
             except Exception as exc:  # noqa: BLE001 - a probe failure is a result, not a crash  # BROAD-CATCH: error-translation
                 # ⛔ **Scrubbed, because a driver error quotes the DSN back verbatim.**
                 # `probe_database` scrubs what it RETURNS but not what it RAISES, and the identical
-                # handler in `recall/desktop/ui.py` already scrubs for a measured reason:
+                # handler in `recall/desktop/main_window.py` already scrubs for a measured reason:
                 # `ProgrammingError: missing "=" after "not-a-dsn://user:PASSWORD@x"`. This is the
                 # surface most likely to hit it, because it is where somebody types a connection
                 # string for the first time, and it is what ends up in screenshots and bug reports.
