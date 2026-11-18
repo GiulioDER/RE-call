@@ -32,7 +32,8 @@ So a calibration that failed re-verification is never served, whatever the delta
 decides only how far the labelled questions are trusted to speak for the questions nobody
 labelled. `ensure_calibrated` performs a due or needed refit inline by default. With
 `background=True` (the MCP write path) it runs in a background thread, so the write returns at
-once, but only once a fit has certified: before that, the refit still runs inline. Meanwhile the
+once. A store whose fit did not certify is refitted only once it has grown by a quarter of the
+chunks that fit measured, so a corpus that does not separate is not refitted on every write. Meanwhile the
 carried calibration serves only while it still re-verifies, which `resolve` re-checks on every
 corpus change. Carried calibrations are never stored as calibrations: each is recomputed from the
 fit and its evidence, and `ensure_calibrated` records the lineage as a `calibration_carried_forward`
@@ -557,7 +558,12 @@ def auto_calibrate(
         canonical_json(sources).decode("utf-8"),
     ) if certified else None
     store.save_calibration(
-        artifact_to_json(artifact), created_at=artifact.created_at, model=model, dimension=dimension, evidence=evidence
+        artifact_to_json(artifact),
+        created_at=artifact.created_at,
+        model=model,
+        dimension=dimension,
+        evidence=evidence,
+        uncertified_chunks=None if certified else snapshot.count(),
     )
     coverage = ""
     if runtime.threshold is not None:
@@ -608,6 +614,21 @@ def _record_carry(store: LiteStore, carried: CarryForward) -> None:
         )
 
 
+def _uncertified_refit_waits(store: LiteStore, fit: CalibrationArtifactV2) -> bool:
+    """True while `fit` did not certify and the corpus has not grown by `DEFAULT_MAX_CORPUS_DELTA`
+    of the chunks it measured (CCA PERF-001).
+
+    Without this an uncertified store refitted on every write, a full fit each time, and kept every
+    fit as a row. The same quarter that makes a certified fit's refit due bounds how often a store
+    that does not separate is retried, so its fits grow with the log of its size. A fit for another
+    model, or one recorded before the count was kept, is refitted as before.
+    """
+    if fit.certified or _fitted_for_another_model(store, fit):
+        return False
+    measured = store.uncertified_fit_chunks()
+    return measured is not None and store.count() < measured * (1 + DEFAULT_MAX_CORPUS_DELTA)
+
+
 def ensure_calibrated(
     store: LiteStore, embedder: Embedder, *, background: bool = False, env: Mapping[str, str] | None = None
 ) -> CalibrationOutcome:
@@ -616,11 +637,12 @@ def ensure_calibrated(
     Never fitted: fit now, inline, whatever `background` says (the first fit, below or at the
     certifying floor, behaves as it always has). Unchanged since the fit: keep it; a fit that did
     not certify is not retried on the same corpus, because the query set and the measurement are
-    deterministic. Changed: `carry_forward`. A carry within `DEFAULT_MAX_CORPUS_DELTA` is the whole
-    answer and costs no embedding. A due refit (past that delta), or a needed one (the carry
-    failed), runs inline by default; with `background=True`, and once a fit has certified, it runs
-    in a background thread (`schedule_refit`) and this returns at once, with the carried
-    calibration in force when it re-verified and `stale` (strict search refuses) when it did not.
+    deterministic, nor on a changed one until it has grown by a quarter (`_uncertified_refit_waits`).
+    Changed: `carry_forward`. A carry within `DEFAULT_MAX_CORPUS_DELTA` is the whole answer and
+    costs no embedding. A due refit (past that delta), or a needed one (the carry failed, or the
+    fit never certified), runs inline by default; with `background=True` it runs in a background
+    thread (`schedule_refit`) and this returns at once, with the carried calibration in force when
+    it re-verified and `stale` (strict search refuses) when it did not.
     """
     raw = store.latest_calibration_json()
     if raw is None:
@@ -636,13 +658,19 @@ def ensure_calibrated(
         if fit.certified:
             return CalibrationOutcome(CalibrationStatus.CERTIFIED, "already certified for this corpus", fit)
         return CalibrationOutcome(
-            CalibrationStatus.UNCERTIFIED, "this corpus was calibrated and did not certify; it is refitted when it changes"
+            CalibrationStatus.UNCERTIFIED,
+            "this corpus was calibrated and did not certify; it is refitted once it has grown by a quarter",
+        )
+    if _uncertified_refit_waits(store, fit):
+        return CalibrationOutcome(
+            CalibrationStatus.STALE,
+            "the last fit did not certify, so strict search refuses; it is refitted once memory has grown by a quarter",
         )
     carried = carry_forward(store, fit, embedder=embedder)
     _record_carry(store, carried)
     if carried.artifact is not None and not carried.refit_due:
         return CalibrationOutcome(CalibrationStatus.CERTIFIED, carried.reason, carried.artifact)
-    if background and fit.certified:
+    if background:
         schedule_refit(store, embedder, env=env)
         if carried.artifact is not None:
             return CalibrationOutcome(
@@ -686,7 +714,7 @@ def _refit_wanted(store: LiteStore) -> bool:
         return True
     if _fitted_for_another_model(store, fit):
         return True
-    if fit.corpus_fingerprint == store.corpus_fingerprint():
+    if fit.corpus_fingerprint == store.corpus_fingerprint() or _uncertified_refit_waits(store, fit):
         return False
     carried = carry_forward(store, fit)
     return carried.artifact is None or carried.refit_due
