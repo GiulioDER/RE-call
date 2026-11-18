@@ -473,6 +473,91 @@ def test_a_root_whose_erasure_fails_does_not_stop_the_others(forget_without_a_ro
     assert f"under {roots[0]} failed" in result.message, result.message
 
 
+def test_dat_001_forget_removes_only_its_abandoned_writer_stages(tmp_path: Path) -> None:
+    """Red on 31e6841d plus prior local fixes: erase_forgotten left both abandoned stages."""
+    from recall.generation_rescue import erase_forgotten
+
+    matching = tmp_path / ".gen_1.cal_1.0123456789abcdef"
+    legacy = tmp_path / ".gen_1.0123456789abcdef"
+    partial = tmp_path / ".gen_1.cal_3.fedcba9876543210"
+    unrelated_source = tmp_path / ".gen_1.cal_2.0123456789abcdef"
+    unrelated_generation = tmp_path / ".gen_10.cal_1.0123456789abcdef"
+    unrelated_directory = tmp_path / ".gen_1.notes.0123456789abcdef"
+    for directory in (matching, legacy, unrelated_source, unrelated_generation, unrelated_directory):
+        _publish(directory, "cal_1")
+    (unrelated_source / "views.json").write_text(
+        json.dumps({"views": [{"source": "other.md"}]}), encoding="utf-8"
+    )
+    partial.mkdir()
+    (partial / "matrix.npy").write_bytes(b"synthetic incomplete matrix")
+
+    result = erase_forgotten(["gen_1"], [], ["a.md"], env={ROOT_ENV: str(tmp_path)})
+
+    assert not any(directory.exists() for directory in (matching, legacy, partial)), "forget left an abandoned writer stage"
+    assert result == (0, 3)
+    assert all(directory.is_dir() for directory in (unrelated_source, unrelated_generation, unrelated_directory))
+
+
+def test_dat_001_forget_reports_failed_stage_removal_and_continues(
+    forget_without_a_root, monkeypatch, tmp_path: Path,
+) -> None:
+    """Red on 31e6841d plus prior local fixes: public forget omitted the failed-root warning."""
+    import recall.atomic_rescue as atomic
+    import recall.generations as generations
+
+    failing_root, other_root = tmp_path / "a-fails", tmp_path / "b-erased"
+    stage_name = ".gen_1.cal_1.0123456789abcdef"
+    blocked_stage = failing_root / stage_name
+    for root in (failing_root, other_root):
+        _publish(root / stage_name, "cal_1")
+    remove = atomic.shutil.rmtree
+
+    def remove_unless_blocked(path: Path, *args, **kwargs) -> None:  # noqa: ANN002, ANN003
+        if path != blocked_stage:
+            remove(path, *args, **kwargs)
+
+    monkeypatch.setattr(atomic.shutil, "rmtree", remove_unless_blocked)
+    monkeypatch.setattr(generations, "GenerationManager", _manager({str(failing_root), str(other_root)}, []))
+    result = forget_without_a_root._forget_memory_unlocked(
+        _generation_store([]), ["a.md"], erase_memo_requests=False,
+    )
+
+    assert f"under {failing_root} failed" in result.message, result.message
+    assert blocked_stage.is_dir()
+    assert not (other_root / stage_name).exists(), "forget stopped before cleaning the remaining root"
+
+
+@pytest.mark.parametrize("partial", [False, True], ids=["committed", "partial_commit"])
+def test_dat_001_forget_refreshes_roots_after_committed_deletion(
+    forget_without_a_root, monkeypatch, tmp_path: Path, partial: bool,
+) -> None:
+    """Red on 31e6841d: only the root list read before deletion was used for stage cleanup."""
+    import recall.generations as generations
+
+    recorded: set[str] = set()
+    stage = tmp_path / "writer-root" / ".gen_1.cal_1.0123456789abcdef"
+    store = _generation_store([])
+    delete = store.delete_sources
+
+    def delete_with_new_root(sources: list[str], **kwargs: object) -> int:
+        _publish(stage, "cal_1")
+        recorded.add(str(stage.parent))
+        count = delete(sources, **kwargs)
+        if partial:
+            raise RuntimeError("synthetic failure after committed deletion")
+        return count
+
+    monkeypatch.setattr(generations, "GenerationManager", _manager(recorded, []))
+    monkeypatch.setattr(store, "delete_sources", delete_with_new_root)
+    if partial:
+        with pytest.raises(RuntimeError, match="after committed deletion"):
+            forget_without_a_root._forget_memory_unlocked(store, ["a.md"], erase_memo_requests=False)
+    else:
+        result = forget_without_a_root._forget_memory_unlocked(store, ["a.md"], erase_memo_requests=False)
+        assert result.chunks_removed == 1
+    assert not stage.exists(), "forget missed the stage under the newly recorded root"
+
+
 @requires_db
 def test_a_postgres_forget_without_the_root_finds_it_in_the_audit_trail(rescue_tenant, tmp_path: Path, monkeypatch) -> None:  # noqa: F811
     """Review TEST-001: the record's INSERT and SELECT against a real database. Build with the

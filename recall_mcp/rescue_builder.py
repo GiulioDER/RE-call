@@ -24,6 +24,7 @@ import math
 import threading
 import time
 from collections.abc import Callable, Mapping
+from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -48,6 +49,7 @@ _log = logging.getLogger(__name__)
 CHECK_INTERVAL_S = 30.0
 MIN_BACKOFF_S = 60.0
 MAX_BACKOFF_S = 600.0
+_BUILD_UNDER_LOCK = partial(build_artifact, _build_lock_held=True)
 
 
 def _artifact_serves(root: Path, binding: Mapping[str, str], calibration_id: str, embedder: Embedder) -> bool:
@@ -71,7 +73,7 @@ class RescueBuilder:
         embedder: Embedder,
         root: Path,
         *,
-        build: Callable[..., str] = build_artifact,
+        build: Callable[..., str] = _BUILD_UNDER_LOCK,
         prune: Callable[[str, str, Path], int] | None = None,
         clock: Callable[[], float] = time.time,
     ) -> None:

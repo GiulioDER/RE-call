@@ -185,36 +185,46 @@ def test_a_prune_keeps_the_serving_artifact_cached(tmp_path: Path, monkeypatch) 
         atomic_rescue.clear_atomic_rescue_artifact_cache()
 
 
-def test_a_prune_removes_the_lock_files_of_removed_generations(tmp_path: Path, monkeypatch) -> None:
-    """D6 (Minor 6): `.rescue-<generation_id>.lock` files piled up under the root, one per
-    generation. Invariant: a prune removes a removed generation's lock file, and its backoff record,
-    unless another holder has the lock; a kept generation's stays."""
+def test_dat_001_prune_keeps_lock_identity_and_clears_idle_backoff(tmp_path: Path, monkeypatch) -> None:
+    """Red on 31e6841d: prune split lock contention on POSIX or changed the idle file ID on Windows."""
+    import os
+
     import recall.generations as generations
     from recall.generation_rescue import build_lock, prune_superseded
+    from recall.lite.writer_lock import try_lock
 
     monkeypatch.setattr(generations, "GenerationManager", _Manager)
     for generation_id in ("gen_active", "gen_failed"):
         with build_lock(tmp_path, generation_id):
             pass
-    (tmp_path / ".rescue-gen_failed.backoff.json").write_text("{}", encoding="utf-8")
+    failed_lock = tmp_path / ".rescue-gen_failed.lock"
+    backoff = tmp_path / ".rescue-gen_failed.backoff.json"
+    backoff.write_text("{}", encoding="utf-8")
+    with failed_lock.open("ab") as delayed:
+        original = os.fstat(delayed.fileno())
+        prune_superseded("postgresql://x", "t", tmp_path)
+        with build_lock(tmp_path, "gen_failed") as held:
+            assert held
+            assert not try_lock(delayed), "the delayed and later openers acquired separate locks"
+        assert try_lock(delayed)
+        with build_lock(tmp_path, "gen_failed") as held:
+            assert not held, "the later opener did not contend with the delayed descriptor"
 
-    prune_superseded("postgresql://x", "t", tmp_path)
-
-    assert not (tmp_path / ".rescue-gen_failed.lock").exists(), "a removed generation's lock file was left"
-    assert not (tmp_path / ".rescue-gen_failed.backoff.json").exists(), "a removed generation's backoff was left"
+    assert not backoff.exists(), "a removed generation's backoff was left"
     assert (tmp_path / ".rescue-gen_active.lock").exists(), "a kept generation's lock file was removed"
 
-    from recall.lite.writer_lock import try_lock  # after the assertions above, which `292127550` fails
+    # Windows normally denies unlink while the delayed descriptor is open. Check the file
+    # identity after an idle prune as well, when Windows lets the old implementation unlink it.
+    prune_superseded("postgresql://x", "t", tmp_path)
+    with build_lock(tmp_path, "gen_failed") as held:
+        assert held
+        assert os.path.samestat(original, failed_lock.stat()), "prune replaced the generation lock's file identity"
 
-    with build_lock(tmp_path, "gen_failed"):
-        pass
-    holder = open(tmp_path / ".rescue-gen_failed.lock", "ab")  # noqa: SIM115  # held across the prune
-    try:
-        assert try_lock(holder)
+    backoff.write_text("{}", encoding="utf-8")
+    with build_lock(tmp_path, "gen_failed") as held:
+        assert held
         prune_superseded("postgresql://x", "t", tmp_path)
-        assert (tmp_path / ".rescue-gen_failed.lock").exists(), "a lock another holder has was removed"
-    finally:
-        holder.close()
+        assert backoff.is_file(), "prune cleared the backoff of a generation with a live holder"
 
 
 def test_the_wizard_says_what_happens_to_an_unbuilt_rescue_under_skip(tmp_path: Path, monkeypatch) -> None:

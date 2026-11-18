@@ -161,7 +161,11 @@ def test_a_forget_during_the_write_is_not_undone(corpus: _Corpus, tmp_path: Path
     real = rescue.write_atomic_rescue_artifact
 
     def forgotten_meanwhile(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
-        _forget(corpus, tmp_path, "forgotten.md")
+        try:
+            _forget(corpus, tmp_path, "forgotten.md")
+        except AtomicRescueArtifactError as exc:
+            # The production forget reports this root as incomplete and lets the writer finish.
+            assert "still being built" in str(exc)
         return real(*args, **kwargs)
 
     monkeypatch.setattr(rescue, "write_atomic_rescue_artifact", forgotten_meanwhile)
