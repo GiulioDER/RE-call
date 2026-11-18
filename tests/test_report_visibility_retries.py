@@ -9,15 +9,17 @@ from __future__ import annotations
 import json
 from collections.abc import Iterator
 from contextlib import contextmanager
+from pathlib import Path
 from typing import Any
 
 import pytest
 
 from recall.generation_types import NoActiveGeneration
-from recall.security_policy import SourceRule, SourceSecurityPolicy
+from recall.security_policy import AccessContext, SourceRule, SourceSecurityPolicy
 from recall.types import Chunk
 from recall_mcp import server, use_reports_api
 from recall_mcp.auth import SCOPE_READ, SCOPE_WRITE
+from recall_mcp.stale_reports_api import report_stale
 from recall_mcp.use_reports_api import report_use
 from tests.test_mcp_auth_hunt_regressions import (
     _IdempotentLimiter, _Registry, _Token, _authenticated, _run,
@@ -258,4 +260,36 @@ def test_a_report_without_sources_needs_no_served_generation(monkeypatch: pytest
     except NoActiveGeneration as exc:
         result = f"RAISED {exc}"
     assert not result.startswith("RAISED"), f"a source-free report required a generation: {result}"
+    assert len(store.rows) == 1
+
+
+@pytest.mark.parametrize("tool", ["recall_report_use", "recall_report_stale"])
+def test_policy_reports_read_unchanged_names_once(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, tool: str,
+) -> None:
+    """PERF-001. Check source metadata once and retain the stale report's quote read."""
+    store = GenerationLikeStore()
+    policy = SourceSecurityPolicy((SourceRule("recall"),))
+    access = AccessContext(principal="fixture", tenant=store.tenant, purpose="retrieval")
+    reads: list[bool] = []
+    chunks = [
+        Chunk(file, SERVED + file, text, {"file": file, "security_policy_digest": policy.digest})
+        for file, text in FILES.items()
+    ]
+
+    def scoped_chunks(_scope: object, *, include_text: bool, **_kwargs: object) -> Iterator[Chunk]:
+        reads.append(include_text)
+        return iter(chunks)
+
+    monkeypatch.setattr(store, "iter_scoped_chunks", scoped_chunks, raising=False)
+    if tool == "recall_report_use":
+        report_use(store, task="Check the release.", effect="helped", used=["new.md"],
+                   security_policy=policy, access_context=access)
+        expected = [False]
+    else:
+        report_stale(store, stale_source="old.md", replacing_source="new.md", stale_quote=OLD_QUOTE,
+                     current_quote=NEW_QUOTE, task=None, env={"RECALL_INDEX_ROOT": str(tmp_path)},
+                     security_policy=policy, access_context=access)
+        expected = [False, True]
+    assert reads == expected, f"unexpected scoped reads: {reads}"
     assert len(store.rows) == 1

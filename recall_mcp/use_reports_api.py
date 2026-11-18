@@ -154,6 +154,21 @@ def authorized_report_aliases(
     return {name: next(iter(sources)) for name, sources in eligible.items() if len(sources) == 1}
 
 
+def _authorized_report_sources(
+    store: Any,
+    names: tuple[str, ...],
+    policy: SourceSecurityPolicy,
+    context: AccessContext,
+    aliases: Mapping[str, str],
+) -> tuple[set[str], dict[str, str]]:
+    """Retain readable original names when an alias target is unavailable."""
+    named = tuple(aliases.get(str(name).strip(), name) for name in names)
+    known = set(authorized_report_rows(store, names, policy, context, include_text=False))
+    if named != names:
+        known.update(authorized_report_rows(store, named, policy, context, include_text=False))
+    return known, {name: source for name, source in aliases.items() if source in known}
+
+
 def report_use(
     store: Any,
     *,
@@ -181,11 +196,7 @@ def report_use(
     elif access_context is None:
         raise UseReportRefused("source policy requires an access context")
     else:
-        original = (*used, *wrong)
-        named = tuple(aliases.get(str(n).strip(), n) for n in original)
-        known = set(authorized_report_rows(store, original, security_policy, access_context, include_text=False))
-        known.update(authorized_report_rows(store, named, security_policy, access_context, include_text=False))
-        aliases = {name: source for name, source in aliases.items() if source in known}
+        known, aliases = _authorized_report_sources(store, (*used, *wrong), security_policy, access_context, aliases)
     used_sources = resolve_sources(used, known, "used", aliases)
     wrong_sources = resolve_sources(wrong, known, "wrong", aliases)
     both = sorted(set(used_sources) & set(wrong_sources))

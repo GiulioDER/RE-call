@@ -58,7 +58,7 @@ from recall.stale_reports import (
     quote_fingerprint,
     resolve_memo,
 )
-from recall_mcp.use_reports_api import UseReportRefused, authorized_report_rows, resolve_sources
+from recall_mcp.use_reports_api import UseReportRefused, _authorized_report_sources, authorized_report_rows, resolve_sources
 
 logger = logging.getLogger(__name__)
 
@@ -114,15 +114,9 @@ def _record_served(
             elif access_context is None:
                 raise StaleReportRefused("source policy requires an access context")
             else:
-                original = (stale_source, replacing_source)
-                named = tuple(aliases.get(str(n).strip(), n) for n in original)
-                known = set(authorized_report_rows(
-                    store, original, security_policy, access_context, include_text=False,
-                ))
-                known.update(authorized_report_rows(
-                    store, named, security_policy, access_context, include_text=False,
-                ))
-                aliases = {name: source for name, source in aliases.items() if source in known}
+                known, aliases = _authorized_report_sources(
+                    store, (stale_source, replacing_source), security_policy, access_context, aliases,
+                )
             stale = resolve_sources([stale_source], known, "stale_source", aliases)[0]
             replacing = resolve_sources([replacing_source], known, "replacing_source", aliases)[0]
             if security_policy is not None:
