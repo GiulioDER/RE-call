@@ -6,10 +6,10 @@ with no rescue artifact. The host servers run with RECALL_ATOMIC_RESCUE_WHEN_MIS
 search then answers without the rescue (`recall.trust`); this builds what is missing so the next
 searches have it again (docs/DESKTOP_ATOMIC_RESCUE_DESIGN.md).
 
-After each retrieval, at most once per CHECK_INTERVAL_S, it asks whether an artifact serves the
-active generation beside its published calibration, and when none does starts one daemon thread
-that builds it (`recall.generation_rescue.build_artifact`, the build `recall generation rescue`
-runs) and then removes superseded artifacts. A lock file under the root, taken without waiting,
+After retrieval, at most once per CHECK_INTERVAL_S, it schedules one daemon thread to check
+whether an artifact serves the active generation beside its published calibration. The same
+thread builds a missing artifact (`recall.generation_rescue.build_artifact`) and removes
+superseded artifacts. A lock file under the root, taken without waiting,
 lets one process build at a time: several servers of one tenant (Claude Code, Codex, each open
 session) see the same gap, and the others leave it to the holder. A failed build is retried after
 a backoff, MIN_BACKOFF_S doubling to MAX_BACKOFF_S, so a broken build does not run on every search.
@@ -86,7 +86,7 @@ class RescueBuilder:
 
     @classmethod
     def from_env(
-        cls, store: object, embedder: Embedder, env: Mapping[str, str], **kwargs: object
+        cls, store: object, embedder: Embedder, env: Mapping[str, str]
     ) -> RescueBuilder | None:
         """A builder for a PostgreSQL store whose rescue is active with `skip` and a root; else None.
 
@@ -106,11 +106,10 @@ class RescueBuilder:
             or not root
         ):
             return None
-        kwargs.setdefault("prune", prune_superseded)  # a desktop install runs no gc
-        return cls(store, embedder, Path(root).expanduser(), **kwargs)  # type: ignore[arg-type]
+        return cls(store, embedder, Path(root).expanduser(), prune=prune_superseded)  # a desktop install runs no gc
 
     def after_retrieval(self) -> None:
-        """Start a build when the active generation has no artifact. Never raises; returns at once."""
+        """Schedule the eligibility check without reading the store or artifact on the request."""
         try:
             with self._lock:
                 now = self._clock()
@@ -121,11 +120,22 @@ class RescueBuilder:
                 self._last_check = now
                 if self._thread is not None and self._thread.is_alive():
                     return
-            resolution = self._store.resolve_calibration()
-            if resolution.artifact is None:
-                return  # strict search refuses an uncalibrated generation before the rescue
-            binding = self._store.generation_binding()
-            key = (str(binding["generation_id"]), str(resolution.artifact.calibration_id))
+                worker = threading.Thread(
+                    target=self._check_and_build, args=(now,), name="recall-rescue-build", daemon=True
+                )
+                worker.start()
+                self._thread = worker
+        except Exception as exc:  # BROAD-CATCH: fail-open  # a rescue problem must never fail a search
+            _log.warning("atomic rescue build check failed: %s", type(exc).__name__)
+
+    def _check_and_build(self, now: float) -> None:
+        try:
+            with self._store.snapshot() as generation_id:
+                resolution = self._store.resolve_calibration()
+                if resolution.artifact is None:
+                    return  # strict search refuses an uncalibrated generation before the rescue
+                binding = self._store.generation_binding()
+            key = (generation_id, str(resolution.artifact.calibration_id))
             if self._backing_off(key, now):
                 return
             if _artifact_serves(self._root, binding, key[1], self._embedder):
@@ -133,12 +143,9 @@ class RescueBuilder:
             with self._lock:
                 if self._stopped:
                     return
-                self._thread = threading.Thread(
-                    target=self._run, args=(key,), name="recall-rescue-build", daemon=True
-                )
-                self._thread.start()
+            self._run(key)
         except Exception as exc:  # BROAD-CATCH: fail-open  # a rescue problem must never fail a search
-            _log.warning("atomic rescue build check failed: %s", exc)
+            _log.warning("atomic rescue build check failed: %s", type(exc).__name__)
 
     def stop(self, timeout_s: float = 10.0) -> None:
         """Start no more builds, and let a running one finish before the store closes."""
@@ -171,7 +178,7 @@ class RescueBuilder:
                         self._store._dsn, self._store.tenant, generation_id, self._embedder, self._root
                     )
                 except Exception as exc:  # BROAD-CATCH: fail-open  # logged and retried after the backoff
-                    _log.warning("atomic rescue build for %s failed: %s", generation_id, exc)
+                    _log.warning("atomic rescue build for %s failed: %s", generation_id, type(exc).__name__)
                     previous = build_backoff(self._root, generation_id, calibration_id)
                     backoff = MIN_BACKOFF_S if previous is None else min(previous[1] * 2, MAX_BACKOFF_S)
                     # Under the build lock, so servers failing one after another double one record.
@@ -182,4 +189,4 @@ class RescueBuilder:
                 if self._prune is not None:
                     self._prune(self._store._dsn, self._store.tenant, self._root)
         except Exception as exc:  # BROAD-CATCH: fail-open  # a rescue problem must never fail a search
-            _log.warning("atomic rescue build for %s failed: %s", generation_id, exc)
+            _log.warning("atomic rescue build for %s failed: %s", generation_id, type(exc).__name__)

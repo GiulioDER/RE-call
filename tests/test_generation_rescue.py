@@ -176,6 +176,30 @@ def test_a_host_install_keeps_refuse(tmp_path: Path, monkeypatch) -> None:
     assert "RECALL_ATOMIC_RESCUE_WHEN_MISSING" not in env
 
 
+def test_host_registration_overrides_an_inherited_rescue_skip(tmp_path: Path, monkeypatch) -> None:
+    """ENV-001. With the setting omitted from the block, the launcher inherited skip."""
+    from recall.wizard.headless import _atomic_rescue_env, _cli_rescue_env, _with_rescue
+    from recall.wizard.pipeline import CorpusOutcome
+    from recall.wizard.wiring import ServerBlock
+    from recall_mcp.settings import bootstrap_settings
+
+    policy = "RECALL_ATOMIC_RESCUE_WHEN_MISSING"
+    monkeypatch.setenv(policy, "skip")
+    monkeypatch.setenv("RECALL_ATOMIC_RESCUE_MODE", "active")
+    monkeypatch.delenv(ROOT_ENV, raising=False)
+    env, _ = _atomic_rescue_env(_config(tmp_path))
+    block = ServerBlock(name="p-docs", tenant="p-docs", env={}, rationale="r")
+    outcomes = [CorpusOutcome(
+        tenant="p-docs", generation_id="gen_docs", certified=True, promoted=True, atomic="built for gen_docs",
+    )]
+    _with_rescue((block,), outcomes, env)
+
+    runtime = bootstrap_settings({policy: "skip", **block.env})
+    assert runtime.env[policy] == "refuse", "the registered host inherited skip"
+    assert runtime.env["RECALL_ATOMIC_RESCUE_MODE"] == "active"
+    assert _cli_rescue_env((block,))[policy] == "refuse"
+
+
 def test_a_shell_mode_off_still_wins_beside_the_docker_stack(tmp_path: Path, monkeypatch) -> None:
     """A control: a mode the shell sets is registered as it is, and `off` adds no `skip`."""
     from recall.wizard.headless import _atomic_rescue_env
@@ -265,7 +289,10 @@ def test_only_a_tenant_this_run_built_for_is_served_active(tmp_path: Path) -> No
 
     assert [b.env["RECALL_ATOMIC_RESCUE_MODE"] for b in blocks] == ["active", "off", "off"]
     assert all(b.env[ROOT_ENV] == root for b in blocks)
-    assert _cli_rescue_env(blocks) == {"RECALL_ATOMIC_RESCUE_MODE_BY_TENANT": "p-docs:active", ROOT_ENV: root}
+    assert _cli_rescue_env(blocks) == {
+        "RECALL_ATOMIC_RESCUE_MODE_BY_TENANT": "p-docs:active", ROOT_ENV: root,
+        "RECALL_ATOMIC_RESCUE_WHEN_MISSING": "refuse",
+    }
 
 
 def test_a_shell_shadow_mode_is_registered_as_it_is(tmp_path: Path) -> None:
@@ -412,6 +439,24 @@ def test_a_rebuild_after_publish_that_fails_is_reported_not_raised(monkeypatch) 
     monkeypatch.setattr(rescue, "ensure_for_promotion", ensure)
     line = rescue.after_publish("postgresql://x", "p-docs", "gen_live", lambda: _FakeEmbedder())
     assert line.startswith("WARNING") and "recall --tenant p-docs generation rescue gen_live" in line
+
+
+@pytest.mark.parametrize("policy, consequence", [
+    ("skip", "continue without the rescue"),
+    ("refuse", "searches refuse"),
+])
+def test_calibration_rebuild_warning_matches_the_missing_rescue_policy(monkeypatch, policy: str, consequence: str) -> None:
+    """DOC-001. A desktop host previously printed the refusal warning under skip."""
+    from recall import generation_rescue
+
+    def fail(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+        raise AtomicRescueArtifactError("the root is full")
+
+    monkeypatch.setattr(generation_rescue, "ensure_for_promotion", fail)
+    env = {"RECALL_ATOMIC_RESCUE_WHEN_MISSING": policy}
+    warning = generation_rescue.after_publish("postgresql://x", "p-docs", "gen_live", _FakeEmbedder, env=env)
+    assert consequence in warning, "the warning described the wrong missing-artifact policy"
+    assert "recall --tenant p-docs generation rescue gen_live" in warning
 
 
 def test_gc_removes_the_artifacts_of_the_collected_generations(tmp_path: Path, monkeypatch, capsys) -> None:
@@ -759,3 +804,112 @@ def test_a_rollback_whose_target_moved_during_its_build_is_refused(rescue_tenant
     assert built == [first]
     assert manager.active_generation_id() == third, "the unbuilt generation must not be activated"
     assert first in str(refused.value)
+
+
+@requires_db
+def test_prune_preserves_the_active_rescue_when_the_previous_pointer_returns(
+    rescue_tenant, tmp_path: Path, monkeypatch
+) -> None:
+    """STAKES-002. Two equal pointer reads can straddle changes that make the inventory stale."""
+    from recall.generation_rescue import prune_superseded
+    from recall.generations import _GENERATION_COLUMNS
+    from tests.test_calibration_carry_forward import _CarryEmbedder
+
+    tenant, manager = rescue_tenant
+    embedder = _CarryEmbedder()
+    retired, active, previous, next_ready = (
+        _certified_ready(manager, embedder, version) for version in ("v1", "v2", "v3", "v4")
+    )
+    for generation_id in (retired, active, previous):
+        manager.promote(generation_id, unsafe_development=True)
+    assert manager.rollback() == active
+    assert manager.previous_generation_id() == previous
+    artifact = _artifact(tmp_path, active, "kept.md")
+
+    real_execute = psycopg.Connection.execute
+    interleaved = False
+
+    def execute_with_promotions(conn, query, *args, **kwargs):  # noqa: ANN001, ANN002, ANN003, ANN202
+        nonlocal interleaved
+        inventory = f"SELECT {_GENERATION_COLUMNS} FROM recall_generations "
+        if not interleaved and str(query).startswith(inventory) and "ORDER BY created_at" in str(query):
+            interleaved = True
+            manager.promote(next_ready, unsafe_development=True)
+            with manager._connect() as writer:
+                writer.execute(
+                    "UPDATE recall_generations SET retired_at = '2000-01-01' "
+                    "WHERE tenant_id = %s AND generation_id = %s",
+                    (tenant, active),
+                )
+            rows = real_execute(conn, query, *args, **kwargs)
+            assert manager.rollback() == active
+            manager.promote(previous, unsafe_development=True)
+            assert manager.rollback() == active
+            return rows
+        return real_execute(conn, query, *args, **kwargs)
+
+    monkeypatch.setattr(psycopg.Connection, "execute", execute_with_promotions)
+    prune_superseded(TEST_DSN, tenant, tmp_path)
+
+    assert interleaved, "the overlapping publications did not run"
+    assert manager.active_generation_id() == active
+    assert manager.previous_generation_id() == previous
+    assert artifact.is_dir(), "prune deleted the rescue of the active generation"
+
+
+@requires_db
+@pytest.mark.parametrize("assembly_fails", [False, True], ids=["assembly-completes", "assembly-errors"])
+def test_collection_after_forget_does_not_leave_reinserted_rescue_views(
+    rescue_tenant, tmp_path: Path, monkeypatch, assembly_fails: bool
+) -> None:
+    """SEC-003. The builder used to leave cached views if its generation had been collected."""
+    from datetime import UTC, datetime, timedelta
+
+    from recall import atomic_view_store
+    from recall.atomizer import chunk_micro_views
+    from recall.embedding_core import embedding_profile
+    from recall.generation_rescue import build_artifact
+    from recall.generation_store import GenerationStore
+    from recall.generation_types import NoActiveGeneration
+    from recall_mcp.lifecycle import forget_memory
+    from tests.test_calibration_carry_forward import _CarryEmbedder
+
+    tenant, manager = rescue_tenant
+    embedder = _CarryEmbedder()
+    first, second, third = (_certified_ready(manager, embedder, ver) for ver in ("v1", "v2", "v3"))
+    manager.promote(first, unsafe_development=True)
+    source = f"s3://approved/corpora/{tenant}/memo-0.md"
+    assemble = atomic_view_store.assemble
+    forgotten: list[str] = []
+    profile = embedding_profile(embedder).fingerprint()
+
+    def cached(views: atomic_view_store.AtomicViewStore):  # noqa: ANN202
+        text = forgotten[0]
+        return views.get(profile, atomic_view_store.chunk_view_digest(text),
+                         view_count=len(chunk_micro_views(text)), dimension=embedder.dim)
+
+    def assemble_after_collection(parents, views, *args, **kwargs):  # noqa: ANN001, ANN002, ANN003, ANN202
+        forgotten.extend(text for _, uri, _, text in parents if uri == source)
+        assert len(forgotten) == 1
+        with GenerationStore(TEST_DSN, embedder.dim, tenant=tenant) as store:
+            result = forget_memory(store, [source], erase_memo_requests=False)
+        assert result.chunks_removed > 0
+        for generation_id in (second, third):
+            manager.promote(generation_id, unsafe_development=True)
+        assert first in manager.gc(
+            now=datetime.now(UTC) + timedelta(days=1), retention_days=0, retain_previous=0,
+        )
+        assembled = assemble(parents, views, *args, **kwargs)
+        assert cached(views) is not None, "assembly must commit the forgotten vectors for this regression"
+        if assembly_fails:
+            raise RuntimeError("assembly failed after committing a cache batch")
+        return assembled
+
+    monkeypatch.setattr(atomic_view_store, "assemble", assemble_after_collection)
+    with pytest.raises(NoActiveGeneration):
+        build_artifact(TEST_DSN, tenant, first, embedder, tmp_path)
+
+    with atomic_view_store.AtomicViewStore(tmp_path / "micro-views.sqlite") as views:
+        assert cached(views) is None, "collection left the forgotten rescue vectors"
+        assert views.count() == len(_bodies()) - 1, "collection removed unrelated cached views"
+    assert not list(tmp_path.glob(f"{first}.*"))

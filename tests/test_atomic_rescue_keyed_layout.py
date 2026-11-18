@@ -121,11 +121,8 @@ def test_prune_keeps_the_active_and_the_rollback_target(tmp_path: Path, monkeypa
         def __init__(self, dsn: str, tenant: str, **_: object) -> None:
             pass
 
-        def list_generations(self):  # noqa: ANN202
-            return tuple(records)
-
-        def collected_generation_ids(self) -> set[str]:
-            return {"gen_collected"}
+        def rescue_prune_snapshot(self):  # noqa: ANN202
+            return tuple(records), {"gen_active", "gen_prev"}, {"gen_collected"}
 
     monkeypatch.setattr(generations, "GenerationManager", _Manager)
     for name in ("gen_active.cal_1", "gen_old.cal_1", "gen_prev", "gen_ready.cal_1", "gen_failed.cal_1",
@@ -157,14 +154,12 @@ def test_prune_removes_the_staging_left_by_a_killed_build(tmp_path: Path, monkey
         def __init__(self, dsn: str, tenant: str, **_: object) -> None:
             pass
 
-        def list_generations(self):  # noqa: ANN202
-            return (
+        def rescue_prune_snapshot(self):  # noqa: ANN202
+            records = (
                 SimpleNamespace(generation_id="gen_active", state=GenerationState.ACTIVE, retired_at=None),
                 SimpleNamespace(generation_id="gen_failed", state=GenerationState.FAILED, retired_at=None),
             )
-
-        def collected_generation_ids(self) -> set[str]:
-            return set()
+            return records, {"gen_active"}, set()
 
     monkeypatch.setattr(generations, "GenerationManager", _Manager)
     (tmp_path / ".gen_failed.cal_1.0123456789abcdef").mkdir()
@@ -174,3 +169,136 @@ def test_prune_removes_the_staging_left_by_a_killed_build(tmp_path: Path, monkey
 
     assert not (tmp_path / ".gen_failed.cal_1.0123456789abcdef").exists(), "a killed build's staging was kept"
     assert (tmp_path / ".gen_active.cal_1.fedcba9876543210").exists(), "a kept generation's staging was removed"
+
+
+def test_prune_does_not_remove_staging_while_a_builder_holds_the_lock(tmp_path: Path, monkeypatch) -> None:
+    """STAKES-001. On 31e6841d, prune_superseded removed staging under a held build lock."""
+    from types import SimpleNamespace
+
+    import recall.generations as generations
+    from recall.generation_rescue import build_lock, prune_superseded
+
+    manager = SimpleNamespace(
+        # The older candidate uses the separate inventory methods.
+        list_generations=lambda: (),
+        collected_generation_ids=lambda: {"gen_failed"},
+        rescue_prune_snapshot=lambda: ((), set(), {"gen_failed"}),
+    )
+    monkeypatch.setattr(generations, "GenerationManager", lambda *a, **k: manager)
+    stage = tmp_path / ".gen_failed.cal_1.0123456789abcdef"
+    stage.mkdir()
+    with build_lock(tmp_path, "gen_failed") as held:
+        assert held
+        prune_superseded("postgresql://x", "t", tmp_path)
+        assert stage.is_dir(), "prune removed a stage owned by a running worker"
+    assert prune_superseded("postgresql://x", "t", tmp_path) == 1
+    assert not stage.exists()
+
+
+def test_prune_enumerates_the_root_once_for_many_obsolete_generations(tmp_path: Path, monkeypatch) -> None:
+    """PERF-002. The signed parent enumerated the root twice for every obsolete generation."""
+    import os
+    from types import SimpleNamespace
+
+    import recall.generations as generations
+    from recall.generation_rescue import prune_superseded
+    from recall.lineage import GenerationState
+
+    obsolete = "gen_old.custom"
+    active = f"{obsolete}.keep"
+    rollback = f"{obsolete}.previous"
+    missing = {f"gen_gone_{index}" for index in range(16)}
+    collected = missing | {obsolete, "gen_backoff"}
+    records = (
+        SimpleNamespace(generation_id=active, state=GenerationState.ACTIVE, retired_at=None),
+        SimpleNamespace(generation_id=rollback, state=GenerationState.RETIRED, retired_at=None),
+    )
+    manager = SimpleNamespace(rescue_prune_snapshot=lambda: (records, {active, rollback}, collected))
+    monkeypatch.setattr(generations, "GenerationManager", lambda *args, **kwargs: manager)
+    remove = (obsolete, f"{obsolete}.cal_2", f".{obsolete}.0123456789abcdef",
+              f".{obsolete}.legacy_cal_3.0123456789abcdef")
+    keep = (active, f"{active}.cal_4", f".{active}.cal_4.0123456789abcdef", f"{rollback}.cal_5",
+            "gen_other_tenant.cal_3", f".{obsolete}.other.0123456789abcdef")
+    for name in (*remove, *keep):
+        (tmp_path / name).mkdir()
+    backoff = tmp_path / ".rescue-gen_backoff.backoff.json"
+    backoff.write_text("{}", encoding="utf-8")
+    scandir = os.scandir
+    scans = 0
+
+    def count_root(path="."):  # noqa: ANN001, ANN202
+        nonlocal scans
+        if not isinstance(path, int) and Path(path) == tmp_path:
+            scans += 1
+        return scandir(path)
+
+    monkeypatch.setattr(os, "scandir", count_root)
+    removed = prune_superseded("postgresql://x", "t", tmp_path)
+
+    assert scans == 1, f"prune enumerated the same artifact root {scans} times"
+    assert removed == len(remove)
+    assert all(not (tmp_path / name).exists() for name in remove)
+    assert all((tmp_path / name).is_dir() for name in keep)
+    assert not backoff.exists()
+    assert all(not (tmp_path / f".rescue-{generation_id}.lock").exists() for generation_id in missing)
+
+
+def test_prune_keeps_live_artifacts_that_also_match_a_collected_id(
+    corpus: _Corpus, tmp_path: Path, monkeypatch  # noqa: F811
+) -> None:
+    """A calibrated key can also be a different generation's literal legacy key."""
+    from types import SimpleNamespace
+
+    import recall.generations as generations
+    from recall.generation_rescue import build_artifact, build_lock, prune_superseded
+    from recall.lineage import GenerationState
+
+    build_artifact("postgresql://x", "t", "gen_1", _CarryEmbedder(), tmp_path)
+    published = tmp_path / "gen_1.cal_1"
+    stage = tmp_path / ".gen_1.cal_1.0123456789abcdef"
+    stage.mkdir()
+    obsolete = tmp_path / "gen_obsolete"
+    obsolete.mkdir()
+    active = SimpleNamespace(generation_id="gen_1", state=GenerationState.ACTIVE, retired_at=None)
+    manager = SimpleNamespace(
+        rescue_prune_snapshot=lambda: ((active,), {"gen_1"}, {"gen_1.cal_1", "gen_obsolete"}),
+    )
+    monkeypatch.setattr(generations, "GenerationManager", lambda *args, **kwargs: manager)
+
+    with build_lock(tmp_path, "gen_1") as held:
+        assert held
+        prune_superseded("postgresql://x", "t", tmp_path)
+        assert (published / "manifest.json").is_file(), "a collected literal key deleted a live calibrated artifact"
+        assert stage.is_dir(), "prune took the collected generation's lock to remove a live stage"
+    assert not obsolete.exists()
+    assert load_atomic_rescue_artifact(published / "manifest.json").generation_id == "gen_1"
+
+
+def test_prune_preserves_the_rollback_pointer_after_a_clock_step(tmp_path: Path, monkeypatch) -> None:
+    """STAKES-002. On 31e6841d, prune_superseded removed the actual rollback target."""
+    from datetime import UTC, datetime
+    from types import SimpleNamespace
+
+    import recall.generations as generations
+    from recall.generation_rescue import prune_superseded
+    from recall.lineage import GenerationState
+
+    previous = tmp_path / "gen_previous.cal_1"
+    obsolete = tmp_path / "gen_obsolete.cal_1"
+    previous.mkdir()
+    obsolete.mkdir()
+    records = (
+        SimpleNamespace(generation_id="gen_previous", state=GenerationState.RETIRED,
+                        retired_at=datetime(2026, 11, 1, tzinfo=UTC)),
+        SimpleNamespace(generation_id="gen_obsolete", state=GenerationState.RETIRED,
+                        retired_at=datetime(2026, 11, 2, tzinfo=UTC)),
+    )
+    manager = SimpleNamespace(
+        # The DAT-001 parent uses the separate inventory methods.
+        list_generations=lambda: records,
+        collected_generation_ids=set,
+        rescue_prune_snapshot=lambda: (records, {"gen_previous"}, set()),
+    )
+    monkeypatch.setattr(generations, "GenerationManager", lambda *a, **k: manager)
+    prune_superseded("postgresql://x", "t", tmp_path)
+    assert previous.is_dir(), "prune removed the actual rollback target"

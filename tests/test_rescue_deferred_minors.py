@@ -143,16 +143,14 @@ class _Manager:
     def __init__(self, dsn: str, tenant: str, **_: object) -> None:
         pass
 
-    def list_generations(self) -> tuple[Any, ...]:
+    def rescue_prune_snapshot(self) -> tuple[tuple[Any, ...], set[str], set[str]]:
         from recall.lineage import GenerationState
 
-        return (
+        records = (
             SimpleNamespace(generation_id="gen_active", state=GenerationState.ACTIVE, retired_at=None),
             SimpleNamespace(generation_id="gen_failed", state=GenerationState.FAILED, retired_at=None),
         )
-
-    def collected_generation_ids(self) -> set[str]:
-        return set()
+        return records, {"gen_active"}, set()
 
 
 def test_a_prune_keeps_the_serving_artifact_cached(tmp_path: Path, monkeypatch) -> None:

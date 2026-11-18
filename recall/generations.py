@@ -651,12 +651,27 @@ class GenerationManager:
 
     def list_generations(self) -> tuple[GenerationRecord, ...]:
         with self._connect() as conn:
-            rows = conn.execute(
-                f"SELECT {_GENERATION_COLUMNS} FROM recall_generations "
-                "WHERE tenant_id = %s ORDER BY created_at DESC, generation_id",
-                (self.tenant_id,),
-            ).fetchall()
+            return self._list_generations(conn)
+
+    def _list_generations(self, conn: psycopg.Connection) -> tuple[GenerationRecord, ...]:
+        rows = conn.execute(
+            f"SELECT {_GENERATION_COLUMNS} FROM recall_generations "
+            "WHERE tenant_id = %s ORDER BY created_at DESC, generation_id",
+            (self.tenant_id,),
+        ).fetchall()
         return tuple(_record(row) for row in rows)
+
+    def rescue_prune_snapshot(self) -> tuple[tuple[GenerationRecord, ...], set[str], set[str]]:
+        """Read the generation records, protected pointers and collected IDs from one snapshot."""
+        with self._connect() as conn, conn.transaction():
+            conn.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
+            state = conn.execute(
+                "SELECT active_generation_id, previous_generation_id "
+                "FROM recall_tenant_state WHERE tenant_id = %s",
+                (self.tenant_id,),
+            ).fetchone()
+            protected = {str(generation_id) for generation_id in (state or ()) if generation_id}
+            return self._list_generations(conn), protected, self._collected_ids(conn)
 
     def _load_identity(
         self, conn: psycopg.Connection, generation_id: str
@@ -714,6 +729,17 @@ class GenerationManager:
             (self.tenant_id, source_uri),
         ).fetchone()
         return row is not None
+
+    def tombstoned_sources(self, sources: Collection[str]) -> set[str]:
+        """Which of these source URIs have a committed erasure for this tenant."""
+        if not sources:
+            return set()
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT source_uri FROM recall_source_tombstones WHERE tenant_id = %s AND source_uri = ANY(%s)",
+                (self.tenant_id, sorted(sources)),
+            ).fetchall()
+        return {str(row[0]) for row in rows}
 
     def _scrub_sparse_rows(self, conn: psycopg.Connection, chunk_ids: list[str]) -> None:
         """Remove learned sparse sidecars for generation chunks in this transaction."""
