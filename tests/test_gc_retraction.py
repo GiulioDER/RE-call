@@ -214,3 +214,45 @@ def test_g5_a_memo_held_under_a_shifted_name_keeps_its_fact(manager: Any) -> Non
         "gc retracted a fact whose memo a remaining generation holds under another name"
     )
     assert manager.last_gc_facts_retracted == 0
+
+
+def test_g6_gc_retracts_holding_the_exclusive_erasure_lock(
+    three: tuple[Any, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Node tests/test_gc_retraction.py::test_g6_gc_retracts_holding_the_exclusive_erasure_lock.
+
+    CCA DAT-004 (facts deferred pass, PR 1176; owner decision 2026-11-18). `retract_forgotten`
+    locks only its first plan's keys, so an application that lands between its two reads was
+    retracted without its key's lock. gc must hold the erasure lock exclusively while it retracts,
+    as a forget does, so no application (which holds it shared) can land in between. Probed from
+    a second session: the shared lock an application would take must be refused.
+
+    Red proof: to be run in CI with the `erasure_lock_for(ledger, shared=False)` wrapper in
+    `GenerationManager.retract_collected_facts` removed; expected failure "an application could
+    take the shared erasure lock while gc retracted".
+    """
+    import psycopg
+
+    from recall.fact_ledger import PostgresFactLedger, fact_erasure_lock
+    from tests.conftest import TEST_DSN
+
+    manager, first = three
+    real = PostgresFactLedger.retract_forgotten
+    probed: list[bool] = []
+
+    def probing(self: PostgresFactLedger, **kwargs: Any) -> Any:
+        with psycopg.connect(TEST_DSN, autocommit=True) as other:
+            row = other.execute(
+                "SELECT pg_try_advisory_lock_shared(hashtextextended(%s, 0))",
+                (fact_erasure_lock(manager.tenant_id),),
+            ).fetchone()
+            probed.append(bool(row and row[0]))
+        return real(self, **kwargs)
+
+    monkeypatch.setattr(PostgresFactLedger, "retract_forgotten", probing)
+
+    assert _gc(manager) == (first,)
+
+    assert probed == [False], "an application could take the shared erasure lock while gc retracted"
+    assert manager.last_gc_facts_retracted == 1
+    assert _bare_current(manager) == []
