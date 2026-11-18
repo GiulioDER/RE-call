@@ -43,7 +43,7 @@ from recall.atomic_rescue import (
     resolve_atomic_rescue_manifest,
     write_atomic_rescue_artifact,
 )
-from recall.lite.atomic import ROOT_ENV, VIEW_STORE_NAME, artifact_root, configured_root, rescue_active
+from recall.lite.atomic import ROOT_ENV, VIEW_STORE_NAME, WHEN_MISSING_ENV, artifact_root, configured_root, rescue_active
 from recall.lite.writer_lock import try_lock, unlock
 from recall.observability import get_logger
 from recall.state_dir import write_ignore
@@ -109,18 +109,21 @@ def after_publish(
 ) -> str:
     """Rebuild `generation_id`'s artifact for the calibration just published, and say what happened.
 
-    An artifact names the calibration it serves beside, so a new one on a serving generation leaves
-    every unscoped search refusing until it is rebuilt. The publication has happened by now and is
-    not undone, so a failed build is reported, with the command that retries it, rather than raised.
+    An artifact names the calibration it serves beside. Until it is rebuilt, eligible unscoped
+    searches under `skip` continue without it, and under `refuse` they require it.
+    The calibration is already published, so report any rebuild failure with the retry command.
     "" when the rescue is off for `tenant`.
     """
     try:
         built = ensure_for_promotion(dsn, tenant, generation_id, make_embedder, env=env)
     except Exception as exc:  # BROAD-CATCH: error-translation  # the publication stands; the operator must see this
+        values = os.environ if env is None else env
+        skip = values.get(WHEN_MISSING_ENV, "refuse").strip().lower() == "skip"
+        impact = "Eligible unscoped searches continue without the rescue" if skip else "Unscoped searches refuse"
         return (
             f"WARNING: the atomic rescue is active for tenant {tenant!r} and its artifact for "
-            f"{generation_id} could not be rebuilt for the new calibration ({exc}), so its unscoped "
-            f"searches refuse; retry with `recall --tenant {tenant} generation rescue {generation_id}`"
+            f"{generation_id} could not be rebuilt for the new calibration ({exc}). {impact} "
+            f"until the artifact is available. Retry with `recall --tenant {tenant} generation rescue {generation_id}`"
         )
     return f"atomic rescue: {built}" if built else ""
 
@@ -410,9 +413,19 @@ def _refuse_if_corpus_moved(
                 return
             current = {chunk.text for chunk in store.iter_chunks()}
     except NoActiveGeneration:
-        # Collection can complete before this build publishes; delete only this build's key.
-        if written is not None:
-            remove_artifact_directories([written], root)
+        # Collected rows cannot tell us what was forgotten. The committed tombstones can.
+        from recall.generations import GenerationManager
+
+        try:
+            forgotten = GenerationManager(dsn, tenant, actor="recall-atomic-rescue").tombstoned_sources(
+                {source for _, source, _, _ in parents},
+            )
+            if forgotten:
+                with AtomicViewStore(root / VIEW_STORE_NAME) as views:
+                    views.erase_digests({chunk_view_digest(text) for _, source, _, text in parents if source in forgotten})
+        finally:
+            if written is not None:
+                remove_artifact_directories([written], root)
         raise
     stale = {chunk_view_digest(text) for *_, text in parents if text not in current}
     if stale:

@@ -730,6 +730,17 @@ class GenerationManager:
         ).fetchone()
         return row is not None
 
+    def tombstoned_sources(self, sources: Collection[str]) -> set[str]:
+        """Which of these source URIs have a committed erasure for this tenant."""
+        if not sources:
+            return set()
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT source_uri FROM recall_source_tombstones WHERE tenant_id = %s AND source_uri = ANY(%s)",
+                (self.tenant_id, sorted(sources)),
+            ).fetchall()
+        return {str(row[0]) for row in rows}
+
     def _scrub_sparse_rows(self, conn: psycopg.Connection, chunk_ids: list[str]) -> None:
         """Remove learned sparse sidecars for generation chunks in this transaction."""
         if not chunk_ids:

@@ -12,6 +12,44 @@ from tests.test_atomic_rescue_default_on_cca import corpus  # noqa: F401
 from tests.test_calibration_carry_forward import _CarryEmbedder
 
 
+def test_a_concurrent_build_cannot_publish_between_the_early_inspection_and_removal(
+    corpus, tmp_path: Path, monkeypatch  # noqa: F811
+) -> None:
+    """BUG-002. The original candidate removed a valid artifact published after the early check."""
+    from recall import generation_rescue
+    from recall.atomic_rescue import AtomicRescueArtifactError
+
+    serves = generation_rescue.artifact_serves
+    remove = generation_rescue._remove_damaged
+    overtaking = False
+    removed: list[Path] = []
+    embedder = _CarryEmbedder()
+
+    def inspect_then_compete(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+        nonlocal overtaking
+        result = serves(*args, **kwargs)
+        if not overtaking:
+            overtaking = True
+            try:
+                build_artifact("postgresql://x", "t", "gen_1", embedder, tmp_path)
+            except AtomicRescueArtifactError as exc:
+                assert "already being built" in str(exc)
+        return result
+
+    def observe_removal(manifest: Path) -> None:
+        if manifest.is_file():
+            removed.append(manifest)
+        remove(manifest)
+
+    monkeypatch.setattr(generation_rescue, "artifact_serves", inspect_then_compete)
+    monkeypatch.setattr(generation_rescue, "_remove_damaged", observe_removal)
+    build_artifact("postgresql://x", "t", "gen_1", embedder, tmp_path)
+
+    assert overtaking
+    assert not removed, "early damage cleanup deleted the competing build's valid artifact"
+    assert list(tmp_path.glob("gen_1.*/manifest.json"))
+
+
 def test_collection_during_publication_removes_this_builds_artifact(corpus, tmp_path: Path, monkeypatch) -> None:  # noqa: F811
     from recall import generation_rescue, generation_store
 

@@ -105,6 +105,9 @@ def corpus(monkeypatch) -> _Corpus:
         def record_rescue_root(self, generation_id: str, root: str) -> None:
             db.recorded.append((generation_id, root))
 
+        def tombstoned_sources(self, sources: set[str]) -> set[str]:
+            return set()
+
     monkeypatch.setattr(calibration, "CalibrationRepository", _Repository)
     monkeypatch.setattr(generations, "GenerationManager", _Manager)
     db.repository = _Repository  # type: ignore[attr-defined]

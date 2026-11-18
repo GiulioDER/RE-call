@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import threading
 import time
+from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -44,6 +45,9 @@ class _Store(GenerationStore):
 
     def generation_binding(self) -> dict[str, str]:  # type: ignore[override]
         return {"generation_id": self._gen, "pipeline_fingerprint": "p", "corpus_fingerprint": "c"}
+
+    def snapshot(self) -> nullcontext[str]:
+        return nullcontext(self._gen)
 
     def resolve_calibration(self):  # type: ignore[override]  # noqa: ANN201
         return SimpleNamespace(
@@ -166,6 +170,10 @@ def test_stop_waits_for_a_running_build(tmp_path: Path) -> None:
     build.gate.clear()
     builder = _builder(tmp_path, build, _Clock())
     builder.after_retrieval()
+    deadline = time.monotonic() + 5
+    while not build.calls and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert build.calls == ["gen_1"], "the build did not start"
     threading.Timer(0.3, build.gate.set).start()
 
     builder.stop(timeout_s=5)
@@ -240,20 +248,50 @@ def test_the_server_checks_after_a_search_and_stops_at_shutdown(lite_env, tmp_pa
     assert events == ["checked", "stopped"], f"the shutdown did not stop the builder: {events}"
 
 
+def test_the_request_returns_while_the_calibration_check_waits(tmp_path: Path, monkeypatch) -> None:
+    """PERF-001. Resolving calibration previously held the request until its database read ended."""
+    store = _Store()
+    calibration = store.resolve_calibration
+    checking = threading.Event()
+    release_check = threading.Event()
+    returned = threading.Event()
+    build = _Build()
+    builder = _builder(tmp_path, build, _Clock(), store)
+
+    def wait_for_calibration():  # noqa: ANN202
+        checking.set()
+        assert release_check.wait(8)
+        return calibration()
+
+    def after_request() -> None:
+        builder.after_retrieval()
+        returned.set()
+
+    monkeypatch.setattr(store, "resolve_calibration", wait_for_calibration)
+    caller = threading.Thread(target=after_request)
+    caller.start()
+    try:
+        assert checking.wait(5), "the worker did not check calibration"
+        assert returned.wait(3), "the retrieval caller waited on the calibration check"
+    finally:
+        release_check.set()
+        caller.join(6)
+        _settle(builder)
+        builder.stop()
+    assert build.calls == ["gen_1"]
+
+
 def test_a_slow_check_cannot_replace_the_running_worker(tmp_path: Path, monkeypatch) -> None:
-    """BUG-001. On 31e6841d, after_retrieval replaced the worker that stop must join."""
+    """BUG-001. A slow artifact check belongs to the same worker as the build and shutdown."""
     checking = threading.Event()
     release_check = threading.Event()
     building = threading.Event()
     release_build = threading.Event()
     clock = _Clock()
     builder = _builder(tmp_path, _Build(), clock)
-    first_check = threading.Thread(target=builder.after_retrieval, daemon=True)
-
     def missing(*args: object) -> bool:
-        if threading.current_thread() is first_check:
-            checking.set()
-            release_check.wait(10)
+        checking.set()
+        release_check.wait(10)
         return False
 
     def build(*args: object) -> None:
@@ -262,26 +300,46 @@ def test_a_slow_check_cannot_replace_the_running_worker(tmp_path: Path, monkeypa
 
     monkeypatch.setattr(rb, "_artifact_serves", missing)
     monkeypatch.setattr(builder, "_run", build)
-    first_check.start()
-    worker = None
+    builder.after_retrieval()
     try:
         assert checking.wait(5), "first check did not reach the artifact lookup"
-        clock.now += rb.CHECK_INTERVAL_S
-        builder.after_retrieval()
-        assert building.wait(5), "later check did not start a worker"
         worker = builder._thread
         assert worker is not None and worker.is_alive()
+        clock.now += rb.CHECK_INTERVAL_S
+        builder.after_retrieval()
+        assert builder._thread is worker, "a later request replaced the worker that stop must join"
         release_check.set()
-        first_check.join(5)
-        assert not first_check.is_alive()
-        assert builder._thread is worker, "the slow check replaced the worker that stop must join"
+        assert building.wait(5), "the worker did not reach the build"
+        clock.now += rb.CHECK_INTERVAL_S
+        builder.after_retrieval()
+        assert builder._thread is worker, "a later request replaced the running build"
     finally:
         release_check.set()
         release_build.set()
-        first_check.join(5)
         builder.stop()
-        if worker is not None:
-            worker.join(5)
+
+
+def test_stop_prevents_a_slow_check_from_starting_a_build(tmp_path: Path, monkeypatch) -> None:
+    checking = threading.Event()
+    release_check = threading.Event()
+    build = _Build()
+    builder = _builder(tmp_path, build, _Clock())
+
+    def missing(*args: object) -> bool:
+        checking.set()
+        release_check.wait(10)
+        return False
+
+    monkeypatch.setattr(rb, "_artifact_serves", missing)
+    builder.after_retrieval()
+    try:
+        assert checking.wait(5)
+        builder.stop(timeout_s=0)
+    finally:
+        release_check.set()
+        _settle(builder)
+        builder.stop()
+    assert build.calls == [], "shutdown let the delayed check start a build"
 
 
 @pytest.mark.parametrize("where", ["check", "build", "prune"])
@@ -299,6 +357,7 @@ def test_host_rescue_warnings_log_error_type_only(
     if where == "prune":
         monkeypatch.setattr(builder, "_prune", fail)
     builder.after_retrieval()
+    _settle(builder)
     builder.stop()
     assert any("RuntimeError" in record.getMessage() for record in caplog.records)
     assert "worker diagnostic detail" not in caplog.text

@@ -1478,7 +1478,8 @@ def _with_rescue(
     a generation is registered active, with or without one: its searches answer without the rescue
     until the server builds it (`recall_mcp.rescue_builder`), and only the memory tenant is pinned
     off. Another mode (`shadow`, `off`) is registered as this shell set it. The root is registered
-    on all of them, so a forget through any server erases what the rescue keeps.
+    on all of them, so a forget through any server erases what the rescue keeps. Pin the missing
+    policy even outside the desktop stack so the launcher cannot inherit a different setting.
     """
     from recall.lite.atomic import MODE_ENV, ROOT_ENV, WHEN_MISSING_ENV
 
@@ -1494,8 +1495,7 @@ def _with_rescue(
         block.env[MODE_ENV] = "off" if active and block.tenant not in built else configured
         if ROOT_ENV in atomic_env:
             block.env[ROOT_ENV] = atomic_env[ROOT_ENV]
-        if WHEN_MISSING_ENV in atomic_env:
-            block.env[WHEN_MISSING_ENV] = atomic_env[WHEN_MISSING_ENV]
+        block.env[WHEN_MISSING_ENV] = atomic_env.get(WHEN_MISSING_ENV, "refuse")
 
 
 def _cli_rescue_env(blocks: tuple[ServerBlock, ...]) -> dict[str, str]:
