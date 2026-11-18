@@ -26,6 +26,7 @@ from recall_mcp.auth import SCOPE_FORGET, SCOPE_READ, AuthConfigError, Principal
 from recall_mcp.oidc import OidcConfig, OidcValidator, oidc_validator_from_env
 from recall_mcp.server import build_server
 from recall_mcp.settings import Settings
+from tests.server_modules import setattr_on_server
 
 ISSUER = "https://idp.example.com"
 AUDIENCE = "recall-api"
@@ -49,7 +50,7 @@ class _Registry:
 
 
 def _run(name: str, state: dict, monkeypatch, token, **kwargs):
-    monkeypatch.setattr(server, "get_access_token", lambda: token)
+    setattr_on_server(monkeypatch, "get_access_token", lambda: token)
     tool = {t.name: t for t in build_server()._tool_manager.list_tools()}[name]
     ctx = SimpleNamespace(request_context=SimpleNamespace(lifespan_context=state))
     return asyncio.run(tool.fn(ctx=ctx, **kwargs))
@@ -218,7 +219,7 @@ def test_a_naive_as_of_is_read_as_utc_by_current_state(monkeypatch) -> None:
         seen.append(kwargs.get("as_of"))
         raise RuntimeError("stop")
 
-    monkeypatch.setattr(server, "current_state_memory", current_state)
+    setattr_on_server(monkeypatch, "current_state_memory", current_state)
     state = {"store": SimpleNamespace(tenant="acme"), "stores": None, "embedder": None,
              "calibration": None, "settings": Settings.from_env({})}
     with pytest.raises(RuntimeError, match="stop"):
@@ -293,7 +294,7 @@ def test_report_stale_reads_the_index_root_from_the_settings_snapshot(monkeypatc
         seen.append(kwargs.get("env"))
         return {"queued": True}
 
-    monkeypatch.setattr(server, "report_stale", report)
+    setattr_on_server(monkeypatch, "report_stale", report)
     state = {"store": SimpleNamespace(tenant="acme"), "stores": None, "embedder": None,
              "calibration": None, "settings": Settings.from_env({"RECALL_INDEX_ROOT": "/snapshot-root"})}
     _run("recall_report_stale", state, monkeypatch, None, stale_source="a.md", replacing_source="b.md",

@@ -38,6 +38,7 @@ from tests.conftest import requires_db
 from tests.fact_fixtures import NOW, evidence_card
 from tests.test_fact_redaction import GEN, Backend, _holds, backend  # noqa: F401  (fixture)
 from tests.test_lite_writer_sites import lite_env  # noqa: F401  (fixture)
+from tests.server_modules import setattr_on_server
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -505,7 +506,7 @@ def test_deploy002_an_apply_that_cannot_take_the_lock_releases_its_reservation(
         released.append(idempotency_key)
         await real(state, tenant, idempotency_key)
 
-    monkeypatch.setattr(srv, "_release_mutation_reservation", record)
+    setattr_on_server(monkeypatch, "_release_mutation_reservation", record)
     monkeypatch.setenv("RECALL_LITE_WRITE_WAIT", "0")
     holder = _hold(_db(lite_env), tmp_path)
     try:

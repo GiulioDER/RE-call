@@ -4,7 +4,7 @@ The MCP server's docstrings ARE the product's model-facing guidance: the
 `check-memory-before-acting` skill and every measured search-rate result were built against this
 exact wording, so the in-process READ tools must say the same thing or the guidance stops
 transferring. `RECALL_SEARCH_DESCRIPTION` and `RECALL_EVIDENCE_DESCRIPTION` are therefore copied
-verbatim from `recall_mcp/server.py`, and `tests/test_recall_agent_descriptions.py` pins those two
+verbatim from `recall_mcp/server_search.py`, and `tests/test_recall_agent_descriptions.py` pins those two
 against that source so they cannot drift apart silently.
 
 ⚠️ The two WRITE descriptions are authored here, not copied, and are not pinned. They must be:

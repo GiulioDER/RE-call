@@ -29,6 +29,7 @@ from recall_mcp.limits import (
     RedisRateLimiter,
 )
 from tests.conftest import requires_db
+from tests.server_modules import setattr_on_server
 
 
 class _Probe:
@@ -833,8 +834,8 @@ def test_a_replay_answers_only_the_principal_that_made_the_request(make_store, m
     fingerprint = _mutation_fingerprint(operation, {"path": "memory"})
 
     def as_principal(name: str) -> None:
-        monkeypatch.setattr(
-            srv,
+        setattr_on_server(
+            monkeypatch,
             "get_access_token",
             lambda: SimpleNamespace(claims={"principal": name, "tenant": store.tenant}, client_id=name),
         )
@@ -1004,8 +1005,8 @@ def test_the_tool_path_binds_the_principal_on_both_sides(make_store, monkeypatch
     key = "bound-" + uuid.uuid4().hex
 
     def call_as(principal: str) -> str:
-        monkeypatch.setattr(
-            srv,
+        setattr_on_server(
+            monkeypatch,
             "get_access_token",
             lambda: SimpleNamespace(
                 scopes=[srv.SCOPE_READ, srv.SCOPE_WRITE, srv.SCOPE_FORGET],

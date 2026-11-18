@@ -41,6 +41,7 @@ from recall_mcp import server as srv
 from tests.test_lite_calibration import ContentWordEmbedder, _write_memos
 from tests.test_lite_mcp import _env, _serve
 from tests.test_lite_writer_lock import _at, _spawn, _wait_for
+from tests.server_modules import setattr_on_server
 
 
 @pytest.fixture
@@ -52,7 +53,7 @@ def lite_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
     env = _env(tmp_path)
     for name, value in env.items():
         monkeypatch.setenv(name, value)
-    monkeypatch.setattr(srv, "make_embedder", lambda *a, **k: ContentWordEmbedder())
+    setattr_on_server(monkeypatch, "make_embedder", lambda *a, **k: ContentWordEmbedder())
     return env
 
 
@@ -186,7 +187,7 @@ def test_a_busy_write_releases_its_idempotency_reservation(
         released.append(idempotency_key)
         await real(state, tenant, idempotency_key)
 
-    monkeypatch.setattr(srv, "_release_mutation_reservation", record)
+    setattr_on_server(monkeypatch, "_release_mutation_reservation", record)
     monkeypatch.setenv("RECALL_LITE_WRITE_WAIT", "0")
     holder = _hold(_db(lite_env), tmp_path)
     try:

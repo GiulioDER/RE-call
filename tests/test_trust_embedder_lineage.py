@@ -7,7 +7,7 @@ only comparison that ran was the dimension one, and it passed.
 
 Nothing on the stdio path compared the MODEL. `check_enterprise_readiness` does, but only
 `if control_plane is not None`, and a stdio server has none; its sibling check on the calibration's
-identity is documented in `recall_mcp/server.py` as unreachable from startup.
+identity is documented in `recall_mcp/server_lifespan.py` as unreachable from startup.
 
 `test_same_dimension_different_model_is_refused` is the one that matters: an equal-dimension
 mismatch is the only kind that ever reached production, because an unequal one already failed.

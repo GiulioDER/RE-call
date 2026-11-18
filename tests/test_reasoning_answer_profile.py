@@ -48,6 +48,7 @@ from recall.types import (
     TrustedResult,
     Validity,
 )
+from tests.server_modules import server_source, server_source_paths
 
 ROOT = Path(__file__).resolve().parents[1]
 #: sha256 of the contract text RC-1 measured (`GENERIC_CONTRACT` in the RC-1 harness at 64a68d2d).
@@ -281,9 +282,8 @@ def test_both_front_doors_resolve_and_pass_the_profile() -> None:
     Red proof: deleting ``answer_profile=answer_profile`` from the CLI's `reasoning_query` call
     fails the CLI count.
     """
-    server = ROOT / "recall_mcp" / "server.py"
     cli = ROOT / "recall" / "cli_commands" / "reasoning_cmd.py"
-    assert _calls_with_keyword(server, "reasoning_query", "answer_profile") >= 1
+    assert sum(_calls_with_keyword(p, "reasoning_query", "answer_profile") for p in server_source_paths()) >= 1
     assert _calls_with_keyword(cli, "reasoning_query", "answer_profile") >= 1
-    assert "resolve_answer_profile(runtime_env)" in server.read_text(encoding="utf-8")
+    assert "resolve_answer_profile(runtime_env)" in server_source()
     assert "resolve_answer_profile()" in cli.read_text(encoding="utf-8")

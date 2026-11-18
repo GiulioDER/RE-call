@@ -224,6 +224,9 @@ def test_the_facade_contract_lists_every_server_module() -> None:
     package as internal; a module added to `recall_mcp` and not listed would be unchecked.
     Red proof (2026-10-27): removing "recall_mcp.retrieval" from the contract's `source_modules`
     in pyproject.toml fails the equality below with that module missing.
+
+    `server_ingest` and `server_reasoning` are the server: since the server split they hold its two
+    deliberate facade imports (`tenant_scopes`, `query_construction_challenge`).
     """
     import tomllib
     from pathlib import Path
@@ -236,11 +239,31 @@ def test_the_facade_contract_lists_every_server_module() -> None:
     modules = {
         f"recall_mcp.{path.stem}"
         for path in (root / "recall_mcp").glob("*.py")
-        if path.stem not in {"__init__", "server", "service"}
+        if path.stem not in {"__init__", "server", "server_ingest", "server_reasoning", "service"}
     }
 
     assert contract["forbidden_modules"] == ["recall_mcp.service"]
     assert set(contract["source_modules"]) == modules, sorted(modules ^ set(contract["source_modules"]))
+
+
+def test_the_test_helper_lists_every_server_module() -> None:
+    """`tests/server_modules.SERVER_MODULES` names `server.py` and every `server_*.py` on disk.
+
+    A module missing from it is silently skipped by `setattr_on_server` (which is satisfied by
+    `server.py`'s re-export of the same name) and by every guard that reads `server_source()` or
+    `server_tree()`. `server_auth` is left out on purpose: a patch of `server.py` never reached it.
+    Red proof (2026-11-18, the test host): with "recall_mcp.server_facts" deleted from the tuple,
+    this test fails on the equality below, naming that module.
+    """
+    from pathlib import Path
+
+    from tests.server_modules import SERVER_MODULES
+
+    root = Path(__file__).resolve().parents[1] / "recall_mcp"
+    on_disk = {f"recall_mcp.{path.stem}" for path in root.glob("server*.py") if path.stem != "server_auth"}
+
+    assert set(SERVER_MODULES) == on_disk, sorted(on_disk ^ set(SERVER_MODULES))
+    assert len(SERVER_MODULES) == len(set(SERVER_MODULES)), "a module is listed twice"
 
 
 def test_trusted_retrieval_reads_the_reranker_and_admission_from_factories(monkeypatch) -> None:

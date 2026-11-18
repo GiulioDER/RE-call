@@ -24,10 +24,11 @@ from types import SimpleNamespace
 
 import pytest
 
-import recall_mcp.server as server
 from recall.federation import FederationConfig
+from recall.observability import METRICS
 from recall_mcp.server import build_server
 from recall_mcp.settings import Settings
+from tests.server_modules import setattr_on_server
 
 
 class _Stop(Exception):
@@ -52,9 +53,9 @@ def _call(name: str, monkeypatch) -> tuple[str, str]:
         seen["mode"] = config.mode
         raise _Stop
 
-    monkeypatch.setattr(server.METRICS, "timer", timer)
-    monkeypatch.setattr(server, "prepare_federated_execution", prepare)
-    monkeypatch.setattr(server, "_retrieval_plan_for", lambda *args, **kwargs: _Plan())
+    monkeypatch.setattr(METRICS, "timer", timer)
+    setattr_on_server(monkeypatch, "prepare_federated_execution", prepare)
+    setattr_on_server(monkeypatch, "_retrieval_plan_for", lambda *args, **kwargs: _Plan())
 
     tools = {tool.name: tool for tool in build_server()._tool_manager.list_tools()}
     context = SimpleNamespace(

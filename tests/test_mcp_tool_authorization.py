@@ -54,6 +54,7 @@ that makes the guard fire.** A declaration can only ever be checked against anot
 from __future__ import annotations
 
 import asyncio
+import importlib
 import inspect
 import pathlib
 from types import SimpleNamespace
@@ -73,6 +74,7 @@ from recall_mcp.auth import (
 from recall_mcp.limits import RateLimited
 from recall_mcp.server import build_server
 from recall_mcp.settings import Settings
+from tests.server_modules import SERVER_MODULES, setattr_on_server
 
 #: tool -> (required scope, budget key, a call that reaches its body). ONE source of truth for the
 #: parametrised cases and the coverage guard, so a tool cannot be declared covered without a case
@@ -166,7 +168,7 @@ _DUAL_WRITING_TOOLS = {"recall_index", "recall_forget", "recall_withdraw"}
 
 
 def _service_entry_points() -> tuple[str, ...]:
-    """Every approved service boundary function `server.py` imported that takes a store first.
+    """Every approved service boundary function the server modules import that takes a store first.
 
     DERIVED, not hand-listed, for the reason `recall_mcp.oidc.oidc_non_issuer_env_keys` records
     about its own list: an enumeration that must be remembered is one that will be forgotten. A
@@ -215,7 +217,10 @@ def _service_entry_points() -> tuple[str, ...]:
     for name in dir(service_module):
         if name.startswith("_"):
             continue
-        server_fn = getattr(server_module, name, None)
+        server_fn = next(
+            (getattr(m, name) for m in map(importlib.import_module, SERVER_MODULES) if hasattr(m, name)),
+            None,
+        )
         if not inspect.isfunction(server_fn):
             continue
         if getattr(server_fn, "__module__", None) not in boundary_modules:
@@ -351,7 +356,7 @@ def _stop_at_the_service_boundary(monkeypatch) -> None:
     entry_points = _service_entry_points()
     assert entry_points, "derived no service entry points; the predicate has gone stale"
     for name in entry_points:
-        monkeypatch.setattr(server_module, name, _capture)
+        setattr_on_server(monkeypatch, name, _capture)
 
 
 @pytest.fixture(autouse=True)
@@ -394,7 +399,7 @@ def _invoke(
             record.append(True)
         return token
 
-    monkeypatch.setattr(server_module, "get_access_token", _get_token)
+    setattr_on_server(monkeypatch, "get_access_token", _get_token)
     if stop_at_service:
         _stop_at_the_service_boundary(monkeypatch)
     tools = {t.name: t for t in build_server()._tool_manager.list_tools()}
@@ -914,7 +919,7 @@ def test_recall_calibration_run_hands_the_server_environment_to_the_build(monkey
         seen.update(kwargs)
         raise _ReachedService(store)
 
-    monkeypatch.setattr(server_module, "run_calibration", _capture)
+    setattr_on_server(monkeypatch, "run_calibration", _capture)
     with pytest.raises(_ReachedService):
         _invoke("recall_calibration_run", state, token, monkeypatch)
     assert seen.get("env") is state["settings"].env, "recall_calibration_run did not pass the server's environment"

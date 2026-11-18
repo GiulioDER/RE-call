@@ -64,7 +64,7 @@ it serves:
 
 | Deployment | On an RLS-bypassing role |
 |---|---|
-| Authenticated multi-tenant HTTP | **Refuses to start.** `require_effective_rls` in `recall_mcp/server_auth.py`, called from the server's lifespan in `recall_mcp/server.py` |
+| Authenticated multi-tenant HTTP | **Refuses to start.** `require_effective_rls` in `recall_mcp/server_auth.py`, called from the server's lifespan (`_make_lifespan`, in `recall_mcp/server_lifespan.py`) |
 | Single-tenant, or `stdio` | Warns at startup, and serves |
 
 The refusal is narrow on purpose. A multi-tenant server is the deployment where RLS is the control
@@ -219,7 +219,7 @@ or trust state with `memory`, `re-call-code-gen`, or `re-call-docs`.
 
 For a sensitive corpus, use `recall.embeddings.FastEmbedEmbedder` instead: it runs the embedding
 model locally (`pip install "recall-rag[fastembed]"`) and never makes a network call with
-chunk text. This is the default. `recall_mcp/server.py` now accepts the same
+chunk text. This is the default. The MCP server's lifespan (`recall_mcp/server_lifespan.py`) now accepts the same
 `recall.embeddings.resolve_embedder` spellings as the CLI, so cloud egress through `RECALL_EMBEDDER`
 is possible only when the operator names a cloud backend and installs the matching optional package
 such as `recall-rag[voyage]` or `recall-rag[openai]`. Both `make eval` and `python -m recall.eval`
@@ -416,7 +416,7 @@ truncations: silently searching a prefix answers a question the caller did not a
 **Deletion is exposed; retention is mechanism, not schedule.**
 `PgVectorStore.delete_sources()` (in `recall/store.py`) is now wired into `recall forget` (CLI,
 dry-run by default — pass `--yes` to actually delete) and into the `recall_forget` MCP tool
-(`recall_mcp/server.py`, delegating to `forget_memory` in `recall_mcp/service.py`), both
+(`recall_mcp/server_memory_admin.py`, delegating to `forget_memory` in `recall_mcp/service.py`), both
 tenant-scoped like every other write path. That closes the original gap — there is a supported
 way to make the system forget an indexed memory.
 

@@ -18,6 +18,7 @@ import pytest
 from recall_mcp import server
 from tests.test_report_tools_database_names import FILES, NEW_QUOTE, OLD_QUOTE, SERVED
 from tests.test_report_tools_database_names import call as call  # noqa: F401
+from tests.server_modules import setattr_on_server
 
 
 @pytest.mark.parametrize("tool", ["recall_report_use", "recall_report_stale"])
@@ -80,7 +81,7 @@ def test_scope_denials_keep_the_verified_tenant(monkeypatch: pytest.MonkeyPatch,
     for tenant in ("tenant-a", "tenant-b"):
         token = SimpleNamespace(claims={"tenant": tenant, "principal": "synthetic-reader"},
                                 scopes=[], client_id="fixture")
-        monkeypatch.setattr(server, "get_access_token", lambda: token)
+        setattr_on_server(monkeypatch, "get_access_token", lambda: token)
         with pytest.raises(PermissionError):
             asyncio.run(fn(ctx=ctx))
     records = [record for record in caplog.records if record.name == "recall.mcp.access"]
@@ -96,8 +97,8 @@ def test_access_logging_does_not_block_the_shared_event_loop(monkeypatch: pytest
         release.wait(1)
 
     token = SimpleNamespace(claims={"tenant": "tenant-a"}, scopes=[], client_id="fixture")
-    monkeypatch.setattr(server, "get_access_token", lambda: token)
-    monkeypatch.setattr(server, "record_access", blocked)
+    setattr_on_server(monkeypatch, "get_access_token", lambda: token)
+    setattr_on_server(monkeypatch, "record_access", blocked)
     fn, ctx = _stats_caller()
 
     async def run() -> None:

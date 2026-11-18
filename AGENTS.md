@@ -21,7 +21,8 @@ isolation requirements, validation commands, and evidence discipline that apply 
 
 ## Model facing surfaces
 
-The MCP tool descriptions in `recall_mcp/server.py` are the canonical model facing instructions.
+The MCP tool descriptions in the `recall_mcp/server_*.py` tool modules (`recall_search` and
+`recall_evidence` in `recall_mcp/server_search.py`) are the canonical model facing instructions.
 The in process copies in `recall_agent/_descriptions.py` are tested against them. Do not edit one
 surface without checking its parity tests and the measurements tied to that wording.
 

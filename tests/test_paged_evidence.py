@@ -43,6 +43,7 @@ from recall.types import (
     TrustedResult,
     Validity,
 )
+from tests.server_modules import setattr_on_server
 
 _AT = datetime(2026, 1, 1, tzinfo=timezone.utc)
 _STALE = StalenessReport(False, None, None, timedelta(days=2))
@@ -519,15 +520,15 @@ def _tool_evidence_k(monkeypatch, **arguments):  # type: ignore[no-untyped-def]
         def as_dict(self) -> dict:
             return {}
 
-    monkeypatch.setattr(server, "_retrieval_plan_for", lambda *_a, **_k: _Plan())
-    monkeypatch.setattr(
-        server,
+    setattr_on_server(monkeypatch, "_retrieval_plan_for", lambda *_a, **_k: _Plan())
+    setattr_on_server(
+        monkeypatch,
         "prepare_federated_execution",
         lambda plan, *, current_store, current_embedder, **_k: FederationExecution(
             current_store, current_embedder, None, {}
         ),
     )
-    monkeypatch.setattr(server, "evidence_memory", capture)
+    setattr_on_server(monkeypatch, "evidence_memory", capture)
     tools = {tool.name: tool for tool in server.build_server()._tool_manager.list_tools()}
     context = SimpleNamespace(request_context=SimpleNamespace(lifespan_context={
         "store": SimpleNamespace(tenant="default"), "embedder": object(), "calibration": None,

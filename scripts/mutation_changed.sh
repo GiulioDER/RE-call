@@ -73,7 +73,8 @@ fi
 files=()
 untested=()
 skipped=()
-# Modules split out of recall/store.py (S7d), recall/calibration_v2.py and recall/desktop/ui.py.
+# Modules split out of recall/store.py (S7d), recall/calibration_v2.py, recall/desktop/ui.py and
+# recall_mcp/server.py.
 # Tests reach them through the module they came from, which re-exports their names (and, for the
 # store, inherits the mixins), so that module's importers are their tests.
 declare -A REACHED_THROUGH=(
@@ -85,6 +86,15 @@ declare -A REACHED_THROUGH=(
   [recall.store_mutation]=recall.store
   [recall.store_receipts]=recall.store
   [recall.store_supersession]=recall.store
+  [recall_mcp.server_assistant]=recall_mcp.server
+  [recall_mcp.server_calibration]=recall_mcp.server
+  [recall_mcp.server_common]=recall_mcp.server
+  [recall_mcp.server_facts]=recall_mcp.server
+  [recall_mcp.server_ingest]=recall_mcp.server
+  [recall_mcp.server_lifespan]=recall_mcp.server
+  [recall_mcp.server_memory_admin]=recall_mcp.server
+  [recall_mcp.server_reasoning]=recall_mcp.server
+  [recall_mcp.server_search]=recall_mcp.server
 )
 declare -A tests=()
 declare -A dropped_tests=()

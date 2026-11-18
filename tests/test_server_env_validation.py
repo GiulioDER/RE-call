@@ -12,7 +12,6 @@ the env under test — the honest path, not a re-implementation of the parsing.
 """
 from __future__ import annotations
 
-import inspect
 import os
 import subprocess
 import sys
@@ -21,6 +20,7 @@ import pytest
 
 from recall_mcp import server
 from recall_mcp.settings import Settings
+from tests.server_modules import server_source, setattr_on_server
 
 
 def _bootstrap_settings_with(**env_overrides: str) -> subprocess.CompletedProcess[str]:
@@ -159,7 +159,7 @@ def test_streamable_http_run_passes_transport_security(monkeypatch):
             "RECALL_AUTH_RESOURCE_URL": "https://recall.example.com",
         }
     )
-    monkeypatch.setattr(server, "bootstrap_settings", lambda: settings)
+    setattr_on_server(monkeypatch, "bootstrap_settings", lambda: settings)
     monkeypatch.setattr(server, "build_server", lambda _settings: FakeServer())
 
     server.main()
@@ -198,7 +198,7 @@ def test_streamable_http_can_opt_back_into_stateful_sessions(monkeypatch):
             "RECALL_AUTH_RESOURCE_URL": "https://recall.example.com",
         }
     )
-    monkeypatch.setattr(server, "bootstrap_settings", lambda: settings)
+    setattr_on_server(monkeypatch, "bootstrap_settings", lambda: settings)
     monkeypatch.setattr(server, "build_server", lambda _settings: FakeServer())
 
     server.main()
@@ -229,7 +229,7 @@ def test_main_runs_the_bootstrapped_settings_snapshot(monkeypatch):
             "RECALL_AUTH_RESOURCE_URL": "https://recall.example.com",
         }
     )
-    monkeypatch.setattr(server, "bootstrap_settings", lambda: settings)
+    setattr_on_server(monkeypatch, "bootstrap_settings", lambda: settings)
     def build(settings_arg):
         built_with.append(settings_arg)
         return FakeServer()
@@ -289,7 +289,7 @@ def test_the_refusal_is_wired_to_the_registry_and_not_to_something_weaker():
     test above still passes while the server goes back to warning. `registry is not None` holds
     exactly when a token registry was built, which `build_auth` permits only for HTTP.
     """
-    source = inspect.getsource(server)
+    source = server_source()
     assert "multi_tenant=registry is not None" in source, (
         "the RLS gate is no longer driven by whether a store registry exists; if the call site "
         "moved, re-derive the multi-tenant condition rather than relaxing this assertion"
@@ -303,7 +303,7 @@ def test_the_refusal_releases_the_pool_it_was_holding():
     inside `build_server`, so it is not a module attribute and `inspect.getsource` cannot reach
     it. Slicing the source is the honest way to assert on a closure without building a server.
     """
-    source = inspect.getsource(server)
+    source = server_source()
     # The CALL site, not the definition: the definition's docstring also names the function.
     after_call = source.split("rls_effective=probe.check_rls_effective()", 1)[1]
     # The refusal re-raises into the one cleanup handler that covers every startup check after

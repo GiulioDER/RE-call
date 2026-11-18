@@ -731,8 +731,8 @@ def _migration_check(dsn: str, *, table: str, dim: int | None) -> Check:
     """Ask `schema_status` whether migrations are pending, which is what the server refuses on.
 
     ⛔ **The check named `schema` never asked this, and "migrations are pending" is one of the six
-    symptoms this module's own docstring says the command separates.** `recall_mcp/server.py`
-    calls `schema_status` at startup and raises `SchemaTooOld`, which an MCP client renders as a
+    symptoms this module's own docstring says the command separates.** The MCP server's lifespan
+    (`recall_mcp/server_lifespan.py`) calls `schema_status` at startup and raises `SchemaTooOld`, which an MCP client renders as a
     server with no tools. So a user in exactly that state ran the diagnostic written for it and was
     told the schema was fine.
 

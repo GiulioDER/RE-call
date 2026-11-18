@@ -32,7 +32,7 @@ a **tenant**.
 
 | Claim | Site | Verdict |
 |---|---|---|
-| Server builds `GenerationStore` only when the resolved route uses generation | the `if generation_mode:` branch of the server lifespan (`_make_lifespan`, in `recall_mcp/server.py`) | confirmed. The route is resolved once at startup and both serving and writes use that decision |
+| Server builds `GenerationStore` only when the resolved route uses generation | the `if generation_mode:` branch of the server lifespan (`_make_lifespan`, in `recall_mcp/server_lifespan.py`) | confirmed. The route is resolved once at startup and both serving and writes use that decision |
 | Missing `generation_id` is `null` in `SearchResult`, while the optional explanation labels it `"legacy"` | the `generation_id=result.generation_id` field of the `SearchResult` that `search_memory` builds (in `recall_mcp/retrieval.py`) | confirmed. The two fields intentionally preserve different compatibility contracts |
 | `promote()` refuses in production, needs a flag otherwise | `GenerationManager.promote` (in `recall/generations.py`) | 🔁 **no longer true.** Confirmed when written. `promote()` now admits a generation whose published calibration certified and is still bound, and `unsafe_development` is refused in production rather than being the other way through. See F2 |
 | No generation means `INDEX_NOT_READY` **at the readiness endpoint** | `recall/readiness.py:116` | confirmed, but this is **not** the search path. See Q2 |
@@ -126,7 +126,7 @@ step a first-run wizard has to remove". It is not wired into the CLI.
 1. **Ingestion source.** Production refuses local filesystem indexing through the resolved route guard (`recall/cli_commands/index_search.py:396-397` <!-- cite-anchor: route.uses_generation -->).
 2. **Auth.** Production refuses static bearer tokens (`recall_mcp/auth.py:409`).
 3. **Store class.** Production selects `GenerationStore`, at **three** sites, not one:
-    the `if generation_mode:` branch of `_make_lifespan` (`recall_mcp/server.py`), `recall/cli_commands/index_search.py:540` <!-- cite-anchor: generation_mode -->, and the `generation_mode` parameter threaded
+    the `if generation_mode:` branch of `_make_lifespan` (`recall_mcp/server_lifespan.py`), `recall/cli_commands/index_search.py:540` <!-- cite-anchor: generation_mode -->, and the `generation_mode` parameter threaded
    into `StoreRegistry` (`StoreRegistry.__init__`, in `recall_mcp/stores.py`), whose value is `generation_mode and not
    enterprise` and therefore also encodes the control plane interaction.
 4. **Retrieval legs.** Production disables the learned sparse leg (`recall/retriever.py:446`). <!-- cite-anchor: wants_learned -->

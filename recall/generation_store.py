@@ -405,7 +405,7 @@ class GenerationStore(PgVectorStore):
         `check_enterprise_readiness` does
         compare the runtime embedder against the generation's, but only `if control_plane is not
         None`, and a stdio server has no control plane; its sibling check on the calibration's
-        identity is documented at `recall_mcp/server.py` as unreachable from startup. So on the
+        identity is documented at `recall_mcp/server_lifespan.py` as unreachable from startup. So on the
         stdio path nothing compared them at all, and a mismatch is invisible rather than loud.
 
         Served from a cache inside `snapshot()`, where the corpus fingerprint is already pinned:
