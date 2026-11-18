@@ -1,4 +1,6 @@
-"""The ingest tools of the MCP server, and `ingest_into_serving_store` behind them.
+"""The MCP server's ingest tools, and `ingest_into_serving_store` behind them.
+
+The tools: `recall_index`, `recall_tenants`, `recall_ingest` and `recall_job_status`.
 
 Moved out of `recall_mcp.server` (server split). `recall_mcp.server` re-imports every name, so
 `recall_mcp.server.<name>` keeps resolving.

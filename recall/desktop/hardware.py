@@ -1,7 +1,9 @@
 """The hardware answers the desktop configuration page reads, without importing Qt.
 
 Moved out of `recall.desktop.ui` (desktop UI split). `recall.desktop.ui` re-imports every name, so
-`recall.desktop.ui.<name>` keeps resolving.
+`recall.desktop.ui.<name>` keeps resolving. To change what the window calls, a test patches
+`recall.desktop.main_window._splade_hardware_probe`: the window binds the probe at import, so a
+patch here or on `recall.desktop.ui` does not reach it.
 """
 
 from __future__ import annotations

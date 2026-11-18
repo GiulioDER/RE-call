@@ -1,4 +1,8 @@
-"""The reasoning tools of the MCP server, and the evidence proof they run on their own pool.
+"""The MCP server's reasoning and evidence tools, and the evidence proof run on their own pool.
+
+The tools: `recall_related`, `recall_records`, `recall_current_state`, `recall_reasoning_query`,
+`recall_query_construction_challenge`, `recall_reasoning_projection`, `recall_reasoning_proposals`,
+`recall_rewrite_plan`, `recall_report_stale`, `recall_report_use` and `recall_reasoning_audit`.
 
 Moved out of `recall_mcp.server` (server split). `recall_mcp.server` re-imports every name, so
 `recall_mcp.server.<name>` keeps resolving.

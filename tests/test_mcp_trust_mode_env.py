@@ -120,9 +120,7 @@ def test_the_search_tool_passes_the_policy_rather_than_defaulting() -> None:
     """
     import ast
 
-    from tests.server_modules import server_tree
-
-    tree = server_tree()
+    from tests.server_modules import server_source_paths
 
     # The gated set is DERIVED from the service's own signatures, never listed here.
     #
@@ -145,13 +143,14 @@ def test_the_search_tool_passes_the_policy_rather_than_defaulting() -> None:
     assert gated, "no policy-taking function found in recall_mcp.service; the guard lost its target"
 
     called = {
-        node.func.id: node
-        for node in ast.walk(tree)
+        node.func.id: (path, node)
+        for path in server_source_paths()
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8")))
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
     }
     for name in sorted(gated & called.keys()):
-        node = called[name]
+        path, node = called[name]
         assert any(kw.arg == "policy" for kw in node.keywords), (
-            f"{name} is called in the server (line {node.lineno} of its module) without policy=, so it "
+            f"{name} is called in recall_mcp/{path.name}:{node.lineno} without policy=, so it "
             "silently falls back to the strict default and RECALL_TRUST_MODE has no effect there."
         )
