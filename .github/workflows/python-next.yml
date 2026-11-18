@@ -12,10 +12,13 @@ name: Python 3.15 readiness
 #
 # NOT REQUIRED, and outside ci.yml's merge-gate on purpose: it is red until upstream ships those
 # wheels and the lock picks them up, and a required job that no pull request can fix would block
-# every merge. It runs weekly,
-# by hand, and on every pull request that changes the dependency set, so the Dependabot bump that
-# finally makes 3.15 installable shows it as a green check. When this goes green, move the job
-# into ci.yml beside `test-py314`, add it to merge-gate, and add the 3.15 classifier.
+# every merge. It runs weekly, by hand, and on every pull request that changes the dependency set.
+#
+# On a pull request it never fails: a known red check on every lock bump teaches people to ignore
+# red. It reports instead, as a warning annotation and a step summary that say "not ready", or
+# "ready" on the Dependabot bump that finally makes 3.15 installable. The weekly and manual runs
+# still fail red. When those go green, move the job into ci.yml beside `test-py314`, add it to
+# merge-gate, and add the 3.15 classifier.
 on:
   schedule:
     - cron: "23 5 * * 1"
@@ -65,9 +68,30 @@ jobs:
       # The same locked set and the same suite as ci.yml's `test-py314`, so a green here is the
       # same claim that job makes for 3.14.
       - name: Install
+        id: install
+        continue-on-error: ${{ github.event_name == 'pull_request' }}
         run: |
           bash .github/scripts/locked_install.sh dev documents
           python --version
 
       - name: Test (pytest on real pgvector)
+        id: test
+        if: steps.install.outcome == 'success'
+        continue-on-error: ${{ github.event_name == 'pull_request' }}
         run: pytest -q -n auto
+
+      # `outcome` is the result before continue-on-error, so it still says what happened.
+      - name: Report readiness
+        if: always() && github.event_name == 'pull_request'
+        env:
+          INSTALL: ${{ steps.install.outcome }}
+          TEST: ${{ steps.test.outcome }}
+        run: |
+          if [ "$INSTALL" = success ] && [ "$TEST" = success ]; then
+            msg="Python 3.15 is ready: the locked set installs and the suite passes."
+            echo "::notice title=Python 3.15 readiness::$msg"
+          else
+            msg="Python 3.15 is not ready (install: $INSTALL, test: $TEST). Expected until upstream ships cp315 wheels; the failing step's log names the package."
+            echo "::warning title=Python 3.15 readiness::$msg"
+          fi
+          echo "$msg" >> "$GITHUB_STEP_SUMMARY"
