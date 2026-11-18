@@ -207,6 +207,35 @@ def test_a_rescue_that_cannot_be_erased_is_reported(tmp_path: Path, monkeypatch:
     store.close()
 
 
+def test_a_rescue_erasure_error_reaches_the_client_as_its_type_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The forget message reaches MCP clients, so a failed rescue erasure names its exception's
+    type, never its text (which can name paths or keys on the host), as a failed refresh does
+    since #1379; the log keeps the text.
+
+    Red proof (2026-11-18, test host): against the pre-fix `rescue_failure = str(exc)` in
+    `recall_mcp.lifecycle._forget_memory_unlocked` it failed with "the client was told the rescue
+    error's text".
+    """
+    store, root, source, _texts = _built(tmp_path)
+    monkeypatch.setenv(ROOT_ENV, str(root))
+    canary = "canary-key-sk-0123456789 at /private/host/path"
+
+    def fail(*_args, **_kwargs):  # noqa: ANN002, ANN003, ANN202
+        raise AtomicRescueArtifactError(canary)
+
+    monkeypatch.setattr(lite_atomic, "erase_forgotten", fail)
+    try:
+        result = forget_memory(store, [source])
+        assert result.chunks_removed > 0, result.message
+        assert "erasing them from the atomic rescue failed" in result.message, result.message
+        assert canary not in result.message, "the client was told the rescue error's text"
+        assert "AtomicRescueArtifactError" in result.message, "the client was not told the error's type"
+    finally:
+        store.close()
+
+
 def test_a_build_overtaken_by_a_forget_does_not_keep_the_forgotten_views(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -239,11 +268,15 @@ def test_a_build_overtaken_by_a_forget_does_not_keep_the_forgotten_views(
 
 
 def test_a_flat_artifact_naming_the_memo_reports_unknown_ownership(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     """A matching source alone cannot establish ownership of a flat artifact.
 
     Red on a7024d569: forget_memory silently removed the matching flat artifact.
+
+    Changed 2026-11-18: the "owner is unknown" text names host paths, so the client is told only the
+    error's type and the log keeps the text (CCA follow-up to #1379). Red with the pre-change
+    `rescue_failure = str(exc)` at "the client was told the artifact paths".
     """
     store, root, source, _texts = _built(tmp_path)
     monkeypatch.setenv(ROOT_ENV, str(root))
@@ -257,9 +290,12 @@ def test_a_flat_artifact_naming_the_memo_reports_unknown_ownership(
     assert "ops-log.md" in (naming / "views.json").read_text(encoding="utf-8"), "negative control"
     assert "ops-log.md" not in views.read_text(encoding="utf-8"), "negative control"
 
-    result = forget_memory(store, [source])
+    with caplog.at_level("ERROR", logger="recall.mcp.service"):
+        result = forget_memory(store, [source])
 
-    assert "WARNING" in result.message and "owner is unknown" in result.message, result.message
+    assert str(root) not in result.message, "the client was told the artifact paths"
+    assert "WARNING" in result.message and "AtomicRescueArtifactError" in result.message, result.message
+    assert "owner is unknown" in caplog.text, "the log lost the ownership advice"
     assert not own.exists(), "the store's own artifact built with the memo is left"
     assert naming.exists(), "the matching flat artifact had no verified owner"
     assert other.exists(), "a flat artifact of another memory was removed"

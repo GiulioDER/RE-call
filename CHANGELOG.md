@@ -274,7 +274,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   URL with a key in it or the input it rejected, and what an agent is told reaches its model
   provider. The state file, `recall lite refresh --check` and `recall doctor` keep the full text on
   the store's host. A state file written before this release is served unchanged until the next
-  refresh.
+  refresh. A Lite forget or withdraw whose atomic rescue erasure fails likewise names only the
+  error's type; the log keeps its text.
 
 ## [0.15.0] (2026-11-08)
 

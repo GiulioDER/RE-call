@@ -651,7 +651,9 @@ def _forget_memory_unlocked(
             )
             rescue_views_erased = -1
             if isinstance(exc, AtomicRescueArtifactError):
-                rescue_failure = str(exc)
+                # The message reaches MCP clients, so it names only the type, as a failed refresh
+                # does (#1379); the text is in the log line above.
+                rescue_failure = f"The rescue raised {type(exc).__name__}; its message is in this host's log."
     elif isinstance(store, GenerationStore) and chunks_removed:
         try:
             # A writer can record a new root between the first lookup and committed deletion.
