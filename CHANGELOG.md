@@ -109,6 +109,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ### Fixed
 
+- A Lite forget could report success on a file made before 0.15.0 while the file still held, in
+  its free pages, text that earlier deletes had freed, such as an edited memo's old chunks: 0.15.0
+  turned `secure_delete` on for every connection, which zeroes later frees but not those. The first
+  forget or withdraw on a file made before this release now runs VACUUM once, which needs about the
+  file's size again in free disk, and records a `free_pages_zeroed` marker; new files carry the
+  marker and skip it.
 - A correction through `recall_remember` wrote its target as a bare file name, which matched every
   memo folder's memo of that id under the index root: with two agent folders numbering from
   `note-0001`, the corrected memo and the other folder's memo both read `ambiguous_supersession`.
