@@ -86,7 +86,7 @@ class RescueBuilder:
 
     @classmethod
     def from_env(
-        cls, store: object, embedder: Embedder, env: Mapping[str, str], **kwargs: object
+        cls, store: object, embedder: Embedder, env: Mapping[str, str]
     ) -> RescueBuilder | None:
         """A builder for a PostgreSQL store whose rescue is active with `skip` and a root; else None.
 
@@ -106,8 +106,7 @@ class RescueBuilder:
             or not root
         ):
             return None
-        kwargs.setdefault("prune", prune_superseded)  # a desktop install runs no gc
-        return cls(store, embedder, Path(root).expanduser(), **kwargs)  # type: ignore[arg-type]
+        return cls(store, embedder, Path(root).expanduser(), prune=prune_superseded)  # a desktop install runs no gc
 
     def after_retrieval(self) -> None:
         """Schedule the eligibility check without reading the store or artifact on the request."""

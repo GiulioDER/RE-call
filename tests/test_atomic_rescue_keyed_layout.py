@@ -195,6 +195,85 @@ def test_prune_does_not_remove_staging_while_a_builder_holds_the_lock(tmp_path: 
     assert not stage.exists()
 
 
+def test_prune_enumerates_the_root_once_for_many_obsolete_generations(tmp_path: Path, monkeypatch) -> None:
+    """PERF-002. The signed parent enumerated the root twice for every obsolete generation."""
+    import os
+    from types import SimpleNamespace
+
+    import recall.generations as generations
+    from recall.generation_rescue import prune_superseded
+    from recall.lineage import GenerationState
+
+    obsolete = "gen_old.custom"
+    active = f"{obsolete}.keep"
+    rollback = f"{obsolete}.previous"
+    missing = {f"gen_gone_{index}" for index in range(16)}
+    collected = missing | {obsolete, "gen_backoff"}
+    records = (
+        SimpleNamespace(generation_id=active, state=GenerationState.ACTIVE, retired_at=None),
+        SimpleNamespace(generation_id=rollback, state=GenerationState.RETIRED, retired_at=None),
+    )
+    manager = SimpleNamespace(rescue_prune_snapshot=lambda: (records, {active, rollback}, collected))
+    monkeypatch.setattr(generations, "GenerationManager", lambda *args, **kwargs: manager)
+    remove = (obsolete, f"{obsolete}.cal_2", f".{obsolete}.0123456789abcdef",
+              f".{obsolete}.legacy_cal_3.0123456789abcdef")
+    keep = (active, f"{active}.cal_4", f".{active}.cal_4.0123456789abcdef", f"{rollback}.cal_5",
+            "gen_other_tenant.cal_3", f".{obsolete}.other.0123456789abcdef")
+    for name in (*remove, *keep):
+        (tmp_path / name).mkdir()
+    backoff = tmp_path / ".rescue-gen_backoff.backoff.json"
+    backoff.write_text("{}", encoding="utf-8")
+    scandir = os.scandir
+    scans = 0
+
+    def count_root(path="."):  # noqa: ANN001, ANN202
+        nonlocal scans
+        if not isinstance(path, int) and Path(path) == tmp_path:
+            scans += 1
+        return scandir(path)
+
+    monkeypatch.setattr(os, "scandir", count_root)
+    removed = prune_superseded("postgresql://x", "t", tmp_path)
+
+    assert scans == 1, f"prune enumerated the same artifact root {scans} times"
+    assert removed == len(remove)
+    assert all(not (tmp_path / name).exists() for name in remove)
+    assert all((tmp_path / name).is_dir() for name in keep)
+    assert not backoff.exists()
+    assert all(not (tmp_path / f".rescue-{generation_id}.lock").exists() for generation_id in missing)
+
+
+def test_prune_keeps_live_artifacts_that_also_match_a_collected_id(
+    corpus: _Corpus, tmp_path: Path, monkeypatch  # noqa: F811
+) -> None:
+    """A calibrated key can also be a different generation's literal legacy key."""
+    from types import SimpleNamespace
+
+    import recall.generations as generations
+    from recall.generation_rescue import build_artifact, build_lock, prune_superseded
+    from recall.lineage import GenerationState
+
+    build_artifact("postgresql://x", "t", "gen_1", _CarryEmbedder(), tmp_path)
+    published = tmp_path / "gen_1.cal_1"
+    stage = tmp_path / ".gen_1.cal_1.0123456789abcdef"
+    stage.mkdir()
+    obsolete = tmp_path / "gen_obsolete"
+    obsolete.mkdir()
+    active = SimpleNamespace(generation_id="gen_1", state=GenerationState.ACTIVE, retired_at=None)
+    manager = SimpleNamespace(
+        rescue_prune_snapshot=lambda: ((active,), {"gen_1"}, {"gen_1.cal_1", "gen_obsolete"}),
+    )
+    monkeypatch.setattr(generations, "GenerationManager", lambda *args, **kwargs: manager)
+
+    with build_lock(tmp_path, "gen_1") as held:
+        assert held
+        prune_superseded("postgresql://x", "t", tmp_path)
+        assert (published / "manifest.json").is_file(), "a collected literal key deleted a live calibrated artifact"
+        assert stage.is_dir(), "prune took the collected generation's lock to remove a live stage"
+    assert not obsolete.exists()
+    assert load_atomic_rescue_artifact(published / "manifest.json").generation_id == "gen_1"
+
+
 def test_prune_preserves_the_rollback_pointer_after_a_clock_step(tmp_path: Path, monkeypatch) -> None:
     """STAKES-002. On 31e6841d, prune_superseded removed the actual rollback target."""
     from datetime import UTC, datetime

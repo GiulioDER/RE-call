@@ -140,7 +140,7 @@ def artifact_manifest(root: str | Path, generation_id: str, calibration_id: str 
     """
     if calibration_id is None:
         raise AtomicRescueArtifactError("an atomic rescue artifact on PostgreSQL requires a certified calibration")
-    keyed = _key_manifest(root, f"{generation_id}.{calibration_id}")
+    keyed = _calibrated_manifest(root, generation_id, calibration_id)
     if keyed.is_file():
         return keyed
     legacy = _key_manifest(root, generation_id)
@@ -153,6 +153,10 @@ def _key_manifest(root: str | Path, key: str) -> Path:
     if manifest != Path(root).expanduser().resolve() / key / "manifest.json":
         raise AtomicRescueArtifactError("atomic rescue artifact key or manifest is redirected")
     return manifest
+
+
+def _calibrated_manifest(root: str | Path, generation_id: str, calibration_id: str) -> Path:
+    return _key_manifest(root, f"{generation_id}.{calibration_id}")
 
 
 def generation_artifact_dirs(root: str | Path, generation_id: str) -> list[Path]:
@@ -168,6 +172,9 @@ def generation_artifact_dirs(root: str | Path, generation_id: str) -> list[Path]
     return sorted(found)
 
 
+_STAGING_SUFFIX = re.compile(r"(?:(?:cal|legacy_cal)_[0-9a-f]+\.)?[0-9a-f]{16}")
+
+
 def _staging_artifact_dirs(root: Path, generation_id: str) -> list[Path]:
     """Recognize legacy and calibration-keyed writer stages for this generation."""
     prefix = f".{generation_id}."
@@ -175,7 +182,7 @@ def _staging_artifact_dirs(root: Path, generation_id: str) -> list[Path]:
         entry
         for entry in sorted(root.iterdir())
         if entry.name.startswith(prefix)
-        and re.fullmatch(r"(?:(?:cal|legacy_cal)_[0-9a-f]+\.)?[0-9a-f]{16}", entry.name[len(prefix):])
+        and _STAGING_SUFFIX.fullmatch(entry.name[len(prefix):])
         and entry.is_dir()
     ]
 
@@ -208,7 +215,7 @@ def build_artifact(
 
     require_atomic_dependency()
     calibration_id = _published_calibration(dsn, tenant, generation_id)
-    manifest = _key_manifest(root, f"{generation_id}.{calibration_id}")
+    manifest = _calibrated_manifest(root, generation_id, calibration_id)
     # Entered as a name, not bound by `as`: `__enter__` is typed on the base store.
     store = GenerationStore(dsn, embedder.dim, tenant=tenant)
     with store:
@@ -567,6 +574,42 @@ def set_build_backoff(
     os.replace(staging, path)
 
 
+def _known_generation_prefixes(key: str, generations: set[str]) -> Iterator[str]:
+    """Find literal legacy and calibrated candidates, including custom IDs with dots."""
+    while key:
+        if key in generations:
+            yield key
+        key = key.rpartition(".")[0]
+
+
+def _prune_inventory(root: Path, generations: set[str], doomed: set[str]) -> dict[str, list[Path]]:
+    """Find work in one scan. A generation's empty lock sentinel alone gives us nothing to do."""
+    work: dict[str, list[Path]] = {}
+    with os.scandir(root) as entries:
+        for entry in entries:
+            name = entry.name
+            if name.startswith(".rescue-") and name.endswith(".backoff.json"):
+                generation_id = name[len(".rescue-"):-len(".backoff.json")]
+                if generation_id in doomed:
+                    work.setdefault(generation_id, [])
+
+            owners = set(_known_generation_prefixes(name, generations))
+            if name.startswith("."):
+                staging_key = name[1:].rpartition(".")[0]
+                owners.update(
+                    candidate for candidate in _known_generation_prefixes(staging_key, generations)
+                    if _STAGING_SUFFIX.fullmatch(name[len(candidate) + 2:])
+                )
+            # The same name can be a legacy key, a keyed artifact, or a stage.
+            # An ambiguous name does not tell us which generation's lock would protect it.
+            if len(owners) != 1:
+                continue
+            (owner,) = owners
+            if owner in doomed and entry.is_dir():
+                work.setdefault(owner, []).append(Path(entry.path))
+    return work
+
+
 def prune_superseded(dsn: str, tenant: str, root: Path) -> int:
     """Remove the artifacts under `root` of this tenant's generations that cannot serve again,
     returning how many directories went.
@@ -576,7 +619,8 @@ def prune_superseded(dsn: str, tenant: str, root: Path) -> int:
     generation, the rollback target, the latest retirement by timestamp, and every generation
     not yet retired or failed (one about to be promoted). Removed: older retired, failed, and those gc has
     already deleted. Best effort: a directory a process still has mapped (Windows) stays, and a later
-    prune removes it. Only this tenant's generation ids are considered, though tenants share a root.
+    prune removes it. Entries that arrive after the directory inventory wait for the next prune.
+    Only this tenant's generation ids are considered, though tenants share a root.
     """
     from recall.generations import GenerationManager
     from recall.lineage import GenerationState
@@ -592,17 +636,21 @@ def prune_superseded(dsn: str, tenant: str, root: Path) -> int:
     doomed |= collected
     # Only a ready generation or the previous pointer can be made active after this snapshot.
     doomed -= protected
+    if not doomed or not root.is_dir():
+        return 0
+    generations = {record.generation_id for record in records} | collected | protected
+    inventory = _prune_inventory(root, generations, doomed)
     removed = 0
-    for generation_id in sorted(doomed):
+    for generation_id, directories in sorted(inventory.items()):
         try:
-            published = generation_artifact_dirs(root, generation_id)
+            _key_manifest(root, generation_id)
         except AtomicRescueArtifactError:
             _log.info("atomic rescue artifact keys for %s could not be resolved; skipping prune", generation_id)
             continue
         with build_lock(root, generation_id) as held:
             if not held:
                 continue
-            for directory in [*published, *_staging_artifact_dirs(root, generation_id)]:
+            for directory in sorted(directories):
                 try:
                     candidate = _key_manifest(root, directory.name).parent
                     removed += remove_artifact_directories([candidate], root)
