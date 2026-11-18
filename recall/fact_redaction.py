@@ -51,6 +51,7 @@ from typing import Any
 from recall.fact_ledger import (
     FACT_LEDGER_TABLE,
     SUPERSESSION_EVENT_SUFFIX,
+    connect_tenant,
     decision_event_id,
     lock_fact_keys,
     supersession_ids,
@@ -414,12 +415,7 @@ class PostgresFactRedactor:
         self.statement_timeout_ms = statement_timeout_ms
 
     def _connect(self, dsn: str) -> Any:
-        import psycopg
-
-        conn = psycopg.connect(dsn, autocommit=True, connect_timeout=10)
-        conn.execute("SELECT set_config('recall.tenant_id', %s, false)", (self.tenant_id,))
-        conn.execute(f"SET statement_timeout = {int(self.statement_timeout_ms)}")
-        return conn
+        return connect_tenant(dsn, self.tenant_id, self.statement_timeout_ms)
 
     def card_sources(self) -> set[str]:
         """The memo names the card table's unredacted cards of this tenant cite."""

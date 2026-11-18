@@ -75,6 +75,8 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import numpy as np
+
 from recall.document import parse_document
 from recall.frontmatter import frontmatter_span, supersedes_targets
 from recall.observability import get_logger
@@ -292,25 +294,44 @@ def lexical_neighbours(
     """Each focus memo's `k` nearest memos by TF-IDF cosine, as `{(a, b): similarity}`, a < b.
 
     `focus` defaults to every memo. A pair is kept once whichever side found it.
+
+    Common words put nearly every memo on nearly every posting list, so the accumulation is
+    close to quadratic in the corpus (PERF-001: 191 s at 2,000 synthetic memos as a Python
+    loop). It runs in `numpy.bincount`, which adds its weights in input order: the postings are
+    concatenated term by term in the vector's order, each in name order, so every memo's score is
+    the same sequence of float additions as the plain loop and the result is bit-identical.
     """
     vectors = _tfidf(bodies)
-    postings: dict[str, list[tuple[str, float]]] = {}
-    for name in sorted(vectors):
+    names = sorted(vectors)
+    index = {name: i for i, name in enumerate(names)}
+    rows: dict[str, list[int]] = {}
+    cols: dict[str, list[float]] = {}
+    for name in names:
         for term, weight in vectors[name].items():
-            postings.setdefault(term, []).append((name, weight))
+            rows.setdefault(term, []).append(index[name])
+            cols.setdefault(term, []).append(weight)
+    postings = {
+        term: (np.array(rows[term], dtype=np.intp), np.array(cols[term], dtype=np.float64))
+        for term in rows
+    }
     pairs: dict[tuple[str, str], float] = {}
     for name in sorted(focus if focus is not None else vectors):
-        if name not in vectors:
+        if name not in vectors or not vectors[name]:
             continue
-        scores: dict[str, float] = {}
-        for term, weight in vectors[name].items():
-            for other, other_weight in postings[term]:
-                if other != name:
-                    scores[other] = scores.get(other, 0.0) + weight * other_weight
-        ranked = sorted(scores.items(), key=lambda item: (-item[1], item[0]))[:k]
-        for other, similarity in ranked:
-            if similarity <= 0:
-                continue
+        lists = [postings[term] for term in vectors[name]]
+        others = np.concatenate([ids for ids, _ in lists])
+        weights = np.repeat(
+            np.fromiter(vectors[name].values(), dtype=np.float64, count=len(lists)),
+            [len(ids) for ids, _ in lists],
+        ) * np.concatenate([w for _, w in lists])
+        scores = np.bincount(others, weights=weights, minlength=len(names))
+        scores[index[name]] = 0.0
+        # Every weight is positive, so a memo sharing a term scores above zero and one sharing
+        # none scores exactly zero: `> 0` is the plain loop's "touched, and similarity > 0".
+        touched = np.flatnonzero(scores > 0)
+        # A stable sort over ascending indices breaks ties by name, as `(-score, name)` did.
+        for i in touched[np.argsort(-scores[touched], kind="stable")[:k]]:
+            other, similarity = names[i], float(scores[i])
             key = (name, other) if name < other else (other, name)
             pairs[key] = max(pairs.get(key, 0.0), similarity)
     return pairs

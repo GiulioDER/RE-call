@@ -233,6 +233,58 @@ def test_env001_the_redaction_gets_the_timeout_of_the_rebuild_it_runs() -> None:
     assert redactor.statement_timeout_ms >= facts.statement_timeout_ms, redactor.statement_timeout_ms
 
 
+
+class _RecordingConnection:
+    def __init__(self, log: list[Any]) -> None:
+        self.log = log
+
+    def execute(self, sql: str, params: Any = None) -> None:
+        self.log.append((sql, params))
+
+
+def test_code004_every_facts_connection_binds_its_tenant_the_same_way(monkeypatch) -> None:
+    """CODE-004. The ledger, the outbox, the current-facts tables and the redactor each open their
+    connections through `recall.fact_ledger.connect_tenant`, so all four bind the RLS tenant with
+    the same session-level `set_config` and apply their own statement timeout.
+
+    Red, 2026-11-18, node `tests/test_facts_family_cca.py::test_code004_every_facts_connection_binds_its_tenant_the_same_way`,
+    run on the test host with this test unchanged, then restored (green):
+    (1) `recall.fact_ledger.connect_tenant` binds with `set_config(..., true)` (transaction-local,
+    the change the finding names as the one that drifts): AssertionError on the ledger's case
+    (`postgresql://l`), the first checked;
+    (2) `PostgresCurrentFacts._connect` (recall/fact_current.py) restored to an inline copy with
+    `connect_timeout=5`: AssertionError on its case (`postgresql://c`), the others passing.
+    """
+    import psycopg
+
+    from recall.fact_ledger import PostgresFactLedger, PostgresMaterializationOutbox
+
+    log: list[Any] = []
+
+    def fake_connect(dsn: str, **kwargs: Any) -> _RecordingConnection:
+        log.append((dsn, kwargs))
+        return _RecordingConnection(log)
+
+    monkeypatch.setattr(psycopg, "connect", fake_connect)
+    cases = [
+        (PostgresFactLedger("postgresql://l", tenant_id="t1")._connect, "postgresql://l", 15000),
+        (PostgresMaterializationOutbox("postgresql://o", tenant_id="t1")._connect, "postgresql://o", 15000),
+        (PostgresCurrentFacts("postgresql://c", tenant_id="t1")._connect, "postgresql://c", 60000),
+        (
+            lambda: PostgresFactRedactor("postgresql://r", tenant_id="t1")._connect("postgresql://r"),
+            "postgresql://r",
+            60000,
+        ),
+    ]
+    for connect, dsn, timeout in cases:
+        log.clear()
+        connect()
+        assert log == [
+            (dsn, {"autocommit": True, "connect_timeout": 10}),
+            ("SELECT set_config('recall.tenant_id', %s, false)", ("t1",)),
+            (f"SET statement_timeout = {timeout}", None),
+        ], dsn
+
 # ------------------------------------------------------------------------------ stated_facts.py
 
 
