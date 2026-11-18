@@ -2601,7 +2601,7 @@ class GenerationManager:
         """
         from recall.fact_ledger import GC_RETRACTION_WRITER, PostgresFactLedger
         from recall.fact_retraction import FACT_WRITE_DSN_ENV
-        from recall.provenance_controller import DecisionCode
+        from recall.provenance_controller import DecisionCode, erasure_lock_for
 
         environment = os.environ if env is None else env
         dsn = environment.get(FACT_WRITE_DSN_ENV, "").strip() or self._dsn
@@ -2654,8 +2654,14 @@ class GenerationManager:
         def touched(card: EvidenceCard) -> bool:
             return card.generation_id in removed
 
-        written = ledger.retract_forgotten(
-            tenant_id=self.tenant_id, touched=touched, gone=gone,
-            writer=GC_RETRACTION_WRITER, decision_code=DecisionCode.SOURCE_REMOVED,
-        )
+        # Exclusive, as a forget holds it: `retract_forgotten` locks only the keys of its first
+        # plan, so an application landing between its two reads was retracted without its key's
+        # lock (CCA DAT-004, owner decision 2026-11-18). gc's own transaction has committed by
+        # now, so this waits holding no other lock, and it takes the key locks after this one, in
+        # the order applications and forgets take them.
+        with erasure_lock_for(ledger, shared=False):
+            written = ledger.retract_forgotten(
+                tenant_id=self.tenant_id, touched=touched, gone=gone,
+                writer=GC_RETRACTION_WRITER, decision_code=DecisionCode.SOURCE_REMOVED,
+            )
         return len({fact_id for event in written for fact_id in event.supersedes_fact_ids})
