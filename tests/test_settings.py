@@ -139,6 +139,21 @@ def test_generated_environment_reference_comes_from_the_schema() -> None:
     assert document.endswith(render_env_example() + "\n")
 
 
+def test_stated_fact_sources_is_in_the_schema() -> None:
+    """ENV-005 (CCA facts deferred pass, PR 1176): the MCP index path reads
+    `RECALL_STATED_FACT_SOURCES` (`recall_mcp/indexing.py` via `recall.stated_facts`), so it must
+    be in the schema that generates the operator reference.
+
+    Red proof (2026-11-18): with its `EnvironmentSpec` in `recall_mcp.settings.ENVIRONMENT_SCHEMA`
+    renamed (so the schema no longer held the name), this test failed with an AssertionError.
+    """
+    from recall.stated_facts import STATED_FACT_SOURCES_ENV
+
+    names = {spec.name for spec in ENVIRONMENT_SCHEMA}
+    assert STATED_FACT_SOURCES_ENV in names
+    assert f"# {STATED_FACT_SOURCES_ENV}=" in render_env_example()
+
+
 def test_documented_voyage_timeout_reaches_the_contextual_provider(monkeypatch) -> None:
     """ENV-001: an operator can discover the timeout and configure the actual provider.
 

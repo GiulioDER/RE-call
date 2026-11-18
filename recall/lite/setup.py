@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from recall.lite import LITE_DSN_PREFIX, LiteStore
-from recall.lite.atomic import MODE_ENV, ROOT_ENV, rescue_settings, store_default_root
+from recall.lite.atomic import MODE_BY_TENANT_ENV, MODE_ENV, ROOT_ENV, rescue_settings, store_default_root
 
 if TYPE_CHECKING:
     from recall.embeddings import Embedder
@@ -227,8 +227,13 @@ def run_lite_setup(
                 background_calibration=False, allow_prune=False,
                 security_policy=policy, security_context=context, budget=None, key_root=memory,
                 # The settings the registered server will search under, so the artifact its first
-                # search needs exists when setup returns.
-                rescue_env={**os.environ, **atomic_env},
+                # search needs exists when setup returns. Without this shell's per-tenant mode,
+                # which is not registered: a `default:off` here would skip the build for a server
+                # registered `active` (as the wizard does, CCA ENV-003).
+                rescue_env={
+                    **{key: value for key, value in os.environ.items() if key != MODE_BY_TENANT_ENV},
+                    **atomic_env,
+                },
             )
             if refreshed.outcome is not Outcome.REFRESHED:
                 raise ValueError(f"indexing {memory} failed: {refreshed.reason}")
