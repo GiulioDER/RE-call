@@ -825,9 +825,9 @@ def _index_fingerprint(
     every single run, silently and forever. A stable tokenizer identity has to be supplied by the
     caller before this can be closed.
 
-    One derivation because it is consumed twice and the two consumers are 60 lines apart: the skip
-    guard reads it to decide whether to do the work, and the write path stores it so the NEXT run's
-    skip guard can. When the shadow's copy of this was inline in the write path only, the skip
+    One derivation because it is consumed twice, in two methods: the skip guard in `_index_path`
+    reads it to decide whether to do the work, and `_queue_chunks` stores it so the NEXT run's skip
+    guard can. When the shadow's copy of this was inline in the write path only, the skip
     guard had no shadow term at all and an attached shadow was never filled.
     """
     fields = [
@@ -1342,9 +1342,9 @@ class Indexer:
         else:
             # `_confined_to` filters on `is_file()` as well as on the root, so it silently eats a
             # file that vanished between the caller's walk and this call. That count has to be
-            # carried forward: without it the total-failure check below cannot fire on this path
-            # — every candidate would be gone, and the loop would simply never see one — so a
-            # corpus that disappeared would return "indexed 0 files" instead of raising.
+            # carried forward: without it `_index_path`'s total-failure check cannot fire on this
+            # path — every candidate would be gone, and its per-file loop would simply never see
+            # one — so a corpus that disappeared would return "indexed 0 files" instead of raising.
             requested = len(files)
             files = _confined_to(root, files)
             dropped = requested - len(files)
@@ -1572,8 +1572,8 @@ class Indexer:
             # (CCA CODE-002).
             return {
                 "file": rel[f], "ord": i, "content_hash": content_hash,
-                # Same derivation the skip guard used above, so the value stored here is
-                # the value the next run compares against.
+                # Same derivation `_index_path`'s skip guard compared, so the value stored here
+                # is the value the next run compares against.
                 "index_fingerprint": fingerprint,
                 "embedding_profile": embedding_profile_id(embedder),
                 "context_mode": policy.mode,
