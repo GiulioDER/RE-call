@@ -120,6 +120,60 @@ def test_k3_a_reindex_zeroes_the_bytes_it_frees(tmp_path: Path, monkeypatch: pyt
     assert marker.encode() not in raw, "the old version's bytes are still in the file"
 
 
+def test_k3b_the_first_erasure_on_an_old_file_clears_its_stale_free_pages(tmp_path: Path) -> None:
+    """STAKES-002 residue (owner decision 2026-11-18): a file made before 0.15.0 holds, in free
+    pages, text that deletes freed with `secure_delete` off. `erasing()` must clear those once.
+
+    Red proof (2026-11-18): with `erasing()`'s `if zeroed is None:` mutated to `if False:`, this
+    test failed with "a page freed before secure_delete still holds its text".
+    """
+    path = tmp_path / "memory.db"
+    LiteStore(path, dim=DIM).close()
+    marker = "zqxstalefreepagemarker"
+    old = sqlite3.connect(path)
+    old.execute("PRAGMA secure_delete = OFF")  # how every connection freed pages before 0.15.0
+    old.execute("DELETE FROM meta WHERE key = 'free_pages_zeroed'")  # a file from before the marker
+    old.execute("CREATE TABLE scratch (t TEXT)")
+    old.execute("INSERT INTO scratch VALUES (?)", (marker * 400,))
+    old.commit()
+    old.execute("DROP TABLE scratch")
+    old.commit()
+    old.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    old.close()
+    assert marker.encode() in path.read_bytes(), "the fixture did not leave a stale free page"
+
+    store = LiteStore(path, dim=DIM)
+    with store.erasing():
+        pass
+    store.close()
+
+    raw = b"".join(p.read_bytes() for p in tmp_path.glob("memory.db*"))
+    assert marker.encode() not in raw, "a page freed before secure_delete still holds its text"
+    reopened = sqlite3.connect(path)
+    try:
+        assert reopened.execute("SELECT value FROM meta WHERE key = 'free_pages_zeroed'").fetchone() == ("1",)
+    finally:
+        reopened.close()
+
+
+def test_k3c_a_file_made_now_is_not_vacuumed_by_an_erasure(tmp_path: Path) -> None:
+    """A new file has zeroed every free since it was made, so `erasing()` must not rewrite it.
+
+    Red proof (2026-11-18): with the `if fresh:` marker insert in `LiteStore._create_schema`
+    removed, this test failed with "VACUUM ran on a file made with secure_delete on".
+    """
+    store = LiteStore(tmp_path / "memory.db", dim=DIM)
+    statements: list[str] = []
+    with store._lock:  # noqa: SLF001  # the test watches the statements the store runs
+        store._conn.set_trace_callback(statements.append)  # noqa: SLF001
+    with store.erasing():
+        pass
+    store.close()
+    assert not any(s.strip().upper() == "VACUUM" for s in statements), (
+        "VACUUM ran on a file made with secure_delete on"
+    )
+
+
 def test_k4_a_blocked_erase_checkpoint_is_reported(tmp_path: Path) -> None:
     """Red against `erasing()` discarding `checkpoint()`: "a blocked checkpoint was not reported" (None)."""
     store = _store(tmp_path, 6)

@@ -137,6 +137,8 @@ _DEFAULT_LEXEME_WEIGHT = 0.1
 _NUMERIC_BOOST = 0.25
 #: How long a connection waits for another's SQLite lock before "database is locked".
 _BUSY_TIMEOUT_S = 30.0
+#: The `meta` key set once the file holds no free page left over from before `secure_delete`.
+_FREE_PAGES_ZEROED = "free_pages_zeroed"
 #: The oldest SQLite the schema runs on: UPSERT is 3.24, the window functions of the
 #: supersession scan 3.25.
 _MIN_SQLITE = (3, 25, 0)
@@ -463,6 +465,7 @@ class LiteStore:
         self.erase_checkpoint_blocked = False
         _require_sqlite()
         make_parent(self.path)
+        fresh = not self.path.exists() or self.path.stat().st_size == 0
         self._conn = sqlite3.connect(self.path, check_same_thread=False, isolation_level=None, timeout=_BUSY_TIMEOUT_S)
         try:
             self._conn.execute("PRAGMA journal_mode=WAL")
@@ -470,7 +473,7 @@ class LiteStore:
             # Every free zeroes its bytes, not only a forget's: an edited memo's old text,
             # freed by re-indexing or an FTS segment merge, would otherwise outlive a later forget.
             self._conn.execute("PRAGMA secure_delete = ON")
-            self._create_schema()
+            self._create_schema(fresh=fresh)
         except BaseException:
             # A refused open (another width or tenant, not a SQLite file) must not keep the file
             # handle open for as long as its traceback lives.
@@ -558,7 +561,7 @@ class LiteStore:
                 "audit events, operation receipts and a fact ledger; not this"
             )
 
-    def _create_schema(self) -> None:
+    def _create_schema(self, *, fresh: bool) -> None:
         with self._lock:
             self._conn.executescript(
                 """
@@ -639,6 +642,12 @@ class LiteStore:
                     "INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)",
                     [*wanted.items(), ("corpus_version", "0")],
                 )
+                if fresh:
+                    # Every connection has zeroed its frees since this file was made, so it has no
+                    # stale free pages for `erasing()` to vacuum away (STAKES-002 residue).
+                    self._conn.execute(
+                        "INSERT OR IGNORE INTO meta(key, value) VALUES (?, '1')", (_FREE_PAGES_ZEROED,)
+                    )
                 stored = dict(self._conn.execute("SELECT key, value FROM meta").fetchall())
                 for key, value in wanted.items():
                     if stored[key] != value:
@@ -679,6 +688,12 @@ class LiteStore:
         write-ahead log. A reader holding a snapshot open can keep that checkpoint from finishing:
         that is logged and left in `erase_checkpoint_blocked`, for the caller to report. VACUUM,
         which also compacts the file, is `vacuum()`.
+
+        A file made before every connection turned `secure_delete` on (#1172) can still hold, in
+        its free pages, text that earlier deletes freed, such as an edited memo's old chunks. The
+        first erasure on such a file therefore also runs VACUUM once and records that in `meta`
+        (STAKES-002 residue, owner decision 2026-11-18). It needs about the file's size again in
+        free disk, once.
         """
         with self._lock:
             self.erase_checkpoint_blocked = False
@@ -688,6 +703,15 @@ class LiteStore:
                 yield
                 with self._write():
                     self._conn.execute("INSERT INTO chunks_fts(chunks_fts) VALUES ('optimize')")
+                zeroed = self._conn.execute(
+                    "SELECT 1 FROM meta WHERE key = ?", (_FREE_PAGES_ZEROED,)
+                ).fetchone()
+                if zeroed is None:
+                    self._conn.execute("VACUUM")
+                    with self._write():
+                        self._conn.execute(
+                            "INSERT OR IGNORE INTO meta(key, value) VALUES (?, '1')", (_FREE_PAGES_ZEROED,)
+                        )
             finally:
                 self._conn.execute(f"PRAGMA secure_delete = {prior}")
                 self.erase_checkpoint_blocked = not self.checkpoint()

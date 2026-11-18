@@ -109,6 +109,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ### Fixed
 
+- A Lite forget could report success on a file made before 0.15.0 while the file still held, in
+  its free pages, text that earlier deletes had freed, such as an edited memo's old chunks: 0.15.0
+  turned `secure_delete` on for every connection, which zeroes later frees but not those. The first
+  forget or withdraw on a file made before this release now runs VACUUM once, which needs about the
+  file's size again in free disk, and records a `free_pages_zeroed` marker; new files carry the
+  marker and skip it.
 - The setup wizard and the desktop app withheld SPLADE from a 6 GB GPU whenever torch was
   installed, because torch reports a card's memory a little under its nominal size and the floor
   was exactly 6 GiB; through nvidia-smi the same card qualified. The floor now allows 512 MiB of
