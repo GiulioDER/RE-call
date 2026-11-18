@@ -70,7 +70,9 @@ are private under your user profile but not, for example, directly under `C:\`.
 
 Setup leaves strict trust enabled. A small corpus can index successfully while remaining
 uncertified. Add substantive memos and refresh; inspect the reported calibration reason rather than
-turning off trust to make a search answer. Automatic calibration does not guarantee that every
+turning off trust to make a search answer. A store whose fit did not certify is refitted only once
+its chunk count has grown or shrunk by a quarter since that fit; until then it reports `stale`, and
+`recall_calibration_run` fits it at once. Automatic calibration does not guarantee that every
 corpus can certify. See [CALIBRATION.md](CALIBRATION.md) for its coverage and limits.
 
 After memos change, Lite re-verifies the calibration it already has rather than refitting at once.

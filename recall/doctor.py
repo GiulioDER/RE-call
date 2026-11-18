@@ -1101,6 +1101,17 @@ def _lite_checks(dsn: str, *, tenant: str, table: str = DEFAULT_TABLE) -> Iterat
             detail,
             "recall index <your memory folder>   (refits it with the store's model)",
         )
+    elif found.calibration is CalibrationStatus.STALE and found.uncertified_waiting:
+        # Indexing does not refit such a store yet, so `recall index` is not offered (CCA DOC-001).
+        from recall.calibration_v2_bounds import DEFAULT_MAX_CORPUS_DELTA
+
+        yield Check(
+            "calibration",
+            "warn",
+            "fitted to an earlier version of the memory and did not certify, so strict search refuses",
+            f"indexing refits it once memory has grown or shrunk by {DEFAULT_MAX_CORPUS_DELTA:.0%} since that "
+            "fit; recall_calibration_run (MCP) fits it now",
+        )
     elif found.calibration is CalibrationStatus.STALE:
         yield Check(
             "calibration",

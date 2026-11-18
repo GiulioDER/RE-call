@@ -29,7 +29,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   artifact the trust gate serves, and a search can move one parent chunk to dense rank six before
   fusion as on PostgreSQL. Fusion can move it into the final top five. A search the rescue applies
   to refuses while its artifact is missing, as between a
-  write and its build or after `recall forget` until the next refresh. See
+  write and its build or after `recall forget` until the next refresh. A Lite
+  `recall_calibration_run` whose artifact build fails still reports the fit it stored, with an
+  `atomic` field naming the failure's type. See
   [docs/LITE.md](docs/LITE.md#atomic-rescue) and [docs/GENERATIONS.md](docs/GENERATIONS.md#atomic-rescue).
 - On PostgreSQL under an active rescue, `recall generation promote` and `rollback` and a certified
   MCP upload build the generation's artifact first and refuse when they cannot, and every calibration
@@ -117,9 +119,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   (`startup_timeout_sec`, and `mcp_optional_startup_grace_ms`).
 - A scoped dense search on a Lite store is faster. It filtered every chunk in Python on every
   query, and with a source policy configured every search is scoped. The filter's result is now
-  kept per scope until the next write, and its prefix patterns are built once. Measured at 13,304
-  chunks, the policy filter on the first search after a write went from about 140 ms to about 30
-  ms, and later searches with the same scope skip it.
+  kept, for up to 16 scopes, until the next write, and its prefix patterns are built once. Measured
+  at 13,304 chunks, the policy filter on the first search after a write went from about 140 ms to
+  about 30 ms, and later searches with a kept scope skip it.
 
 ### Fixed
 
@@ -175,7 +177,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   store in the background (`recall_index` and the server's memo folder refresh), an uncertified
   store's refit now runs there too; the assistant's `remember` and `delete` still refit inline, and
   only when the store has changed that much. Until then the calibration reports `stale` rather than
-  `uncertified`, and strict search refuses as before. `recall_calibration_run` still fits on demand.
+  `uncertified`, and strict search refuses as before. `recall_calibration_run` still fits on demand,
+  and `recall_calibration_status` and `recall doctor` name it rather than indexing during that wait.
+  A fit from before this release, which recorded no chunk count, is refitted at its next change.
 - The setup wizard and the desktop app withheld SPLADE from a 6 GB GPU whenever torch was
   installed, because torch reports a card's memory a little under its nominal size and the floor
   was exactly 6 GiB; through nvidia-smi the same card qualified. The floor now allows 512 MiB of
@@ -247,9 +251,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 - The Claude plugin marketplace entry named the license as Apache-2.0; it now says AGPL-3.0-only,
   as the plugin manifest and the package do.
 - On a Lite server with the assistant surface, every `remember` and `delete` walked the memo folder
-  twice before indexing, once for an unchanged check that a memo write always skips; so did
-  `recall lite refresh --force`. A forced refresh now walks it once, which saves about 1.4 s per
-  write on a folder of 3,000 memos.
+  twice before indexing, once for an unchanged check that a memo write always skips. They now walk
+  it once, which saves about 1.4 s per write on a folder of 3,000 memos.
 
 ### Security
 

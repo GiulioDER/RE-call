@@ -660,14 +660,20 @@ def ensure_calibrated(
     if fit.corpus_fingerprint == store.corpus_fingerprint():
         if fit.certified:
             return CalibrationOutcome(CalibrationStatus.CERTIFIED, "already certified for this corpus", fit)
+        # A fit recorded before the count was kept is refitted at the next change (CCA CODE-009).
+        when = (
+            "when memory next changes"
+            if store.uncertified_fit_chunks() is None
+            else f"once it has grown or shrunk by {DEFAULT_MAX_CORPUS_DELTA:.0%}"
+        )
         return CalibrationOutcome(
-            CalibrationStatus.UNCERTIFIED,
-            "this corpus was calibrated and did not certify; it is refitted once it has grown or shrunk by a quarter",
+            CalibrationStatus.UNCERTIFIED, f"this corpus was calibrated and did not certify; it is refitted {when}"
         )
     if _uncertified_refit_waits(store, fit):
         return CalibrationOutcome(
             CalibrationStatus.STALE,
-            "the last fit did not certify, so strict search refuses; it is refitted once memory has grown or shrunk by a quarter",
+            "the last fit did not certify, so strict search refuses; it is refitted once memory has grown or "
+            f"shrunk by {DEFAULT_MAX_CORPUS_DELTA:.0%}",
         )
     carried = carry_forward(store, fit, embedder=embedder)
     _record_carry(store, carried)
@@ -707,7 +713,8 @@ def _refit_key(store: LiteStore) -> str:
 
 
 def _refit_wanted(store: LiteStore) -> bool:
-    """True while the newest fit no longer covers the corpus without a refit."""
+    """True while a refit is due: the newest fit no longer covers the corpus, and is not an
+    uncertified fit still waiting for its corpus to grow or shrink (`_uncertified_refit_waits`)."""
     raw = store.latest_calibration_json()
     if raw is None:
         return True
@@ -806,7 +813,14 @@ def status_report(store: LiteStore) -> dict[str, object]:
         return report
     carried = carry_forward(store, latest) if latest.corpus_fingerprint != store.corpus_fingerprint() else None
     coverage_report, coverage_message = coverage_summary(store.near_miss_coverage, latest.calibration_id)
-    if resolution.status is CalibrationStatus.STALE:
+    if resolution.status is CalibrationStatus.STALE and _uncertified_refit_waits(store, latest):
+        # Indexing does not refit here (`ensure_calibrated`), so it is not offered (CCA DOC-001).
+        message = (
+            "The memory changed since this calibration was fitted, and that fit did not certify, so strict "
+            f"search refuses; indexing refits it once memory has grown or shrunk by {DEFAULT_MAX_CORPUS_DELTA:.0%}, "
+            "and recall_calibration_run fits it now."
+        )
+    elif resolution.status is CalibrationStatus.STALE:
         message = (
             "The memory changed since this calibration was fitted and its threshold is not carried forward "
             f"({carried.reason if carried else 'no carry was possible'}); recall_index or "
@@ -872,8 +886,18 @@ def run_report(
             f"generation {generation_id!r} is not this lite store's corpus ({store.lite_generation_id()}); "
             "a lite store calibrates the corpus it holds now"
         )
-    outcome = _fit_and_build(store, embedder, queries=queries, env=env)
-    return {**status_report(store), "outcome": outcome.status.value, "message": outcome.reason}
+    outcome = auto_calibrate(store, embedder, queries=queries)
+    from recall.lite.atomic import ensure_rescue_artifact
+
+    atomic: dict[str, object] = {}
+    try:
+        ensure_rescue_artifact(store, embedder, env=env)
+    except Exception as exc:  # BROAD-CATCH: the fit above is stored and in force, so the run reports it; the next write or refresh builds the artifact again
+        # A raise here reported a failed run for a calibration already in force, and a retry stored
+        # another fit (CCA STAKES-002). The type only: this answer reaches an MCP client.
+        _log.warning("atomic rescue build after the calibration run of %s failed: %s", store.path, exc)
+        atomic = {"atomic": f"atomic rescue artifact not built: {type(exc).__name__}"}
+    return {**status_report(store), "outcome": outcome.status.value, "message": outcome.reason, **atomic}
 
 
 def _fit_and_build(
@@ -885,8 +909,8 @@ def _fit_and_build(
 ) -> CalibrationOutcome:
     """`auto_calibrate`, then the atomic rescue artifact its new calibration id names.
 
-    Every fit stored outside a write (a background refit, `recall_calibration_run`) goes through
-    here: a write builds after its own bookkeeping instead (`recall.lite.refresh`).
+    A background refit goes through here. A write builds after its own bookkeeping instead
+    (`recall.lite.refresh`), and `run_report` after the fit it reports.
     """
     outcome = auto_calibrate(store, embedder, queries=queries)
     from recall.lite.atomic import ensure_rescue_artifact
