@@ -97,3 +97,43 @@ def test_l5_an_object_key_is_compared_as_written() -> None:
     assert memory.admits("x.md", "s3://bucket/memory/../x.md"), "an object key under the prefix was refused after folding"
     docs = StatingRule(prefixes=("s3://bucket/docs",), tenant="t", by_source=True)
     assert not docs.admits("x.md", "s3://bucket/memory/../docs/x.md"), "an object key outside the prefix was admitted after folding"
+
+
+def test_l6_a_symlinked_absolute_prefix_is_named_in_a_warning(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Node tests/test_stated_facts_locations.py::test_l6_a_symlinked_absolute_prefix_is_named_in_a_warning.
+
+    CCA CODE-008 (facts deferred pass, PR 1176; owner decision 2026-11-18: warn, do not widen).
+    An absolute prefix is matched after its symlinks resolve, so memos stored under the link's own
+    path state nothing, and nothing said so. The rule must keep matching the resolved path (no
+    widening) and log a warning naming both paths; a prefix that names its folder directly logs
+    nothing (the control).
+
+    Red proof (2026-11-18): with the warning in `_source_prefixes.local` (recall/stated_facts.py)
+    removed, this test failed with "a symlinked prefix resolved elsewhere without a warning".
+    """
+    import logging
+
+    target = tmp_path / "data" / "team"
+    target.mkdir(parents=True)
+    link = tmp_path / "srv-team"
+    try:
+        link.symlink_to(target, target_is_directory=True)
+    except OSError:
+        pytest.skip("this platform cannot create a symlink without privileges")
+
+    with caplog.at_level(logging.WARNING, logger="recall.stated_facts"):
+        prefixes = _source_prefixes([str(link)], {})
+    assert prefixes == (target.resolve().as_posix(),), "the prefix is no longer matched on its resolved path"
+    rule = StatingRule(prefixes=prefixes, tenant="t", by_source=True)
+    assert not rule.admits("door.md", f"{link.as_posix()}/door.md"), "admission was widened to the link's own path"
+    warned = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+    assert any(link.as_posix() in m and target.resolve().as_posix() in m for m in warned), (
+        "a symlinked prefix resolved elsewhere without a warning"
+    )
+
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="recall.stated_facts"):
+        _source_prefixes([str(target.resolve())], {})
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING], "a direct prefix was warned about"

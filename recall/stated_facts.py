@@ -142,7 +142,16 @@ def _source_prefixes(parts: Sequence[str], values: Mapping[str, str]) -> tuple[s
 
     def local(path: Path) -> str:
         # A file URI and an absolute path name one folder alike: resolved, symlinks followed.
-        return path.resolve().as_posix().rstrip("/")
+        resolved = path.resolve().as_posix().rstrip("/")
+        named = _fold(path.absolute().as_posix()).rstrip("/")
+        if os.path.normcase(resolved) != os.path.normcase(named):
+            # Memos stored under the link's own path then state nothing, silently, so say which
+            # path is used (CCA CODE-008, owner decision 2026-11-18: warn, do not widen).
+            _log.warning(
+                "%s prefix %s resolves to %s, which is the path it is matched on: memos stored "
+                "under %s state no facts", STATED_FACT_SOURCES_ENV, named, resolved, named,
+            )
+        return resolved
 
     resolved: list[str] = []
     for part in parts:
