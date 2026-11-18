@@ -1,8 +1,10 @@
-"""The desktop window and its widgets: `MainWindow`, the drop zone, the table headers and watermarks.
+"""The desktop window and its widgets: `MainWindow`, the drop zone, table headers, watermarks.
+
 Imported by `recall.desktop.ui` only when PySide6 is present, so this module imports Qt directly.
 
 Moved out of `recall.desktop.ui` (desktop UI split). `recall.desktop.ui` re-imports every name, so
-`recall.desktop.ui.<name>` keeps resolving.
+`recall.desktop.ui.<name>` keeps resolving. A test patches a name HERE: the window reads this
+module's globals, so a patch on `recall.desktop.ui.<name>` succeeds and changes nothing it calls.
 """
 
 from __future__ import annotations
@@ -67,9 +69,9 @@ from recall.desktop.github import GithubImport, download_repository
 from recall.desktop.uploads import upload_batches
 from recall.desktop.jobs import CLOSE_WAIT_MS
 from recall.desktop.jobs import Job as _Worker
+from recall.desktop.hardware import _splade_hardware_probe
 from recall.store import scrub_dsn_secrets
 from recall.wizard.database import probe_database
-from recall.desktop.hardware import _splade_hardware_probe
 
 
 def _project_name(value: str) -> str:
