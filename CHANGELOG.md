@@ -40,7 +40,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   build records its root in the audit trail, so a forget run where
   RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT is not set still erases under it, and names a recorded root
   it cannot reach. A build overtaken by a newer calibration's publish refuses rather than
-  replacing that calibration's artifact with its own.
+  replacing that calibration's artifact with its own. A forget also removes a stage that an abandoned
+  build left behind when it names a forgotten source; a running build's stage is left alone and
+  reported as incomplete cleanup.
 - The rescue applies only to a search with no folder, source or other scope and no source policy;
   a certified Lite store or generation of five or fewer chunks serves ordinary trusted results
   without an artifact. `recall setup --lite` refuses a relative `RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT`
@@ -110,6 +112,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   [docs/GETTING_STARTED.md](docs/GETTING_STARTED.md) and [docs/HOW_IT_WORKS.md](docs/HOW_IT_WORKS.md).
   The GitHub Pages site is retired, and the package's homepage and documentation links, the MCP
   Registry entry and the plugin manifests point at the repository instead.
+- [docs/CODEX_RECALL_INTEGRATION.md](docs/CODEX_RECALL_INTEGRATION.md) says what to do when a
+  manually configured server's tools are missing because Codex timed out its startup
+  (`startup_timeout_sec`, and `mcp_optional_startup_grace_ms`).
 - A scoped dense search on a Lite store is faster. It filtered every chunk in Python on every
   query, and with a source policy configured every search is scoped. The filter's result is now
   kept per scope until the next write, and its prefix patterns are built once. Measured at 13,304
@@ -118,6 +123,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ### Fixed
 
+- The graphical Windows installer registered its MCP server as `recall-install.exe -m
+  recall_mcp.server`. A frozen executable cannot run `-m`, so the installer's argument parser
+  refused it and the client listed a server that never started. The installer now registers
+  `recall-install.exe --mcp-stdio`, which serves MCP over stdio, and its `--selftest` starts that
+  server from a scratch client configuration and calls `recall_stats`.
+- On PostgreSQL, `recall generation gc` retracted the facts of what it collected without the
+  erasure lock that forget and withdraw hold, so a fact applied between its two reads could be
+  retracted without its key's lock. It now holds that lock exclusively while it retracts; a lock
+  timeout leaves the retraction to the next gc.
 - A standalone SQLite fact ledger (`recall provenance --sqlite-path`) reloaded its events in the
   order of their time text, so an event written with a UTC offset other than zero could be
   listed before an earlier one. It now orders them by time. Current facts were not affected.
