@@ -76,6 +76,27 @@ def test_k_equals_configuration_remains_excluded() -> None:
     assert scan_text("retrieval budget k=5", doc="x.md") == []
 
 
+@pytest.mark.parametrize(
+    "markup",
+    [
+        '<h3 align="center">17 records, hit rate 0.777</h3>',
+        '<img width="56" height="34" alt="17 records, hit rate 0.777">',
+        "<img width = '48' height = '34' alt='17 records, hit rate 0.777'>",
+    ],
+)
+def test_html_layout_numbers_preserve_visible_claims(markup: str) -> None:
+    """PR 1371 red proof against 5bfdd1193 in scan_text.
+
+    Heading levels and image dimensions were reported as claims. Visible text,
+    including image alternative text, must retain its unmarked quantities.
+    """
+    claims = scan_text(markup, doc="x.md")
+    assert [(claim.text, claim.marker) for claim in claims] == [
+        ("17", None),
+        ("0.777", None),
+    ]
+
+
 def test_n_equals_is_no_longer_masked_a_sample_size_is_gated() -> None:
     """The design's stated defect: `results/gap/summary.json` read `usable: 1` beside a published
     `n=17` — and masking `n=` together with `k=` made this exact claim invisible to the gate.

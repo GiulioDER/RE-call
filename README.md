@@ -8,7 +8,11 @@
 
 <!-- mcp-name: io.github.GiulioDER/re-call -->
 
-[Official site](https://re-call.dev/) · [YouTube channel](https://www.youtube.com/@RE-call-y6k)
+<h3 align="center">
+  <a href="https://re-call.dev/"><img src="docs/assets/re_call_logo.png" alt="RE-call" width="56" height="56" align="absmiddle"> official site</a>
+  &nbsp;&nbsp;&nbsp;
+  <a href="https://www.youtube.com/@RE-call-y6k"><img src="docs/assets/youtube.svg" alt="RE-call YouTube channel" width="48" height="34" align="absmiddle"></a>
+</h3>
 
 **RE-call is persistent memory for agents, built on hybrid retrieval with rank fusion.**
 On SQLite or PostgreSQL, it combines dense vectors and full-text search using reciprocal rank
