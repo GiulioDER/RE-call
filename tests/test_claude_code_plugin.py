@@ -375,3 +375,20 @@ def test_every_manifest_names_the_packages_license() -> None:
     marketplace = json.loads(MARKETPLACE.read_text(encoding="utf-8"))
     assert manifest["license"] == package
     assert [entry.get("license") for entry in marketplace["plugins"]] == [package]
+
+
+def test_the_icon_holds_no_download_word_or_long_text_run() -> None:
+    """The Claude directory screens a plugin's files: it held the RGBA icon for a long printable run
+    (#1283), then flagged a download-and-execute pattern in its compressed bytes (#1284), which a
+    256-colour palette avoided. #1320 regenerated the icon from the new logo as RGBA again (852 KB),
+    and its bytes held `iwr`, `irm` and `iex` in some letter case. The screen's rules are
+    unpublished, so this checks what #1284 checked.
+
+    Red proof: run against the icon on master `31e6841dc`, this failed at the download-word
+    assertion (`[b'iwr', b'irm', b'iex'] == []`). Node:
+    tests/test_claude_code_plugin.py::test_the_icon_holds_no_download_word_or_long_text_run
+    """
+    data = (PLUGIN / ".claude-plugin" / "icon.png").read_bytes()
+    words = [b"curl", b"wget", b"iwr", b"irm", b"iex", b"http", b"|sh", b"| sh", b"bash"]
+    assert [word for word in words if word in data.lower()] == []
+    assert max(len(run) for run in re.findall(rb"[\x20-\x7e]+", data)) < 16
