@@ -295,9 +295,17 @@ its source list is unreadable, forget reports incomplete cleanup and leaves the 
 ownership review.
 Views are shared by text, so another store holding the same text re-embeds it at its next build.
 They do so even with the rescue since turned off, and report an erasure that failed (on Windows,
-an artifact a running server still has open). With `RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT` unset,
-forget checks the default setup root beside the store, `<store-path>.atomic`. A custom root still
-requires that variable in the forgetting process, or manual cleanup of that root.
+an artifact a running server still has open). Forget checks the root
+`RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT` names in the forgetting process, the default setup root beside
+the store, `<store-path>.atomic`, and every root a build of the store recorded in it (builds record
+their root since 0.16.0), so a forget from a shell without the variable still erases under the root
+the MCP server built in. A recorded root that is not there (a drive not mounted, a folder removed)
+is named in the forget's answer, since nothing kept there was erased.
+
+A write that replaces a memo's text (an edit, then a refresh) erases the old text's vectors from
+the embedding cache and from `micro-views.sqlite` right away, since a later forget sees only the
+text the store holds then. A failure there is logged and leaves those vectors until a forget of the
+same text or eviction.
 
 ## Update the software
 

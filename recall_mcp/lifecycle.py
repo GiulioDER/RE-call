@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 from contextlib import AbstractContextManager, nullcontext
-from collections.abc import Callable, Sequence
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 import hashlib
 import json
 from typing import TYPE_CHECKING, Any
 
-from recall.cache import EMBEDDING_TEXT_DIGEST_KEY, erase_cached_digests, text_digest
+from recall.cache import erase_cached_digests, text_digests
 from recall.current_state import MAX_CURRENT_STATE_RECORDS, project_current_state
 from recall.errors import RecallError
 from recall.fact_retraction import FactErasure, fact_ledger_for, prepare_fact_erasure
@@ -434,17 +434,7 @@ def _embedded_text_digests(stores: tuple[Any, ...], sources: list[str]) -> set[s
         read = getattr(target, "texts_for_sources", None)
         if not sources or not callable(read):
             continue
-        digests.update(_text_digests(read(sources)))
-    return digests
-
-
-def _text_digests(texts: Sequence[tuple[str, dict[str, Any]]]) -> set[str]:
-    digests: set[str] = set()
-    for text, metadata in texts:
-        digests.add(text_digest(text))
-        recorded = metadata.get(EMBEDDING_TEXT_DIGEST_KEY)
-        if isinstance(recorded, str):
-            digests.add(recorded)
+        digests.update(text_digests(read(sources)))
     return digests
 
 
@@ -580,7 +570,7 @@ def _forget_memory_unlocked(
             # committed rows' cache entries, which a retry can no longer discover.
             if erased_texts:
                 try:
-                    erase_cached_digests(_text_digests(erased_texts))
+                    erase_cached_digests(text_digests(erased_texts))
                 except Exception:  # BROAD-CATCH: error-translation
                     _log.exception("embedding cache cleanup failed after partial deletion for tenant %r", store.tenant)
                 try:
@@ -590,7 +580,7 @@ def _forget_memory_unlocked(
                     _log.exception("atomic rescue cleanup failed after partial deletion for tenant %r", store.tenant)
             raise
         # A build can commit while deletion waits for its source lock. Purge those actual rows.
-        cached_digests.update(_text_digests(erased_texts))
+        cached_digests.update(text_digests(erased_texts))
         rescue_texts.extend(text for text, _ in erased_texts)
     elif to_delete and shadow_store is not None:
         chunks_removed = store.delete_sources_across(
@@ -648,9 +638,10 @@ def _forget_memory_unlocked(
     rescue_failure = ""
     if isinstance(store, LiteStore) and chunks_removed:
         from recall.atomic_rescue import AtomicRescueArtifactError
-        from recall.lite.atomic import erase_forgotten
+        from recall.lite.atomic import erase_forgotten, unreached_rescue_roots
 
         try:
+            unreached_roots = unreached_rescue_roots(store)
             rescue_views_erased, rescue_artifacts_removed = erase_forgotten(
                 store, rescue_texts, to_delete, env=runtime_environment()
             )
@@ -777,12 +768,12 @@ def _forget_memory_unlocked(
             "so it may still hold the deleted text's vectors in micro-views.sqlite and the generation "
             "folders under its root; delete them there, which costs only a rebuild."
         )
-    if isinstance(store, GenerationStore) and chunks_removed and unreached_roots:
+    if chunks_removed and unreached_roots:
         # A re-run finds no rows to erase them by, so the operator is told where they are.
         message += (
             f" NOTE: an atomic rescue of this tenant was built under {', '.join(unreached_roots)}, "
             "which this process cannot reach, so nothing the rescue keeps there was erased: its "
-            "micro-views.sqlite and the generation folders under it still hold the deleted text's "
+            "micro-views.sqlite and the artifact folders under it still hold the deleted text's "
             "vectors; delete them there, which costs only a rebuild. A root gone for good is named "
             "here until an empty folder exists at that path."
         )

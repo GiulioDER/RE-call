@@ -347,6 +347,7 @@ def test_a_damaged_lite_flat_artifact_is_reported_by_a_forget(tmp_path: Path) ->
         path=tmp_path / "memory.lite",
         tenant="t",
         resolve_calibration=lambda: SimpleNamespace(status=CalibrationStatus.MISSING, artifact=None),
+        rescue_roots=lambda: [],  # the store records no build root
     )
 
     warning = ""

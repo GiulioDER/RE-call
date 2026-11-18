@@ -16,6 +16,7 @@ from recall.observability import METRICS
 from recall.lite import LiteStore, LiteWriterBusy
 from recall.lite.refresh import client_reason
 from recall.lite.refresh import read_state as read_refresh_state
+from recall_mcp.assistant import WITHDRAW_DESCRIPTION
 from recall_mcp.auth import SCOPE_FORGET, SCOPE_READ
 from recall_mcp.lifecycle import (
     ErasurePreflightRefused,
@@ -150,6 +151,8 @@ def _register_memory_admin_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
 
     @mcp.tool(
         name="recall_withdraw",
+        # Beside the assistant surface, search names a hit by its memo_id and shows no source.
+        description=None if deps.assistant is None else WITHDRAW_DESCRIPTION,
         annotations=ToolAnnotations(
             title="Withdraw a mistaken memory",
             read_only_hint=False,

@@ -57,6 +57,7 @@ __all__ = [
     "REPORT_STALE_DESCRIPTION",
     "REPORT_USE_DESCRIPTION",
     "STATED_FACT_SCHEMA",
+    "WITHDRAW_DESCRIPTION",
     "AssistantMemos",
     "AssistantSurfaceError",
     "assistant_memos_from_env",
@@ -99,6 +100,17 @@ REPORT_USE_DESCRIPTION = (
     "not help: the counts are only useful if the no-difference cases are in them. Nothing in "
     "memory or search changes. A server with a shared rate limiter requires idempotency_key, as "
     "for every write."
+)
+#: `recall_withdraw`'s text when served beside this surface, where search names hits by memo_id
+#: and shows no source (CCA DOC-001).
+WITHDRAW_DESCRIPTION = (
+    "Withdraw memory that was a MISTAKE, and give back what it replaced. IRREVERSIBLE. Use this, "
+    "not recall_forget_memo, when a memory should never have been believed: a wrong correction, a "
+    "mistaken \"this replaces that\". It erases the memory as recall_forget_memo does, file "
+    "included, and voids its supersedes claims, so what it replaced is current again. Each fact it "
+    "alone supported is withdrawn and its value erased. Name each memory in sources by the memo_id "
+    "search returned it by, or by its file. A server with a shared rate limiter requires "
+    "idempotency_key, as for every write."
 )
 #: `recall_report_stale`'s text when served beside this surface, where search names hits by memo_id.
 REPORT_STALE_DESCRIPTION = (
@@ -328,7 +340,9 @@ class AssistantMemos(MemoFolder):
         ledger, while the caller reads the memo as gone. A memo no row names was published and
         never indexed (a crash after publication, no refresh since): it is deleted, and its request
         cancelled, like any other. The answer's fields are the pinned
-        contract's; a completed forget has erased the values too (`forget_memory`).
+        contract's; a completed forget has erased the values too (`forget_memory`). A forget whose
+        erasure elsewhere (the embedding cache, the atomic rescue) was incomplete adds `warning`,
+        `forget_memory`'s message, which says what is left.
         """
         result = self._erase_memo(
             store, embedder, memo_id, withdraw=False, security_policy=security_policy,
@@ -337,7 +351,13 @@ class AssistantMemos(MemoFolder):
         if result is None:
             return {"deleted": 0}
         assert isinstance(result, ForgetResult)
-        return {"deleted": 1, "memo_id": memo_id, "facts_retracted": result.facts_retracted}
+        answer: dict[str, Any] = {"deleted": 1, "memo_id": memo_id, "facts_retracted": result.facts_retracted}
+        if " WARNING: " in result.message or " NOTE: " in result.message:
+            # The rows and the file are gone, but something else the forget erases (the embedding
+            # cache, the atomic rescue) may still hold the text; the message is the only place
+            # that says what is left and where, and a re-run finds no rows (CCA STAKES-001).
+            answer["warning"] = result.message
+        return answer
 
     def withdraw(
         self,

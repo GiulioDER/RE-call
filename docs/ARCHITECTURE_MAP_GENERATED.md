@@ -9,7 +9,7 @@ design violation.
 
 Packages: `recall`, `recall_mcp`, `recall_agent`, `recall_hooks`, `recall_interop`, `recall_consistency`
 Modules: 376
-Cross package edges: 447
+Cross package edges: 449
 
 ## Highest fan in modules
 
@@ -282,6 +282,7 @@ They are observations, not automatic failures.
 | `recall_mcp.limits` | `recall.errors` |
 | `recall_mcp.limits` | `recall.idempotency_receipts` |
 | `recall_mcp.limits` | `recall.observability` |
+| `recall_mcp.lite_refresh` | `recall.calibration_v2` |
 | `recall_mcp.lite_refresh` | `recall.embeddings` |
 | `recall_mcp.lite_refresh` | `recall.index_budget` |
 | `recall_mcp.lite_refresh` | `recall.lite` |
@@ -379,6 +380,7 @@ They are observations, not automatic failures.
 | `recall_mcp.rescue_builder` | `recall.embeddings` |
 | `recall_mcp.rescue_builder` | `recall.generation_rescue` |
 | `recall_mcp.rescue_builder` | `recall.generation_store` |
+| `recall_mcp.rescue_builder` | `recall.lite.atomic` |
 | `recall_mcp.retrieval` | `recall.calibration` |
 | `recall_mcp.retrieval` | `recall.decision_ledger` |
 | `recall_mcp.retrieval` | `recall.embeddings` |
@@ -722,7 +724,7 @@ They are observations, not automatic failures.
 | `recall.lint` | 5 | 27 |
 | `recall.lite` | 2 | 140 |
 | `recall.lite.assistant_memos` | 8 | 140 |
-| `recall.lite.atomic` | 10 | 140 |
+| `recall.lite.atomic` | 12 | 140 |
 | `recall.lite.calibration` | 12 | 140 |
 | `recall.lite.facts` | 9 | 140 |
 | `recall.lite.graph` | 5 | 140 |
@@ -902,7 +904,7 @@ They are observations, not automatic failures.
 | `recall_mcp.indexing` | 23 | 152 |
 | `recall_mcp.lifecycle` | 25 | 150 |
 | `recall_mcp.limits` | 5 | 15 |
-| `recall_mcp.lite_refresh` | 6 | 141 |
+| `recall_mcp.lite_refresh` | 7 | 141 |
 | `recall_mcp.models` | 2 | 5 |
 | `recall_mcp.oidc` | 4 | 42 |
 | `recall_mcp.provenance` | 19 | 155 |
@@ -913,7 +915,7 @@ They are observations, not automatic failures.
 | `recall_mcp.reasoning_diagnostics` | 15 | 153 |
 | `recall_mcp.reasoning_engine` | 23 | 158 |
 | `recall_mcp.related_api` | 9 | 155 |
-| `recall_mcp.rescue_builder` | 4 | 141 |
+| `recall_mcp.rescue_builder` | 5 | 141 |
 | `recall_mcp.retrieval` | 23 | 154 |
 | `recall_mcp.semantic_graph_cache` | 17 | 145 |
 | `recall_mcp.server` | 26 | 219 |
@@ -924,7 +926,7 @@ They are observations, not automatic failures.
 | `recall_mcp.server_facts` | 5 | 163 |
 | `recall_mcp.server_ingest` | 20 | 199 |
 | `recall_mcp.server_lifespan` | 31 | 172 |
-| `recall_mcp.server_memory_admin` | 9 | 163 |
+| `recall_mcp.server_memory_admin` | 10 | 163 |
 | `recall_mcp.server_reasoning` | 24 | 199 |
 | `recall_mcp.server_search` | 16 | 166 |
 | `recall_mcp.service` | 59 | 191 |
