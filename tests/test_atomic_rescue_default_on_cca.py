@@ -172,6 +172,25 @@ def test_a_forget_during_the_write_is_not_undone(corpus: _Corpus, tmp_path: Path
     assert not (tmp_path / "gen_1.cal_1").exists(), "an artifact naming the forgotten source was kept"
 
 
+def test_a_failed_assembly_clears_views_written_after_forget(corpus: _Corpus, tmp_path: Path, monkeypatch) -> None:
+    """A late assembly error must clean views written after a generation's corpus changed."""
+    import recall.atomic_view_store as view_store
+    from recall.generation_rescue import build_artifact
+
+    assemble = view_store.assemble
+
+    def forget_then_fail(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+        _forget(corpus, tmp_path, "forgotten.md")
+        assemble(*args, **kwargs)
+        assert _view_rows(tmp_path) == 3, "negative control: no forgotten views were committed"
+        raise AtomicRescueArtifactError("synthetic later assembly failure")
+
+    monkeypatch.setattr(view_store, "assemble", forget_then_fail)
+    with pytest.raises(AtomicRescueArtifactError, match="synthetic later assembly failure"):
+        build_artifact("postgresql://x", "t", "gen_1", _CarryEmbedder(), tmp_path)
+    assert _view_rows(tmp_path) == 2, "forgotten views survived the failed build"
+
+
 def _publish(directory: Path, calibration_id: str, *, pipeline: str = "p") -> None:
     write_atomic_rescue_artifact(
         directory,

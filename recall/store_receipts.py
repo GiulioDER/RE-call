@@ -137,6 +137,26 @@ class ReceiptsAuditMixin:
 
         return self._with_retry(_op)
 
+    def recorded_memo_journal_roots(self, sources: Sequence[str]) -> dict[str, list[str]]:
+        """Verified indexing roots recorded before these exact tenant sources were deleted."""
+        if not sources:
+            return {}
+
+        def _op(conn: "psycopg.Connection") -> dict[str, list[str]]:
+            rows = conn.execute(
+                "SELECT source_uri, payload FROM recall_audit_events WHERE tenant_id = %s "
+                "AND event_type = 'forget_memo_journal' AND source_uri = ANY(%s)",
+                (self._tenant, list(sources)),
+            ).fetchall()
+            roots: dict[str, set[str]] = {}
+            for source, payload in rows:
+                for root in payload.get("index_roots", []):
+                    if isinstance(root, str):
+                        roots.setdefault(str(source), set()).add(root)
+            return {source: sorted(values) for source, values in roots.items()}
+
+        return self._with_retry(_op)
+
     def forgotten_source_aliases(self, sources: Sequence[str]) -> set[str]:
         """Recover card names recorded before these exact sources were forgotten."""
         if not sources:

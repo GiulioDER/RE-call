@@ -111,7 +111,9 @@ overrides it per tenant), an unscoped search loads
 `<RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT>/<generation_id>.<calibration_id>/manifest.json` (or, for an
 artifact built before 2026-11-17, `<generation_id>/manifest.json`) and refuses when it is missing or
 was built for another calibration, unless `RECALL_ATOMIC_RESCUE_WHEN_MISSING=skip` (a desktop install,
-[WIZARD.md](WIZARD.md#atomic-rescue)) lets it answer without the rescue. So under an active rescue `recall generation promote` and
+[WIZARD.md](WIZARD.md#atomic-rescue)) lets it answer without the rescue. A certified generation
+with five or fewer chunks has no sixth candidate and serves ordinary trusted results without an
+artifact. With the rescue active, `recall generation promote` and
 `recall generation rollback` build the target generation's artifact first, and refuse, saying how
 to turn the rescue off, when they cannot: the generation needs a published certified calibration,
 and the embedder must be the one that built it. A certified upload through an MCP server does the
@@ -130,7 +132,9 @@ recall --tenant acme generation rescue <generation-id>  # any generation
 `rescue` builds whatever the mode, with only the root set, so an existing deployment can build the
 artifacts of its active and previous generations before it turns the rescue on, the order in which
 no search refuses. Run it when a publish reported that its rebuild failed: until the artifact is rebuilt
-every unscoped search on that generation refuses. Views already embedded are reused from `<root>/micro-views.sqlite`, so a rebuild for a new calibration embeds nothing. An
+unscoped searches that need the artifact refuse under the default missing-artifact policy.
+Views already embedded are reused from `<root>/micro-views.sqlite`, so a rebuild for a new
+calibration embeds nothing. An
 artifact already in force is reported and kept.
 
 `gc` removes the artifacts of the generations it collects, and a forget removes every artifact of

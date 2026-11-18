@@ -547,7 +547,7 @@ def _protected_parent_ids(dense: Sequence[ScoredChunk]) -> list[str]:
 def _query_view_scores(np: Any, artifact: AtomicRescueArtifact, query_vector: Sequence[float]) -> Any:
     """Every view's cosine with one admitted query vector."""
 
-    query: Any = np.asarray(query_vector, dtype=np.float32)
+    query: Any = np.asarray(query_vector, dtype=np.float32).astype(np.float64)
     if query.ndim != 1 or query.shape[0] != artifact.dimension:
         raise AtomicRescueSelectionError("atomic rescue query dimension mismatch")
     norm = float(np.linalg.norm(query))

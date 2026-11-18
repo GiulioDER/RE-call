@@ -1191,7 +1191,9 @@ class Indexer:
         # denominator of the prune-fraction guard, so it moves the meaning of a safety limit
         # on a delete path — that belongs in its own change with its own test, not as a
         # side effect of fixing the skip predicate.
-        deleted = self._prune_vanished(root, files, known) if root.is_dir() else 0
+        deleted = self._prune_vanished(
+            root, files, known, key_root=keys if key_root is not None else root
+        ) if root.is_dir() else 0
 
         pending_sources: list[str] = []
         pending_chunks: list[Chunk] = []
@@ -1721,7 +1723,9 @@ class Indexer:
         for source in sorted(found):
             append(PRUNE_SOURCE_CHUNKS, {"chunk_ids": sorted(found[source])}, source_uri=source)
 
-    def _prune_vanished(self, root: Path, files: list[Path], known: dict[str, str]) -> int:
+    def _prune_vanished(
+        self, root: Path, files: list[Path], known: dict[str, str], *, key_root: Path | str | None = None
+    ) -> int:
         """Delete rows for files that are gone from disk, scoped to `root`.
 
         A deleted file is never replaced and never removed: its chunks stay indexed forever. That
@@ -1812,7 +1816,8 @@ class Indexer:
         # still in place and the next one tries again.
         from recall.lite.assistant_memos import forget_memo_requests
 
-        forget_memo_requests(vanished)
+        journal_root = Path(key_root).resolve() if key_root is not None else root
+        forget_memo_requests(vanished, index_roots={source: [str(journal_root)] for source in vanished})
         from recall.fact_retraction import fact_ledger_for
         from recall.provenance_controller import erasure_lock_for
 

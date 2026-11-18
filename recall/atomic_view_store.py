@@ -194,6 +194,7 @@ def assemble(
             missing.append(len(planned))
         planned.append((parent, views, digest))
 
+    reused_chunks = len(planned) - len(missing)
     embedded_views = 0
     seen_digests: set[str] = set()
     for offset in range(0, len(missing), EMBED_BATCH_CHUNKS):
@@ -203,6 +204,9 @@ def assemble(
             item = planned[index]
             digest = item[2]
             if digest in seen_digests or digest in batch_digests:
+                continue
+            if store.get(profile, digest, view_count=len(item[1]), dimension=dimension) is not None:
+                reused_chunks += 1
                 continue
             batch.append(item)
             batch_digests.add(digest)
@@ -239,14 +243,16 @@ def assemble(
     # exists keeps the peak at about two matrices rather than three (CCA PERF-004).
     full: Any = np.concatenate(rows, axis=0, dtype=np.float32)
     rows.clear()
-    norms = np.linalg.norm(full, axis=1, keepdims=True)
-    if not np.all(norms > 0):
-        raise RuntimeError("a view vector has zero norm")
-    full /= norms
+    # Accumulate in float64 without widening the whole matrix.
+    squared_norms = np.einsum("ij,ij->i", full, full, dtype=np.float64)
+    norms = np.sqrt(squared_norms)[:, None]
+    if not np.all(np.isfinite(norms) & (norms > 0)):
+        raise RuntimeError("a view vector has nonfinite or zero norm")
+    np.divide(full, norms, out=full)
     counts = {
         "parents": len(planned),
         "views": len(metadata),
-        "reused_chunks": len(planned) - len(missing),
+        "reused_chunks": reused_chunks,
         "embedded_chunks": len(seen_digests),
         "embedded_views": embedded_views,
     }

@@ -847,14 +847,15 @@ def _search_scope(args: argparse.Namespace) -> Scope | None:
 
 
 def _lite_search_environment(store: object) -> dict[str, str] | None:
-    """The process environment with a lite store's per-tenant rescue mode applied; None otherwise."""
-    if not isinstance(store, LiteStore):
+    """The process environment with the store's per-tenant rescue mode applied."""
+    tenant = getattr(store, "tenant", None)
+    if not isinstance(tenant, str):
         return None
     import os
 
     from recall._env import tenant_retrieval_environment
 
-    return tenant_retrieval_environment(os.environ, store.tenant)
+    return tenant_retrieval_environment(os.environ, tenant)
 
 
 def _cmd_search(args: argparse.Namespace) -> None:

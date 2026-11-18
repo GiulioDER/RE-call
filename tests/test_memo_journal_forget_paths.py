@@ -222,7 +222,9 @@ def test_p6_a_forget_in_another_store_leaves_the_journal_alone(tmp_path: Path) -
     assert retry.get("receipt", {}).get("replayed") is True, f"the memo's own request no longer replays: {retry}"
 
 
-def test_p7_a_forget_re_run_completes_a_failed_journal_erasure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_p7_a_forget_re_run_completes_a_failed_journal_erasure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
     """Node tests/test_memo_journal_forget_paths.py::test_p7_a_forget_re_run_completes_a_failed_journal_erasure.
 
     The first forget deletes the rows and then fails to erase the journal; the re-run finds no rows,
@@ -240,13 +242,15 @@ def test_p7_a_forget_re_run_completes_a_failed_journal_erasure(tmp_path: Path, m
     try:
         _index(store, path, _text(GONE))
 
-        def boom(_sources: Any) -> int:
+        def boom(_sources: Any, *, index_roots: Any = None) -> int:
+            assert index_roots is not None, "the failure double did not receive root context"
             raise OSError("injected journal failure")
 
         with monkeypatch.context() as patch:
             patch.setattr(assistant_memos, "forget_memo_requests", boom)
             failed = forget_memory(store, [str(path)])
         assert failed.sources_removed == [str(path)] and "WARNING" in failed.message, failed.message
+        assert "injected journal failure" in caplog.text, "the intended journal failure was not exercised"
         assert derived & _hashes(folder.folder), "the injected failure must leave the journal as it was"
         rerun = forget_memory(store, [str(path)])
     finally:

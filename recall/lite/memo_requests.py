@@ -26,11 +26,12 @@ import os
 import re
 import tempfile
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
 from recall.atomic_write import _flush_directory, atomic_write_bytes
+from recall.confinement import within
 from recall.document import parse_document
 from recall.frontmatter import supersedes_key, supersedes_targets
 from recall.supersession import reference_path_key
@@ -136,7 +137,20 @@ def _prune(requests: dict[str, Any], now: float) -> None:
         del requests[key]
 
 
-def cancel_requests(ledger_path: Path, memo_id: str) -> dict[str, Any]:
+def _journal_target(reference: object, folder: Path, root: Path) -> Path | None:
+    """Resolve the stored target without reading its bytes or changing its request fingerprint."""
+    if not isinstance(reference, str):
+        return None
+    parent, _, memo_id = reference.replace("\\", "/").removesuffix(".md").rpartition("/")
+    if not MEMO_ID.fullmatch(memo_id):
+        return None
+    base = root / parent if parent else folder
+    return within(root, base / f"{memo_id}.md")
+
+
+def cancel_requests(
+    ledger_path: Path, memo_id: str, *, target: Path | None = None, index_roots: Sequence[Path] = (),
+) -> dict[str, Any]:
     """Persist explicit deletion intent before unlinking, including prepared publications, and
     drop every hash the journal derived from the memo's bytes.
 
@@ -151,19 +165,27 @@ def cancel_requests(ledger_path: Path, memo_id: str) -> dict[str, Any]:
     """
     ledger = load_ledger(ledger_path)
     previous: dict[str, Any] = {}
+    own = target is None or ledger_path.parent == target.parent
     now = time.time()
     for key, entry in ledger.get("requests", {}).items():
         if not isinstance(entry, dict):
             continue
-        if entry.get("memo_id") == memo_id and not entry.get("erased"):
+        if own and entry.get("memo_id") == memo_id and not entry.get("erased"):
             previous[key] = dict(entry)
             for field in ("identity", "content", "supersedes"):
                 entry.pop(field, None)
             entry.update(state=_CANCELLED, at=now, erased=True)
-        elif entry.get("supersedes") == memo_id and "identity" in entry:
-            previous[key] = dict(entry)
-            del entry["identity"]
-            entry["target_forgotten"] = True
+        elif "identity" in entry:
+            matches = (
+                any(_journal_target(entry.get("supersedes"), ledger_path.parent, root) == target
+                    for root in index_roots)
+                if target is not None
+                else entry.get("supersedes") == memo_id
+            )
+            if matches:
+                previous[key] = dict(entry)
+                del entry["identity"]
+                entry["target_forgotten"] = True
     if previous:
         _save(ledger_path, ledger)
     return previous
@@ -199,7 +221,7 @@ def _names_target(reference: str, name: str, memo_id: str) -> bool:
 def _target_conflict(
     folder: Path, target: str | None, expected: str | None,
     has_successor: Callable[[str, str | None], bool] | None = None, own: str | None = None,
-    located: tuple[Path, str] | None = None,
+    located: tuple[Path, str] | None = None, successor_folders: Sequence[Path] = (),
 ) -> dict[str, Any] | None:
     """The refusal a correction of `target` meets, or None. `located` is the target's file and its
     name under the index root, as the caller resolved `target` (a memo of `folder`, or of another
@@ -214,6 +236,15 @@ def _target_conflict(
     path, name = located
     if path.is_symlink() or not path.is_file():
         return _conflict("target_missing", "the replacement target is not an existing memo")
+    if "/" not in reference_path_key(name) and folder != path.parent:
+        from recall.index import candidate_files
+        from recall.supersession import resolve_reference
+
+        files = [item.relative_to(path.parent).as_posix() for item in candidate_files(path.parent)]
+        claimant = (folder / f"{own}.md").relative_to(path.parent).as_posix() if own else ""
+        status, _ = resolve_reference(name, files, claimant)
+        if status == "ambiguous":
+            return _conflict("ambiguous_target", "the replacement target cannot be represented unambiguously")
     if expected is not None:
         try:
             current = revision(path)
@@ -223,7 +254,7 @@ def _target_conflict(
             current = None
         if current != expected:
             return _conflict("revision_mismatch", "the replacement target changed since it was read")
-    for other in (p for scanned in dict.fromkeys((folder, path.parent)) for p in scanned.glob("*.md")):
+    for other in (p for scanned in dict.fromkeys((folder, path.parent, *successor_folders)) for p in scanned.glob("*.md")):
         if other.is_symlink():
             continue
         try:
@@ -380,7 +411,7 @@ def write_memo(
     folder: Path, ledger_path: Path, body: str, *, kind: str, author: str,
     supersedes: str | None, request_id: str | None, expected_revision: str | None,
     include_receipt: bool, has_successor: Callable[[str, str | None], bool] | None = None,
-    target: tuple[Path, str] | None = None,
+    target: tuple[Path, str] | None = None, successor_folders: Sequence[Path] = (),
 ) -> dict[str, Any]:
     """Write `body` as a memo. Call while holding the store's write lane.
 
@@ -397,21 +428,29 @@ def write_memo(
         return {"refused": f"request_id must be a nonempty string of at most {REQUEST_ID_MAX_LEN} characters"}
     if expected_revision is not None and not _REVISION.fullmatch(expected_revision):
         return {"refused": "expected_revision must be a lowercase SHA-256 digest"}
-    data = body.encode("utf-8")
-    digest = hashlib.sha256(data).hexdigest()
-    identity = hashlib.sha256(json.dumps(
-        [digest, kind, author, supersedes, expected_revision], separators=(",", ":"),
-    ).encode()).hexdigest()
-    # The identity without the revision precondition, which hashes the target's bytes: what a
-    # retry is compared on once that target is forgotten (`cancel_requests`).
-    content = hashlib.sha256(json.dumps(
-        [digest, kind, author, supersedes], separators=(",", ":"),
-    ).encode()).hexdigest()
     ledger = load_ledger(ledger_path)
     sweep_staged(folder)
     authors = ledger["authors"]
     requests = ledger.setdefault("requests", {})
     entry = requests.get(request_id) if request_id is not None else None
+    bodies = [body]
+    if entry is not None and target is not None and target[0].parent == folder:
+        # v0.15.0 journalled a local correction with a bare frontmatter target.
+        bodies.append(body.replace(f"supersedes: {target[1]}\n",
+                                   f"supersedes: {target[0].name}\n", 1))
+    for candidate in bodies:
+        data = candidate.encode("utf-8")
+        digest = hashlib.sha256(data).hexdigest()
+        identity = hashlib.sha256(json.dumps(
+            [digest, kind, author, supersedes, expected_revision], separators=(",", ":"),
+        ).encode()).hexdigest()
+        content = hashlib.sha256(json.dumps(
+            [digest, kind, author, supersedes], separators=(",", ":"),
+        ).encode()).hexdigest()
+        if entry is None or (isinstance(entry, dict) and (
+            entry.get("content") == content if entry.get("target_forgotten") else entry.get("identity") == identity
+        )):
+            break
     replayed = entry is not None
     changed = True
     if entry is not None:
@@ -450,6 +489,7 @@ def write_memo(
                 # Rows under the reserved name are the request's own memo only while no file
                 # holds that name; a file there is somebody else's, and so is any claim it makes.
                 own=memo_id if current is None and not path.is_symlink() else None, located=target,
+                successor_folders=successor_folders,
             )
             if conflict:
                 return conflict
@@ -466,7 +506,10 @@ def write_memo(
             number = _memo_number(memo_id) if free else _next_number(folder, ledger)
             memo_id = _publish(folder, ledger_path, ledger, data, kind=kind, number=number, entry=entry)
     else:
-        conflict = _target_conflict(folder, supersedes, expected_revision, has_successor, located=target)
+        conflict = _target_conflict(
+            folder, supersedes, expected_revision, has_successor, located=target,
+            successor_folders=successor_folders,
+        )
         if conflict:
             return conflict
         folder.mkdir(parents=True, exist_ok=True)
