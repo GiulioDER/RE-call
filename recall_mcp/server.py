@@ -3480,6 +3480,8 @@ def _register_memory_admin_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
 _ASSISTANT_VIEWS: frozenset[str] = frozenset(
     {"recall_search", "recall_evidence", "recall_current_facts", "recall_apply_fact"}
 )
+#: The views, and `recall_withdraw`, which the assistant surface serves with memo ids too.
+_ASSISTANT_HELD: frozenset[str] = _ASSISTANT_VIEWS | {"recall_withdraw"}
 
 
 class _HeldTools:
@@ -3634,6 +3636,62 @@ def _register_assistant_tools(mcp: MCPServer, deps: _ToolDeps, held: _HeldTools)
                 )
             )
         return assistant_dumps(result)
+
+    if "recall_withdraw" in held.held:
+        plain_withdraw = held.held["recall_withdraw"][1]
+
+        async def recall_withdraw(
+            sources: list[str], ctx: Context[dict, object], idempotency_key: str | None = None
+        ) -> str:
+            # A memo of the folder, named by its id (as hits name it here) or by its file, is
+            # withdrawn as `recall_forget_memo` forgets one, file included. The plain tool matched
+            # no id, and for a path it left the file, which the next refresh indexed again
+            # (a live agent run, 2026-11-18). Every other source goes to it unchanged.
+            memos = {source: memo for source in sources if (memo := assistant.folder_memo(source)) is not None}
+            rest = [source for source in sources if source not in memos]
+            done: list[tuple[str, WithdrawResult]] = []
+            if memos:
+                state = _state(ctx)
+                store = await _require(SCOPE_FORGET, ctx)
+                refresh = _policy(state, store)
+                for source, memo in memos.items():
+                    with METRICS.timer("recall_tool_latency_ms", tool="withdraw"):
+                        result = await _to_thread(
+                            lambda memo=memo: assistant.withdraw(
+                                cast(LiteStore, store),
+                                state["embedder"],
+                                memo,
+                                security_policy=refresh["security_policy"],
+                                security_context=_access_context(state, store, purpose="erasure"),
+                                refresh_context=refresh["security_context"],
+                            )
+                        )
+                    if result is None:
+                        rest.append(str(assistant.path_of(memo)))  # no file: by the name it had
+                    else:
+                        done.append((source, result))
+            if not done:
+                return cast(str, await plain_withdraw(rest, ctx, idempotency_key))
+            parts = [result for _, result in done]
+            if rest:
+                parts.append(WithdrawResult.model_validate_json(await plain_withdraw(rest, ctx, idempotency_key)))
+
+            def total(field: str) -> int:
+                values = [getattr(part, field) for part in parts]
+                return -1 if -1 in values else sum(values)
+
+            return WithdrawResult(
+                chunks_removed=total("chunks_removed"),
+                sources_withdrawn=[source for source, _ in done] + [s for part in parts[len(done):] for s in part.sources_withdrawn],
+                sources_not_found=[s for part in parts[len(done):] for s in part.sources_not_found],
+                message=" ".join(part.message for part in parts),
+                outbox_events_scrubbed=total("outbox_events_scrubbed"),
+                staged_files_removed=total("staged_files_removed"),
+                facts_withdrawn=total("facts_withdrawn"),
+                facts_redacted=total("facts_redacted"),
+            ).model_dump_json(indent=2)
+
+        held.register("recall_withdraw", recall_withdraw)
 
     _register_assistant_views(held, deps, assistant)
 
@@ -3986,7 +4044,7 @@ def build_server(settings: Settings | None = None) -> MCPServer:
     registrar = cast(MCPServer, FilteredToolRegistrar(mcp, surface))
     # With the assistant surface on, four tools are registered in their compact form by
     # `_register_assistant_tools`, which reuses the held declarations' annotations and descriptions.
-    held = _HeldTools(registrar, _ASSISTANT_VIEWS if assistant is not None else frozenset())
+    held = _HeldTools(registrar, _ASSISTANT_HELD if assistant is not None else frozenset())
     tools = cast(MCPServer, held)
     _register_search_tools(tools, deps)
     _register_fact_tools(tools, deps)

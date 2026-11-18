@@ -26,6 +26,9 @@ Invariants and the failure each one catches:
 - A6 `recall_forget_memo` removes the memo's file, its rows and the fact it was the only evidence
   for; an id outside the memo folder deletes nothing.
 - A7 startup refuses the surface on a non-lite DSN and for a folder outside RECALL_INDEX_ROOT.
+- A8 `recall_withdraw` takes a memo of the folder by its id or its file, removes its rows and its
+  file, and the next refresh does not index it again; a source outside the folder is withdrawn by
+  the plain tool and keeps its file.
 
 Red proof, 2026-10-16, on a Linux test host: each mutation applied alone to the commit's tree, its
 test run alone, failing in the intended assertion, then restored byte for byte (sha256 checked) and
@@ -292,6 +295,36 @@ def test_forget_memo_removes_the_memo_and_its_fact(
         assert store.count() < rows, "the forgotten memo's rows are still in the store"
         assert json.loads(await a("recall_current_facts", as_of=AS_OF))["facts"] == [], "the fact outlived its memo"
         assert "pref-0001" in AssistantMemos(tmp_path / "memos").authors(), "the ledger forgot an id it may not reuse"
+
+    _serve_both(envs, body)
+
+
+def test_withdraw_takes_a_memo_by_id_or_file_and_it_stays_withdrawn(
+    envs: tuple[dict[str, str], dict[str, str]], tmp_path: Path
+) -> None:
+    """A8. Hits here are named by memo id, and an agent in a live run (2026-11-18) withdrew by
+    that id, which matched nothing; by file, the rows went and the file stayed, so the next refresh
+    indexed the memo again. Red proof is recorded in the pull request."""
+
+    async def body(a: Call, p: Call, state: dict[str, Any]) -> None:
+        await a("recall_remember", text="My bike lock combination is 8153.", kind="note")
+        await a("recall_remember", text="My locker code at the gym is 4729.", kind="note")
+        store = state["store"]
+        rows = store.count()
+        by_id = json.loads(await a("recall_withdraw", sources=["note-0001"]))
+        assert (by_id["sources_withdrawn"], by_id["sources_not_found"]) == (["note-0001"], []), by_id
+        second = tmp_path / "memos" / "note-0002.md"
+        by_file = json.loads(await a("recall_withdraw", sources=[str(second)]))
+        assert (by_file["sources_withdrawn"], by_file["sources_not_found"]) == ([str(second)], []), by_file
+        assert not (tmp_path / "memos" / "note-0001.md").exists(), "a memo withdrawn by id is still on disk"
+        assert not second.exists(), "a memo withdrawn by file is still on disk"
+        assert store.count() == rows - 2, "a withdrawn memo's rows are still in the store"
+        await a("recall_remember", text="The user parks in spot fourteen.", kind="note")
+        assert store.count() == rows - 1, "the refresh after a withdrawal indexed a withdrawn memo again"
+        outside = str(tmp_path / "mem" / "memo-003.md")
+        plain = json.loads(await a("recall_withdraw", sources=[outside]))
+        assert plain["sources_withdrawn"] == [outside], plain
+        assert (tmp_path / "mem" / "memo-003.md").exists(), "a source outside the memo folder lost its file"
 
     _serve_both(envs, body)
 

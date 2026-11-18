@@ -91,12 +91,12 @@ Cross package edges: 410
 | 14 | `recall.eval.promotion.__main__` |
 | 14 | `recall.generation_rescue` |
 | 14 | `recall.lite.refresh` |
+| 14 | `recall_mcp.assistant` |
 | 14 | `recall_mcp.reasoning_api` |
 | 13 | `recall.cli_commands._shared` |
 | 13 | `recall.dashboard.lite_db` |
 | 13 | `recall.eval.labelled` |
 | 13 | `recall.reasoning` |
-| 13 | `recall_mcp.assistant` |
 | 12 | `recall.cli_commands.extract_rewrite` |
 | 12 | `recall.desktop.ui` |
 | 12 | `recall.eval.harness` |
@@ -847,7 +847,7 @@ They are observations, not automatic failures.
 | `recall_interop.memory_benchmarks` | 7 | 142 |
 | `recall_mcp` | 0 | 0 |
 | `recall_mcp.access_log` | 1 | 1 |
-| `recall_mcp.assistant` | 13 | 157 |
+| `recall_mcp.assistant` | 14 | 157 |
 | `recall_mcp.auth` | 4 | 41 |
 | `recall_mcp.codex_server` | 2 | 211 |
 | `recall_mcp.compat` | 0 | 0 |
