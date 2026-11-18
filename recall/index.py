@@ -891,6 +891,17 @@ def head_commit(path: str | Path) -> str | None:
     return sha if out.returncode == 0 and sha else None
 
 
+@dataclass(frozen=True)
+class _StoredHashes:
+    """`Indexer._known_hashes`: three of these are `dict[str, str]`, so they travel by name."""
+
+    known: dict[str, str]
+    project: str | None
+    known_by_file: dict[str, str]
+    known_shadow: dict[str, str]
+    known_sparse: AbstractSet[str]
+
+
 class Indexer:
     def __init__(
         self,
@@ -1089,7 +1100,9 @@ class Indexer:
 
         self._enforce_source_policy(root, root_is_dir, rel, key_root)
 
-        known, project, known_by_file, known_shadow, known_sparse = self._known_hashes(root, root_is_dir)
+        stored = self._known_hashes(root, root_is_dir)
+        known, project, known_by_file = stored.known, stored.project, stored.known_by_file
+        known_shadow, known_sparse = stored.known_shadow, stored.known_sparse
         # Pruning stays keyed on the ACTIVE generation, deliberately and incompletely.
         #
         # `_prune_vanished` asks which sources have left the DISK, which is a property of the
@@ -1244,13 +1257,16 @@ class Indexer:
             ):
                 skipped += 1
                 continue
-            raw, meta, body, content_blocks = self._admitted_document(f, raw, source_bytes, is_markdown, rel)
+            raw, meta, body, content_blocks = self._admitted_document(f, raw, source_bytes, rel)
             pending_sources.append(str(f))
             indexed += 1
             self._queue_chunks(
-                f, rel, raw, body, meta, content_blocks, content_hash, context_group_id,
-                index_fingerprint, shadow_fingerprint, pending_chunks, pending_embedding_texts,
-                pending_shadow_chunks, pending_shadow_texts,
+                f=f, rel=rel, raw=raw, body=body, meta=meta, content_blocks=content_blocks,
+                content_hash=content_hash, context_group_id=context_group_id,
+                index_fingerprint=index_fingerprint, shadow_fingerprint=shadow_fingerprint,
+                pending_chunks=pending_chunks, pending_embedding_texts=pending_embedding_texts,
+                pending_shadow_chunks=pending_shadow_chunks,
+                pending_shadow_texts=pending_shadow_texts,
             )
             # Flush on a whole-file boundary once the batch is big enough. A file's chunks are
             # never split across batches: `replace_sources` deletes the file's rows before
@@ -1324,7 +1340,7 @@ class Indexer:
     def _resolve_candidates(
         self, path: str | Path, glob: str | None, files: list[Path] | None
     ) -> tuple[Path, list[Path], int]:
-        """`_index_path`'s root and candidate files, and how many supplied files confinement dropped."""
+        """`_index_path`'s root and candidates, and how many supplied files confinement dropped."""
         if files is not None and glob is not None:
             raise ValueError(
                 "pass either `glob` or `files`, not both: `files` is used verbatim, so the "
@@ -1358,7 +1374,11 @@ class Indexer:
     def _enforce_source_policy(
         self, root: Path, root_is_dir: bool, rel: dict[Path, str], key_root: str | Path | None
     ) -> None:
-        """Refuse the run if the source policy denies a file, or a link reaches what another rule governs."""
+        """Refuse the run when the policy denies a file or a link reaches what another rule governs.
+
+        Every key of `rel` must be a file confined to `root`, as `_resolve_candidates` returns them;
+        a linked file whose target lies outside `base` makes `relative_to` below raise.
+        """
         if self._security_policy is not None:
             assert self._security_context is not None
             base = Path(key_root).resolve() if key_root is not None else root
@@ -1374,7 +1394,8 @@ class Indexer:
                 target = f.resolve()
                 if target == f or not root_is_dir:
                     continue
-                # `_confined_to` keeps only targets under `root`, which is under `base`.
+                # `_resolve_candidates` keeps only targets under `root` (`_confined_to` for supplied
+                # files, `candidate_files` for a walk), and `root` is under `base`.
                 target_relative = target.relative_to(base).as_posix()
                 target_decision = self._security_policy.decide(target_relative, self._security_context)
                 if not target_decision.allowed:
@@ -1390,10 +1411,13 @@ class Indexer:
                         "source policy rule governs; index the target under its own path"
                     )
 
-    def _known_hashes(
-        self, root: Path, root_is_dir: bool
-    ) -> tuple[dict[str, str], str | None, dict[str, str], dict[str, str], AbstractSet[str]]:
-        """What the stores already hold, read once per run: the skip predicate compares against it."""
+    def _known_hashes(self, root: Path, root_is_dir: bool) -> _StoredHashes:
+        """What the stores already hold, and the declared project, read once per run.
+
+        The skip predicate compares against it, and `known` is also `_prune_vanished`'s candidate
+        set and so the denominator of its prune-fraction guard: widening `known` changes a delete
+        path, not only the skip (see the comment at its call in `_index_path`).
+        """
         if (
             not root_is_dir
             and type(self._store) is PgVectorStore
@@ -1427,12 +1451,12 @@ class Indexer:
             if self._sparse_encoder is None
             else self._store.sparse_covered_sources(self._sparse_encoder.profile.profile_id)
         )
-        return known, project, known_by_file, known_shadow, known_sparse
+        return _StoredHashes(known, project, known_by_file, known_shadow, known_sparse)
 
     def _group_files(
         self, files: list[Path], rel: dict[Path, str]
     ) -> tuple[dict[str, str], bool, dict[str, int]]:
-        """Each file's context group, whether groups are re-encoded whole, and each group's last file."""
+        """Each file's context group, whether groups re-encode whole, and each group's last file."""
         group_for_file = {
             str(f): (
                 self._context_group_for_file(f)
@@ -1461,9 +1485,13 @@ class Indexer:
         return group_for_file, complete_context_groups, last_file_of_group
 
     def _admitted_document(
-        self, f: Path, raw: str | None, source_bytes: bytes, is_markdown: bool, rel: dict[Path, str]
+        self, f: Path, raw: str | None, source_bytes: bytes, rel: dict[Path, str]
     ) -> tuple[str, dict[str, object], str, list[tuple[str, dict[str, Any]]] | None]:
-        """One file's text after extraction and redaction, its admitted metadata, body and blocks."""
+        """A file's text after extraction and redaction, its admitted metadata, body and blocks.
+
+        `raw` is the markdown text `_index_path` already read, or None for any other document.
+        """
+        is_markdown = raw is not None
         extracted = None
         if raw is None:
             extracted = extract_document(f, source_bytes)
@@ -1524,6 +1552,7 @@ class Indexer:
 
     def _queue_chunks(
         self,
+        *,
         f: Path,
         rel: dict[Path, str],
         raw: str,
@@ -1539,7 +1568,7 @@ class Indexer:
         pending_shadow_chunks: list[Chunk],
         pending_shadow_texts: list[str],
     ) -> None:
-        """Append one file's active and shadow chunks, and the texts to embed, to the pending batch."""
+        """Add one file's active and shadow chunks, and its texts to embed, to the pending batch."""
         if content_blocks is None:
             raw_chunks = self._chunker(body)
             structured, embedding_texts = contextual_passages(
