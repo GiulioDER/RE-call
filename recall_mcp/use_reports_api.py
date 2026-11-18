@@ -15,7 +15,7 @@ name, which is how search results usually show it.
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import nullcontext
 from typing import Any
 
@@ -83,6 +83,39 @@ def resolve_sources(
     return resolved
 
 
+def _authorized_report_chunks(
+    store: Any,
+    wanted: set[str],
+    basenames: set[str],
+    policy: SourceSecurityPolicy,
+    context: AccessContext,
+    *,
+    include_text: bool,
+) -> Iterator[Chunk]:
+    if store.tenant != context.tenant:
+        raise PermissionError("access context tenant does not match the serving store")
+    scope = policy.scope_for(context)
+    if not wanted or not scope.source_prefixes:
+        return
+    snapshot = getattr(store, "snapshot", None)
+    with snapshot() if callable(snapshot) else nullcontext():
+        scoped_reader = getattr(store, "iter_scoped_chunks", None)
+        chunks = (
+            scoped_reader(scope, sources=sorted(wanted), basenames=sorted(basenames), include_text=include_text)
+            if callable(scoped_reader) else store.iter_chunks()
+        )
+        for chunk in chunks:
+            if chunk.source not in wanted and _basename(chunk.source) not in basenames:
+                continue
+            file = chunk.metadata.get("file")
+            if not scope.matches_source_policy(
+                file if isinstance(file, str) and file else chunk.source,
+                chunk.metadata.get("security_policy_digest"),
+            ):
+                continue
+            yield chunk
+
+
 def authorized_report_rows(
     store: Any,
     names: Sequence[str],
@@ -92,36 +125,33 @@ def authorized_report_rows(
     include_text: bool,
     exact: bool = False,
 ) -> dict[str, list[Chunk]]:
-    if store.tenant != context.tenant:
-        raise PermissionError("access context tenant does not match the serving store")
     if len(names) > 2 * MAX_SOURCES:
         raise UseReportRefused("too many report sources")
     wanted = {name.strip() for name in names}
-    scope = policy.scope_for(context)
-    if not wanted or not scope.source_prefixes:
-        return {}
-    aliases = {name for name in wanted if not exact and name == _basename(name)}
-    snapshot = getattr(store, "snapshot", None)
+    basenames = {name for name in wanted if not exact and name == _basename(name)}
     result: dict[str, list[Chunk]] = {}
-    with snapshot() if callable(snapshot) else nullcontext():
-        scoped_reader = getattr(store, "iter_scoped_chunks", None)
-        chunks = (
-            scoped_reader(scope, sources=sorted(wanted), basenames=sorted(aliases), include_text=include_text)
-            if callable(scoped_reader) else store.iter_chunks()
-        )
-        for chunk in chunks:
-            if chunk.source not in wanted and _basename(chunk.source) not in aliases:
-                continue
-            file = chunk.metadata.get("file")
-            if not scope.matches_source_policy(
-                file if isinstance(file, str) and file else chunk.source,
-                chunk.metadata.get("security_policy_digest"),
-            ):
-                continue
-            matches = result.setdefault(chunk.source, [])
-            if include_text:
-                matches.append(chunk)
+    for chunk in _authorized_report_chunks(store, wanted, basenames, policy, context, include_text=include_text):
+        matches = result.setdefault(chunk.source, [])
+        if include_text:
+            matches.append(chunk)
     return result
+
+
+def authorized_report_aliases(
+    store: Any,
+    candidates: Mapping[str, Sequence[str]],
+    policy: SourceSecurityPolicy,
+    context: AccessContext,
+) -> dict[str, str]:
+    """Count only associations made by eligible rows, including the row that supplied a file alias."""
+    candidates_by_name = {name: set(sources) for name, sources in candidates.items()}
+    wanted = {source for sources in candidates_by_name.values() for source in sources}
+    eligible: dict[str, set[str]] = {}
+    for chunk in _authorized_report_chunks(store, wanted, set(), policy, context, include_text=False):
+        for name in (chunk.source, chunk.metadata.get("file")):
+            if isinstance(name, str) and name in candidates_by_name and chunk.source in candidates_by_name[name]:
+                eligible.setdefault(name, set()).add(chunk.source)
+    return {name: next(iter(sources)) for name, sources in eligible.items() if len(sources) == 1}
 
 
 def report_use(
@@ -137,6 +167,7 @@ def report_use(
     security_policy: SourceSecurityPolicy | None = None,
     access_context: AccessContext | None = None,
     aliases: Mapping[str, str] | None = None,
+    before_write: Callable[[], None] | None = None,
 ) -> dict[str, Any]:
     """Record one report, or raise `UseReportRefused` with the reason. `aliases` as in `resolve_sources`."""
     aliases = aliases or {}
@@ -173,6 +204,8 @@ def report_use(
         "query": _context(query, MAX_QUERY_CHARS) or None,
         "note": _context(note, MAX_NOTE_CHARS) or None,
     }
+    if before_write is not None:
+        before_write()
     event_id = store.append_audit_event(USE_REPORT_EVENT, payload, actor="agent-report")
     return {
         "recorded": True,
