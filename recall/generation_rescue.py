@@ -46,7 +46,7 @@ from recall.atomic_rescue import (
 from recall.lite.atomic import ROOT_ENV, VIEW_STORE_NAME, WHEN_MISSING_ENV, artifact_root, configured_root, rescue_active
 from recall.lite.writer_lock import try_lock, unlock
 from recall.observability import get_logger
-from recall.state_dir import write_ignore
+from recall.state_dir import make_dir, write_ignore
 
 if TYPE_CHECKING:
     from recall.embeddings import Embedder
@@ -251,7 +251,7 @@ def build_artifact(
             _remove_damaged(manifest)
         reused = _recalibrated(root, generation_id, lineage, embedder)
         parents = rescue_parents(store.iter_chunks()) if reused is None else []
-    root.mkdir(parents=True, exist_ok=True)
+    make_dir(root)
     # The root holds view vectors of the corpus, like the `.recall` directory.
     write_ignore(root)
     profile = embedding_profile(embedder).fingerprint()
@@ -521,7 +521,7 @@ def build_lock(root: Path, generation_id: str) -> Iterator[bool]:
     The host holds it for the whole build, and foreground builders hold it while publishing.
     Prune and forget take it before touching stages. The OS releases it when its process exits.
     """
-    root.mkdir(parents=True, exist_ok=True)
+    make_dir(root)
     with open(_lock_path(root, generation_id), "ab") as fh:
         held = try_lock(fh)
         try:

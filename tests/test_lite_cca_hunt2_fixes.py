@@ -174,6 +174,59 @@ def test_k3c_a_file_made_now_is_not_vacuumed_by_an_erasure(tmp_path: Path) -> No
     )
 
 
+class _VacuumFails:
+    """A connection whose VACUUM fails as it does with no room for its copy; all else passes through."""
+
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self._conn = conn
+
+    def execute(self, sql: str, *args: object) -> sqlite3.Cursor:
+        if sql.strip().upper() == "VACUUM":
+            raise sqlite3.OperationalError("database or disk is full")
+        return self._conn.execute(sql, *args)
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._conn, name)
+
+
+def test_k3d_a_failed_one_time_vacuum_leaves_the_erasure_committed_and_reported(tmp_path: Path) -> None:
+    """CCA STAKES-001 (run 20261118T205956Z): the one-time VACUUM runs after the erasure has
+    committed, so its failure must not report the erasure as failed (which made
+    `recall_forget_memo` keep the memo file for the next refresh to index again), must leave the
+    marker unset so a later erasure retries, and must reach the caller's message.
+
+    Red proof (2026-11-18, test host): against the pre-fix `erasing()` (no handler around
+    `self._conn.execute("VACUUM")`) it failed with "a failed VACUUM turned a committed erasure into
+    an error"; with the handler kept but its `else:` (the marker insert) mutated to `if True:` it
+    failed with "the marker was recorded although the VACUUM never ran"; with
+    `_with_checkpoint_note`'s `if getattr(store, "erase_vacuum_failed", False):` mutated to
+    `if False:` it failed with "the caller was not told the VACUUM failed".
+    """
+    store = _store(tmp_path, 6)
+    victim = sorted({row.source for row in store.iter_chunks()})[0]
+    real = store._conn  # noqa: SLF001
+    with store._lock:  # noqa: SLF001  # a file from before the marker, as 0.15.0 left it
+        real.execute("DELETE FROM meta WHERE key = 'free_pages_zeroed'")
+        store._conn = _VacuumFails(real)  # type: ignore[assignment]  # noqa: SLF001
+    try:
+        try:
+            with store.erasing():
+                store.delete_sources([victim])
+        except sqlite3.OperationalError:
+            pytest.fail("a failed VACUUM turned a committed erasure into an error")
+        assert victim not in {row.source for row in store.iter_chunks()}, "the erasure did not commit"
+        assert store.erase_vacuum_failed is True, "the failed VACUUM was not recorded"
+        marker = real.execute("SELECT 1 FROM meta WHERE key = 'free_pages_zeroed'").fetchone()
+        assert marker is None, "the marker was recorded although the VACUUM never ran"
+        from recall_mcp.lifecycle import _with_checkpoint_note
+
+        assert "VACUUM" in _with_checkpoint_note(store, "Forgot 1 source."), "the caller was not told the VACUUM failed"
+    finally:
+        with store._lock:  # noqa: SLF001
+            store._conn = real  # noqa: SLF001
+        store.close()
+
+
 def test_k4_a_blocked_erase_checkpoint_is_reported(tmp_path: Path) -> None:
     """Red against `erasing()` discarding `checkpoint()`: "a blocked checkpoint was not reported" (None)."""
     store = _store(tmp_path, 6)

@@ -182,6 +182,34 @@ def test_windows_is_not_asked_for_a_private_mode(tmp_path: Path, monkeypatch: py
     assert _mode(tmp_path / ".recall") == 0o755
 
 
+@_POSIX_ONLY
+@pytest.mark.usefixtures("umask_022")
+def test_a_rescue_root_written_first_makes_the_state_directory_owner_only(tmp_path: Path) -> None:
+    """CCA ENV-001 (run 20261118T205956Z): on a PostgreSQL install the atomic rescue's default root
+    ``<project>/.recall/atomic`` can be the first thing written under ``.recall``, and every later
+    writer keeps the mode it got. Red proof (2026-11-18, Linux test host, umask 022): with
+    ``build_lock`` in ``recall/generation_rescue.py`` reverted to ``root.mkdir(parents=True,
+    exist_ok=True)`` this failed on ``== 0o700`` with ``0o755``.
+    """
+    from recall.generation_rescue import build_lock
+
+    with build_lock(tmp_path / ".recall" / "atomic", "generation-1"):
+        pass
+    assert _mode(tmp_path / ".recall") == 0o700
+    assert (tmp_path / ".recall" / ".gitignore").is_file()
+
+
+@_POSIX_ONLY
+@pytest.mark.usefixtures("umask_022")
+def test_make_dir_leaves_a_directory_outside_recall_at_the_umask(tmp_path: Path) -> None:
+    """A rescue root the user pointed outside ``.recall`` keeps the umask, as ``make_parent`` does.
+    Red proof (2026-11-18, Linux test host, umask 022): with ``make_dir``'s final ``mkdir`` mutated
+    to make every missing component with ``mode=0o700`` this failed on ``== 0o755`` with
+    ``0o700``."""
+    state_dir.make_dir(tmp_path / "rescue" / "atomic")
+    assert _mode(tmp_path / "rescue") == 0o755
+
+
 def test_the_docker_context_excludes_recall_state_at_any_depth() -> None:
     lines = set((REPO / ".dockerignore").read_text(encoding="utf-8").splitlines())
     assert {".recall", "**/.recall"} <= lines

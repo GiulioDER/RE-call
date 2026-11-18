@@ -41,6 +41,19 @@ def make_parent(path: Path) -> None:
     write_ignore(parent)
 
 
+def make_dir(directory: Path) -> None:
+    """Create ``directory`` and its parents, making a missing ``.recall`` among them as `make_parent` does.
+
+    An atomic rescue root defaults to ``<project>/.recall/atomic``, and on a PostgreSQL install it
+    can be the first thing written there; a plain ``mkdir(parents=True)`` would give ``.recall``
+    the umask mode, which every later writer then keeps (CCA ENV-001).
+    """
+    state = next((p for p in (directory, *directory.parents) if p.name == STATE_DIR), None)
+    if state is not None:
+        make_parent(state / IGNORE_NAME)
+    directory.mkdir(parents=True, exist_ok=True)
+
+
 def write_ignore(directory: Path) -> None:
     """Give an existing ``directory`` the ``.gitignore`` of ``*`` when it has none; never overwrite one."""
     try:
