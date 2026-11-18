@@ -69,6 +69,13 @@ RAM_REPORTING_SLACK_BYTES = 1 * 1024**3
 #: cannot load it — an option that is visible, selectable, and fails later.
 SPLADE_MIN_VRAM_BYTES = 6 * 1024**3
 
+#: How far under the floor a card may report and still count as a 6 GB card (CCA NUM-001, owner
+#: decision 2026-11-18). `probe_cuda_vram` asks torch first, whose `total_memory` comes in under
+#: the nominal size, and nvidia-smi second, which reports the nominal 6144 MiB, so without slack
+#: the same card was feasible or not depending on whether torch was installed. Not measured on a
+#: 6 GB card: half a GiB is chosen to keep every such card in on both routes and a 5 GB one out.
+VRAM_REPORTING_SLACK_BYTES = 512 * 1024**2
+
 #: Path fragments that identify the Microsoft Store interpreter. Matched case-insensitively
 #: against `sys.executable`. `WindowsApps` covers both the per-user shim directory and the
 #: `Program Files\WindowsApps` install root.
@@ -357,7 +364,7 @@ def splade_is_feasible(*, cuda_available: bool, vram_bytes: int | None) -> bool:
     """
     if not cuda_available or vram_bytes is None:
         return False
-    return vram_bytes >= SPLADE_MIN_VRAM_BYTES
+    return vram_bytes >= SPLADE_MIN_VRAM_BYTES - VRAM_REPORTING_SLACK_BYTES
 
 
 def heavy_local_models_are_feasible(*, total_ram_bytes: int | None) -> bool:
