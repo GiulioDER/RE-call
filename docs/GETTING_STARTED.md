@@ -104,7 +104,7 @@ see [docs/INSTALLATION.md](INSTALLATION.md) and [docs/WIZARD.md](WIZARD.md).
 
 | Use case | Install | Next step |
 |---|---|---|
-| Lite CLI or MCP | [Install from source](LITE.md#install-a-build-that-contains-lite) | Run `recall setup --lite --memory ./notes`; use `--no-register` for CLI or manual client wiring. |
+| Lite CLI or MCP | [Install Lite](LITE.md#install-a-build-that-contains-lite) | Run `recall setup --lite --memory ./notes`; use `--no-register` for CLI or manual client wiring. |
 | PostgreSQL CLI and Python | `pip install "recall-rag[fastembed]"` | Run `recall setup`, then use `recall search` or the [Python API](API.md). |
 | PostgreSQL MCP clients | `pip install "recall-rag[fastembed,mcp]"` | Run setup and follow [the MCP guide](USING_WITH_CLAUDE.md). Host specific steps are below. |
 | Claude Agent SDK | `pip install "recall-rag[agent,fastembed]"` | Use the in process integration in [USING_WITH_AGENT_SDK.md](USING_WITH_AGENT_SDK.md). |

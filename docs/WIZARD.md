@@ -207,7 +207,7 @@ With `project_root` set:
   launched with an explicit `env` block inherits nothing, so each server carries its own variables.
   It also carries the atomic rescue settings, `RECALL_ATOMIC_RESCUE_MODE_BY_TENANT` and
   `RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT`, so a `recall generation promote` run in the project builds
-  the artifact its server needs.
+  the artifact its server needs. It also records `RECALL_ATOMIC_RESCUE_WHEN_MISSING` when configured.
 - **`CLAUDE.md`** and **`memory/MEMORY.md`** — block-scoped edits between markers, so your own file
   content is preserved.
 
@@ -228,17 +228,18 @@ tenant's server. The report's `atomic rescue:` line under each corpus says what 
 - **Where the artifacts go.** `<project_root>/.recall/atomic`. A `RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT`
   set in the shell that runs the wizard is used instead, and must be absolute. One root can serve
   several tenants.
-- **With the Docker stack, a missing artifact is answered without it.** When `data_root` provisions
-  the stack, the desktop app's uploads and calibrations run in those containers, which do not mount
-  the host's artifact root, so they promote a generation, or publish a calibration, without an
-  artifact. The wizard therefore also registers `RECALL_ATOMIC_RESCUE_WHEN_MISSING=skip` on the host
-  servers: a search whose artifact is missing, for another calibration, or damaged answers exactly as
-  with the rescue off and says why in `atomic_rescue_skipped`, and the server builds the artifact in
-  the background (at most one build at a time across servers, retried after 60 s doubling to 600 s
-  when it fails), then removes the artifacts of generations that cannot serve again. Everywhere else
-  the setting stays `refuse`, today's behaviour. See
+- **The Docker-backed desktop host defaults to ordinary retrieval while an artifact is missing.**
+  When `data_root` provisions Docker, the desktop app's uploads and calibrations run in containers
+  without the host's artifact root. They can promote a generation or publish a calibration without
+  an artifact. The wizard defaults the host servers to `RECALL_ATOMIC_RESCUE_WHEN_MISSING=skip`.
+  If the artifact is missing, damaged, or for another calibration, searches use ordinary retrieval
+  and report the reason in `atomic_rescue_skipped`. Across servers, one process at a time builds a
+  given generation under a given artifact root. After a failure, a later search can trigger a retry
+  after a delay that starts at 60 seconds and doubles up to 600 seconds. The builder then removes
+  artifacts for generations that cannot serve again. The default elsewhere is `refuse`.
+  An explicit `refuse` in the wizard's environment preserves refusal and disables the host builder. See
   [DESKTOP_ATOMIC_RESCUE_DESIGN.md](DESKTOP_ATOMIC_RESCUE_DESIGN.md).
-- **Only a tenant this run built an artifact for is served active**, without the Docker stack. Every
+- **With `refuse`, only a tenant this run built an artifact for is served active.** Every
   other server is pinned to `RECALL_ATOMIC_RESCUE_MODE=off`: the memory tenant has no generation, and
   a tenant left on an earlier generation may have no artifact; in active mode either would refuse
   every unscoped search. With the Docker stack (`skip`), only the memory tenant is pinned off.
@@ -247,8 +248,8 @@ tenant's server. The report's `atomic rescue:` line under each corpus says what 
   refuse to start on it.
 - **Without `numpy` and `threadpoolctl`** (the `atomic` extra), or with neither `project_root` nor
   a root in the shell, the rescue stays off and the report says why.
-- **The Docker services themselves serve with the rescue off**, since they cannot reach the root;
-  they serve only the desktop app, and the host servers build what their promotions leave missing.
+- **The Docker services serve with rescue off.** They serve only the desktop app and cannot access
+  the host artifact root.
 - **A failed build refuses the promotion**, as a failed publish does: the generation is left
   unpromoted and released for `recall generation gc`.
 
@@ -261,10 +262,10 @@ hours to build the first artifact. With a hosted embedder the cost is the provid
 After install, `recall generation promote` and `rollback` and an upload through an MCP server
 build the artifact before promotion when the rescue is active for the tenant. Publishing a new
 calibration rebuilds the artifact after publication. If that rebuild fails, the calibration stays
-published and applicable unscoped searches refuse until `recall generation rescue [generation-id]`
-builds a matching artifact. **The CLI learns the mode from the project's `.env`**, so
-run those commands from the project directory: from anywhere else the rescue reads as off, nothing
-is built, and the server, which is active, refuses the promoted generation. See
+published. With `refuse`, applicable unscoped searches refuse until
+`recall generation rescue [generation-id]` builds a matching artifact. With `skip`, they use
+ordinary retrieval. **The CLI learns the mode from the project's `.env`**, so run those commands
+from the project directory to apply the same settings. See
 [GENERATIONS.md](GENERATIONS.md#atomic-rescue).
 
 **Docker autostart is not configured.** Making a container start on login is a change to the machine
@@ -385,6 +386,10 @@ Two choices in that spec are not preferences:
   from the visible imports alone starts fine and dies with `ModuleNotFoundError` at the moment the
   user presses Install.
 
+The standalone installer registers Claude Code to run `recall-install.exe --mcp-stdio` directly.
+Keep the extracted folder, including `_internal`, at the path used during installation. If you
+move the bundle, run the installer from its new location to refresh the registration.
+
 ## Code signing, which is what makes the binary runnable at all
 
 ⛔ **This is not cosmetic, and "SmartScreen warning" understates it.** Measured 2026-08-21 on a
@@ -433,10 +438,9 @@ the right thing when they do not:
 - repository **variable** `SIGNPATH_ORGANIZATION_ID`
 - repository **secret** `SIGNPATH_API_TOKEN`
 
-Without them a pull request build still runs and still self-tests, unsigned — that is a check, not
-a download. **A tag build without them fails**, deliberately: shipping an unsigned release is worse
-than shipping none, because it works for whoever built it and is blocked for the audience it exists
-to serve, with nothing in the release saying which one you got.
+Pull requests without signing access can still build and self-test an unsigned bundle. A tag build
+without a SignPath organization warns and leaves the release without a Windows installer. Only a
+bundle that passes signing and signature verification can be attached to the release.
 
 After signing, `signtool verify /pa` runs against the artifact. The signing step's exit code only
 says the service accepted the request; `signtool` asks Windows whether the file now carries a chain

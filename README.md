@@ -12,14 +12,16 @@
 On SQLite or PostgreSQL, it combines dense vectors and full-text search using reciprocal rank
 fusion (RRF).
 
-**Opt-in atomic rescue** recovers a passage when a single sentence matches the query.
+**Atomic rescue** can recover a passage when a single sentence matches the query.
 A **semantic graph** maps the links between your memos.
 
 **The trust layer** abstains when no result clears a threshold calibrated on your own store.
 It ranks superseded memos below their successors, flags memos that have expired or are not yet
 valid, and lets you erase memos from the store.
 
-[Benchmarks and limits](docs/EVIDENCE.md) · [Security policy](SECURITY.md) · [For agents](docs/FOR_AGENTS.md)
+[Benchmarks and limits](https://github.com/GiulioDER/RE-call/blob/master/docs/EVIDENCE.md) ·
+[Security policy](https://github.com/GiulioDER/RE-call/blob/master/SECURITY.md) ·
+[For agents](https://github.com/GiulioDER/RE-call/blob/master/docs/FOR_AGENTS.md)
 
 <p align="center">
   <b>Memory that abstains when nothing clears its threshold.</b>

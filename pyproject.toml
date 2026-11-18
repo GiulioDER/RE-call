@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 # Distribution name is `recall-rag`; import name is `recall`. See docs/DEPENDENCIES.md.
 name = "recall-rag"
-version = "0.15.0"
+version = "0.16.0"
 description = "Trustworthy retrieval for an AI agent's own memory — verdict, confidence and provenance per hit, or an explicit abstention"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -266,8 +266,8 @@ desktop = [
     "PySide6-Essentials>=6.7", "keyring>=25", "mcp~=2.2.0", "psycopg-pool>=3.2", "fastembed>=0.9.1,<1",
     "onnxruntime>=1.17,<2", "tokenizers>=0.13,<1", "pillow>=13",
     # The `atomic` extra's two packages (owner decision 2026-11-16, CCA DEP-001), as in `fastembed`:
-    # without them the rescue cannot be turned on in this environment at all. They do not turn it
-    # on by themselves: beside the Docker stack the wizard keeps it off (`recall.wizard.headless`).
+    # the desktop wizard needs them to enable rescue on eligible host MCP servers beside Docker.
+    # The Docker services keep rescue off because they cannot access the host artifact root.
     "numpy>=1.26", "threadpoolctl>=3.1",
 ]
 

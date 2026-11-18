@@ -13,15 +13,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 - The atomic rescue is on at first install. `recall setup --lite` and the PostgreSQL wizard register
   it `active`, with its artifacts beside the Lite store or under `<project_root>/.recall/atomic`,
   and build the first artifact before they finish, which on Lite takes most of the install (the
-  first build embeds about ten views per 120 word chunk). Without the `atomic` dependencies, or beside the
-  desktop app's Docker services, it stays off with a note. The code default of
-  `RECALL_ATOMIC_RESCUE_MODE` is still `off`, so an existing deployment changes only when it sets it.
+  first build embeds about ten views per 120 word chunk). Without the `atomic` dependencies it stays
+  off with a note. `RECALL_ATOMIC_RESCUE_MODE` still defaults to `off` in code. Upgrading the package
+  keeps the existing configuration. Rerunning setup can register the new defaults.
   On a Lite store with the rescue active, every write that keeps a calibration in force builds the
   artifact the trust gate serves, and a search can move one parent chunk to dense rank six before
   fusion as on PostgreSQL. Fusion can move it into the final top five. A search the rescue applies
   to refuses while its artifact is missing, as between a
   write and its build or after `recall forget` until the next refresh. See
   [docs/LITE.md](docs/LITE.md#atomic-rescue) and [docs/GENERATIONS.md](docs/GENERATIONS.md#atomic-rescue).
+- For desktop installs that provision Docker, the wizard enables rescue on eligible host MCP
+  servers and defaults to `RECALL_ATOMIC_RESCUE_WHEN_MISSING=skip`. Eligible searches use ordinary
+  retrieval while the host builds the missing artifact in the background. The Docker services and
+  the memory tenant without a generation keep rescue off. See [the wizard guide](docs/WIZARD.md#atomic-rescue).
 - On PostgreSQL under an active rescue, `recall generation promote` and `rollback` and a certified
   MCP upload build the generation's artifact first and refuse when they cannot, and every calibration
   publish rebuilds it, reporting a failed rebuild with the command that retries it. New
@@ -61,8 +65,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 - `recall forget` and `recall withdraw` on a Lite store with the atomic rescue left the
   forgotten memo's view vectors in `micro-views.sqlite` and in the rescue artifacts under
   `RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT`, which also name its source. They now erase its views with
-  SQLite `secure_delete` and a truncating checkpoint, remove every artifact built before it, and
-  report an erasure that failed.
+  SQLite `secure_delete` and a truncating checkpoint, remove superseded artifacts owned by the
+  store, and report incomplete cleanup. A matching or unreadable legacy artifact whose owner is
+  unknown is retained for [ownership review](docs/LITE.md#atomic-rescue).
 
 ## [0.15.0] (2026-11-08)
 
