@@ -95,6 +95,22 @@ User-level and plugin-level hooks are separate registration paths. Review an ins
 that also has custom RE-call hooks before enabling equivalent handlers twice. Preserve
 unrelated hooks and use the client's normal trust review for changed plugin definitions.
 
+## Troubleshoot startup timeouts for manually configured servers
+
+If a manually configured RE-call MCP server is enabled but its tools are missing,
+check the Codex diagnostics for a handshake timeout. In the existing
+`[mcp_servers.<name>]` table in `CODEX_HOME/config.toml`, give the affected server
+more time to start, for example `startup_timeout_sec = 60`. Keep a higher timeout
+if you already use one.
+
+If Codex still opens the chat before the server is ready, set
+`mcp_optional_startup_grace_ms = 0` at the top of the file, before the first table.
+This makes Codex wait up to the configured startup timeout for each optional MCP
+server and can delay chat startup. See the [Codex MCP configuration guide](https://learn.chatgpt.com/docs/extend/mcp#configure-with-config-toml).
+
+Fully quit and reopen Codex. Use `recall_stats` to confirm the server is reachable,
+then run `recall_search` and `recall_evidence` to verify retrieval.
+
 ## Durable memo contract
 
 Write one fact per file in the Claude project memory directory and add its pointer to
