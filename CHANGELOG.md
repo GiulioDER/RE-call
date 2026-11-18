@@ -142,8 +142,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   generation, and on a stdio server with no source policy a stale report reaches the review queue
   and the audit ledger under one name. Under a source policy a memo the caller may not read is
   refused exactly as a missing one, and a bare file name is still matched only among the memos the
-  caller may read. A name lookup that fails before the write releases the call's idempotency
-  reservation.
+  caller may read. A name and the sources it reads resolve against one served generation, so a
+  promotion between the two cannot split a report, and a qualified name is matched among the rows
+  the caller may read, so a row outside the source policy no longer makes it fail. A report whose
+  write never started releases the call's idempotency reservation, so a retry runs; one whose
+  append has an unknown outcome keeps it for reconciliation.
+- On a Lite server with the assistant surface, `recall_withdraw` answered `sources_not_found` for
+  a memo named by its id, the name search shows, and for a memo named by its file it erased the
+  rows but kept the file, so the next refresh indexed the memo again. It now takes a memo of that
+  folder by its id (with or without `.md`) or its file, and withdraws it as `recall_forget_memo`
+  forgets one: the memo's journal entries, then its rows, then its file, then a refresh. Every
+  other name is withdrawn as before.
 - `recall provenance current` now applies `RECALL_SOURCE_POLICY_FILE` as `recall_current_facts`
   does: a memo the caller may not read whole is not named, and a fact left with no readable memo
   is not listed.
