@@ -110,6 +110,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   [docs/GETTING_STARTED.md](docs/GETTING_STARTED.md) and [docs/HOW_IT_WORKS.md](docs/HOW_IT_WORKS.md).
   The GitHub Pages site is retired, and the package's homepage and documentation links, the MCP
   Registry entry and the plugin manifests point at the repository instead.
+- A scoped dense search on a Lite store is faster. It filtered every chunk in Python on every
+  query, and with a source policy configured every search is scoped. The filter's result is now
+  kept per scope until the next write, and its prefix patterns are built once. Measured at 13,304
+  chunks, the policy filter on the first search after a write went from about 140 ms to about 30
+  ms, and later searches with the same scope skip it.
 
 ### Fixed
 

@@ -21,6 +21,9 @@ Invariants and the failure each one catches:
 - S28 the numpy top-k returns exactly what sorting every row would, ties broken by chunk id.
 - S29 `newest_indexed_at` moves with every write (it is served from the cached rows).
 - S30 a scoped keyword search still filters by scope.
+- S31 a scoped dense search filters the rows once per corpus version and scope, and a write
+  that adds an in-scope row is seen by the very next scoped search.
+- S32 a prefix scope builds each prefix's pattern once, not once per row.
 
 Red proof, 2026-10-07, each mutation alone against `recall/lite/store.py`, failing in the named
 assertion (JUnit XML), then restored byte for byte and green:
@@ -88,6 +91,13 @@ Third round, same day, after a profile on the real corpus put two thirds of a st
   its scope".
 The unscoped dense leg now multiplies the cached matrix instead of a copy of it. That is a speed
 change with no new behaviour, so it has no test of its own; S1, S7 and S14 still pin its results.
+
+Fourth round, 2026-11-18 (CCA PERF-004), on the test host, failing in the named assertion:
+- R1 (S31) against the pre-fix `_allowed` (master 9b98a18f5): "a repeated scoped search filtered
+  the corpus again".
+- R2 (S31) the cache kept on the store instead of the matrix (`self.__dict__.setdefault`), so a
+  write does not drop it: "a scoped search did not see the row a write added".
+- R3 (S32) against the pre-fix `_matches`: "the prefix pattern was built once per row".
 """
 
 from __future__ import annotations
@@ -531,3 +541,53 @@ def test_a_scoped_keyword_search_filters_like_a_scoped_dense_one(store: LiteStor
     assert [h.chunk.id for h in store.query_sparse("cache key", k=5, scope=Scope(folder="ops"))] == ["k1"], (
         "a scoped keyword search returned a row outside its scope"
     )
+
+
+def test_a_scoped_search_filters_once_per_corpus_version(store: LiteStore, monkeypatch: pytest.MonkeyPatch) -> None:
+    """S31: the allowed rows of a scope are computed once per corpus version, and a write drops them."""
+    import recall.lite.store as store_mod
+
+    store.upsert(
+        [_chunk(f"r{i}", f"memo {i}", source=f"/m/ops/r{i}.md", file=f"ops/r{i}.md") for i in range(5)]
+        + [_chunk("x", "elsewhere", source="/m/x.md", file="x.md")],
+        [_vec(1, 0)] * 5 + [_vec(1, 0)],
+    )
+    scope = Scope(source_prefixes=("ops",), security_policy_digest=None)
+    real, calls = store_mod._matches, []
+
+    def counting(scope_: Scope, row: Any) -> bool:
+        calls.append(row.id)
+        return real(scope_, row)
+
+    monkeypatch.setattr(store_mod, "_matches", counting)
+    first = {h.chunk.id for h in store.query_dense(_vec(1, 0), k=10, scope=scope)}
+    assert first == {f"r{i}" for i in range(5)}
+    calls.clear()
+    assert {h.chunk.id for h in store.query_dense(_vec(1, 0), k=10, scope=scope)} == first
+    assert not calls, "a repeated scoped search filtered the corpus again"
+    store.upsert([_chunk("r9", "new", source="/m/ops/r9.md", file="ops/r9.md")], [_vec(0, 1)])
+    hits = {h.chunk.id for h in store.query_dense(_vec(0, 1), k=10, scope=scope)}
+    assert "r9" in hits, "a scoped search did not see the row a write added"
+    assert "x" not in hits
+
+
+def test_a_prefix_scope_builds_each_pattern_once(store: LiteStore, monkeypatch: pytest.MonkeyPatch) -> None:
+    """S32: a prefix pattern is built per prefix, not per row and prefix."""
+    import recall.lite.store as store_mod
+
+    store.upsert(
+        [_chunk(f"r{i}", f"memo {i}", source=f"/m/ops/r{i}.md", file=f"ops/r{i}.md") for i in range(20)],
+        [_vec(1, 0)] * 20,
+    )
+    built: list[str] = []
+    real = store_mod._source_prefix_regex_pattern
+
+    def counting(prefix: str) -> str:
+        built.append(prefix)
+        return real(prefix)
+
+    monkeypatch.setattr(store_mod, "_source_prefix_regex_pattern", counting)
+    # Prefixes no other test uses, so a process-wide cache of patterns cannot hide the count.
+    prefixes = ("zz-s32-a", "zz-s32-b", "ops")
+    assert len(store.query_dense(_vec(1, 0), k=30, scope=Scope(source_prefixes=prefixes))) == 20
+    assert len(built) <= len(prefixes), f"the prefix pattern was built once per row: {len(built)} builds"

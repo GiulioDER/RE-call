@@ -43,7 +43,7 @@ import uuid
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -302,6 +302,14 @@ class _Matrix:
     vectors: Any  # numpy float32 array, rows normalised
     fingerprint: str  # `recall.lite.calibration.corpus_digest` of these rows
     newest: str | None  # max `indexed_at`; the fixed-width UTC format sorts as text, as SQL's max does
+    #: Row positions each scope allows, filled by `LiteStore._allowed`. A write replaces the whole
+    #: matrix, so an entry can never outlive the rows it was computed on (CCA PERF-004).
+    allowed: dict[Scope, list[int]] = field(default_factory=dict, compare=False, repr=False)
+
+
+#: Distinct scopes `_Matrix.allowed` keeps per corpus version. A source policy gives every search
+#: one scope, so a handful covers the normal case; past it, a scope is filtered without being kept.
+_ALLOWED_CACHE_ENTRIES = 16
 
 
 def _normalize(vectors: Any) -> Any:
@@ -390,9 +398,7 @@ def _matches(scope: Scope, row: _Row) -> bool:
         target = file or row.source
         # `fullmatch` with DOTALL is PostgreSQL's `~` on this anchored pattern: Python's `$` also
         # matches before a trailing newline, and its `.` stops at one.
-        if not any(
-            re.fullmatch(_source_prefix_regex_pattern(prefix), target, re.DOTALL) for prefix in scope.source_prefixes
-        ):
+        if not any(pattern.fullmatch(target) for pattern in _prefix_patterns(scope.source_prefixes)):
             return False
     if scope.security_policy_digest is not None and row.metadata.get("security_policy_digest") != scope.security_policy_digest:
         return False
@@ -411,6 +417,13 @@ def _matches(scope: Scope, row: _Row) -> bool:
         if not isinstance(value, str) or value.lower() != facet:
             return False
     return True
+
+
+@functools.lru_cache(maxsize=64)
+def _prefix_patterns(prefixes: tuple[str, ...]) -> tuple[re.Pattern[str], ...]:
+    """The compiled `_source_prefix_regex_pattern` of each prefix: built once per scope rather than
+    once per row and prefix, which was most of a scoped search's filter (CCA PERF-004)."""
+    return tuple(re.compile(_source_prefix_regex_pattern(prefix), re.DOTALL) for prefix in prefixes)
 
 
 def _json_text(metadata: dict[str, Any], key: str) -> str | None:
@@ -1431,10 +1444,15 @@ class LiteStore:
         )
 
     def _allowed(self, matrix: _Matrix, scope: Scope) -> list[int] | None:
-        """Row positions the scope allows, or None for every row."""
+        """Row positions the scope allows, or None for every row; kept on `matrix` per scope."""
         if scope.is_empty:
             return None
-        return [i for i, row in enumerate(matrix.rows) if _matches(scope, row)]
+        allowed = matrix.allowed.get(scope)
+        if allowed is None:
+            allowed = [i for i, row in enumerate(matrix.rows) if _matches(scope, row)]
+            if len(matrix.allowed) < _ALLOWED_CACHE_ENTRIES:
+                matrix.allowed[scope] = allowed
+        return allowed
 
     def query_dense(
         self, vector: list[float], k: int, source: str | None = None, scope: Scope | None = None
