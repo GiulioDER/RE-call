@@ -238,3 +238,67 @@ def test_the_server_checks_after_a_search_and_stops_at_shutdown(lite_env, tmp_pa
 
     _serve(lite_env, body)
     assert events == ["checked", "stopped"], f"the shutdown did not stop the builder: {events}"
+
+
+def test_a_slow_check_cannot_replace_the_running_worker(tmp_path: Path, monkeypatch) -> None:
+    """BUG-001. On 31e6841d, after_retrieval replaced the worker that stop must join."""
+    checking = threading.Event()
+    release_check = threading.Event()
+    building = threading.Event()
+    release_build = threading.Event()
+    clock = _Clock()
+    builder = _builder(tmp_path, _Build(), clock)
+    first_check = threading.Thread(target=builder.after_retrieval, daemon=True)
+
+    def missing(*args: object) -> bool:
+        if threading.current_thread() is first_check:
+            checking.set()
+            release_check.wait(10)
+        return False
+
+    def build(*args: object) -> None:
+        building.set()
+        release_build.wait(10)
+
+    monkeypatch.setattr(rb, "_artifact_serves", missing)
+    monkeypatch.setattr(builder, "_run", build)
+    first_check.start()
+    worker = None
+    try:
+        assert checking.wait(5), "first check did not reach the artifact lookup"
+        clock.now += rb.CHECK_INTERVAL_S
+        builder.after_retrieval()
+        assert building.wait(5), "later check did not start a worker"
+        worker = builder._thread
+        assert worker is not None and worker.is_alive()
+        release_check.set()
+        first_check.join(5)
+        assert not first_check.is_alive()
+        assert builder._thread is worker, "the slow check replaced the worker that stop must join"
+    finally:
+        release_check.set()
+        release_build.set()
+        first_check.join(5)
+        builder.stop()
+        if worker is not None:
+            worker.join(5)
+
+
+@pytest.mark.parametrize("where", ["check", "build", "prune"])
+def test_host_rescue_warnings_log_error_type_only(
+    tmp_path: Path, monkeypatch, caplog: pytest.LogCaptureFixture, where: str
+) -> None:
+    """SEC-001. All three RescueBuilder warning paths logged the raw message on 31e6841d."""
+    def fail(*args: object) -> None:
+        raise RuntimeError("worker diagnostic detail")
+
+    builder = _builder(tmp_path, _Build(), _Clock())
+    monkeypatch.setattr(rb, "_artifact_serves", fail if where == "check" else lambda *args: False)
+    if where == "build":
+        monkeypatch.setattr(builder, "_build", fail)
+    if where == "prune":
+        monkeypatch.setattr(builder, "_prune", fail)
+    builder.after_retrieval()
+    builder.stop()
+    assert any("RuntimeError" in record.getMessage() for record in caplog.records)
+    assert "worker diagnostic detail" not in caplog.text

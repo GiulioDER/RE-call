@@ -131,14 +131,14 @@ class RescueBuilder:
             if _artifact_serves(self._root, binding, key[1], self._embedder):
                 return
             with self._lock:
-                if self._stopped:
+                if self._stopped or (self._thread is not None and self._thread.is_alive()):
                     return
                 self._thread = threading.Thread(
                     target=self._run, args=(key,), name="recall-rescue-build", daemon=True
                 )
                 self._thread.start()
         except Exception as exc:  # BROAD-CATCH: fail-open  # a rescue problem must never fail a search
-            _log.warning("atomic rescue build check failed: %s", exc)
+            _log.warning("atomic rescue build check failed: %s", type(exc).__name__)
 
     def stop(self, timeout_s: float = 10.0) -> None:
         """Start no more builds, and let a running one finish before the store closes."""
@@ -171,7 +171,7 @@ class RescueBuilder:
                         self._store._dsn, self._store.tenant, generation_id, self._embedder, self._root
                     )
                 except Exception as exc:  # BROAD-CATCH: fail-open  # logged and retried after the backoff
-                    _log.warning("atomic rescue build for %s failed: %s", generation_id, exc)
+                    _log.warning("atomic rescue build for %s failed: %s", generation_id, type(exc).__name__)
                     previous = build_backoff(self._root, generation_id, calibration_id)
                     backoff = MIN_BACKOFF_S if previous is None else min(previous[1] * 2, MAX_BACKOFF_S)
                     # Under the build lock, so servers failing one after another double one record.
@@ -182,4 +182,4 @@ class RescueBuilder:
                 if self._prune is not None:
                     self._prune(self._store._dsn, self._store.tenant, self._root)
         except Exception as exc:  # BROAD-CATCH: fail-open  # a rescue problem must never fail a search
-            _log.warning("atomic rescue build for %s failed: %s", generation_id, exc)
+            _log.warning("atomic rescue build for %s failed: %s", generation_id, type(exc).__name__)

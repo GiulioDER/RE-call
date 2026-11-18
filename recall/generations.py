@@ -651,12 +651,27 @@ class GenerationManager:
 
     def list_generations(self) -> tuple[GenerationRecord, ...]:
         with self._connect() as conn:
-            rows = conn.execute(
-                f"SELECT {_GENERATION_COLUMNS} FROM recall_generations "
-                "WHERE tenant_id = %s ORDER BY created_at DESC, generation_id",
-                (self.tenant_id,),
-            ).fetchall()
+            return self._list_generations(conn)
+
+    def _list_generations(self, conn: psycopg.Connection) -> tuple[GenerationRecord, ...]:
+        rows = conn.execute(
+            f"SELECT {_GENERATION_COLUMNS} FROM recall_generations "
+            "WHERE tenant_id = %s ORDER BY created_at DESC, generation_id",
+            (self.tenant_id,),
+        ).fetchall()
         return tuple(_record(row) for row in rows)
+
+    def rescue_prune_snapshot(self) -> tuple[tuple[GenerationRecord, ...], set[str], set[str]]:
+        """Read the generation records, protected pointers and collected IDs from one snapshot."""
+        with self._connect() as conn, conn.transaction():
+            conn.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
+            state = conn.execute(
+                "SELECT active_generation_id, previous_generation_id "
+                "FROM recall_tenant_state WHERE tenant_id = %s",
+                (self.tenant_id,),
+            ).fetchone()
+            protected = {str(generation_id) for generation_id in (state or ()) if generation_id}
+            return self._list_generations(conn), protected, self._collected_ids(conn)
 
     def _load_identity(
         self, conn: psycopg.Connection, generation_id: str

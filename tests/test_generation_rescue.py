@@ -759,3 +759,54 @@ def test_a_rollback_whose_target_moved_during_its_build_is_refused(rescue_tenant
     assert built == [first]
     assert manager.active_generation_id() == third, "the unbuilt generation must not be activated"
     assert first in str(refused.value)
+
+
+@requires_db
+def test_prune_preserves_the_active_rescue_when_the_previous_pointer_returns(
+    rescue_tenant, tmp_path: Path, monkeypatch
+) -> None:
+    """STAKES-002. Two equal pointer reads can straddle changes that make the inventory stale."""
+    from recall.generation_rescue import prune_superseded
+    from recall.generations import _GENERATION_COLUMNS
+    from tests.test_calibration_carry_forward import _CarryEmbedder
+
+    tenant, manager = rescue_tenant
+    embedder = _CarryEmbedder()
+    retired, active, previous, next_ready = (
+        _certified_ready(manager, embedder, version) for version in ("v1", "v2", "v3", "v4")
+    )
+    for generation_id in (retired, active, previous):
+        manager.promote(generation_id, unsafe_development=True)
+    assert manager.rollback() == active
+    assert manager.previous_generation_id() == previous
+    artifact = _artifact(tmp_path, active, "kept.md")
+
+    real_execute = psycopg.Connection.execute
+    interleaved = False
+
+    def execute_with_promotions(conn, query, *args, **kwargs):  # noqa: ANN001, ANN002, ANN003, ANN202
+        nonlocal interleaved
+        inventory = f"SELECT {_GENERATION_COLUMNS} FROM recall_generations "
+        if not interleaved and str(query).startswith(inventory) and "ORDER BY created_at" in str(query):
+            interleaved = True
+            manager.promote(next_ready, unsafe_development=True)
+            with manager._connect() as writer:
+                writer.execute(
+                    "UPDATE recall_generations SET retired_at = '2000-01-01' "
+                    "WHERE tenant_id = %s AND generation_id = %s",
+                    (tenant, active),
+                )
+            rows = real_execute(conn, query, *args, **kwargs)
+            assert manager.rollback() == active
+            manager.promote(previous, unsafe_development=True)
+            assert manager.rollback() == active
+            return rows
+        return real_execute(conn, query, *args, **kwargs)
+
+    monkeypatch.setattr(psycopg.Connection, "execute", execute_with_promotions)
+    prune_superseded(TEST_DSN, tenant, tmp_path)
+
+    assert interleaved, "the overlapping publications did not run"
+    assert manager.active_generation_id() == active
+    assert manager.previous_generation_id() == previous
+    assert artifact.is_dir(), "prune deleted the rescue of the active generation"

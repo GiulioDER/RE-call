@@ -560,8 +560,8 @@ def prune_superseded(dsn: str, tenant: str, root: Path) -> int:
 
     Run by the host server after it builds one (`recall_mcp.rescue_builder`): a desktop install runs
     no gc, and each upload promotes a generation with a full-size artifact. Kept: the active
-    generation, the most recently retired one (a rollback's target), and every generation not yet
-    retired or failed (one about to be promoted). Removed: older retired, failed, and those gc has
+    generation, the rollback target, the latest retirement by timestamp, and every generation
+    not yet retired or failed (one about to be promoted). Removed: older retired, failed, and those gc has
     already deleted. Best effort: a directory a process still has mapped (Windows) stays, and a later
     prune removes it. Only this tenant's generation ids are considered, though tenants share a root.
     """
@@ -569,14 +569,16 @@ def prune_superseded(dsn: str, tenant: str, root: Path) -> int:
     from recall.lineage import GenerationState
 
     manager = GenerationManager(dsn, tenant, actor="recall-atomic-rescue")
-    records = manager.list_generations()
+    records, protected, collected = manager.rescue_prune_snapshot()
     retired = sorted(
         (record for record in records if record.state is GenerationState.RETIRED),
         key=lambda record: record.retired_at or datetime.min.replace(tzinfo=UTC),
     )
     doomed = {record.generation_id for record in retired[:-1]}
     doomed |= {record.generation_id for record in records if record.state is GenerationState.FAILED}
-    doomed |= manager.collected_generation_ids()
+    doomed |= collected
+    # Only a ready generation or the previous pointer can be made active after this snapshot.
+    doomed -= protected
     removed = 0
     for generation_id in sorted(doomed):
         try:

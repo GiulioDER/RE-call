@@ -121,11 +121,8 @@ def test_prune_keeps_the_active_and_the_rollback_target(tmp_path: Path, monkeypa
         def __init__(self, dsn: str, tenant: str, **_: object) -> None:
             pass
 
-        def list_generations(self):  # noqa: ANN202
-            return tuple(records)
-
-        def collected_generation_ids(self) -> set[str]:
-            return {"gen_collected"}
+        def rescue_prune_snapshot(self):  # noqa: ANN202
+            return tuple(records), {"gen_active", "gen_prev"}, {"gen_collected"}
 
     monkeypatch.setattr(generations, "GenerationManager", _Manager)
     for name in ("gen_active.cal_1", "gen_old.cal_1", "gen_prev", "gen_ready.cal_1", "gen_failed.cal_1",
@@ -157,14 +154,12 @@ def test_prune_removes_the_staging_left_by_a_killed_build(tmp_path: Path, monkey
         def __init__(self, dsn: str, tenant: str, **_: object) -> None:
             pass
 
-        def list_generations(self):  # noqa: ANN202
-            return (
+        def rescue_prune_snapshot(self):  # noqa: ANN202
+            records = (
                 SimpleNamespace(generation_id="gen_active", state=GenerationState.ACTIVE, retired_at=None),
                 SimpleNamespace(generation_id="gen_failed", state=GenerationState.FAILED, retired_at=None),
             )
-
-        def collected_generation_ids(self) -> set[str]:
-            return set()
+            return records, {"gen_active"}, set()
 
     monkeypatch.setattr(generations, "GenerationManager", _Manager)
     (tmp_path / ".gen_failed.cal_1.0123456789abcdef").mkdir()
@@ -174,3 +169,57 @@ def test_prune_removes_the_staging_left_by_a_killed_build(tmp_path: Path, monkey
 
     assert not (tmp_path / ".gen_failed.cal_1.0123456789abcdef").exists(), "a killed build's staging was kept"
     assert (tmp_path / ".gen_active.cal_1.fedcba9876543210").exists(), "a kept generation's staging was removed"
+
+
+def test_prune_does_not_remove_staging_while_a_builder_holds_the_lock(tmp_path: Path, monkeypatch) -> None:
+    """STAKES-001. On 31e6841d, prune_superseded removed staging under a held build lock."""
+    from types import SimpleNamespace
+
+    import recall.generations as generations
+    from recall.generation_rescue import build_lock, prune_superseded
+
+    manager = SimpleNamespace(
+        # The older candidate uses the separate inventory methods.
+        list_generations=lambda: (),
+        collected_generation_ids=lambda: {"gen_failed"},
+        rescue_prune_snapshot=lambda: ((), set(), {"gen_failed"}),
+    )
+    monkeypatch.setattr(generations, "GenerationManager", lambda *a, **k: manager)
+    stage = tmp_path / ".gen_failed.cal_1.0123456789abcdef"
+    stage.mkdir()
+    with build_lock(tmp_path, "gen_failed") as held:
+        assert held
+        prune_superseded("postgresql://x", "t", tmp_path)
+        assert stage.is_dir(), "prune removed a stage owned by a running worker"
+    assert prune_superseded("postgresql://x", "t", tmp_path) == 1
+    assert not stage.exists()
+
+
+def test_prune_preserves_the_rollback_pointer_after_a_clock_step(tmp_path: Path, monkeypatch) -> None:
+    """STAKES-002. On 31e6841d, prune_superseded removed the actual rollback target."""
+    from datetime import UTC, datetime
+    from types import SimpleNamespace
+
+    import recall.generations as generations
+    from recall.generation_rescue import prune_superseded
+    from recall.lineage import GenerationState
+
+    previous = tmp_path / "gen_previous.cal_1"
+    obsolete = tmp_path / "gen_obsolete.cal_1"
+    previous.mkdir()
+    obsolete.mkdir()
+    records = (
+        SimpleNamespace(generation_id="gen_previous", state=GenerationState.RETIRED,
+                        retired_at=datetime(2026, 11, 1, tzinfo=UTC)),
+        SimpleNamespace(generation_id="gen_obsolete", state=GenerationState.RETIRED,
+                        retired_at=datetime(2026, 11, 2, tzinfo=UTC)),
+    )
+    manager = SimpleNamespace(
+        # The DAT-001 parent uses the separate inventory methods.
+        list_generations=lambda: records,
+        collected_generation_ids=set,
+        rescue_prune_snapshot=lambda: (records, {"gen_previous"}, set()),
+    )
+    monkeypatch.setattr(generations, "GenerationManager", lambda *a, **k: manager)
+    prune_superseded("postgresql://x", "t", tmp_path)
+    assert previous.is_dir(), "prune removed the actual rollback target"
