@@ -230,7 +230,8 @@ _T = TypeVar("_T")
 #: the `RECALL_ENV=production` path.
 #:
 #: Scope, stated precisely because an earlier version of this comment overstated it: `METRICS.timer`
-#: was ALREADY used for tool-level latency in `recall_mcp/server.py` (`recall_tool_latency_ms`).
+#: was ALREADY used for tool-level latency in the MCP server (`recall_tool_latency_ms`, now in the
+#: `recall_mcp/server_*.py` tool modules).
 #: What had no series was any leg INSIDE `recall/`. Note also that `HybridRetriever` records
 #: per-query stage timings in `diagnostics.stage_ms`, so this metric is not the only per-leg
 #: measurement — it adds process-wide aggregation (percentiles an operator can read via MCP) and

@@ -28,8 +28,8 @@ from typing import Any, Protocol
 from recall.errors import RecallError
 
 #: Every tool the server can register, as the single source of truth for validation. Pinned
-#: against the live registry by `tests/test_tool_surface.py`, so a tool added to `server.py`
-#: without a line here fails a test rather than becoming quietly unselectable.
+#: against the live registry by `tests/test_tool_surface.py`, so a tool added to a
+#: `recall_mcp/server_*.py` tool module without a line here fails a test rather than becoming quietly unselectable.
 ALL_TOOL_NAMES: frozenset[str] = frozenset(
     {
         "recall_search",

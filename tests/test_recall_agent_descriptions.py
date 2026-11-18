@@ -29,7 +29,7 @@ def _normalized(text: str) -> str:
 def test_the_description_is_verbatim_from_the_server_docstring(description: str) -> None:
     source = _normalized(server_source())
     assert _normalized(description) in source, (
-        "recall_agent._descriptions has drifted from the recall_mcp/server.py docstring; "
+        "recall_agent._descriptions has drifted from the recall_mcp/server_search.py docstring; "
         "update whichever surface changed so both say the same thing"
     )
 

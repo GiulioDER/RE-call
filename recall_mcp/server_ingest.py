@@ -27,7 +27,7 @@ from recall.store import PgVectorStore
 from recall_mcp.auth import SCOPE_ADMIN, SCOPE_READ, SCOPE_WRITE
 from recall_mcp.limits import AsyncRateLimiter, INDEX_BYTES_BUDGET
 from recall_mcp.indexing import IndexPreflightError, index_memory
-# Through the service facade on purpose: this wrapper injects the service-level retrieval seams.
+# Through the service facade on purpose: `tenant_scopes` is defined there and nowhere else.
 from recall_mcp.service import tenant_scopes
 from recall_mcp.status import JobLedger, job_status
 from recall_mcp.models import IndexResult

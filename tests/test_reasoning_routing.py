@@ -294,7 +294,7 @@ def test_the_search_tool_gates_routing_on_both_halves() -> None:
     assert isinstance(keyword.value, ast.Name), "pass the bound name, not a literal"
 
     expr = bound.get(keyword.value.id)
-    assert expr is not None, f"{keyword.value.id} is not bound in recall_mcp/server.py"
+    assert expr is not None, f"{keyword.value.id} is not bound in the server modules (tests/server_modules.py)"
     source = ast.dump(expr)
     assert "answer_backend_configured" in source, (
         "routing must require a configured answer backend, or it advertises a tool that "

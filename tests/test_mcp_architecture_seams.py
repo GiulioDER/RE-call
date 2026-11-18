@@ -246,6 +246,26 @@ def test_the_facade_contract_lists_every_server_module() -> None:
     assert set(contract["source_modules"]) == modules, sorted(modules ^ set(contract["source_modules"]))
 
 
+def test_the_test_helper_lists_every_server_module() -> None:
+    """`tests/server_modules.SERVER_MODULES` names `server.py` and every `server_*.py` on disk.
+
+    A module missing from it is silently skipped by `setattr_on_server` (which is satisfied by
+    `server.py`'s re-export of the same name) and by every guard that reads `server_source()` or
+    `server_tree()`. `server_auth` is left out on purpose: a patch of `server.py` never reached it.
+    Red proof (2026-11-18, the test host): with "recall_mcp.server_facts" deleted from the tuple,
+    this test fails on the equality below, naming that module.
+    """
+    from pathlib import Path
+
+    from tests.server_modules import SERVER_MODULES
+
+    root = Path(__file__).resolve().parents[1] / "recall_mcp"
+    on_disk = {f"recall_mcp.{path.stem}" for path in root.glob("server*.py") if path.stem != "server_auth"}
+
+    assert set(SERVER_MODULES) == on_disk, sorted(on_disk ^ set(SERVER_MODULES))
+    assert len(SERVER_MODULES) == len(set(SERVER_MODULES)), "a module is listed twice"
+
+
 def test_trusted_retrieval_reads_the_reranker_and_admission_from_factories(monkeypatch) -> None:
     """`factories` is the one patch point of the reranker builder and the admission.
 

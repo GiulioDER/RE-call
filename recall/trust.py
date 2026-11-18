@@ -515,7 +515,7 @@ def _trusted_search(
     # bound a certified calibration — because both models emit 1024 dimensions, so the only check
     # that ran was the dimension one. `check_enterprise_readiness` compares these two, but only
     # `if control_plane is not None`, and a stdio server has none; its sibling check on the
-    # calibration's identity is documented in `recall_mcp/server.py` as unreachable from startup.
+    # calibration's identity is documented in `recall_mcp/server_lifespan.py` as unreachable from startup.
     # Nothing on that path compared the model at all.
     #
     # The PROFILE is compared too, because name and dimension cannot separate two profiles of one

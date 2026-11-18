@@ -168,7 +168,7 @@ _DUAL_WRITING_TOOLS = {"recall_index", "recall_forget", "recall_withdraw"}
 
 
 def _service_entry_points() -> tuple[str, ...]:
-    """Every approved service boundary function `server.py` imported that takes a store first.
+    """Every approved service boundary function the server modules import that takes a store first.
 
     DERIVED, not hand-listed, for the reason `recall_mcp.oidc.oidc_non_issuer_env_keys` records
     about its own list: an enumeration that must be remembered is one that will be forgotten. A
