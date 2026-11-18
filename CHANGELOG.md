@@ -229,6 +229,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   `.recall/` that already exists keeps its mode: on a shared host, run `chmod 700 .recall`. A
   store placed outside `.recall/` follows the umask as before. Windows is unchanged: the folder
   inherits its parent's permissions.
+- A lite refresh that fails on an exception no longer shows that exception's message to MCP
+  clients. `recall_stats` and the warning on `recall_search` name only its type (for example
+  `RuntimeError`, or `atomic rescue: RuntimeError`), because a provider's error can carry a request
+  URL with a key in it or the input it rejected, and what an agent is told reaches its model
+  provider. The state file, `recall lite refresh --check` and `recall doctor` keep the full text on
+  the store's host. A state file written before this release is served unchanged until the next
+  refresh.
 
 ## [0.15.0] (2026-11-08)
 
