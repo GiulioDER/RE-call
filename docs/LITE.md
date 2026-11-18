@@ -62,6 +62,12 @@ Add `.recall/` to the project's `.gitignore`: the database contains memo text an
 SQLite sidecars and refresh state belong outside version control too. Keep your original notes in
 their own backup or version control policy.
 
+On Linux and macOS, RE-call creates `.recall/` readable only by you (mode 0700), so other accounts
+on the machine cannot read the store. A `.recall/` made by an earlier version keeps its mode; run
+`chmod 700 .recall` on a shared host. A store you place outside `.recall/` gets the umask's mode,
+so keep it in a private directory. On Windows the folder inherits its parent's permissions, which
+are private under your user profile but not, for example, directly under `C:\`.
+
 Setup leaves strict trust enabled. A small corpus can index successfully while remaining
 uncertified. Add substantive memos and refresh; inspect the reported calibration reason rather than
 turning off trust to make a search answer. Automatic calibration does not guarantee that every
