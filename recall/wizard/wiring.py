@@ -339,8 +339,8 @@ def mcp_config(
     against whatever PATH the CLIENT has, which is not the environment recall was installed into.
     On Windows it routinely resolves to the Microsoft Store stub, which opens the Store instead of
     running anything, and the user sees a server that will not start with no cause named. Captured
-    from `sys.executable` at install time, which is by construction the interpreter that has
-    `recall_mcp` importable, since it is the one running this code.
+    from `sys.executable` at install time, which is the executable that has `recall_mcp` available.
+    The frozen installer exposes its own stdio mode because it cannot interpret Python's `-m`.
 
     `args` stays a list so a path containing spaces — `C:\\Program Files\\...` — is never re-split
     by a shell.
@@ -350,14 +350,17 @@ def mcp_config(
     stack's Linux containers (`headless.py` hands it to `StackSpec`), where a Windows APPDATA means
     nothing, and the install report prints it. A block's own value wins a collision.
     """
+    # PYTHONSAFEPATH=1 in `server_os_env()` keeps the session's directory off sys.path.
+    # ast-grep-ignore: python-module-run-with-safe-path
+    args = ["-m", "recall_mcp.server"]
+    if not interpreter and getattr(sys, "frozen", False):
+        args = ["--mcp-stdio"]
     return {
         "mcpServers": {
             block.name: {
                 "type": "stdio",
                 "command": interpreter or sys.executable,
-                # PYTHONSAFEPATH=1 in `server_os_env()` keeps the session's directory off sys.path.
-                # ast-grep-ignore: python-module-run-with-safe-path
-                "args": ["-m", "recall_mcp.server"],
+                "args": args.copy(),
                 "cwd": str(project_root),
                 "env": {**server_os_env(), **block.env},
             }

@@ -504,6 +504,31 @@ def test_the_server_command_launches_the_real_module_from_the_project_root(tmp_p
     assert entry["cwd"] == str(tmp_path / "project")
 
 
+def test_the_frozen_installer_registers_its_stdio_mode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A frozen executable has its own CLI. The old `-m` registration reaches argparse and dies.
+
+    Red proof: candidate 31e6841dc wrote `-m recall_mcp.server` into the local-scope client entry.
+    """
+    import sys
+
+    installer = str(tmp_path / "Windows bundle" / "recall-install.exe")
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "executable", installer)
+    client = _client(tmp_path)
+    register_local_scope(_blocks(tmp_path), project_root=tmp_path, config_path=client)
+    entry = _registered(client, tmp_path)["default-docs"]
+    assert entry["command"] == installer
+    assert entry["args"] == ["--mcp-stdio"]
+
+    python = str(tmp_path / "other" / "python.exe")
+    register_local_scope(_blocks(tmp_path), project_root=tmp_path, config_path=client, interpreter=python)
+    entry = _registered(client, tmp_path)["default-docs"]
+    assert entry["command"] == python
+    assert entry["args"] == ["-m", "recall_mcp.server"]
+
+
 def test_a_registered_server_can_start_when_its_client_replaces_the_environment(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

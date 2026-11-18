@@ -17,6 +17,15 @@ import sys
 
 def main() -> int:
     multiprocessing.freeze_support()
+    if sys.argv[1:] == ["--mcp-stdio"]:
+        import os
+
+        from recall_mcp.server import main as serve_mcp
+
+        os.environ["RECALL_TRANSPORT"] = "stdio"
+        serve_mcp()
+        return 0
+
     from recall.desktop.main import install_main
 
     return install_main(sys.argv[1:])

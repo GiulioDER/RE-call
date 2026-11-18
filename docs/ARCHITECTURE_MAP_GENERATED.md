@@ -99,7 +99,7 @@ Cross package edges: 447
 | 14 | `recall_mcp.reasoning_api` |
 | 13 | `recall.cli_commands._shared` |
 | 13 | `recall.dashboard.lite_db` |
-| 13 | `recall.desktop.main_window` |
+| 13 | `recall.desktop.main` |
 
 ## Cross package edges
 
@@ -632,7 +632,7 @@ They are observations, not automatic failures.
 | `recall.desktop.hardware` | 1 | 165 |
 | `recall.desktop.install_ui` | 8 | 175 |
 | `recall.desktop.jobs` | 0 | 0 |
-| `recall.desktop.main` | 10 | 185 |
+| `recall.desktop.main` | 13 | 185 |
 | `recall.desktop.main_window` | 13 | 180 |
 | `recall.desktop.models` | 0 | 0 |
 | `recall.desktop.profiles` | 2 | 2 |
