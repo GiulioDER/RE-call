@@ -14,6 +14,10 @@ Invariants and the failure each one catches:
 - H6 (DEPLOY-001) `recall setup --lite` refuses to register the server when the MCP SDK is not
   installed, instead of registering one that cannot start.
 - H7 (ENV-003) for a store outside `.recall/`, setup names the refresh state file to ignore.
+- H8 to H11 (PERF-001, residue) a store whose fit did not certify is refitted only once it has
+  grown by a quarter of the chunks that fit measured (inline, and in a background job's re-check),
+  a refit it does get runs off the write path when the write asks for the background, and a fit
+  for another model is refitted at once whatever the growth.
 
 Red proof: each test's docstring names the mutation (the pre-fix line of the production code) it
 was run against and the assertion that failed.
@@ -23,7 +27,9 @@ from __future__ import annotations
 
 import json
 import re
+import sqlite3
 import sys
+import threading
 from pathlib import Path
 
 import pytest
@@ -32,9 +38,10 @@ from recall.calibration_v2 import CalibrationStatus
 from recall.index import Indexer
 from recall.lite import LiteStore, LiteStoreError
 from recall.lite import memo_requests
-from recall.lite.calibration import auto_calibrate, ensure_calibrated
+from recall.lite.calibration import auto_calibrate, ensure_calibrated, schedule_refit, wait_for_refit
 from recall.lite.setup import run_lite_setup
 from recall.types import Chunk
+from tests.test_lite_calibration import DIM as WIDE
 from tests.test_lite_calibration import ContentWordEmbedder, _store, _strict, _write_memos
 
 DIM = 8
@@ -153,3 +160,97 @@ def test_h7_a_custom_store_names_its_refresh_state_to_ignore(tmp_path: Path) -> 
         embedder_name="content-words", store_path=project / "data" / "memory.db", register=False,
     )
     assert any("data/memory.refresh.json" in note for note in report.notes), "the refresh state file was not named"
+
+
+class _FlatEmbedder:
+    """Every text on one vector: no test question separates, so no fit ever certifies."""
+
+    dim = WIDE
+
+    def __init__(self, name: str = "test-flat") -> None:
+        self.name = name
+        self.calls: list[int] = []
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        self.calls.append(threading.get_ident())
+        return [[1.0] + [0.0] * (WIDE - 1) for _ in texts]
+
+    def embed_query(self, text: str) -> list[float]:
+        return self.embed([text])[0]
+
+
+def _uncertified(tmp_path: Path) -> tuple[LiteStore, Path, int]:
+    """A 30-memo store whose fit did not certify, its memo folder, and its calibration row count."""
+    store = LiteStore(tmp_path / "memory.db", dim=WIDE)
+    root = tmp_path / "m"
+    _write_memos(root, 30)
+    Indexer(store, _FlatEmbedder(), env={}).index_path(root)
+    assert auto_calibrate(store, _FlatEmbedder()).status is CalibrationStatus.UNCERTIFIED
+    return store, root, len(store.calibration_rows())
+
+
+def _grow(store: LiteStore, root: Path, count: int, start: int) -> None:
+    _write_memos(root, count, start=start)
+    Indexer(store, _FlatEmbedder(), env={}).index_path(root)
+
+
+def test_h8_an_uncertified_store_is_refitted_only_after_a_quarter_more_memory(tmp_path: Path) -> None:
+    """Red against the pre-fix `ensure_calibrated` (master bb28fcced, no `_uncertified_refit_waits`
+    call): "a write under a quarter refitted an uncertified store", 30 to 32 chunks ran a fit."""
+    store, root, fits = _uncertified(tmp_path)
+    try:
+        _grow(store, root, 2, 30)
+        outcome = ensure_calibrated(store, _FlatEmbedder())
+        assert len(store.calibration_rows()) == fits, "a write under a quarter refitted an uncertified store"
+        assert outcome.status is CalibrationStatus.STALE
+        _grow(store, root, 8, 32)
+        ensure_calibrated(store, _FlatEmbedder())
+        assert len(store.calibration_rows()) == fits + 1, "growing past a quarter did not refit"
+    finally:
+        store.close()
+
+
+def test_h9_a_due_refit_of_an_uncertified_store_runs_in_the_background(tmp_path: Path) -> None:
+    """Red against the pre-fix `if background and fit.certified:` in `ensure_calibrated`: "the refit
+    of an uncertified store ran on the write's own thread"."""
+    store, root, fits = _uncertified(tmp_path)
+    try:
+        _grow(store, root, 10, 30)
+        embedder = _FlatEmbedder()
+        outcome = ensure_calibrated(store, embedder, background=True)
+        assert threading.get_ident() not in embedder.calls, "the refit of an uncertified store ran on the write's own thread"
+        assert outcome.status is CalibrationStatus.STALE
+        wait_for_refit(store, timeout=120)
+        assert embedder.calls, "no background refit ran"
+        assert len(store.calibration_rows()) == fits + 1, "the background refit stored no fit"
+    finally:
+        store.close()
+
+
+def test_h10_a_background_refit_waits_for_the_same_quarter(tmp_path: Path) -> None:
+    """Red against `_refit_wanted` without its `_uncertified_refit_waits` check: "a background
+    refit fitted an uncertified store that grew under a quarter"."""
+    store, root, fits = _uncertified(tmp_path)
+    try:
+        _grow(store, root, 2, 30)
+        schedule_refit(store, _FlatEmbedder())
+        wait_for_refit(store, timeout=120)
+        assert len(store.calibration_rows()) == fits, "a background refit fitted an uncertified store that grew under a quarter"
+    finally:
+        store.close()
+
+
+def test_h11_a_fit_for_another_model_is_refitted_whatever_the_growth(tmp_path: Path) -> None:
+    """Red against `_uncertified_refit_waits` without `or _fitted_for_another_model(store, fit)`:
+    "the store kept another model's uncertified fit"."""
+    store, root, fits = _uncertified(tmp_path)
+    try:
+        _grow(store, root, 2, 30)
+        # What a model switch leaves: the store bound to the model that re-embedded it.
+        with sqlite3.connect(store.path) as conn:
+            conn.execute("UPDATE meta SET value = 'test-flat-2' WHERE key = 'embedder_model'")
+        conn.close()
+        ensure_calibrated(store, _FlatEmbedder("test-flat-2"))
+        assert len(store.calibration_rows()) == fits + 1, "the store kept another model's uncertified fit"
+    finally:
+        store.close()

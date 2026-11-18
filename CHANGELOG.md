@@ -119,6 +119,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   forget or withdraw on a file made before this release now runs VACUUM once, which needs about the
   file's size again in free disk, and records a `free_pages_zeroed` marker; new files carry the
   marker and skip it.
+- A Lite store whose calibration never certified ran a full calibration fit inline on every write
+  that changed it, and kept every fit as a row. It is now refitted only once it has grown by a
+  quarter of the chunks its last fit measured. Where a write already refitted a certified store in
+  the background (`recall_index` and the server's memo folder refresh), an uncertified store's
+  refit now runs there too; the assistant's `remember` and `delete` still refit inline, and only
+  when the store has grown that much. Until then the calibration reports `stale` rather than
+  `uncertified`, and strict search refuses as before. `recall_calibration_run` still fits on demand.
 - The setup wizard and the desktop app withheld SPLADE from a 6 GB GPU whenever torch was
   installed, because torch reports a card's memory a little under its nominal size and the floor
   was exactly 6 GiB; through nvidia-smi the same card qualified. The floor now allows 512 MiB of

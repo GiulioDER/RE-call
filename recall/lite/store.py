@@ -139,6 +139,9 @@ _NUMERIC_BOOST = 0.25
 _BUSY_TIMEOUT_S = 30.0
 #: The `meta` key set once the file holds no free page left over from before `secure_delete`.
 _FREE_PAGES_ZEROED = "free_pages_zeroed"
+#: The `meta` key holding how many chunks the newest uncertified fit measured: what
+#: `recall.lite.calibration` waits on before refitting a store that did not certify (CCA PERF-001).
+_UNCERTIFIED_FIT_CHUNKS = "uncertified_fit_chunks"
 #: The oldest SQLite the schema runs on: UPSERT is 3.24, the window functions of the
 #: supersession scan 3.25.
 _MIN_SQLITE = (3, 25, 0)
@@ -330,6 +333,9 @@ class CorpusSnapshot:
     @property
     def fingerprint(self) -> str:
         return self._matrix.fingerprint
+
+    def count(self) -> int:
+        return len(self._matrix.rows)
 
     @property
     def generation_id(self) -> str:
@@ -1651,8 +1657,13 @@ class LiteStore:
         model: str,
         dimension: int,
         evidence: tuple[str, str, bytes, str] | None = None,
+        uncertified_chunks: int | None = None,
     ) -> None:
         """Append a fit and, in the same transaction, the evidence it was fitted on.
+
+        `uncertified_chunks` is the chunk count an uncertified fit measured, kept as
+        `uncertified_fit_chunks` once this fit is the one in force. It is read only while the fit
+        in force did not certify, so a certified fit leaves it as it was.
 
         `evidence` is `(calibration_id, queries JSON, query vectors as float32 bytes, sources JSON)`;
         together or not at all, so a calibration never names evidence that was not written.
@@ -1688,6 +1699,16 @@ class LiteStore:
                     "DELETE FROM calibration_evidence WHERE calibration_id IS NOT ?",
                     (None if evidence is None else evidence[0],),
                 )
+                if uncertified_chunks is not None:
+                    self._conn.execute(
+                        "INSERT INTO meta(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                        (_UNCERTIFIED_FIT_CHUNKS, str(uncertified_chunks)),
+                    )
+
+    def uncertified_fit_chunks(self) -> int | None:
+        """The chunk count the newest uncertified fit measured, None if none was recorded."""
+        rows = self._metadata_values("SELECT value FROM meta WHERE key = ?", (_UNCERTIFIED_FIT_CHUNKS,))
+        return int(rows[0][0]) if rows else None
 
     def save_near_miss_coverage(self, calibration_id: str, report: dict[str, Any]) -> None:
         """Keep the near-miss coverage measured with a calibration (`recall.near_miss`), by its id."""
