@@ -42,6 +42,9 @@ def test_sync_logos_replaces_stale_dashboard_webp(tmp_path, monkeypatch):
         with Image.open(path) as image:
             assert image.format == "PNG"
             assert image.convert("RGBA").tobytes() == source.tobytes()
+    with Image.open(outputs[-1]) as icon:
+        # The plugin icon is a palette PNG; see test_claude_code_plugin.py's icon test.
+        assert icon.mode == "P", icon.mode
     assert dashboard.read_bytes() != stale, "sync_logos left the dashboard WebP stale"
     expected = source.resize((192, 96), Image.Resampling.LANCZOS)
     with Image.open(dashboard) as image:

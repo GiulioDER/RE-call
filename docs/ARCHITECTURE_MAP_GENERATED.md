@@ -8,7 +8,7 @@ design violation.
 ## Scope
 
 Packages: `recall`, `recall_mcp`, `recall_agent`, `recall_hooks`, `recall_interop`, `recall_consistency`
-Modules: 374
+Modules: 376
 Cross package edges: 447
 
 ## Highest fan in modules
@@ -23,9 +23,10 @@ Cross package edges: 447
 | 191 | `recall.cli_commands.dashboard_cmd` |
 | 191 | `recall_mcp.service` |
 | 190 | `recall.dashboard.server` |
-| 187 | `recall.cli_commands.setup_wizard` |
-| 183 | `recall.desktop.main` |
-| 179 | `recall.desktop.ui` |
+| 189 | `recall.cli_commands.setup_wizard` |
+| 185 | `recall.desktop.main` |
+| 181 | `recall.desktop.ui` |
+| 180 | `recall.desktop.main_window` |
 | 177 | `recall.cli_commands.reasoning_cmd` |
 | 175 | `recall.desktop.install_ui` |
 | 174 | `recall_mcp.reasoning_api` |
@@ -39,6 +40,7 @@ Cross package edges: 447
 | 168 | `recall.doctor` |
 | 166 | `recall_mcp.server_search` |
 | 165 | `recall.dashboard.config` |
+| 165 | `recall.desktop.hardware` |
 | 165 | `recall.lite.setup` |
 | 165 | `recall.wizard.llm` |
 | 165 | `recall_hooks.codex` |
@@ -53,8 +55,6 @@ Cross package edges: 447
 | 163 | `recall_mcp.server_assistant` |
 | 163 | `recall_mcp.server_facts` |
 | 163 | `recall_mcp.server_memory_admin` |
-| 162 | `recall.dashboard.corpus` |
-| 162 | `recall.dashboard.db` |
 
 ## Modules with the most direct imports
 
@@ -99,7 +99,7 @@ Cross package edges: 447
 | 14 | `recall_mcp.reasoning_api` |
 | 13 | `recall.cli_commands._shared` |
 | 13 | `recall.dashboard.lite_db` |
-| 13 | `recall.eval.labelled` |
+| 13 | `recall.desktop.main_window` |
 
 ## Cross package edges
 
@@ -603,7 +603,7 @@ They are observations, not automatic failures.
 | `recall.cli_commands.records_cmd` | 9 | 142 |
 | `recall.cli_commands.schema_cmd` | 2 | 143 |
 | `recall.cli_commands.secret_cmd` | 1 | 4 |
-| `recall.cli_commands.setup_wizard` | 19 | 187 |
+| `recall.cli_commands.setup_wizard` | 19 | 189 |
 | `recall.codex` | 2 | 164 |
 | `recall.confinement` | 0 | 0 |
 | `recall.constants` | 0 | 0 |
@@ -629,14 +629,16 @@ They are observations, not automatic failures.
 | `recall.derived_block` | 3 | 14 |
 | `recall.desktop` | 1 | 1 |
 | `recall.desktop.github` | 3 | 6 |
+| `recall.desktop.hardware` | 1 | 165 |
 | `recall.desktop.install_ui` | 8 | 175 |
 | `recall.desktop.jobs` | 0 | 0 |
-| `recall.desktop.main` | 10 | 183 |
+| `recall.desktop.main` | 10 | 185 |
+| `recall.desktop.main_window` | 13 | 180 |
 | `recall.desktop.models` | 0 | 0 |
 | `recall.desktop.profiles` | 2 | 2 |
 | `recall.desktop.runtime` | 5 | 45 |
 | `recall.desktop.sources` | 3 | 5 |
-| `recall.desktop.ui` | 12 | 179 |
+| `recall.desktop.ui` | 4 | 181 |
 | `recall.desktop.updates` | 2 | 2 |
 | `recall.desktop.uploads` | 4 | 18 |
 | `recall.doctor` | 15 | 168 |
