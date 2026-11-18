@@ -85,6 +85,7 @@ from recall.trust_policy import TrustPolicy
 from recall.types import Chunk
 from tests.audit_memory_support import EXPECTED, MEMOS, REPO
 from tests.test_lite_mcp import _serve, lite_env  # noqa: F401  # the fixture is used by name
+from tests.server_modules import setattr_on_server
 
 BUG = EXPECTED["RE-call__0123456789ab__BUG-001.md"]
 NOW = datetime(2026, 11, 1, tzinfo=UTC)
@@ -319,10 +320,8 @@ def test_d9_a_discarded_candidate_is_not_resolved() -> None:
 def test_d10_the_envelope_is_serialised_off_the_loop(
     lite_env: dict[str, str], monkeypatch: pytest.MonkeyPatch  # noqa: F811  # the imported fixture
 ) -> None:
-    from recall_mcp import server as srv
-
     envelope = {"tenant_id": "t", "generation_id": "g", "truncated": False, "records": [{"name": "Ünïcødé ✅"}]}
-    monkeypatch.setattr(srv, "records_memory", lambda store, **kwargs: envelope)
+    setattr_on_server(monkeypatch, "records_memory", lambda store, **kwargs: envelope)
     threads: list[int] = []
     real_dumps = json.dumps
 
@@ -331,7 +330,7 @@ def test_d10_the_envelope_is_serialised_off_the_loop(
             threads.append(threading.get_ident())
         return real_dumps(value, **kwargs)
 
-    monkeypatch.setattr(srv, "json", types.SimpleNamespace(**{**vars(json), "dumps": dumps}))
+    setattr_on_server(monkeypatch, "json", types.SimpleNamespace(**{**vars(json), "dumps": dumps}))
 
     async def body(_state: dict[str, Any], call: Any) -> tuple[str, int]:
         return await call("recall_records", ids=["x"]), threading.get_ident()

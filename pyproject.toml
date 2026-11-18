@@ -522,7 +522,9 @@ ignore_imports = [
 # recall_mcp/service.py is a compatibility facade over the modules that own its names (S5, #857;
 # S5b, #860): no other module of the server reaches through it, at import or at call time, so each
 # collaborator has its owner as its one patch point. The server imports two wrappers from it on
-# purpose, because they inject the facade's retrieval seams. The modules are listed one by one: with
+# purpose, because they inject the facade's retrieval seams; since the server split those imports
+# sit in `server_ingest` and `server_reasoning`, the tool modules that call them, so those two are
+# not sources here either. The modules are listed one by one: with
 # `recall_mcp` itself as the source, import-linter reads an import of a module inside it as internal
 # and checks nothing. `tests/test_mcp_architecture_seams.py` fails when a module is missing here.
 [[tool.importlinter.contracts]]
@@ -540,7 +542,10 @@ source_modules = [
     "recall_mcp.query_construction_api", "recall_mcp.reasoning_admin", "recall_mcp.reasoning_api",
     "recall_mcp.reasoning_common", "recall_mcp.reasoning_diagnostics",
     "recall_mcp.reasoning_engine", "recall_mcp.related_api", "recall_mcp.rescue_builder", "recall_mcp.retrieval",
-    "recall_mcp.semantic_graph_cache", "recall_mcp.server_auth", "recall_mcp.settings",
+    "recall_mcp.semantic_graph_cache", "recall_mcp.server_assistant", "recall_mcp.server_auth",
+    "recall_mcp.server_calibration", "recall_mcp.server_common", "recall_mcp.server_facts",
+    "recall_mcp.server_lifespan", "recall_mcp.server_memory_admin", "recall_mcp.server_search",
+    "recall_mcp.settings",
     "recall_mcp.stale_reports_api", "recall_mcp.status", "recall_mcp.stores", "recall_mcp.threads",
     "recall_mcp.tool_surface", "recall_mcp.translation", "recall_mcp.use_reports_api",
 ]

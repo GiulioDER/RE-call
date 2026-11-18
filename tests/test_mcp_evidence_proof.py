@@ -29,11 +29,11 @@ import asyncio
 import json
 from types import SimpleNamespace
 
-import recall_mcp.server as server_module
 from recall.evidence import EvidenceBundle, EvidenceItem
 from recall.support import CalibrationCoverage
 from recall_mcp.server import build_server
 from recall_mcp.settings import Settings
+from tests.server_modules import setattr_on_server
 
 
 _RECEIPT_KEYS = {
@@ -144,8 +144,8 @@ class _Provider:
 
 
 def _invoke(monkeypatch, retriever: _Retriever, provider: object | None, **kwargs) -> dict:
-    monkeypatch.setattr(server_module, "get_access_token", lambda: None)
-    monkeypatch.setattr(server_module, "reasoning_query", retriever)
+    setattr_on_server(monkeypatch, "get_access_token", lambda: None)
+    setattr_on_server(monkeypatch, "reasoning_query", retriever)
     state = {
         "store": SimpleNamespace(tenant="acme"),
         "embedder": object(),

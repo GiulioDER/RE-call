@@ -18,8 +18,8 @@ import subprocess
 import sys
 from pathlib import Path
 
-import recall_mcp.server as server_module
 from recall.cli import build_parser
+from tests.server_modules import server_tree
 
 API_MD = Path(__file__).resolve().parent.parent / "docs" / "API.md"
 
@@ -42,7 +42,7 @@ def _registered_mcp_tools() -> list[str]:
     AST rather than build_server(): enumerating must not require auth config or a database,
     and the decorator's `name=` constant is the registration.
     """
-    tree = ast.parse(Path(server_module.__file__).read_text(encoding="utf-8"))
+    tree = server_tree()
     names: list[str] = []
     for node in ast.walk(tree):
         if isinstance(node, ast.AsyncFunctionDef):

@@ -31,6 +31,7 @@ from types import SimpleNamespace
 
 import recall_mcp.server as server
 from recall_mcp.settings import Settings
+from tests.server_modules import server_source, setattr_on_server
 
 
 class _Recorder:
@@ -71,8 +72,8 @@ def _state(*, generation_mode: bool | None = None) -> dict[str, object]:
 @pytest.fixture
 def recorder(monkeypatch: pytest.MonkeyPatch) -> _Recorder:
     rec = _Recorder()
-    monkeypatch.setattr(server, "generation_ingest", rec.generation)
-    monkeypatch.setattr(server, "index_memory", rec.legacy)
+    setattr_on_server(monkeypatch, "generation_ingest", rec.generation)
+    setattr_on_server(monkeypatch, "index_memory", rec.legacy)
     return rec
 
 
@@ -147,9 +148,7 @@ def test_the_lifespan_publishes_the_flag_the_tool_reads() -> None:
     Asserted against the source rather than a live lifespan, which needs a database: the failure
     mode is a renamed key on one side, and that is visible here.
     """
-    from pathlib import Path
-
-    source = Path(server.__file__).read_text(encoding="utf-8")
+    source = server_source()
 
     assert '"route": runtime_route' in source, (
         "the lifespan must publish the resolved route into state, or the tool cannot prove which "

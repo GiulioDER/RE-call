@@ -26,6 +26,7 @@ from tests.test_mcp_auth_hunt_regressions import (
 )
 from tests.test_report_tools_database_names import FILES, NEW_QUOTE, OLD_QUOTE, SERVED, GenerationLikeStore
 from tests.test_report_tools_database_names import call as call  # noqa: F401
+from tests.server_modules import setattr_on_server
 
 
 def test_hidden_alias_does_not_change_a_readable_basename_report(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -100,7 +101,7 @@ def test_a_failed_alias_lookup_releases_the_unwritten_request(
     monkeypatch.setattr(store, "sources_for_identifiers", found)
     monkeypatch.setattr(store, "served_sources_for_identifiers", found)
     operation = "report_use" if tool == "recall_report_use" else "report_stale"
-    monkeypatch.setattr(server, operation, lambda target, **kwargs: (
+    setattr_on_server(monkeypatch, operation, lambda target, **kwargs: (
         target.rows.append((operation, {})) or {"recorded": True}
     ))
     result = _run(tool, state, monkeypatch, token, idempotency_key="same-request", **arguments)

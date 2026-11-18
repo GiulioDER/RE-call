@@ -31,6 +31,7 @@ import pytest
 
 from recall._env import REMOVED_ENTAILMENT_MESSAGE, refuse_removed_entailment
 from recall.cli import main
+from tests.server_modules import setattr_on_server
 
 
 class _Reached(Exception):
@@ -70,7 +71,7 @@ def _drive_startup(env: dict[str, str], monkeypatch: pytest.MonkeyPatch) -> None
     import recall_mcp.server as server
     from recall_mcp.settings import Settings
 
-    monkeypatch.setattr(server, "provider_from_env", _sentinel)
+    setattr_on_server(monkeypatch, "provider_from_env", _sentinel)
     settings = Settings.from_env(env)
 
     async def _run() -> None:

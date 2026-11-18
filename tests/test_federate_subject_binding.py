@@ -21,6 +21,7 @@ import recall_mcp.server as server
 from recall.retrieval_plan import RetrievalPlanResolver
 from recall_mcp.auth import SCOPE_FEDERATE, SCOPE_READ
 from recall_mcp.stores import StoreRegistry
+from tests.server_modules import setattr_on_server
 
 
 class _Registry(StoreRegistry):
@@ -53,7 +54,7 @@ def _resolver() -> RetrievalPlanResolver:
 
 def _plan(monkeypatch, route_id: str, claims: dict, scopes=(SCOPE_READ, SCOPE_FEDERATE), tenant="acme"):
     token = SimpleNamespace(scopes=list(scopes), claims=claims, client_id="agent-1")
-    monkeypatch.setattr(server, "get_access_token", lambda: token)
+    setattr_on_server(monkeypatch, "get_access_token", lambda: token)
     state = {"retrieval_plan_resolver": _resolver(), "stores": _Registry()}
     return server._retrieval_plan_for(
         state,

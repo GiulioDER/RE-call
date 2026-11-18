@@ -26,8 +26,7 @@ from recall_mcp.tool_surface import (
 )
 from recall_mcp import server
 from recall_mcp.settings import Settings
-
-SERVER = Path(__file__).resolve().parents[1] / "recall_mcp" / "server.py"
+from tests.server_modules import server_source
 
 
 def _tools_declared_in_server() -> set[str]:
@@ -36,7 +35,7 @@ def _tools_declared_in_server() -> set[str]:
     From source rather than by building a server, because building one needs auth, a database and
     a lifespan; the question here is only which names exist.
     """
-    return set(re.findall(r'@mcp\.tool\(\s*name="([^"]+)"', SERVER.read_text(encoding="utf-8")))
+    return set(re.findall(r'@mcp\.tool\(\s*name="([^"]+)"', server_source()))
 
 
 def test_the_known_tool_list_matches_the_server() -> None:

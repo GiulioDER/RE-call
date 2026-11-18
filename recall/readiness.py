@@ -257,8 +257,8 @@ def check_enterprise_readiness(
             if not ledger.current:
                 failures.append(f"control plane schema is not current: {ledger.describe()}")
             elif ledger.ahead:
-                # Reported through the EXISTING degraded channel, which `recall_mcp/server.py`
-                # already logs. Making `unknown` non-fatal without wiring this left a database
+                # Reported through the EXISTING degraded channel, which the server's lifespan
+                # (`recall_mcp/server_lifespan.py`) already logs. Making `unknown` non-fatal without wiring this left a database
                 # ahead of its package booting in total silence, which is worse than the fatal
                 # behaviour it replaced: the operator loses the one signal that a rollback is in
                 # progress.

@@ -9,6 +9,7 @@ import json
 import pytest
 from types import SimpleNamespace
 from tests.test_stated_facts_postgres import manager as manager, body, promote, uri, served
+from tests.server_modules import setattr_on_server
 
 def test_sec002_current_facts_respects_source_policy(manager, monkeypatch):
     from recall.embeddings import HashingEmbedder
@@ -26,7 +27,7 @@ def test_sec002_current_facts_respects_source_policy(manager, monkeypatch):
     caller = AccessContext('reader', manager.tenant_id, clearance='public')
     assert not policy.decide('memory/private.md', caller).allowed
     token = SimpleNamespace(scopes=[SCOPE_READ], claims={'tenant':manager.tenant_id,'principal':'reader','clearance':'public'},client_id='sec002-reader')
-    monkeypatch.setattr(srv, 'get_access_token', lambda: token)
+    setattr_on_server(monkeypatch, 'get_access_token', lambda: token)
     settings = Settings.from_env({'RECALL_TRANSPORT':'stdio','RECALL_EMBEDDER':'hashing','RECALL_MCP_TOOLS':'recall_current_facts'})
     mcp = srv.build_server(settings)
     tool = next(t for t in mcp._tool_manager.list_tools() if t.name == 'recall_current_facts')

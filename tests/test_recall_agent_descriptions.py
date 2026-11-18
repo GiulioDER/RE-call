@@ -8,16 +8,13 @@ if either surface drifts from the other.
 """
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 
 from recall_agent._descriptions import (
     RECALL_EVIDENCE_DESCRIPTION,
     RECALL_SEARCH_DESCRIPTION,
 )
-
-_SERVER_SOURCE = Path(__file__).resolve().parents[1] / "recall_mcp" / "server.py"
+from tests.server_modules import server_source
 
 
 def _normalized(text: str) -> str:
@@ -30,9 +27,9 @@ def _normalized(text: str) -> str:
     ids=["recall_search", "recall_evidence"],
 )
 def test_the_description_is_verbatim_from_the_server_docstring(description: str) -> None:
-    source = _normalized(_SERVER_SOURCE.read_text(encoding="utf-8"))
+    source = _normalized(server_source())
     assert _normalized(description) in source, (
-        "recall_agent._descriptions has drifted from the recall_mcp/server.py docstring; "
+        "recall_agent._descriptions has drifted from the recall_mcp/server_search.py docstring; "
         "update whichever surface changed so both say the same thing"
     )
 

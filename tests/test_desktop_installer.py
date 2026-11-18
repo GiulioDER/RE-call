@@ -574,7 +574,7 @@ def test_a_probe_error_never_shows_the_password(
     """⛔ SEC-001: a driver error quotes the connection string back verbatim.
 
     `probe_database` scrubs what it RETURNS and not what it RAISES, and the identical handler in
-    `recall/desktop/ui.py` already scrubs for a measured reason:
+    `recall/desktop/main_window.py` already scrubs for a measured reason:
     `ProgrammingError: missing "=" after "not-a-dsn://user:PASSWORD@x"`. I wrote a second copy of
     that handler and left the scrubbing out. This is the surface most likely to hit it, because it
     is where somebody types a connection string for the first time and it is what gets screenshotted.

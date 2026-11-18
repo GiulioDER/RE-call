@@ -34,6 +34,7 @@ from recall.types import (
     TrustedResult,
     Validity,
 )
+from tests.server_modules import server_source
 
 _INDEXED_AT = datetime(2026, 1, 1, tzinfo=timezone.utc)
 _VALID_FROM = datetime(2025, 12, 1, tzinfo=timezone.utc)
@@ -464,11 +465,7 @@ def test_an_abstained_mcp_evidence_bundle_tells_the_client_not_to_generate(patch
 
 def test_the_evidence_tool_is_registered_read_only_and_the_old_tools_are_untouched() -> None:
     """The tool surface grew; it did not change."""
-    import inspect
-
-    from recall_mcp import server
-
-    source = inspect.getsource(server)
+    source = server_source()
     assert 'name="recall_evidence"' in source
     for existing in ("recall_search", "recall_index", "recall_forget", "recall_stats"):
         assert f'name="{existing}"' in source, f"{existing} disappeared from the tool surface"

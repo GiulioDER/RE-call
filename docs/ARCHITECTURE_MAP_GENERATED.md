@@ -8,16 +8,18 @@ design violation.
 ## Scope
 
 Packages: `recall`, `recall_mcp`, `recall_agent`, `recall_hooks`, `recall_interop`, `recall_consistency`
-Modules: 367
-Cross package edges: 410
+Modules: 376
+Cross package edges: 447
 
 ## Highest fan in modules
 
 | Upstream modules | Module |
 |---:|---|
+| 220 | `recall_mcp.codex_server` |
 | 219 | `recall.cli_commands.calibration_cmd` |
-| 211 | `recall_mcp.codex_server` |
-| 210 | `recall_mcp.server` |
+| 219 | `recall_mcp.server` |
+| 199 | `recall_mcp.server_ingest` |
+| 199 | `recall_mcp.server_reasoning` |
 | 191 | `recall.cli_commands.dashboard_cmd` |
 | 191 | `recall_mcp.service` |
 | 190 | `recall.dashboard.server` |
@@ -28,12 +30,15 @@ Cross package edges: 410
 | 177 | `recall.cli_commands.reasoning_cmd` |
 | 175 | `recall.desktop.install_ui` |
 | 174 | `recall_mcp.reasoning_api` |
+| 172 | `recall_mcp.server_lifespan` |
 | 171 | `recall.wizard.projects` |
 | 170 | `recall.wizard.headless` |
 | 170 | `recall.wizard.state` |
 | 169 | `recall.cli_commands.doctor_cmd` |
 | 169 | `recall.cli_commands.lite_cmd` |
+| 169 | `recall_mcp.server_calibration` |
 | 168 | `recall.doctor` |
+| 166 | `recall_mcp.server_search` |
 | 165 | `recall.dashboard.config` |
 | 165 | `recall.desktop.hardware` |
 | 165 | `recall.lite.setup` |
@@ -47,24 +52,21 @@ Cross package edges: 410
 | 164 | `recall.wizard.wiring` |
 | 163 | `recall.dashboard.activity` |
 | 163 | `recall_agent` |
-| 162 | `recall.dashboard.corpus` |
-| 162 | `recall.dashboard.db` |
-| 162 | `recall.dashboard.edit` |
-| 162 | `recall.dashboard.graph` |
-| 162 | `recall.dashboard.lite_db` |
-| 162 | `recall.dashboard.review` |
-| 162 | `recall.dashboard.triage` |
-| 162 | `recall_agent._sdk` |
+| 163 | `recall_mcp.server_assistant` |
+| 163 | `recall_mcp.server_facts` |
+| 163 | `recall_mcp.server_memory_admin` |
 
 ## Modules with the most direct imports
 
 | Direct imports | Module |
 |---:|---|
-| 62 | `recall_mcp.server` |
 | 59 | `recall_mcp.service` |
+| 31 | `recall_mcp.server_lifespan` |
 | 30 | `recall.cli_commands.index_search` |
 | 27 | `recall.generations` |
+| 26 | `recall_mcp.server` |
 | 25 | `recall_mcp.lifecycle` |
+| 24 | `recall_mcp.server_reasoning` |
 | 23 | `recall.index` |
 | 23 | `recall_mcp.indexing` |
 | 23 | `recall_mcp.reasoning_engine` |
@@ -73,6 +75,7 @@ Cross package edges: 410
 | 21 | `recall` |
 | 21 | `recall.rewrite` |
 | 20 | `recall.wizard.headless` |
+| 20 | `recall_mcp.server_ingest` |
 | 19 | `recall.cli_commands.calibration_cmd` |
 | 19 | `recall.cli_commands.setup_wizard` |
 | 19 | `recall.lite.store` |
@@ -80,6 +83,7 @@ Cross package edges: 410
 | 17 | `recall.dashboard.server` |
 | 17 | `recall.generation_store` |
 | 17 | `recall_mcp.semantic_graph_cache` |
+| 16 | `recall_mcp.server_search` |
 | 15 | `recall.cli_commands.generation_cmd` |
 | 15 | `recall.cli_commands.provenance_cmd` |
 | 15 | `recall.doctor` |
@@ -96,10 +100,6 @@ Cross package edges: 410
 | 13 | `recall.cli_commands._shared` |
 | 13 | `recall.dashboard.lite_db` |
 | 13 | `recall.desktop.main_window` |
-| 13 | `recall.eval.labelled` |
-| 13 | `recall.reasoning` |
-| 12 | `recall.cli_commands.extract_rewrite` |
-| 12 | `recall.eval.harness` |
 
 ## Cross package edges
 
@@ -416,38 +416,75 @@ They are observations, not automatic failures.
 | `recall_mcp.server` | `recall._env` |
 | `recall_mcp.server` | `recall.answer_provider` |
 | `recall_mcp.server` | `recall.backends` |
-| `recall_mcp.server` | `recall.calibration` |
-| `recall_mcp.server` | `recall.control_plane` |
-| `recall_mcp.server` | `recall.current_state` |
-| `recall_mcp.server` | `recall.declared_keys` |
-| `recall_mcp.server` | `recall.desktop.uploads` |
-| `recall_mcp.server` | `recall.embeddings` |
 | `recall_mcp.server` | `recall.errors` |
-| `recall_mcp.server` | `recall.eval_clock` |
-| `recall_mcp.server` | `recall.evidence` |
-| `recall_mcp.server` | `recall.federation` |
-| `recall_mcp.server` | `recall.generation_store` |
-| `recall_mcp.server` | `recall.idempotency_receipts` |
-| `recall_mcp.server` | `recall.index` |
-| `recall_mcp.server` | `recall.lineage` |
-| `recall_mcp.server` | `recall.lite` |
-| `recall_mcp.server` | `recall.lite.refresh` |
 | `recall_mcp.server` | `recall.observability` |
 | `recall_mcp.server` | `recall.ops.health` |
-| `recall_mcp.server` | `recall.profiles` |
-| `recall_mcp.server` | `recall.proof_obligations` |
-| `recall_mcp.server` | `recall.proof_provider` |
-| `recall_mcp.server` | `recall.readiness` |
-| `recall_mcp.server` | `recall.reasoning` |
-| `recall_mcp.server` | `recall.records` |
-| `recall_mcp.server` | `recall.retrieval_plan` |
-| `recall_mcp.server` | `recall.runtime_route` |
-| `recall_mcp.server` | `recall.schema` |
 | `recall_mcp.server` | `recall.security_policy` |
-| `recall_mcp.server` | `recall.stale_reports` |
 | `recall_mcp.server` | `recall.store` |
-| `recall_mcp.server` | `recall.trust_policy` |
+| `recall_mcp.server_assistant` | `recall.declared_keys` |
+| `recall_mcp.server_assistant` | `recall.lite` |
+| `recall_mcp.server_assistant` | `recall.lite.refresh` |
+| `recall_mcp.server_assistant` | `recall.observability` |
+| `recall_mcp.server_assistant` | `recall.store` |
 | `recall_mcp.server_auth` | `recall.observability` |
+| `recall_mcp.server_common` | `recall.idempotency_receipts` |
+| `recall_mcp.server_common` | `recall.lineage` |
+| `recall_mcp.server_common` | `recall.observability` |
+| `recall_mcp.server_common` | `recall.security_policy` |
+| `recall_mcp.server_common` | `recall.store` |
+| `recall_mcp.server_common` | `recall.trust_policy` |
+| `recall_mcp.server_facts` | `recall.declared_keys` |
+| `recall_mcp.server_ingest` | `recall.desktop.uploads` |
+| `recall_mcp.server_ingest` | `recall.embeddings` |
+| `recall_mcp.server_ingest` | `recall.errors` |
+| `recall_mcp.server_ingest` | `recall.index` |
+| `recall_mcp.server_ingest` | `recall.lite` |
+| `recall_mcp.server_ingest` | `recall.observability` |
+| `recall_mcp.server_ingest` | `recall.runtime_route` |
+| `recall_mcp.server_ingest` | `recall.security_policy` |
+| `recall_mcp.server_ingest` | `recall.store` |
+| `recall_mcp.server_lifespan` | `recall._env` |
+| `recall_mcp.server_lifespan` | `recall.answer_provider` |
+| `recall_mcp.server_lifespan` | `recall.backends` |
+| `recall_mcp.server_lifespan` | `recall.calibration` |
+| `recall_mcp.server_lifespan` | `recall.control_plane` |
+| `recall_mcp.server_lifespan` | `recall.embeddings` |
+| `recall_mcp.server_lifespan` | `recall.eval_clock` |
+| `recall_mcp.server_lifespan` | `recall.evidence` |
+| `recall_mcp.server_lifespan` | `recall.federation` |
+| `recall_mcp.server_lifespan` | `recall.generation_store` |
+| `recall_mcp.server_lifespan` | `recall.lite.refresh` |
+| `recall_mcp.server_lifespan` | `recall.ops.health` |
+| `recall_mcp.server_lifespan` | `recall.profiles` |
+| `recall_mcp.server_lifespan` | `recall.proof_provider` |
+| `recall_mcp.server_lifespan` | `recall.readiness` |
+| `recall_mcp.server_lifespan` | `recall.retrieval_plan` |
+| `recall_mcp.server_lifespan` | `recall.runtime_route` |
+| `recall_mcp.server_lifespan` | `recall.schema` |
+| `recall_mcp.server_lifespan` | `recall.security_policy` |
+| `recall_mcp.server_lifespan` | `recall.store` |
+| `recall_mcp.server_memory_admin` | `recall.lite` |
+| `recall_mcp.server_memory_admin` | `recall.lite.refresh` |
+| `recall_mcp.server_memory_admin` | `recall.observability` |
+| `recall_mcp.server_reasoning` | `recall.current_state` |
+| `recall_mcp.server_reasoning` | `recall.evidence` |
+| `recall_mcp.server_reasoning` | `recall.generation_store` |
+| `recall_mcp.server_reasoning` | `recall.lite` |
+| `recall_mcp.server_reasoning` | `recall.observability` |
+| `recall_mcp.server_reasoning` | `recall.proof_obligations` |
+| `recall_mcp.server_reasoning` | `recall.reasoning` |
+| `recall_mcp.server_reasoning` | `recall.records` |
+| `recall_mcp.server_reasoning` | `recall.security_policy` |
+| `recall_mcp.server_reasoning` | `recall.stale_reports` |
+| `recall_mcp.server_reasoning` | `recall.store` |
+| `recall_mcp.server_reasoning` | `recall.trust_policy` |
+| `recall_mcp.server_search` | `recall.embeddings` |
+| `recall_mcp.server_search` | `recall.federation` |
+| `recall_mcp.server_search` | `recall.observability` |
+| `recall_mcp.server_search` | `recall.profiles` |
+| `recall_mcp.server_search` | `recall.retrieval_plan` |
+| `recall_mcp.server_search` | `recall.store` |
+| `recall_mcp.server_search` | `recall.trust_policy` |
 | `recall_mcp.service` | `recall.answer_provider` |
 | `recall_mcp.service` | `recall.atomic_rescue` |
 | `recall_mcp.service` | `recall.calibration` |
@@ -851,7 +888,7 @@ They are observations, not automatic failures.
 | `recall_mcp.access_log` | 1 | 1 |
 | `recall_mcp.assistant` | 14 | 157 |
 | `recall_mcp.auth` | 4 | 41 |
-| `recall_mcp.codex_server` | 2 | 211 |
+| `recall_mcp.codex_server` | 2 | 220 |
 | `recall_mcp.compat` | 0 | 0 |
 | `recall_mcp.config_report` | 2 | 150 |
 | `recall_mcp.desktop_ingest` | 15 | 154 |
@@ -879,8 +916,17 @@ They are observations, not automatic failures.
 | `recall_mcp.rescue_builder` | 4 | 141 |
 | `recall_mcp.retrieval` | 23 | 154 |
 | `recall_mcp.semantic_graph_cache` | 17 | 145 |
-| `recall_mcp.server` | 62 | 210 |
+| `recall_mcp.server` | 26 | 219 |
+| `recall_mcp.server_assistant` | 11 | 163 |
 | `recall_mcp.server_auth` | 5 | 153 |
+| `recall_mcp.server_calibration` | 5 | 169 |
+| `recall_mcp.server_common` | 11 | 161 |
+| `recall_mcp.server_facts` | 5 | 163 |
+| `recall_mcp.server_ingest` | 20 | 199 |
+| `recall_mcp.server_lifespan` | 31 | 172 |
+| `recall_mcp.server_memory_admin` | 9 | 163 |
+| `recall_mcp.server_reasoning` | 24 | 199 |
+| `recall_mcp.server_search` | 16 | 166 |
 | `recall_mcp.service` | 59 | 191 |
 | `recall_mcp.settings` | 10 | 149 |
 | `recall_mcp.stale_reports_api` | 5 | 157 |

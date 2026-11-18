@@ -67,6 +67,7 @@ from recall_mcp import server as srv
 from recall_mcp.settings import bootstrap_settings
 from recall_mcp.tool_surface import LITE_UNSERVED_TOOLS
 from tests.test_lite_calibration import _NOUNS, ContentWordEmbedder, _word, _write_memos
+from tests.server_modules import setattr_on_server
 
 QUESTION = f"who services the {_word(7, 1)} {_NOUNS[7]}"
 
@@ -94,7 +95,7 @@ def lite_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
     env = _env(tmp_path)
     for name, value in env.items():
         monkeypatch.setenv(name, value)  # the route is resolved from the process environment
-    monkeypatch.setattr(srv, "make_embedder", lambda *a, **k: ContentWordEmbedder())
+    setattr_on_server(monkeypatch, "make_embedder", lambda *a, **k: ContentWordEmbedder())
     return env
 
 

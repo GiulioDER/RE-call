@@ -249,6 +249,46 @@ def test_splade_is_only_offered_with_enough_vram() -> None:
     assert P.splade_is_feasible(cuda_available=True, vram_bytes=P.SPLADE_MIN_VRAM_BYTES) is True
 
 
+def _vram_through_torch(monkeypatch: pytest.MonkeyPatch, total_memory: int) -> int | None:
+    import types
+
+    properties = types.SimpleNamespace(total_memory=total_memory)
+    cuda = types.SimpleNamespace(is_available=lambda: True, get_device_properties=lambda _: properties)
+    monkeypatch.setattr(P, "_torch", lambda: types.SimpleNamespace(cuda=cuda))
+    return P.probe_cuda_vram()
+
+
+def _vram_through_nvidia_smi(monkeypatch: pytest.MonkeyPatch, mib: int) -> int | None:
+    monkeypatch.setattr(P, "_torch", lambda: None)
+    monkeypatch.setattr(P.shutil, "which", lambda _: "nvidia-smi")
+    monkeypatch.setattr(
+        subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(a, 0, f"{mib}\n", "")
+    )
+    return P.probe_cuda_vram()
+
+
+@pytest.mark.parametrize(
+    "nominal_gib, feasible", [(4, False), (5, False), (6, True), (8, True)]
+)
+def test_a_card_gets_the_same_splade_answer_on_both_probe_routes(
+    monkeypatch: pytest.MonkeyPatch, nominal_gib: int, feasible: bool
+) -> None:
+    """NUM-001 (CCA wizard hunt, PR 1196; owner decision 2026-11-18): torch reports a card's
+    memory under its nominal size and nvidia-smi reports the nominal MiB, so the exact 6 GiB floor
+    withheld SPLADE from a 6 GB card whenever torch was installed. Both routes must now agree.
+    The 256 MiB torch shortfall is illustrative, not a measured card.
+
+    Red proof (2026-11-18): with `splade_is_feasible` compared against `SPLADE_MIN_VRAM_BYTES`
+    again (the slack dropped), `[6-True]` failed on the torch route with `assert False is True`.
+    With the slack widened to 1.5 GiB, `[5-False]` failed with `assert True is False`.
+    """
+    torch_bytes = _vram_through_torch(monkeypatch, nominal_gib * 1024**3 - 256 * 1024**2)
+    smi_bytes = _vram_through_nvidia_smi(monkeypatch, nominal_gib * 1024)
+
+    assert P.splade_is_feasible(cuda_available=True, vram_bytes=smi_bytes) is feasible
+    assert P.splade_is_feasible(cuda_available=True, vram_bytes=torch_bytes) is feasible
+
+
 def test_heavy_local_models_need_an_eight_gb_class_machine() -> None:
     """Invariant: bge-large and the bge reranker are selectable only on a machine sold with 8 GB
     or more, and unknown memory withholds them, as unknown VRAM withholds SPLADE.

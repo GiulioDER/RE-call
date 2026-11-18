@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
+from tests.server_modules import server_source
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -12,7 +13,7 @@ CODEX_SKILL = ROOT / "codex-plugin" / "skills" / "re-call"
 
 
 def _tool_names() -> set[str]:
-    source = (ROOT / "recall_mcp" / "server.py").read_text(encoding="utf-8")
+    source = server_source()
     return set(re.findall(r'name="(recall_[a-z_]+)"', source))
 
 

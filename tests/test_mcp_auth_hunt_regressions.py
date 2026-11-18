@@ -32,6 +32,7 @@ from recall_mcp.indexing import IndexPreflightError
 from recall_mcp.oidc import IdentityProviderUnavailable, OidcConfig, OidcValidator, oidc_env_present
 from recall_mcp.server import build_server
 from recall_mcp.settings import Settings
+from tests.server_modules import setattr_on_server
 
 ISSUER = "https://idp.example.com"
 AUDIENCE = "recall-api"
@@ -82,7 +83,7 @@ def _authenticated(registry: _Registry, limiter: object | None = None) -> dict:
 
 
 def _run(name: str, state: dict, monkeypatch, token: _Token | None, **kwargs):
-    monkeypatch.setattr(server, "get_access_token", lambda: token)
+    setattr_on_server(monkeypatch, "get_access_token", lambda: token)
     tool = _tools()[name]
     ctx = SimpleNamespace(request_context=SimpleNamespace(lifespan_context=state))
     return asyncio.run(tool.fn(ctx=ctx, **kwargs))
@@ -108,7 +109,7 @@ def test_mutation_uses_its_own_source_policy_purpose(tmp_path, monkeypatch, tool
         decisions.append(state["source_security_policy"].decide("memo.md", context).allowed)
         raise _Stop
 
-    monkeypatch.setattr(server, service, check)
+    setattr_on_server(monkeypatch, service, check)
     for allowed_purpose in ("retrieval", purpose):
         state["source_security_policy"] = SourceSecurityPolicy(
             (SourceRule("memo.md", purposes=frozenset({allowed_purpose})),)
@@ -164,16 +165,16 @@ def test_search_serializes_only_authorized_route_tenants(monkeypatch):
     plan = RetrievalPlan(
         route_id="acme-route", primary_tenant="acme", allowed_tenants=frozenset({"acme", "hidden"}),
     )
-    monkeypatch.setattr(server, "_retrieval_plan_for", lambda *args, **kwargs: plan)
-    monkeypatch.setattr(
-        server, "prepare_federated_execution",
+    setattr_on_server(monkeypatch, "_retrieval_plan_for", lambda *args, **kwargs: plan)
+    setattr_on_server(
+        monkeypatch, "prepare_federated_execution",
         lambda *args, **kwargs: SimpleNamespace(
             store=kwargs["current_store"], embedder=None, retrieve_trusted=None,
         ),
     )
-    monkeypatch.setattr(server, "federation_diagnostics", lambda _: None)
-    monkeypatch.setattr(
-        server, "search_memory",
+    setattr_on_server(monkeypatch, "federation_diagnostics", lambda _: None)
+    setattr_on_server(
+        monkeypatch, "search_memory",
         lambda **kwargs: SimpleNamespace(
             model_copy=lambda update: SimpleNamespace(model_dump_json=lambda **opts: json.dumps(update)),
         ),
@@ -254,7 +255,7 @@ def test_report_use_accepts_an_idempotency_key_where_the_limiter_requires_one(mo
     the production limiter raises IdempotencyKeyRequired.
     """
     limiter = _IdempotentLimiter()
-    monkeypatch.setattr(server, "report_use", lambda store, **kwargs: {"recorded": True})
+    setattr_on_server(monkeypatch, "report_use", lambda store, **kwargs: {"recorded": True})
     out = _run(
         "recall_report_use",
         _authenticated(_Registry(), limiter),
@@ -280,7 +281,7 @@ def test_a_single_tenant_server_refuses_a_tenant_it_does_not_serve(monkeypatch) 
     in A.
     """
     calls: list[str] = []
-    monkeypatch.setattr(server, "calibration_status", lambda store: calls.append(store.tenant) or {})
+    setattr_on_server(monkeypatch, "calibration_status", lambda store: calls.append(store.tenant) or {})
     state = {"store": SimpleNamespace(tenant="acme"), "stores": None, "embedder": None, "calibration": None}
     with pytest.raises(PermissionError, match="globex"):
         _run("recall_calibration_status", state, monkeypatch, None, tenant="globex")
@@ -308,8 +309,8 @@ def test_a_retrieval_overload_reaches_the_client_with_its_retry_hint(monkeypatch
         def as_dict(self) -> dict:
             return {}
 
-    monkeypatch.setattr(server, "prepare_federated_execution", overloaded)
-    monkeypatch.setattr(server, "_retrieval_plan_for", lambda *args, **kwargs: _Plan())
+    setattr_on_server(monkeypatch, "prepare_federated_execution", overloaded)
+    setattr_on_server(monkeypatch, "_retrieval_plan_for", lambda *args, **kwargs: _Plan())
     state = {
         "store": SimpleNamespace(tenant="default"),
         "embedder": object(),
@@ -348,7 +349,7 @@ def test_an_ingest_refused_before_any_write_releases_its_reservation(tmp_path: P
     def refused(*args, **kwargs):
         raise IndexPreflightError("refused before any write")
 
-    monkeypatch.setattr(server, "ingest_into_serving_store", refused)
+    setattr_on_server(monkeypatch, "ingest_into_serving_store", refused)
     limiter = _ReleasingLimiter()
     with pytest.raises(IndexPreflightError):
         _run(
@@ -375,7 +376,7 @@ def test_ingest_stages_uploads_off_the_event_loop(tmp_path: Path, monkeypatch) -
         seen.append(threading.get_ident())
         raise _Stop
 
-    monkeypatch.setattr(server, "stage_uploads", staged)
+    setattr_on_server(monkeypatch, "stage_uploads", staged)
     with pytest.raises(_Stop):
         _run(
             "recall_ingest",
@@ -397,7 +398,7 @@ def test_the_store_registry_is_consulted_off_the_event_loop(monkeypatch) -> None
     on a worker thread. Failure mode caught: it runs on the loop thread.
     """
     registry = _Registry()
-    monkeypatch.setattr(server, "calibration_status", lambda store: {})
+    setattr_on_server(monkeypatch, "calibration_status", lambda store: {})
     _run("recall_calibration_status", _authenticated(registry), monkeypatch, _Token([SCOPE_READ]))
     assert registry.get_threads and threading.get_ident() not in registry.get_threads
 
@@ -413,7 +414,7 @@ def test_forget_resolves_the_shadow_store_off_the_event_loop(monkeypatch) -> Non
     def stop(*args, **kwargs):
         raise _Stop
 
-    monkeypatch.setattr(server, "forget_memory", stop)
+    setattr_on_server(monkeypatch, "forget_memory", stop)
     with pytest.raises(_Stop):
         _run("recall_forget", _authenticated(registry), monkeypatch, _Token([SCOPE_FORGET]), sources=["memo.md"])
     assert registry.shadow_threads and threading.get_ident() not in registry.shadow_threads
@@ -551,7 +552,7 @@ def test_main_configures_logging_before_building_the_server(monkeypatch) -> None
     reversed, so startup warnings bypass RECALL_LOG_FORMAT=json and INFO lines are dropped.
     """
     order: list[str] = []
-    monkeypatch.setattr(server, "bootstrap_settings", lambda: Settings.from_env({}))
+    setattr_on_server(monkeypatch, "bootstrap_settings", lambda: Settings.from_env({}))
     monkeypatch.setattr(server, "configure_logging", lambda **kwargs: order.append("logging"))
 
     def built(settings):

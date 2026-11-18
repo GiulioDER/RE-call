@@ -76,6 +76,7 @@ from recall_mcp.assistant import ASSISTANT_TOOLS, AssistantMemos, AssistantSurfa
 from recall_mcp.settings import bootstrap_settings
 from tests.test_lite_calibration import ContentWordEmbedder, _write_memos
 from tests.test_lite_mcp import _env
+from tests.server_modules import setattr_on_server
 
 CONTRACT = json.loads(
     (Path(__file__).resolve().parent / "fixtures" / "assistant_surface_contract.json").read_text(encoding="utf-8")
@@ -97,7 +98,7 @@ def envs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[dict[str, str
     plain = _env(tmp_path)
     for name, value in plain.items():
         monkeypatch.setenv(name, value)  # the route is resolved from the process environment
-    monkeypatch.setattr(srv, "make_embedder", lambda *a, **k: ContentWordEmbedder())
+    setattr_on_server(monkeypatch, "make_embedder", lambda *a, **k: ContentWordEmbedder())
     _write_memos(tmp_path / "mem", 48)  # enough for the lite calibration to certify
     return {**plain, "RECALL_ASSISTANT_MEMOS": str(tmp_path / "memos")}, plain
 
@@ -419,7 +420,7 @@ def test_a_writer_without_the_read_scope_gets_its_own_key_and_nothing_else(
     written as `read_facts=True` in `recall_mcp.server`'s `recall_remember`; this test failed at its
     equality assertion with pref-0001's value and id in `in_force`.
     """
-    monkeypatch.setattr(srv, "_caller_may_read", lambda state: False)
+    setattr_on_server(monkeypatch, "_caller_may_read", lambda state: False)
 
     async def body(a: Call, p: Call, state: dict[str, Any]) -> None:
         await a("recall_remember", text="The user drink tea, every morning.", kind="pref", fact=TEA,
@@ -445,7 +446,7 @@ def test_the_read_scope_is_decided_as_the_tools_decide_it(monkeypatch: pytest.Mo
     assert srv._caller_may_read({}) is True
     stores = {"stores": object()}
     for scopes, expected in (([srv.SCOPE_WRITE], False), ([srv.SCOPE_READ], True), ([srv.SCOPE_READ, srv.SCOPE_WRITE], True)):
-        monkeypatch.setattr(srv, "get_access_token", lambda scopes=scopes: SimpleNamespace(scopes=scopes, claims={"tenant": "t"}))
+        setattr_on_server(monkeypatch, "get_access_token", lambda scopes=scopes: SimpleNamespace(scopes=scopes, claims={"tenant": "t"}))
         assert srv._caller_may_read(stores) is expected, scopes
-    monkeypatch.setattr(srv, "get_access_token", lambda: None)
+    setattr_on_server(monkeypatch, "get_access_token", lambda: None)
     assert srv._caller_may_read(stores) is False

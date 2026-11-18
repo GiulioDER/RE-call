@@ -115,6 +115,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   forget or withdraw on a file made before this release now runs VACUUM once, which needs about the
   file's size again in free disk, and records a `free_pages_zeroed` marker; new files carry the
   marker and skip it.
+- The setup wizard and the desktop app withheld SPLADE from a 6 GB GPU whenever torch was
+  installed, because torch reports a card's memory a little under its nominal size and the floor
+  was exactly 6 GiB; through nvidia-smi the same card qualified. The floor now allows 512 MiB of
+  slack, so a 6 GB card qualifies either way and a 5 GB one does not.
 - A correction through `recall_remember` wrote its target as a bare file name, which matched every
   memo folder's memo of that id under the index root: with two agent folders numbering from
   `note-0001`, the corrected memo and the other folder's memo both read `ambiguous_supersession`.

@@ -33,6 +33,7 @@ from recall_mcp import retrieval as retrieval_module
 from recall_mcp import semantic_graph_cache
 from recall_mcp import service
 from recall_mcp.graph_expansion import GRAPH_FIRST_SEED_K
+from tests.server_modules import setattr_on_server
 
 ROOT = Path(__file__).resolve().parents[1]
 NOW = datetime(2026, 10, 30, tzinfo=UTC)
@@ -224,7 +225,6 @@ def test_bug002_reasoning_tool_reads_a_naive_as_of_as_utc(monkeypatch) -> None:
     validity bounds during graph expansion and raised TypeError.
     Production line: the `as_of` parse in `recall_mcp.server.recall_reasoning_query`.
     """
-    import recall_mcp.server as server_module
     from recall_mcp.server import build_server
     from recall_mcp.settings import Settings
 
@@ -237,8 +237,8 @@ def test_bug002_reasoning_tool_reads_a_naive_as_of_as_utc(monkeypatch) -> None:
         seen["as_of"] = kwargs.get("as_of")
         raise Captured
 
-    monkeypatch.setattr(server_module, "get_access_token", lambda: None)
-    monkeypatch.setattr(server_module, "reasoning_query", capture)
+    setattr_on_server(monkeypatch, "get_access_token", lambda: None)
+    setattr_on_server(monkeypatch, "reasoning_query", capture)
     state = {
         "store": SimpleNamespace(tenant="acme"),
         "embedder": object(),
