@@ -81,13 +81,13 @@ Cross package edges: 410
 | 17 | `recall.generation_store` |
 | 17 | `recall_mcp.semantic_graph_cache` |
 | 15 | `recall.cli_commands.generation_cmd` |
+| 15 | `recall.cli_commands.provenance_cmd` |
 | 15 | `recall.doctor` |
 | 15 | `recall_mcp.desktop_ingest` |
 | 15 | `recall_mcp.graph_first_api` |
 | 15 | `recall_mcp.query_construction_api` |
 | 15 | `recall_mcp.reasoning_diagnostics` |
 | 14 | `recall.calibration_v2` |
-| 14 | `recall.cli_commands.provenance_cmd` |
 | 14 | `recall.eval.promotion.__main__` |
 | 14 | `recall.generation_rescue` |
 | 14 | `recall.lite.refresh` |
@@ -561,7 +561,7 @@ They are observations, not automatic failures.
 | `recall.cli_commands.lint_check` | 7 | 146 |
 | `recall.cli_commands.lite_cmd` | 9 | 169 |
 | `recall.cli_commands.manifest_cmd` | 4 | 142 |
-| `recall.cli_commands.provenance_cmd` | 14 | 158 |
+| `recall.cli_commands.provenance_cmd` | 15 | 158 |
 | `recall.cli_commands.reasoning_cmd` | 11 | 177 |
 | `recall.cli_commands.records_cmd` | 9 | 142 |
 | `recall.cli_commands.schema_cmd` | 2 | 143 |
@@ -691,7 +691,7 @@ They are observations, not automatic failures.
 | `recall.lite.memo_requests` | 6 | 140 |
 | `recall.lite.receipts` | 3 | 140 |
 | `recall.lite.refresh` | 14 | 140 |
-| `recall.lite.setup` | 9 | 165 |
+| `recall.lite.setup` | 8 | 165 |
 | `recall.lite.store` | 19 | 140 |
 | `recall.lite.writer_lock` | 1 | 140 |
 | `recall.manifest` | 3 | 15 |

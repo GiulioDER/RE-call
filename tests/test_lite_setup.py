@@ -160,6 +160,35 @@ def test_a_mode_set_in_the_shell_is_registered_as_it_is(tmp_path: Path, monkeypa
     assert not (project / ".recall" / "memory.db.atomic").exists()
 
 
+def test_a_per_tenant_mode_in_the_shell_does_not_skip_the_registered_build(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """E9: setup registers no `RECALL_ATOMIC_RESCUE_MODE_BY_TENANT`, so the build must not follow
+    one in the shell either: a `default:off` there skipped the artifact of a server registered
+    `active`, whose first search then found none.
+
+    Red proof (2026-11-18): with the setup refresh given `rescue_env={**os.environ, **atomic_env}`
+    again in `recall/lite/setup.py::run_lite_setup`, this test failed at "setup built no artifact".
+    """
+    from recall.lite.atomic import manifest_path
+
+    _blank_rescue_environment(monkeypatch)
+    monkeypatch.setenv("RECALL_ATOMIC_RESCUE_MODE_BY_TENANT", "default:off")
+    project, config, report = _setup(tmp_path)
+    env = _servers(config)[SERVER_NAME]["env"]
+    assert isinstance(env, dict)
+    assert env.get("RECALL_ATOMIC_RESCUE_MODE") == "active"
+    assert "RECALL_ATOMIC_RESCUE_MODE_BY_TENANT" not in env
+    assert report.atomic.startswith("built for "), f"setup built no artifact: {report.atomic!r}"
+    store_path = (project / ".recall" / "memory.db").resolve()
+    with LiteStore(store_path, dim=DIM) as store:
+        resolution = store.resolve_calibration()
+        assert resolution.artifact is not None
+        root = Path(str(env.get("RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT")))
+        manifest = manifest_path(root, store, store.lite_generation_id(), resolution.artifact.calibration_id)
+        assert manifest.is_file(), "the registered server's first search would find no artifact"
+
+
 def test_without_the_atomic_packages_setup_leaves_the_rescue_off(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """E7: with the rescue on, every search would refuse without numpy and threadpoolctl."""
     import importlib.util
@@ -194,44 +223,3 @@ def test_a_relative_root_in_the_shell_is_refused_before_anything_is_written(tmp_
     with pytest.raises(ValueError, match="RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT"):
         _setup(tmp_path)
     assert not (tmp_path / "project" / ".recall").exists(), "setup wrote a store before refusing the root"
-
-
-@pytest.mark.parametrize(("global_mode", "tenant_mode"), [("active", "off"), ("off", "active"), ("active", "shadow")])
-def test_setup_pins_the_tenant_rescue_mode_for_build_registration_and_followups(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, global_mode: str, tenant_mode: str
-) -> None:
-    """DEPLOY-001: a conflicting inherited tenant map must not change the registered build mode.
-
-    Red proof: the pre-fix setup registered the global mode, failing the effective-mode assertion.
-    """
-    from recall._env import tenant_retrieval_environment
-
-    _blank_rescue_environment(monkeypatch)
-    monkeypatch.setenv("RECALL_ATOMIC_RESCUE_MODE", global_mode)
-    monkeypatch.setenv("RECALL_ATOMIC_RESCUE_MODE_BY_TENANT", f"default:{tenant_mode}")
-    project, config, report = _setup(tmp_path)
-    env = _servers(config)[SERVER_NAME]["env"]
-    assert isinstance(env, dict)
-    assert env.get("RECALL_ATOMIC_RESCUE_MODE") == tenant_mode, "setup registered the global mode instead of its tenant's"
-    for settings in (env, report.followup_env):
-        assert settings.get("RECALL_ATOMIC_RESCUE_MODE_BY_TENANT") == "", "an inherited map can override the pinned mode"
-        inherited = {"RECALL_ATOMIC_RESCUE_MODE_BY_TENANT": f"default:{global_mode}", **settings}
-        assert tenant_retrieval_environment(inherited, "default")["RECALL_ATOMIC_RESCUE_MODE"] == tenant_mode
-    built = list((project / ".recall" / "memory.db.atomic").glob("store-*/*/manifest.json"))
-    assert bool(built) is (tenant_mode == "active"), "the built artifact disagrees with the registered mode"
-    assert report.atomic.startswith("built for ") is (tenant_mode == "active"), report.atomic
-
-
-@pytest.mark.parametrize("mapping", ["default:activ", "default:off,default:active"])
-def test_setup_refuses_a_malformed_tenant_rescue_map_before_indexing(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mapping: str
-) -> None:
-    """DEPLOY-001: invalid tenant settings must refuse before setup writes the store.
-
-    Red proof: the pre-fix builder refused only after indexing, failing the no-store assertion.
-    """
-    _blank_rescue_environment(monkeypatch)
-    monkeypatch.setenv("RECALL_ATOMIC_RESCUE_MODE_BY_TENANT", mapping)
-    with pytest.raises(ValueError, match="RECALL_ATOMIC_RESCUE_MODE_BY_TENANT"):
-        _setup(tmp_path)
-    assert not (tmp_path / "project" / ".recall").exists(), "setup indexed before refusing the tenant map"

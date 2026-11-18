@@ -292,7 +292,7 @@ def ensure_rescue_artifact(
                 matrix, metadata, counts = assemble(
                     parents, views, profile, int(embedder.dim), lambda groups: embed_document_groups(embedder, groups)
                 )
-        except Exception:  # BROAD-CATCH: cleanup  # a previous view batch may have committed
+        except Exception:  # BROAD-CATCH: cleanup-only  # a previous view batch may have committed
             if store.corpus_fingerprint() != corpus_fingerprint:
                 _erase_stale_views(store, root, parents)
             raise

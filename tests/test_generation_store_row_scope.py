@@ -20,6 +20,8 @@ Red proof, recorded per the repository rule (each mutation restored afterwards):
   recall_chunks_v1 statement without the generation predicate" when
   `GenerationStore._row_scope`/`_row_scope_args` were mutated to return no predicate, and failed
   for `count` alone when `{scope}` was deleted from `PgVectorStore.count`'s statement.
+  On 2026-11-18, removing `{scope}` from `PgVectorStore.count_up_to` made the
+  `[count_up_to]` case fail at the missing generation predicate assertion.
 * `test_every_inherited_chunk_table_read_is_checked_or_exempt` failed naming `probe_rows` when a
   method `probe_rows` reading `self._table` was added to `PgVectorStore`, and (after S7d split the
   store into mixins) failed the same way when `probe_mixin_rows` was added to
@@ -116,6 +118,7 @@ CALLS: dict[str, Callable[[GenerationStore], object]] = {
     "chunk_metadata_by_ids": lambda s: s.chunk_metadata_by_ids(["c1"]),
     "chunks_by_ids": lambda s: s.chunks_by_ids(["c1"]),
     "count": lambda s: s.count(),
+    "count_up_to": lambda s: s.count_up_to(6),
     "iter_chunks": lambda s: list(s.iter_chunks(10)),
     "iter_scoped_chunks": lambda s: list(s.iter_scoped_chunks(
         Scope(source_prefixes=("docs",), security_policy_digest="policy"),

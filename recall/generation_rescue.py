@@ -221,7 +221,7 @@ def build_artifact(dsn: str, tenant: str, generation_id: str, embedder: Embedder
                 matrix, metadata, counts = assemble(
                     parents, views, profile, int(embedder.dim), lambda groups: embed_document_groups(embedder, groups)
                 )
-        except Exception as exc:  # BROAD-CATCH: cleanup  # earlier batches may already have committed
+        except Exception as exc:  # BROAD-CATCH: cleanup-only  # earlier batches may already have committed
             _refuse_if_corpus_moved(dsn, tenant, generation_id, embedder.dim, lineage, root, parents, error=exc)
             raise
         ordinary = len(parents)

@@ -25,7 +25,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from recall._env import tenant_retrieval_environment
 from recall.lite import LITE_DSN_PREFIX, LiteStore
 from recall.lite.atomic import MODE_BY_TENANT_ENV, MODE_ENV, ROOT_ENV, rescue_settings, store_default_root
 
@@ -195,11 +194,7 @@ def run_lite_setup(
     # too, or a cache the user switched off or moved here comes back at the default there.
     local_env.update({key: os.environ[key] for key in ("RECALL_EMBED_CACHE", "RECALL_EMBED_CACHE_MAX_MB") if key in os.environ})
     # Its artifacts beside the store (`<store>.atomic`, which the store's own .gitignore advice covers).
-    atomic_env, atomic_note = rescue_settings(
-        store_default_root(path), env=tenant_retrieval_environment(os.environ, "default")
-    )
-    # Pin the resolved mode for the setup refresh and the clients registered for this store.
-    atomic_env[MODE_BY_TENANT_ENV] = ""
+    atomic_env, atomic_note = rescue_settings(store_default_root(path))
     local_env.update(atomic_env)
     if model_env is not None:
         local_env.update(model_env)
@@ -208,7 +203,7 @@ def run_lite_setup(
             "RECALL_ENV", "RECALL_INDEX_MODE", "RECALL_TRANSPORT",
             "RECALL_TRUST_MODE", "RECALL_EMBEDDER", "RECALL_EMBED_PROFILE", "RECALL_MODEL_CACHE",
             "RECALL_MODEL_SHA256", "RECALL_QWEN_MODEL_PATH", "RECALL_EMBED_CACHE", "RECALL_EMBED_CACHE_MAX_MB",
-            MODE_ENV, MODE_BY_TENANT_ENV, ROOT_ENV,
+            MODE_ENV, ROOT_ENV,
         }
         report.followup_env = {key: value for key, value in local_env.items() if key in safe_keys}
     with LiteStore(path, dim=embedder.dim) as store:
@@ -232,8 +227,13 @@ def run_lite_setup(
                 background_calibration=False, allow_prune=False,
                 security_policy=policy, security_context=context, budget=None, key_root=memory,
                 # The settings the registered server will search under, so the artifact its first
-                # search needs exists when setup returns.
-                rescue_env={**os.environ, **atomic_env},
+                # search needs exists when setup returns. Without this shell's per-tenant mode,
+                # which is not registered: a `default:off` here would skip the build for a server
+                # registered `active` (as the wizard does, CCA ENV-003).
+                rescue_env={
+                    **{key: value for key, value in os.environ.items() if key != MODE_BY_TENANT_ENV},
+                    **atomic_env,
+                },
             )
             if refreshed.outcome is not Outcome.REFRESHED:
                 raise ValueError(f"indexing {memory} failed: {refreshed.reason}")

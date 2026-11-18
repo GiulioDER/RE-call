@@ -22,6 +22,7 @@ read the MCP registration, so apply those settings when running CLI searches or 
 | `RECALL_LITE_WRITE_WAIT` | `300` seconds | Maximum wait in the local writer queue. |
 | `RECALL_LITE_REFIT_WAIT` | `120` seconds | Maximum wait in the separate calibration queue. |
 | `RECALL_ASSISTANT_MEMOS` | Unset (off) | A folder inside `RECALL_INDEX_ROOT` where the assistant tools write memo files; lite (`sqlite:///`) only. |
+| `RECALL_STATED_FACT_SOURCES` | Unset: the folders refresh follows | Prefixes of the stored memo names whose stated facts are recorded, comma or space separated; `none` records none. On PostgreSQL it names URIs, absolute paths or paths under `RECALL_INDEX_ROOT`, and unset records none. |
 | `RECALL_INDEX_MAX_FILES` | `2000` | File budget for automatic refresh and MCP indexing. |
 | `RECALL_INDEX_MAX_BYTES` | `20000000` bytes | Byte budget for automatic refresh and MCP indexing. |
 

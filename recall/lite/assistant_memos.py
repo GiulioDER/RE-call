@@ -84,7 +84,7 @@ def restore_memo_requests(previous: Mapping[Path, dict[str, Any]]) -> None:
     for ledger_path, entries in reversed(list(previous.items())):
         try:
             restore_requests(ledger_path, entries)
-        except Exception as exc:  # BROAD-CATCH: rollback must attempt every changed ledger
+        except Exception as exc:  # BROAD-CATCH: cleanup-only  # attempt every changed ledger before raising
             if failure is None:
                 failure = exc
     if failure is not None:
