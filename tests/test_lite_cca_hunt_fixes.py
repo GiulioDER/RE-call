@@ -240,6 +240,28 @@ def test_h10_a_background_refit_waits_for_the_same_quarter(tmp_path: Path) -> No
         store.close()
 
 
+def test_h12_an_uncertified_store_that_shrank_by_a_quarter_is_refitted(tmp_path: Path) -> None:
+    """CCA NUM-001 (run 20261118T205956Z, owner decision 2026-11-18): a forget can remove the memos
+    that kept a fit from separating, so a quarter less memory makes the refit due as a quarter more
+    does; a smaller shrink still waits.
+
+    Red proof (2026-11-18, test host): against the pre-fix `_uncertified_refit_waits`
+    (`store.count() < measured * (1 + DEFAULT_MAX_CORPUS_DELTA)`) it failed with "shrinking by a
+    quarter did not refit".
+    """
+    store, _root, fits = _uncertified(tmp_path)
+    try:
+        sources = sorted({row.source for row in store.iter_chunks()})
+        store.delete_sources(sources[:2])  # 30 to 28 chunks: under a quarter
+        ensure_calibrated(store, _FlatEmbedder())
+        assert len(store.calibration_rows()) == fits, "a shrink under a quarter refitted an uncertified store"
+        store.delete_sources(sources[2:8])  # 30 to 22 chunks: more than a quarter less
+        ensure_calibrated(store, _FlatEmbedder())
+        assert len(store.calibration_rows()) == fits + 1, "shrinking by a quarter did not refit"
+    finally:
+        store.close()
+
+
 def test_h11_a_fit_for_another_model_is_refitted_whatever_the_growth(tmp_path: Path) -> None:
     """Red against `_uncertified_refit_waits` without `or _fitted_for_another_model(store, fit)`:
     "the store kept another model's uncertified fit"."""

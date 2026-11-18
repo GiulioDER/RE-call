@@ -482,6 +482,8 @@ class LiteStore:
         self._lock = threading.RLock()
         #: Set by `erasing()`: True when its closing checkpoint was blocked by a reader.
         self.erase_checkpoint_blocked = False
+        #: Set by `erasing()`: True when its one-time VACUUM failed after the erasure committed.
+        self.erase_vacuum_failed = False
         _require_sqlite()
         make_parent(self.path)
         fresh = not self.path.exists() or self.path.stat().st_size == 0
@@ -712,10 +714,13 @@ class LiteStore:
         its free pages, text that earlier deletes freed, such as an edited memo's old chunks. The
         first erasure on such a file therefore also runs VACUUM once and records that in `meta`
         (STAKES-002 residue, owner decision 2026-11-18). It needs about the file's size again in
-        free disk, once.
+        free disk, once. A VACUUM that cannot run is logged and left in `erase_vacuum_failed`, and
+        the marker stays unset so the next erasure tries again: the erasure has committed by then,
+        and raising would report it as failed.
         """
         with self._lock:
             self.erase_checkpoint_blocked = False
+            self.erase_vacuum_failed = False
             prior = int(self._conn.execute("PRAGMA secure_delete").fetchone()[0])
             self._conn.execute("PRAGMA secure_delete = ON")
             try:
@@ -726,11 +731,20 @@ class LiteStore:
                     "SELECT 1 FROM meta WHERE key = ?", (_FREE_PAGES_ZEROED,)
                 ).fetchone()
                 if zeroed is None:
-                    self._conn.execute("VACUUM")
-                    with self._write():
-                        self._conn.execute(
-                            "INSERT OR IGNORE INTO meta(key, value) VALUES (?, '1')", (_FREE_PAGES_ZEROED,)
+                    try:
+                        self._conn.execute("VACUUM")
+                    except sqlite3.OperationalError:
+                        # No room for its copy, or a locked file (CCA STAKES-001).
+                        _log.warning(
+                            "the one-time VACUUM of %s failed; free pages from before secure_delete "
+                            "may still hold deleted text until it runs", self.path, exc_info=True,
                         )
+                        self.erase_vacuum_failed = True
+                    else:
+                        with self._write():
+                            self._conn.execute(
+                                "INSERT OR IGNORE INTO meta(key, value) VALUES (?, '1')", (_FREE_PAGES_ZEROED,)
+                            )
             finally:
                 self._conn.execute(f"PRAGMA secure_delete = {prior}")
                 self.erase_checkpoint_blocked = not self.checkpoint()

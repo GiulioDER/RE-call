@@ -144,13 +144,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   turned `secure_delete` on for every connection, which zeroes later frees but not those. The first
   forget or withdraw on a file made before this release now runs VACUUM once, which needs about the
   file's size again in free disk, and records a `free_pages_zeroed` marker; new files carry the
-  marker and skip it.
+  marker and skip it. If that VACUUM cannot run, the forget still succeeds and says so, and the
+  next erasure tries the VACUUM again.
 - A Lite store whose calibration never certified ran a full calibration fit inline on every write
-  that changed it, and kept every fit as a row. It is now refitted only once it has grown by a
-  quarter of the chunks its last fit measured. Where a write already refitted a certified store in
-  the background (`recall_index` and the server's memo folder refresh), an uncertified store's
-  refit now runs there too; the assistant's `remember` and `delete` still refit inline, and only
-  when the store has grown that much. Until then the calibration reports `stale` rather than
+  that changed it, and kept every fit as a row. It is now refitted only once it has grown or shrunk
+  by a quarter of the chunks its last fit measured. Where a write already refitted a certified
+  store in the background (`recall_index` and the server's memo folder refresh), an uncertified
+  store's refit now runs there too; the assistant's `remember` and `delete` still refit inline, and
+  only when the store has changed that much. Until then the calibration reports `stale` rather than
   `uncertified`, and strict search refuses as before. `recall_calibration_run` still fits on demand.
 - The setup wizard and the desktop app withheld SPLADE from a 6 GB GPU whenever torch was
   installed, because torch reports a card's memory a little under its nominal size and the floor
@@ -238,11 +239,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   checks out and installs nothing. The desktop Dockerfile pins its Python base image, and both
   compose files the pgvector image, by digest.
 - On Linux and macOS, a new `.recall/` directory is created readable only by its owner (mode
-  0700). Before, at the usual umask 022, the Lite store in it (every memo's text, vectors and
-  facts), its SQLite sidecars and the review ledgers could be read by any local account. A
-  `.recall/` that already exists keeps its mode: on a shared host, run `chmod 700 .recall`. A
-  store placed outside `.recall/` follows the umask as before. Windows is unchanged: the folder
-  inherits its parent's permissions.
+  0700), also when the atomic rescue's default root `.recall/atomic` is the first thing written
+  there, as it can be on a PostgreSQL install. Before, at the usual umask 022, the Lite store in it
+  (every memo's text, vectors and facts), its SQLite sidecars and the review ledgers could be read
+  by any local account. A `.recall/` that already exists keeps its mode: on a shared host, run
+  `chmod 700 .recall`. A store placed outside `.recall/` follows the umask as before. Windows is
+  unchanged: the folder inherits its parent's permissions.
 - A lite refresh that fails on an exception no longer shows that exception's message to MCP
   clients. `recall_stats` and the warning on `recall_search` name only its type (for example
   `RuntimeError`, or `atomic rescue: RuntimeError`), because a provider's error can carry a request

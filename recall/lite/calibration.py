@@ -32,8 +32,8 @@ So a calibration that failed re-verification is never served, whatever the delta
 decides only how far the labelled questions are trusted to speak for the questions nobody
 labelled. `ensure_calibrated` performs a due or needed refit inline by default. With
 `background=True` (the MCP write path) it runs in a background thread, so the write returns at
-once. A store whose fit did not certify is refitted only once it has grown by a quarter of the
-chunks that fit measured, so a corpus that does not separate is not refitted on every write. Meanwhile the
+once. A store whose fit did not certify is refitted only once it has grown or shrunk by a quarter
+of the chunks that fit measured, so a corpus that does not separate is not refitted on every write. Meanwhile the
 carried calibration serves only while it still re-verifies, which `resolve` re-checks on every
 corpus change. Carried calibrations are never stored as calibrations: each is recomputed from the
 fit and its evidence, and `ensure_calibrated` records the lineage as a `calibration_carried_forward`
@@ -615,18 +615,20 @@ def _record_carry(store: LiteStore, carried: CarryForward) -> None:
 
 
 def _uncertified_refit_waits(store: LiteStore, fit: CalibrationArtifactV2) -> bool:
-    """True while `fit` did not certify and the corpus has not grown by `DEFAULT_MAX_CORPUS_DELTA`
-    of the chunks it measured (CCA PERF-001).
+    """True while `fit` did not certify and the corpus has not grown or shrunk by
+    `DEFAULT_MAX_CORPUS_DELTA` of the chunks it measured (CCA PERF-001).
 
     Without this an uncertified store refitted on every write, a full fit each time, and kept every
     fit as a row. The same quarter that makes a certified fit's refit due bounds how often a store
-    that does not separate is retried, so its fits grow with the log of its size. A fit for another
-    model, or one recorded before the count was kept, is refitted as before.
+    that does not separate is retried, so its fits grow with the log of its size. A shrink counts
+    too (owner decision 2026-11-18, CCA NUM-001): a forget can remove the memos that kept the fit
+    from separating, and growth alone would hold the store stale until it outgrew its old size. A
+    fit for another model, or one recorded before the count was kept, is refitted as before.
     """
     if fit.certified or _fitted_for_another_model(store, fit):
         return False
     measured = store.uncertified_fit_chunks()
-    return measured is not None and store.count() < measured * (1 + DEFAULT_MAX_CORPUS_DELTA)
+    return measured is not None and abs(store.count() - measured) < measured * DEFAULT_MAX_CORPUS_DELTA
 
 
 def ensure_calibrated(
@@ -637,7 +639,8 @@ def ensure_calibrated(
     Never fitted: fit now, inline, whatever `background` says (the first fit, below or at the
     certifying floor, behaves as it always has). Unchanged since the fit: keep it; a fit that did
     not certify is not retried on the same corpus, because the query set and the measurement are
-    deterministic, nor on a changed one until it has grown by a quarter (`_uncertified_refit_waits`).
+    deterministic, nor on a changed one until it has grown or shrunk by a quarter
+    (`_uncertified_refit_waits`).
     Changed: `carry_forward`. A carry within `DEFAULT_MAX_CORPUS_DELTA` is the whole answer and
     costs no embedding. A due refit (past that delta), or a needed one (the carry failed, or the
     fit never certified), runs inline by default; with `background=True` it runs in a background
@@ -659,12 +662,12 @@ def ensure_calibrated(
             return CalibrationOutcome(CalibrationStatus.CERTIFIED, "already certified for this corpus", fit)
         return CalibrationOutcome(
             CalibrationStatus.UNCERTIFIED,
-            "this corpus was calibrated and did not certify; it is refitted once it has grown by a quarter",
+            "this corpus was calibrated and did not certify; it is refitted once it has grown or shrunk by a quarter",
         )
     if _uncertified_refit_waits(store, fit):
         return CalibrationOutcome(
             CalibrationStatus.STALE,
-            "the last fit did not certify, so strict search refuses; it is refitted once memory has grown by a quarter",
+            "the last fit did not certify, so strict search refuses; it is refitted once memory has grown or shrunk by a quarter",
         )
     carried = carry_forward(store, fit, embedder=embedder)
     _record_carry(store, carried)
