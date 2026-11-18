@@ -8,16 +8,19 @@
 
 <!-- mcp-name: io.github.GiulioDER/re-call -->
 
+[Official site](https://re-call.dev/) · [YouTube channel](https://www.youtube.com/@RE-call-y6k)
+
 **RE-call is persistent memory for agents, built on hybrid retrieval with rank fusion.**
 On SQLite or PostgreSQL, it combines dense vectors and full-text search using reciprocal rank
 fusion (RRF).
 
-**Opt-in atomic rescue** recovers a passage when a single sentence matches the query.
+**Atomic rescue** recovers a passage when a single sentence matches the query.
 A **semantic graph** maps the links between your memos.
 
 **The trust layer** abstains when no result clears a threshold calibrated on your own store.
-It ranks superseded memos below their successors, flags memos that have expired or are not yet
-valid, and lets you erase memos from the store.
+It ranks superseded memos below their successors.
+Set `valid_from` and `valid_until` to define when a memo is valid. Search flags memos
+that are expired or not yet valid. Use `recall forget` to erase a memo's indexed data from the store.
 
 [Benchmarks and limits](docs/EVIDENCE.md) · [Security policy](SECURITY.md) · [For agents](docs/FOR_AGENTS.md)
 
