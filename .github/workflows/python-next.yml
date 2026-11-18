@@ -1,0 +1,97 @@
+name: Python 3.15 readiness
+
+# The newest CPython that RE-call does not yet claim. CI's required jobs stop at 3.14 (the
+# classifiers' upper end), so nothing said when 3.15 became installable or what still blocked it.
+#
+# Measured 2026-11-17 against uv.lock at e8270d386: of the locked `dev` + `documents` set, nine
+# Linux packages have no cp315 wheel. psycopg-binary 3.3.4, a core dependency, has no sdist
+# either, so nothing can install it. lxml, numpy, orjson, pyyaml, regex, uuid-utils, xxhash and
+# zstandard fall back to sdists, and lxml's fails to build on the runner, which is where this
+# job's first run stopped. The Desktop image's `fastembed` extra is blocked separately, by
+# onnxruntime (no cp315 wheel and no sdist up to 1.32.0). Re-measure: this job's Install step.
+#
+# NOT REQUIRED, and outside ci.yml's merge-gate on purpose: it is red until upstream ships those
+# wheels and the lock picks them up, and a required job that no pull request can fix would block
+# every merge. It runs weekly, by hand, and on every pull request that changes the dependency set.
+#
+# On a pull request it never fails: a known red check on every lock bump teaches people to ignore
+# red. It reports instead, as a warning annotation and a step summary that say "not ready", or
+# "ready" on the Dependabot bump that finally makes 3.15 installable. The weekly and manual runs
+# still fail red. When those go green, move the job into ci.yml beside `test-py314`, add it to
+# merge-gate, and add the 3.15 classifier.
+on:
+  schedule:
+    - cron: "23 5 * * 1"
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - pyproject.toml
+      - uv.lock
+      - .github/scripts/locked_install.sh
+      - .github/workflows/python-next.yml
+
+permissions:
+  contents: read
+
+jobs:
+  test-py315:
+    name: Test suite (Python 3.15, not required)
+    runs-on: ubuntu-latest
+    services:
+      db:
+        image: pgvector/pgvector:pg18
+        env:
+          POSTGRES_USER: recall
+          POSTGRES_PASSWORD: recall
+          POSTGRES_DB: recall
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U recall"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 30
+    env:
+      RECALL_TEST_DSN: postgresql://recall:recall@localhost:5432/recall
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
+        with:
+          python-version: "3.15"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
+
+      # The same locked set and the same suite as ci.yml's `test-py314`, so a green here is the
+      # same claim that job makes for 3.14.
+      - name: Install
+        id: install
+        continue-on-error: ${{ github.event_name == 'pull_request' }}
+        run: |
+          bash .github/scripts/locked_install.sh dev documents
+          python --version
+
+      - name: Test (pytest on real pgvector)
+        id: test
+        if: steps.install.outcome == 'success'
+        continue-on-error: ${{ github.event_name == 'pull_request' }}
+        run: pytest -q -n auto
+
+      # `outcome` is the result before continue-on-error, so it still says what happened.
+      - name: Report readiness
+        if: always() && github.event_name == 'pull_request'
+        env:
+          INSTALL: ${{ steps.install.outcome }}
+          TEST: ${{ steps.test.outcome }}
+        run: |
+          if [ "$INSTALL" = success ] && [ "$TEST" = success ]; then
+            msg="Python 3.15 is ready: the locked set installs and the suite passes."
+            echo "::notice title=Python 3.15 readiness::$msg"
+          else
+            msg="Python 3.15 is not ready (install: $INSTALL, test: $TEST). Expected until upstream ships cp315 wheels; the failing step's log names the package."
+            echo "::warning title=Python 3.15 readiness::$msg"
+          fi
+          echo "$msg" >> "$GITHUB_STEP_SUMMARY"

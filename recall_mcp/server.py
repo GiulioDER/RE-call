@@ -116,6 +116,7 @@ from recall_mcp.server_reasoning import (  # re-exported: moved out of this modu
     PROOF_THREAD_LIMITER as PROOF_THREAD_LIMITER,
     _proof_to_thread as _proof_to_thread,
     _proof_payload as _proof_payload,
+    _report_snapshot as _report_snapshot,
     _paths_named as _paths_named,
     _register_reasoning_tools as _register_reasoning_tools,
 )
@@ -275,6 +276,8 @@ def _answer_backend_configured(env: Mapping[str, str] | None = None) -> bool:
 _ASSISTANT_VIEWS: frozenset[str] = frozenset(
     {"recall_search", "recall_evidence", "recall_current_facts", "recall_apply_fact"}
 )
+#: The views, and `recall_withdraw`, which the assistant surface serves with memo ids too.
+_ASSISTANT_HELD: frozenset[str] = _ASSISTANT_VIEWS | {"recall_withdraw"}
 
 
 def build_server(settings: Settings | None = None) -> MCPServer:
@@ -541,7 +544,7 @@ def build_server(settings: Settings | None = None) -> MCPServer:
     registrar = cast(MCPServer, FilteredToolRegistrar(mcp, surface))
     # With the assistant surface on, four tools are registered in their compact form by
     # `_register_assistant_tools`, which reuses the held declarations' annotations and descriptions.
-    held = _HeldTools(registrar, _ASSISTANT_VIEWS if assistant is not None else frozenset())
+    held = _HeldTools(registrar, _ASSISTANT_HELD if assistant is not None else frozenset())
     tools = cast(MCPServer, held)
     _register_search_tools(tools, deps)
     _register_fact_tools(tools, deps)

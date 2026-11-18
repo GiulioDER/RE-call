@@ -9,7 +9,7 @@ design violation.
 
 Packages: `recall`, `recall_mcp`, `recall_agent`, `recall_hooks`, `recall_interop`, `recall_consistency`
 Modules: 374
-Cross package edges: 446
+Cross package edges: 447
 
 ## Highest fan in modules
 
@@ -66,11 +66,11 @@ Cross package edges: 446
 | 27 | `recall.generations` |
 | 26 | `recall_mcp.server` |
 | 25 | `recall_mcp.lifecycle` |
+| 24 | `recall_mcp.server_reasoning` |
 | 23 | `recall.index` |
 | 23 | `recall_mcp.indexing` |
 | 23 | `recall_mcp.reasoning_engine` |
 | 23 | `recall_mcp.retrieval` |
-| 23 | `recall_mcp.server_reasoning` |
 | 22 | `recall.trust` |
 | 21 | `recall` |
 | 21 | `recall.rewrite` |
@@ -95,11 +95,11 @@ Cross package edges: 446
 | 14 | `recall.eval.promotion.__main__` |
 | 14 | `recall.generation_rescue` |
 | 14 | `recall.lite.refresh` |
+| 14 | `recall_mcp.assistant` |
 | 14 | `recall_mcp.reasoning_api` |
 | 13 | `recall.cli_commands._shared` |
 | 13 | `recall.dashboard.lite_db` |
 | 13 | `recall.eval.labelled` |
-| 13 | `recall.reasoning` |
 
 ## Cross package edges
 
@@ -468,6 +468,7 @@ They are observations, not automatic failures.
 | `recall_mcp.server_memory_admin` | `recall.observability` |
 | `recall_mcp.server_reasoning` | `recall.current_state` |
 | `recall_mcp.server_reasoning` | `recall.evidence` |
+| `recall_mcp.server_reasoning` | `recall.generation_store` |
 | `recall_mcp.server_reasoning` | `recall.lite` |
 | `recall_mcp.server_reasoning` | `recall.observability` |
 | `recall_mcp.server_reasoning` | `recall.proof_obligations` |
@@ -883,7 +884,7 @@ They are observations, not automatic failures.
 | `recall_interop.memory_benchmarks` | 7 | 142 |
 | `recall_mcp` | 0 | 0 |
 | `recall_mcp.access_log` | 1 | 1 |
-| `recall_mcp.assistant` | 13 | 157 |
+| `recall_mcp.assistant` | 14 | 157 |
 | `recall_mcp.auth` | 4 | 41 |
 | `recall_mcp.codex_server` | 2 | 220 |
 | `recall_mcp.compat` | 0 | 0 |
@@ -914,7 +915,7 @@ They are observations, not automatic failures.
 | `recall_mcp.retrieval` | 23 | 154 |
 | `recall_mcp.semantic_graph_cache` | 17 | 145 |
 | `recall_mcp.server` | 26 | 219 |
-| `recall_mcp.server_assistant` | 10 | 163 |
+| `recall_mcp.server_assistant` | 11 | 163 |
 | `recall_mcp.server_auth` | 5 | 153 |
 | `recall_mcp.server_calibration` | 5 | 169 |
 | `recall_mcp.server_common` | 11 | 161 |
@@ -922,7 +923,7 @@ They are observations, not automatic failures.
 | `recall_mcp.server_ingest` | 20 | 199 |
 | `recall_mcp.server_lifespan` | 31 | 172 |
 | `recall_mcp.server_memory_admin` | 9 | 163 |
-| `recall_mcp.server_reasoning` | 23 | 199 |
+| `recall_mcp.server_reasoning` | 24 | 199 |
 | `recall_mcp.server_search` | 16 | 166 |
 | `recall_mcp.service` | 59 | 191 |
 | `recall_mcp.settings` | 10 | 149 |

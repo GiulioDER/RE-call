@@ -263,9 +263,8 @@ def _cmd_provenance(args: argparse.Namespace) -> None:
     if args.provenance_cmd == "current":
         from recall.security_policy import access_context_from_environment, load_source_policy
 
-        # The source policy `recall_current_facts` applies (RECALL_SOURCE_POLICY_FILE), so the CLI
-        # lists what the MCP tool lists: a memo the caller may not read whole is not named, and a
-        # fact left with no readable memo is not listed (CCA SEC-001 sibling, PR 977).
+        # Apply the same whole-source rule as `recall_current_facts`. Omit unreadable memos and
+        # any fact left without a readable memo (CCA SEC-001 sibling, PR 977).
         permitted: Callable[[str], bool] | None = None
         if (security_policy := load_source_policy()) is not None:
             from recall_mcp.provenance import _readable_whole

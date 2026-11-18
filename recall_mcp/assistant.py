@@ -16,6 +16,8 @@ replaces it, and forgets it when asked. This module is that surface, for a lite 
 - `recall_forget_memo` forgets one memo of that folder by its id: `forget_memory` on its source
   first (which retracts every ledger fact whose only evidence it was), then the file, so the next
   refresh does not index it again.
+- `recall_withdraw` takes a memo of that folder by its id or its file too, and withdraws it the
+  same way, file included; any other source goes to the plain tool.
 - With the surface on, `recall_search`, `recall_evidence`, `recall_current_facts` and
   `recall_apply_fact` answer in the compact view below: the fields an assistant acts on, each hit
   named by its memo id, serialized as `json.dumps` writes them. The view is a projection of the full
@@ -40,6 +42,8 @@ from recall.backends import write_session
 from recall.confinement import within
 from recall.errors import RecallError
 from recall.lite.assistant_memos import ASSISTANT_AUTHOR, MEMO_ID, MemoFolder
+
+from recall_mcp.models import ForgetResult, WithdrawResult
 
 if TYPE_CHECKING:
     from recall.embeddings import Embedder
@@ -326,29 +330,74 @@ class AssistantMemos(MemoFolder):
         cancelled, like any other. The answer's fields are the pinned
         contract's; a completed forget has erased the values too (`forget_memory`).
         """
-        from recall_mcp.lifecycle import forget_memory
+        result = self._erase_memo(
+            store, embedder, memo_id, withdraw=False, security_policy=security_policy,
+            security_context=security_context, refresh_context=refresh_context, **refresh_kwargs,
+        )
+        if result is None:
+            return {"deleted": 0}
+        assert isinstance(result, ForgetResult)
+        return {"deleted": 1, "memo_id": memo_id, "facts_retracted": result.facts_retracted}
+
+    def withdraw(
+        self,
+        store: LiteStore,
+        embedder: Embedder,
+        memo_id: str,
+        *,
+        security_policy: Any = None,
+        security_context: Any = None,
+        refresh_context: Any = None,
+        **refresh_kwargs: Any,
+    ) -> WithdrawResult | None:
+        """Withdraw one memo of the folder (`withdraw_memory`) as `forget` forgets one, its file
+        included, so the next refresh does not index it again. None for an id that names no memo
+        file here, which the caller withdraws by the name it had."""
+        result = self._erase_memo(
+            store, embedder, memo_id, withdraw=True, security_policy=security_policy,
+            security_context=security_context, refresh_context=refresh_context, **refresh_kwargs,
+        )
+        assert result is None or isinstance(result, WithdrawResult)
+        return result
+
+    def _erase_memo(
+        self,
+        store: LiteStore,
+        embedder: Embedder,
+        memo_id: str,
+        *,
+        withdraw: bool,
+        security_policy: Any,
+        security_context: Any,
+        refresh_context: Any,
+        **refresh_kwargs: Any,
+    ) -> ForgetResult | WithdrawResult | None:
+        """The body `forget` and `withdraw` share: the journal, the rows, the file, the refresh."""
+        from recall_mcp.lifecycle import forget_memory, withdraw_memory
 
         path = self.path_of(memo_id)
         if path is None:
-            return {"deleted": 0}
+            return None
+        verb = "withdrawal" if withdraw else "forget"
         with write_session(store, "forget"):
             # Under the lane, so a concurrent forget of the same memo cannot pass the check too.
             if not path.exists():
-                return {"deleted": 0}
+                return None
             # The journal first: a ledger that cannot be read or saved stops the forget before
             # any row is erased, instead of after, with the file left for the next refresh.
             previous = self.cancel_requests(memo_id)
             try:
-                result = forget_memory(
+                result = (withdraw_memory if withdraw else forget_memory)(
                     store,  # type: ignore[arg-type]  # the shared lifecycle types the Postgres store
                     [str(path)],
                     security_policy=security_policy,
                     security_context=security_context,
                     erase_memo_requests=False,  # cancelled above, and restored if this fails
                 )
-                if (result.facts_retracted == -1 or result.facts_redacted == -1
+                facts = result.facts_withdrawn if isinstance(result, WithdrawResult) else result.facts_retracted
+                if (facts == -1 or result.facts_redacted == -1
                         or (result.sources_not_found and self._indexed_under_another_name(store, path))):
-                    raise RuntimeError(f"forget of {memo_id} incomplete: {result.message}")
+                    raise RuntimeError(f"{verb} of {memo_id} incomplete: {result.message}")
             except BaseException:
                 self.restore_requests(previous)
                 raise
@@ -360,7 +409,22 @@ class AssistantMemos(MemoFolder):
                 security_context=refresh_context if refresh_context is not None else security_context,
                 **refresh_kwargs,
             )
-        return {"deleted": 1, "memo_id": memo_id, "facts_retracted": result.facts_retracted}
+        return result
+
+    def folder_memo(self, value: object) -> str | None:
+        """The id of the memo of this folder that `value` names, by its id (`note-0002`, `.md` or
+        not) or by its file's path (absolute, or under the index root); None for anything else."""
+        ref = memo_ref(value)
+        if not ref:
+            return None
+        path = Path(ref)
+        if len(path.parts) > 1:
+            if not path.is_absolute():
+                path = self.index_root / path
+            if path.parent.resolve() != self.folder.resolve():
+                return None
+            ref = path.name
+        return ref if self.path_of(ref) is not None else None
 
     def _indexed_successor(self, store: LiteStore, target: str, own: str | None = None) -> bool:
         """Whether an indexed document other than memo `own` claims to supersede memo `target` (a

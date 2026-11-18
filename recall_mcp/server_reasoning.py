@@ -7,7 +7,9 @@ Moved out of `recall_mcp.server` (server split). `recall_mcp.server` re-imports 
 from __future__ import annotations
 
 import json
+import threading
 from collections.abc import Callable, Sequence
+from contextlib import AbstractContextManager, ExitStack, nullcontext
 from dataclasses import asdict
 from typing import Any, cast
 
@@ -23,7 +25,7 @@ from recall.reasoning import ReasoningResponse
 from recall.evidence import AnswerProfile, EvidenceBundle
 from recall.current_state import MAX_CURRENT_STATE_RECORDS
 from recall.observability import METRICS
-from recall.security_policy import SourceSecurityPolicy
+from recall.security_policy import AccessContext, SourceSecurityPolicy
 from recall.lite import LiteStore
 from recall_mcp.assistant import REPORT_STALE_DESCRIPTION, REPORT_USE_DESCRIPTION
 from recall.store import PgVectorStore
@@ -36,7 +38,15 @@ from recall_mcp.related_api import records_memory, related_memory
 from recall.records import RecordsQueryError
 from recall_mcp.stale_reports_api import report_stale
 from recall.stale_reports import StaleReportRefused
-from recall_mcp.use_reports_api import EFFECTS, MAX_SOURCES, UseReportRefused, _basename, authorized_report_rows, report_use
+from recall_mcp.use_reports_api import (
+    EFFECTS,
+    MAX_SOURCES,
+    UseReportRefused,
+    _basename,
+    authorized_report_aliases,
+    authorized_report_rows,
+    report_use,
+)
 # Through the service facade on purpose: this wrapper injects the service-level retrieval seams.
 from recall_mcp.service import query_construction_challenge
 from recall_mcp.reasoning_api import reasoning_audit, reasoning_query
@@ -85,7 +95,17 @@ def _proof_payload(proof: ProofRun) -> dict[str, object]:
     }
 
 
-def _paths_named(store: Any, names: Sequence[object]) -> dict[str, str]:
+def _report_snapshot(store: PgVectorStore) -> AbstractContextManager[object]:
+    from recall.generation_store import GenerationStore
+
+    # Lite snapshots are read transactions. Keep them separate from a report's ledger write.
+    return store.snapshot() if isinstance(store, GenerationStore) else nullcontext()
+
+
+def _paths_named(
+    store: Any, names: Sequence[object], *,
+    security_policy: SourceSecurityPolicy | None = None, access_context: AccessContext | None = None,
+) -> dict[str, str]:
     """`{name: stored source}` for each name that search shows (a memo's file under the index
     root) and that names exactly one served memo; the ledger knows a memo only by its stored
     source (an absolute path, or a generation's URI). Both sides of the association belong to
@@ -94,16 +114,20 @@ def _paths_named(store: Any, names: Sequence[object]) -> dict[str, str]:
     let a hidden namesake change the answer."""
     lookup = getattr(store, "served_sources_for_identifiers", None)
     paths = [n for n in (str(raw).strip() for raw in names) if n != _basename(n)]
-    if callable(lookup):
-        return {name: hits[0] for name, hits in lookup(paths).items() if len(hits) == 1}
-    lookup, present = getattr(store, "sources_for_identifiers", None), getattr(store, "sources_present", None)
-    # The ledger recognises a store by its methods (`stale_reports_api._database_backed`); one
-    # without this lookup has nothing to resolve, and the ledger judges the names as written.
-    if not paths or not callable(lookup) or not callable(present):
+    if not paths:
         return {}
-    found = lookup(paths)
-    served = present(sorted({s for n in paths for s in found.get(n, ())}))
-    matches = {n: [s for s in found.get(n, ()) if s in served] for n in paths}
+    if callable(lookup):
+        matches = lookup(paths)
+    else:
+        lookup, present = getattr(store, "sources_for_identifiers", None), getattr(store, "sources_present", None)
+        if not callable(lookup) or not callable(present):
+            return {}
+        found = lookup(paths)
+        served = present(sorted({s for n in paths for s in found.get(n, ())}))
+        matches = {n: [s for s in found.get(n, ()) if s in served] for n in paths}
+    if security_policy is not None:
+        assert access_context is not None
+        return authorized_report_aliases(store, matches, security_policy, access_context)
     return {n: hits[0] for n, hits in matches.items() if len(hits) == 1}
 
 
@@ -651,42 +675,41 @@ def _register_reasoning_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         assistant = deps.assistant
 
         names = (stale_source, replacing_source)
-        try:
-            named = await _to_thread(
-                lambda: (
-                    assistant.files_named(cast(LiteStore, store), list(names))
-                    if assistant is not None
-                    else {n: (n, s) for n, s in _paths_named(store, names).items()}
-                )
-            )
-        except Exception:  # BROAD-CATCH: fail-open  # plain local names can still reach the sidecar
-            if sidecar and assistant is None and not report_access:
-                named = {}
-            else:
-                await _release_mutation_reservation(state, store.tenant, idempotency_key)
-                raise
+        write_started = threading.Event()
 
         def run() -> dict[str, Any]:
-            # The queue reads a memo's file under the root, and runs only with no source policy,
-            # where nothing is hidden from the caller. Under a policy the caller's names go to the
-            # ledger as written, so a refusal names them and an unreadable memo reads as absent.
-            queued = sidecar and not report_access
+            with ExitStack() as stack:
+                try:
+                    stack.enter_context(_report_snapshot(store))
+                    named = (
+                        assistant.files_named(cast(LiteStore, store), list(names))
+                        if assistant is not None
+                        else {n: (n, s) for n, s in _paths_named(store, names, **report_access).items()}
+                    )
+                except Exception:  # BROAD-CATCH: fail-open  # local names can still reach the sidecar
+                    if not (sidecar and assistant is None and not report_access):
+                        raise
+                    named = {}
+                # Under a policy the caller's names go to the ledger as written, so a refusal
+                # still names the caller's input.
+                queued = sidecar and not report_access
 
-            def name(given: str) -> str:
-                return named[given.strip()][0] if queued and given.strip() in named else given
+                def name(given: str) -> str:
+                    return named[given.strip()][0] if queued and given.strip() in named else given
 
-            return report_stale(
-                store,
-                stale_source=name(stale_source),
-                replacing_source=name(replacing_source),
-                stale_quote=stale_quote,
-                current_quote=current_quote,
-                task=task,
-                env=_runtime_env_for(state),
-                sidecar=sidecar,
-                aliases={name(n).strip(): named[n.strip()][1] for n in names if n.strip() in named},
-                **report_access,
-            )
+                return report_stale(
+                    store,
+                    stale_source=name(stale_source),
+                    replacing_source=name(replacing_source),
+                    stale_quote=stale_quote,
+                    current_quote=current_quote,
+                    task=task,
+                    env=_runtime_env_for(state),
+                    sidecar=sidecar,
+                    aliases={name(n).strip(): named[n.strip()][1] for n in names if n.strip() in named},
+                    before_write=write_started.set,
+                    **report_access,
+                )
 
         with METRICS.timer("recall_tool_latency_ms", tool="report_stale"):
             try:
@@ -696,6 +719,10 @@ def _register_reasoning_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
                 raise ToolError(
                     json.dumps({"error": "stale_report_refused", "reason": str(exc)}, sort_keys=True)
                 ) from exc
+            except Exception:  # BROAD-CATCH: cleanup-only
+                if not write_started.is_set():
+                    await _release_mutation_reservation(state, store.tenant, idempotency_key)
+                raise
         payload = json.dumps(result, indent=2)
         await _record_mutation_result(
             state,
@@ -768,33 +795,32 @@ def _register_reasoning_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         assert store is not None
         assistant = deps.assistant
         names: list[object] = [*(used or []), *(wrong or [])]
-        try:
-            aliases = await _to_thread(
-                lambda: (
+        write_started = threading.Event()
+
+        def run() -> dict[str, Any]:
+            with _report_snapshot(store) if names else nullcontext():
+                aliases = (
                     None if len(names) > 2 * MAX_SOURCES
-                    else _paths_named(store, names) if assistant is None
+                    else _paths_named(store, names, **report_access) if assistant is None
                     else {n: s for n, (_, s) in assistant.files_named(cast(LiteStore, store), names).items()}
                 )
-            )
-        except Exception:  # BROAD-CATCH: cleanup-only  # release the unwritten alias phase's reservation
-            await _release_mutation_reservation(state, store.tenant, idempotency_key)
-            raise
+                return report_use(
+                    store,
+                    task=task,
+                    effect=effect,
+                    used=used or [],
+                    wrong=wrong or [],
+                    task_succeeded=task_succeeded,
+                    query=query,
+                    note=note,
+                    aliases=aliases,
+                    before_write=write_started.set,
+                    **report_access,
+                )
+
         with METRICS.timer("recall_tool_latency_ms", tool="report_use"):
             try:
-                result = await _to_thread(
-                    lambda: report_use(
-                        store,
-                        task=task,
-                        effect=effect,
-                        used=used or [],
-                        wrong=wrong or [],
-                        task_succeeded=task_succeeded,
-                        query=query,
-                        note=note,
-                        aliases=aliases,
-                        **report_access,
-                    )
-                )
+                result = await _to_thread(run)
             except UseReportRefused as exc:
                 await _release_mutation_reservation(state, store.tenant, idempotency_key)
                 raise ToolError(
@@ -803,6 +829,10 @@ def _register_reasoning_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
                         sort_keys=True,
                     )
                 ) from exc
+            except Exception:  # BROAD-CATCH: cleanup-only
+                if not write_started.is_set():
+                    await _release_mutation_reservation(state, store.tenant, idempotency_key)
+                raise
         payload = json.dumps(result, indent=2)
         await _record_mutation_result(
             state,

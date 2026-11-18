@@ -38,7 +38,7 @@ import hashlib
 import logging
 import os
 import re
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from contextlib import nullcontext
 from datetime import UTC, datetime
 from pathlib import Path
@@ -58,7 +58,7 @@ from recall.stale_reports import (
     quote_fingerprint,
     resolve_memo,
 )
-from recall_mcp.use_reports_api import UseReportRefused, authorized_report_rows, resolve_sources
+from recall_mcp.use_reports_api import UseReportRefused, _authorized_report_sources, authorized_report_rows, resolve_sources
 
 logger = logging.getLogger(__name__)
 
@@ -100,6 +100,7 @@ def _record_served(
     security_policy: SourceSecurityPolicy | None = None,
     access_context: AccessContext | None = None,
     aliases: Mapping[str, str] | None = None,
+    before_write: Callable[[], None] | None = None,
 ) -> tuple[str, str, str]:
     """Append one `stale_report` row, or refuse; returns the event id and the two served names.
     `aliases` as in `recall_mcp.use_reports_api.resolve_sources`."""
@@ -113,15 +114,9 @@ def _record_served(
             elif access_context is None:
                 raise StaleReportRefused("source policy requires an access context")
             else:
-                original = (stale_source, replacing_source)
-                named = tuple(aliases.get(str(n).strip(), n) for n in original)
-                known = set(authorized_report_rows(
-                    store, original, security_policy, access_context, include_text=False,
-                ))
-                known.update(authorized_report_rows(
-                    store, named, security_policy, access_context, include_text=False,
-                ))
-                aliases = {name: source for name, source in aliases.items() if source in known}
+                known, aliases = _authorized_report_sources(
+                    store, (stale_source, replacing_source), security_policy, access_context, aliases,
+                )
             stale = resolve_sources([stale_source], known, "stale_source", aliases)[0]
             replacing = resolve_sources([replacing_source], known, "replacing_source", aliases)[0]
             if security_policy is not None:
@@ -166,6 +161,8 @@ def _record_served(
     }
     # One row per claim per day in this tenant: the append is ON CONFLICT DO NOTHING on the id.
     event_id = "evt_stale_" + hashlib.sha256(f"{key}|{day}".encode()).hexdigest()[:32]
+    if before_write is not None:
+        before_write()
     store.append_audit_event(STALE_REPORT_EVENT, payload, actor="agent-report", source_uri=stale, event_id=event_id)
     return event_id, stale, replacing
 
@@ -189,6 +186,7 @@ def report_stale(
     security_policy: SourceSecurityPolicy | None = None,
     access_context: AccessContext | None = None,
     aliases: Mapping[str, str] | None = None,
+    before_write: Callable[[], None] | None = None,
 ) -> dict[str, Any]:
     """Record one report, or raise `StaleReportRefused` with the reason. `aliases` maps a name to
     the stored source the ledger records it under (`_record_served`); the queue reads the name.
@@ -225,6 +223,8 @@ def report_stale(
     report = None
     if local_refusal is None:
         with StaleReportQueue(default_queue_path(root)) as queue:
+            if before_write is not None:
+                before_write()
             report = queue.submit(
                 root,
                 stale_source=stale_source,
@@ -254,6 +254,7 @@ def report_stale(
                 security_policy=security_policy,
                 access_context=access_context,
                 aliases=aliases,
+                before_write=before_write,
             )
             served = (served_stale, served_replacing)
         except Exception as exc:  # BROAD-CATCH: fail-open
