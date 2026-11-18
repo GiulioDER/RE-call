@@ -6,9 +6,10 @@ import os
 import sqlite3
 import struct
 import time
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager, suppress
 from pathlib import Path
+from typing import Any
 
 from recall.embeddings import (
     Embedder,
@@ -52,6 +53,19 @@ EMBEDDING_TEXT_DIGEST_KEY = "embedding_text_sha256"
 def text_digest(text: str) -> str:
     """The digest an entry's `text_sha256` column holds: what a forget erases cache entries by."""
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def text_digests(texts: Sequence[tuple[str, dict[str, Any]]]) -> set[str]:
+    """The digests chunks' cache entries carry, from `(chunk text, chunk metadata)` pairs: the
+    chunk text's own, plus the one the indexer recorded where a contextual profile embedded
+    different text (`EMBEDDING_TEXT_DIGEST_KEY`)."""
+    digests: set[str] = set()
+    for text, metadata in texts:
+        digests.add(text_digest(text))
+        recorded = metadata.get(EMBEDDING_TEXT_DIGEST_KEY)
+        if isinstance(recorded, str):
+            digests.add(recorded)
+    return digests
 
 
 def cache_key(

@@ -80,6 +80,7 @@ from recall.wizard.wiring import (
     SmokeResult,
     UnservableTenant,
     LocalScopeRegistration,
+    _managed_env_values,
     claude_config_path as _default_claude_config_path,
     register_local_scope,
     server_blocks,
@@ -1459,7 +1460,17 @@ def _atomic_rescue_env(config: HeadlessConfig) -> tuple[dict[str, str], str]:
         # Named by key, as every other config refusal is.
         raise ConfigRefusal(str(exc), (exc.key,)) from exc
     if config.data_root is not None and values.get(MODE_ENV, "off").lower() == "active":
-        when_missing = os.environ.get(WHEN_MISSING_ENV, "").strip() or "skip"
+        when_missing = os.environ.get(WHEN_MISSING_ENV, "").strip()
+        if (
+            when_missing
+            and config.project_root is not None
+            and when_missing == _managed_env_values(config.project_root / ".env").get(WHEN_MISSING_ENV)
+        ):
+            # The previous run's, which a re-run from the project directory loads from its `.env`
+            # (written by `_cli_rescue_env`), not a shell choice: taken as one, it registered refuse
+            # where the desktop stack needs skip (CCA ENV-001; ENV-003 is the per-tenant mode's).
+            when_missing = ""
+        when_missing = when_missing or "skip"
         if when_missing.lower() not in {"refuse", "skip"}:
             raise ConfigRefusal(f"{WHEN_MISSING_ENV} must be refuse or skip, not {when_missing!r}", (WHEN_MISSING_ENV,))
         values[WHEN_MISSING_ENV] = when_missing

@@ -28,6 +28,7 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from recall.calibration_v2 import CalibrationStatus
 from recall.index_budget import IndexBudget, budget_from_env
 from recall.lite import LiteStore
 from recall.lite.atomic import artifact_in_force, configured_root
@@ -112,6 +113,7 @@ class LiteAutoRefresher:
         self._thread: threading.Thread | None = None
         self._last_check = -math.inf
         self._refreshed: str | None = None  # the snapshot fingerprint this server last saw current
+        self._rescue_revision: int | None = None  # the corpus revision the last refresh left (CCA BUG-001)
         # The snapshot whose refresh last FAILED, and when it may be tried again. A failure that
         # repeats (embedder down, prune guard tripped) is retried after a doubling backoff, not
         # on every interval, each time stalling a search (CCA PERF-002).
@@ -214,7 +216,19 @@ class LiteAutoRefresher:
         operation that never updated the refresh state file.
         """
         root = configured_root(self._store.tenant, self._env)
-        return root is not None and not artifact_in_force(self._store, root)
+        if root is None:
+            return False
+        if (
+            self._store.resolve_calibration().status is not CalibrationStatus.CERTIFIED
+            and self._store.corpus_revision() == self._rescue_revision
+        ):
+            # No artifact is built without a certified calibration, and a refresh of the memory its
+            # last refresh already calibrated cannot certify it (too little memory, a fit that did
+            # not separate), so one started here would change nothing and start again every
+            # interval, indefinitely (CCA BUG-001). A memory changed since (a forget, a person's
+            # `recall index`) may refit and certify, so it still asks for one.
+            return False
+        return not artifact_in_force(self._store, root)
 
     def _refreshed_elsewhere(self, fingerprint: str) -> bool:
         """Did another refresher (a person's CLI run) bring this failing snapshot current? Then adopt it."""
@@ -262,6 +276,9 @@ class LiteAutoRefresher:
     def _run(self) -> None:
         with self._lock:
             before, self._pending = self._pending, None
+        # Read before the refresh, so a write that lands after it (a forget from a shell) is not
+        # taken for memory this refresh calibrated; a refresh that writes costs one more check.
+        revision = self._store.corpus_revision()
         try:
             # In the background: a server is long-lived, so a refit can outlast this refresh.
             report = refresh(
@@ -288,6 +305,7 @@ class LiteAutoRefresher:
         with self._lock:
             if report.outcome in (Outcome.REFRESHED, Outcome.UNCHANGED) and report.facts_stated >= 0:
                 self._refreshed, self._failed, self._backoff_s = report.fingerprint, None, 0.0
+                self._rescue_revision = revision
                 self._failure = None
             elif report.outcome is Outcome.FAILED or report.facts_stated < 0:
                 self._failure = report.stated if report.facts_stated < 0 else client_reason(report.reason, report.error_type)

@@ -354,6 +354,12 @@
         "memo_id",
         "facts_retracted"
       ],
+      "incomplete": [
+        "deleted",
+        "memo_id",
+        "facts_retracted",
+        "warning"
+      ],
       "nothing": [
         "deleted"
       ]

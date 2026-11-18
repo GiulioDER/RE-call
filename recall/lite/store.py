@@ -126,6 +126,7 @@ _DELETE_PROJECT_FILES = (
     "DELETE FROM chunks WHERE json_extract(metadata, '$.project') = ? "
     "AND json_extract(metadata, '$.file') IN (SELECT value FROM json_each(?))"
 )
+_SELECT_PROJECT_FILES = _DELETE_PROJECT_FILES.replace("DELETE FROM", "SELECT text, metadata FROM", 1)
 #: `ts_rank` pieces: pi**2/6 normalises the occurrence series, and a tsvector keeps at most 255
 #: distinct positions per lexeme, clamping positions at 16383, so later occurrences add nothing.
 _ZETA_TWO = 1.64493406685
@@ -142,6 +143,9 @@ _FREE_PAGES_ZEROED = "free_pages_zeroed"
 #: The `meta` key holding how many chunks the newest uncertified fit measured: what
 #: `recall.lite.calibration` waits on before refitting a store that did not certify (CCA PERF-001).
 _UNCERTIFIED_FIT_CHUNKS = "uncertified_fit_chunks"
+#: The `meta` key listing every root an atomic rescue build of this store wrote under, which a
+#: forget erases whatever root its own process names (CCA SEC-001).
+_RESCUE_ROOTS = "atomic_rescue_roots"
 #: The oldest SQLite the schema runs on: UPSERT is 3.24, the window functions of the
 #: supersession scan 3.25.
 _MIN_SQLITE = (3, 25, 0)
@@ -826,19 +830,24 @@ class LiteStore:
     def replace_sources(self, sources: list[str], chunks: list[Chunk], embeddings: list[list[float]]) -> int:
         """Atomically replace every row of `sources` (and of the batch's project files) with `chunks`."""
         self._check_batch(chunks, embeddings)
+        replaced: list[tuple[str, dict[str, Any]]] = []
         with self._write():
             preserved: dict[str, str] = {}
             if sources:
                 wanted = json.dumps(sources)
-                preserved = dict(
-                    self._conn.execute(
-                        "SELECT id, first_indexed_at FROM chunks WHERE source IN (SELECT value FROM json_each(?))",
-                        (wanted,),
-                    ).fetchall()
-                )
+                rows = self._conn.execute(
+                    "SELECT id, first_indexed_at, text, metadata FROM chunks WHERE source IN (SELECT value FROM json_each(?))",
+                    (wanted,),
+                ).fetchall()
+                preserved = {cid: first for cid, first, _, _ in rows}
+                replaced = [(text, json.loads(metadata)) for _, _, text, metadata in rows]
                 self._conn.execute("DELETE FROM chunks WHERE source IN (SELECT value FROM json_each(?))", (wanted,))
             project, files = _chunk_identity(chunks)
             if project and files:
+                replaced += [
+                    (text, json.loads(metadata))
+                    for text, metadata in self._conn.execute(_SELECT_PROJECT_FILES, (project, json.dumps(files)))
+                ]
                 self._conn.execute(_DELETE_PROJECT_FILES, (project, json.dumps(files)))
             now = _now()
             if chunks:
@@ -847,6 +856,12 @@ class LiteStore:
                 if restore:
                     self._conn.executemany("UPDATE chunks SET first_indexed_at = ? WHERE id = ?", restore)
             self._bump()
+        kept = {chunk.text for chunk in chunks}
+        gone = [(text, metadata) for text, metadata in replaced if text not in kept]
+        if gone:
+            from recall.lite.atomic import erase_replaced
+
+            erase_replaced(self, gone)
         return len(chunks)
 
     def delete_sources(self, sources: list[str], *, withdraw: bool = False) -> int:
@@ -1741,6 +1756,25 @@ class LiteStore:
         """The chunk count the newest uncertified fit measured, None if none was recorded."""
         rows = self._metadata_values("SELECT value FROM meta WHERE key = ?", (_UNCERTIFIED_FIT_CHUNKS,))
         return int(rows[0][0]) if rows else None
+
+    def record_rescue_root(self, root: Path) -> None:
+        """Keep a root an atomic rescue build writes under (`recall.lite.atomic`). The root is set
+        in the building process's environment only, so without this a forget run from another
+        process (a CLI shell) would erase nothing there (CCA SEC-001)."""
+        with self._write():
+            row = self._conn.execute("SELECT value FROM meta WHERE key = ?", (_RESCUE_ROOTS,)).fetchone()
+            roots = set(json.loads(row[0])) if row else set()
+            if str(root) not in roots:
+                self._conn.execute(
+                    "INSERT INTO meta(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                    (_RESCUE_ROOTS, json.dumps(sorted(roots | {str(root)}))),
+                )
+
+    def rescue_roots(self) -> list[str]:
+        """Every absolute root `record_rescue_root` kept, sorted. A relative one, which no build
+        writes under, would resolve against the reading process's directory, so it is skipped."""
+        rows = self._metadata_values("SELECT value FROM meta WHERE key = ?", (_RESCUE_ROOTS,))
+        return [root for root in json.loads(rows[0][0]) if Path(root).is_absolute()] if rows else []
 
     def save_near_miss_coverage(self, calibration_id: str, report: dict[str, Any]) -> None:
         """Keep the near-miss coverage measured with a calibration (`recall.near_miss`), by its id."""

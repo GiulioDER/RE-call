@@ -44,7 +44,7 @@ import shutil
 from collections.abc import Container, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from recall.atomic_rescue import (
     AtomicRescueArtifact,
@@ -59,16 +59,20 @@ from recall.atomic_rescue import (
     write_atomic_rescue_artifact,
 )
 from recall.errors import RecallError
+from recall.observability import get_logger
 from recall.state_dir import write_ignore
 
 if TYPE_CHECKING:
     from recall.embeddings import Embedder
     from recall.lite.store import LiteStore
 
+_log = get_logger(__name__)
+
 __all__ = [
     "MODE_BY_TENANT_ENV", "MODE_ENV", "BuildReport", "RescueSettingError", "artifact_in_force",
-    "artifact_root", "configured_root", "ensure_rescue_artifact", "erase_forgotten", "manifest_path",
-    "rescue_active", "rescue_settings", "serving_manifest", "store_default_root",
+    "artifact_root", "configured_root", "ensure_rescue_artifact", "erase_forgotten", "erase_replaced",
+    "manifest_path", "rescue_active", "rescue_settings", "serving_manifest", "store_default_root",
+    "unreached_rescue_roots",
 ]
 
 ROOT_ENV = "RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT"
@@ -241,7 +245,10 @@ def ensure_rescue_artifact(
     calibration_id = resolution.artifact.calibration_id
     binding = store.generation_binding()
     generation_id, corpus_fingerprint = binding["generation_id"], binding["corpus_fingerprint"]
-    manifest = manifest_path(root, store, generation_id, calibration_id)
+    manifest = manifest_path(root, store, generation_id, calibration_id)  # refuses a relative root
+    if str(root) not in store.rescue_roots():
+        # Before anything is written there, so a forget from any process finds it (CCA SEC-001).
+        store.record_rescue_root(root)
     lineage = {
         "generation_id": generation_id,
         "calibration_id": calibration_id,
@@ -387,42 +394,89 @@ def erase_forgotten(
     folder is removed except the one the store resolves now: each other one was built from a
     corpus that held the forgotten chunks, and keeps their view vectors and sources. An artifact
     left at the top of the root by the layout before per-store folders has an unknown owner.
-    Reports any such artifact that names a forgotten source or cannot be read. The root is read
-    regardless of mode, since a rescue turned off keeps what it built.
+    Reports any such artifact that names a forgotten source or cannot be read. Done under every
+    root `_forget_roots` names, read regardless of mode, since a rescue turned off keeps what it
+    built.
     """
     from recall.atomic_view_store import AtomicViewStore, chunk_view_digest
     from recall.lite.writer_lock import _mutex
 
-    # Without the variable, the root `recall setup --lite` chose: it registers the root only on the
-    # MCP server, so a CLI forget would otherwise erase nothing and say nothing (CCA ENV-001).
-    root = artifact_root(env) or store_default_root(store.path)
-    if not root.is_dir():
-        return 0, 0
-    erased = 0
-    views_path = root / VIEW_STORE_NAME
-    if texts and views_path.is_file():
-        with AtomicViewStore(views_path) as views:
-            erased = views.erase_digests({chunk_view_digest(text) for text in texts})
-    own = _store_folder(root, store)
-    own.mkdir(parents=True, exist_ok=True)
-    with _mutex(own, "publish"):
-        keep = _key_in_force(store)
-        doomed = [
-            entry for entry in own.iterdir()
-            if entry.name != keep and entry.is_dir() and _ARTIFACT_NAME.fullmatch(entry.name)
-        ]
-        removed = remove_artifact_directories(doomed, root)
+    erased = removed = 0
     named = set(sources)
-    unowned = [
-        entry for entry in root.iterdir()
-        if entry.is_dir() and _ARTIFACT_NAME.fullmatch(entry.name) and artifact_names_any(entry, named)
-    ]
+    unowned: list[Path] = []
+    for root in _forget_roots(store, env):
+        if not root.is_dir():
+            continue
+        views_path = root / VIEW_STORE_NAME
+        if texts and views_path.is_file():
+            with AtomicViewStore(views_path) as views:
+                erased += views.erase_digests({chunk_view_digest(text) for text in texts})
+        own = _store_folder(root, store)
+        own.mkdir(parents=True, exist_ok=True)
+        with _mutex(own, "publish"):
+            keep = _key_in_force(store)
+            doomed = [
+                entry for entry in own.iterdir()
+                if entry.name != keep and entry.is_dir() and _ARTIFACT_NAME.fullmatch(entry.name)
+            ]
+            removed += remove_artifact_directories(doomed, root)
+        unowned += [
+            entry for entry in root.iterdir()
+            if entry.is_dir() and _ARTIFACT_NAME.fullmatch(entry.name) and artifact_names_any(entry, named)
+        ]
     if unowned:
         raise AtomicRescueArtifactError(
             "legacy atomic rescue artifact owner is unknown; confirm ownership before removing "
             + ", ".join(str(entry) for entry in sorted(unowned))
         )
     return erased, removed
+
+
+def erase_replaced(store: LiteStore, replaced: Sequence[tuple[str, dict[str, Any]]]) -> None:
+    """Erase what the embedding cache and the rescue's view stores keep of chunk texts a write replaced.
+
+    Run by `LiteStore.replace_sources` after its commit, with the `(text, metadata)` of the rows an
+    edit removed. A forget erases by the texts the store holds when it runs, so without this an
+    edited memo's earlier text would keep its vectors in both after the memo is forgotten (CCA
+    STAKES-002). Another chunk or store with the same text loses only cached vectors, which costs a
+    re-embed. A failure is logged, not raised: the replacement has committed, and an index run
+    failed here would not replace the rows again, so raising retries nothing.
+    """
+    from recall.atomic_view_store import AtomicViewStore, chunk_view_digest
+    from recall.cache import erase_cached_digests, text_digests
+
+    try:
+        erase_cached_digests(text_digests(replaced))
+        digests = {chunk_view_digest(text) for text, _ in replaced}
+        for root in _forget_roots(store, None):
+            if (root / VIEW_STORE_NAME).is_file():
+                with AtomicViewStore(root / VIEW_STORE_NAME) as views:
+                    views.erase_digests(digests)
+    except Exception:  # BROAD-CATCH: fail-open  # the replacement committed; see the docstring
+        _log.exception(
+            "erasing the replaced text of %s from the embedding cache or the atomic rescue failed; "
+            "its vectors stay there until a forget of the same text or eviction",
+            store.path,
+        )
+
+
+def _forget_roots(store: LiteStore, env: Mapping[str, str] | None) -> list[Path]:
+    """Every root a forget erases under, each once.
+
+    The root this process names, the one `recall setup --lite` chose (it registers a root only on
+    the MCP server, so a CLI forget would otherwise erase nothing and say nothing, CCA ENV-001),
+    and every root a build of this store recorded, which covers a root set only in the building
+    process's environment (CCA SEC-001).
+    """
+    named = artifact_root(env)
+    roots = [*([named] if named is not None else []), store_default_root(store.path)]
+    return list(dict.fromkeys([*roots, *(Path(root) for root in store.rescue_roots())]))
+
+
+def unreached_rescue_roots(store: LiteStore) -> list[str]:
+    """Roots a build of this store recorded that are no directory now, so a forget erased nothing
+    the rescue keeps there: a drive not mounted, or a root since removed."""
+    return [root for root in store.rescue_roots() if not Path(root).is_dir()]
 
 
 def _key_in_force(store: LiteStore) -> str | None:

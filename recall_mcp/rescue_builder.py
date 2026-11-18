@@ -95,18 +95,20 @@ class RescueBuilder:
         """
         from recall._env import tenant_retrieval_environment
         from recall.generation_store import GenerationStore
+        from recall.lite.atomic import WHEN_MISSING_ENV, configured_root
 
         if not isinstance(store, GenerationStore):
             return None
-        values = tenant_retrieval_environment(env, store.tenant)
-        root = values.get("RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT", "").strip()
+        root = configured_root(store.tenant, env)
+        # A relative root is refused by the search gate and the builders; built here, it would
+        # land under whatever directory the server started in (CCA CODE-001).
         if (
-            values.get("RECALL_ATOMIC_RESCUE_MODE", "off").strip().lower() != "active"
-            or values.get("RECALL_ATOMIC_RESCUE_WHEN_MISSING", "refuse").strip().lower() != "skip"
-            or not root
+            root is None
+            or not root.is_absolute()
+            or tenant_retrieval_environment(env, store.tenant).get(WHEN_MISSING_ENV, "refuse").strip().lower() != "skip"
         ):
             return None
-        return cls(store, embedder, Path(root).expanduser(), prune=prune_superseded)  # a desktop install runs no gc
+        return cls(store, embedder, root, prune=prune_superseded)  # a desktop install runs no gc
 
     def after_retrieval(self) -> None:
         """Schedule the eligibility check without reading the store or artifact on the request."""

@@ -132,6 +132,29 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   erasure lock that forget and withdraw hold, so a fact applied between its two reads could be
   retracted without its key's lock. It now holds that lock exclusively while it retracts; a lock
   timeout leaves the retraction to the next gc.
+- A Lite forget erased the atomic rescue only under the root its own process named, or the
+  default beside the store, so `recall forget` from a shell without
+  `RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT` left the view vectors and artifacts under the root the MCP
+  server built in, and reported a clean forget. A Lite build now records its root in the store,
+  and forget erases under every recorded root and names any it cannot reach.
+- Editing a Lite memo left its old text's vectors in the embedding cache and the rescue's
+  `micro-views.sqlite`, where a later forget of the memo could no longer find them. A write that
+  replaces a memo's text now erases the replaced text's vectors from both.
+- `recall_forget_memo` answered `deleted: 1` and dropped the forget's message, so an embedding
+  cache or atomic rescue erasure that did not complete went unreported. Its answer now carries
+  `warning` with that message.
+- A Lite store with the atomic rescue on whose calibration had not certified made the MCP server
+  start a full refresh every `RECALL_LITE_REFRESH_INTERVAL`, which a search waited on, for an
+  artifact that cannot be built without a certified calibration. It now asks for that refresh
+  only when the memory changed since the last one.
+- A wizard re-run with `--data-root` from the project directory took the
+  `RECALL_ATOMIC_RESCUE_WHEN_MISSING=refuse` an earlier run wrote to the project `.env` for a
+  shell choice, and registered the host servers with refuse where the desktop stack needs skip.
+- The PostgreSQL rescue builder accepted a relative `RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT`, which
+  the search gate refuses, and would have built under the server's working directory.
+- Beside the assistant surface, `recall_withdraw` told the assistant to pass the `source` field of
+  search hits, which the compact search does not show; it now says to name a memo by its memo_id
+  or file.
 - A standalone SQLite fact ledger (`recall provenance --sqlite-path`) reloaded its events in the
   order of their time text, so an event written with a UTC offset other than zero could be
   listed before an earlier one. It now orders them by time. Current facts were not affected.

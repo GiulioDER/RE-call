@@ -373,6 +373,7 @@ def test_a_cli_forget_on_a_default_lite_install_erases_the_rescue(tmp_path: Path
         path=store_path,
         tenant="t",
         resolve_calibration=lambda: SimpleNamespace(status=CalibrationStatus.CERTIFIED, artifact=None),
+        rescue_roots=lambda: [],  # the store records no build root
     )
 
     erased, _removed = erase_forgotten(store, [text], ["forgotten.md"], env={})  # type: ignore[arg-type]
