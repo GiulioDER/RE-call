@@ -128,6 +128,8 @@ EXCLUSIONS: tuple[tuple[str, str, int], ...] = (
     ("inline code — code, not prose", r"`[^`\n]*`", 0),
     ("url — path and query components", r"https?://\S+", 0),
     ("html comment — the marker is the citation", r"<!--.*?-->", re.DOTALL),
+    ("html heading level — structure", r"</?h[1-6](?=[\s>])", re.IGNORECASE),
+    ("html dimensions — layout", r"""\b(?:width|height)\s*=\s*["']\d+["']""", re.IGNORECASE),
     ("iso date — timestamp", r"\d{4}-\d{2}-\d{2}", 0),
     ("semver — identifier", r"\bv?\d+\.\d+\.\d+\b", 0),
     ("model version suffix — identifier", r"-v\d+(?:\.\d+)?\b", 0),

@@ -13,7 +13,7 @@ import hashlib
 import json
 import sqlite3
 import threading
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from dataclasses import replace
@@ -469,6 +469,13 @@ def decision_event_id(tenant_id: str, request_id: str, event_type: str) -> str:
     ).hexdigest()[:32]
 
 
+def _by_instant(events: Iterable[FactEvent]) -> list[FactEvent]:
+    """`events` in time order. SQLite stores `created_at` as ISO text with the writer's offset, so
+    its `ORDER BY created_at` sorts the text: 14:00+02:00 (12:00 UTC) came after 13:00+00:00
+    (CCA NUM-001, owner decision 2026-11-18). PostgreSQL's timestamptz already sorts by instant."""
+    return sorted(events, key=lambda event: (_as_utc(event.created_at), event.event_id))
+
+
 class SQLiteFactLedger(InMemoryFactLedger):
     """Durable local adapter that preserves the controller's in-memory semantics."""
 
@@ -485,8 +492,7 @@ class SQLiteFactLedger(InMemoryFactLedger):
             f"SELECT {LEDGER_COLUMNS} FROM {FACT_LEDGER_TABLE} WHERE tenant_id = ? ORDER BY created_at, event_id",
             (tenant_id,),
         ).fetchall()
-        for row in rows:
-            event = decode_ledger_row(row)
+        for event in _by_instant(decode_ledger_row(row) for row in rows):
             self._events.append(event)
             self._by_request[(event.tenant_id, event.request_id)] = event
 
@@ -516,8 +522,7 @@ class SQLiteFactLedger(InMemoryFactLedger):
         ).fetchall()
         events: list[FactEvent] = []
         requests: dict[tuple[str, str], FactEvent] = {}
-        for row in rows:
-            event = decode_ledger_row(row)
+        for event in _by_instant(decode_ledger_row(row) for row in rows):
             events.append(event)
             requests[(event.tenant_id, event.request_id)] = event
         self._events[:] = events
