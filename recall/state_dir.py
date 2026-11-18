@@ -9,6 +9,7 @@ touching the repository's own ignore file.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 STATE_DIR = ".recall"
@@ -25,11 +26,19 @@ def make_parent(path: Path) -> None:
 
     The ignore file is written whenever it is absent, so a directory created before this existed
     is covered the next time a writer opens it, and never overwritten once present.
+
+    On POSIX a new ``.recall`` directory is made 0700: SQLite, its sidecars and the lanes create
+    their files at the umask, so at the usual 022 every memo's text would be readable by every
+    local account (CCA DEPLOY-003). A directory that exists keeps the mode its owner gave it.
+    Windows is left to the folder's inherited ACL, because from Python 3.13 a mode of 0o700 there
+    replaces that ACL with one that drops every other account, a sandbox's included.
     """
     parent = path.parent
-    parent.mkdir(parents=True, exist_ok=True)
-    if parent.name == STATE_DIR:
-        write_ignore(parent)
+    if parent.name != STATE_DIR:
+        parent.mkdir(parents=True, exist_ok=True)
+        return
+    parent.mkdir(mode=0o700 if os.name == "posix" else 0o777, parents=True, exist_ok=True)
+    write_ignore(parent)
 
 
 def write_ignore(directory: Path) -> None:
