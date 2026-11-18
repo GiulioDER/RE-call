@@ -218,6 +218,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   PyInstaller pin, and the checkout installed with no index access), and the job that signs it
   checks out and installs nothing. The desktop Dockerfile pins its Python base image, and both
   compose files the pgvector image, by digest.
+- On Linux and macOS, a new `.recall/` directory is created readable only by its owner (mode
+  0700). Before, at the usual umask 022, the Lite store in it (every memo's text, vectors and
+  facts), its SQLite sidecars and the review ledgers could be read by any local account. A
+  `.recall/` that already exists keeps its mode: on a shared host, run `chmod 700 .recall`. A
+  store placed outside `.recall/` follows the umask as before. Windows is unchanged: the folder
+  inherits its parent's permissions.
 
 ## [0.15.0] (2026-11-08)
 
