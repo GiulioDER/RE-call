@@ -47,6 +47,7 @@ from recall.fact_ledger import (
     FACT_LEDGER_TABLE,
     LEDGER_COLUMNS,
     _event_from_row,
+    connect_tenant,
     decode_ledger_row,
     lock_fact_keys,
 )
@@ -1007,10 +1008,7 @@ class PostgresCurrentFacts:
         self.statement_timeout_ms = statement_timeout_ms
 
     def _connect(self) -> psycopg.Connection:
-        conn = psycopg.connect(self.dsn, autocommit=True, connect_timeout=10)
-        conn.execute("SELECT set_config('recall.tenant_id', %s, false)", (self.tenant_id,))
-        conn.execute(f"SET statement_timeout = {int(self.statement_timeout_ms)}")
-        return conn
+        return connect_tenant(self.dsn, self.tenant_id, self.statement_timeout_ms)
 
     def materialize(self, event: FactEvent) -> None:
         if event.tenant_id != self.tenant_id:

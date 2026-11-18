@@ -79,6 +79,22 @@ def fact_erasure_lock(tenant_id: str) -> str:
 #: forget erases values in place and can outlast the ledger's statement timeout.
 ERASURE_LOCK_WAIT_S = 300
 
+#: Seconds a facts-family PostgreSQL connection may take to open.
+CONNECT_TIMEOUT_S = 10
+
+
+def connect_tenant(dsn: str, tenant_id: str, statement_timeout_ms: int) -> psycopg.Connection:
+    """An autocommit connection bound to `tenant_id` for row-level security, with a statement timeout.
+
+    The one place the facts family binds its tenant (CODE-004): the ledger, the outbox, the
+    current-facts tables and the redactor each held a copy, so a change to the binding made in
+    three of them would have left the fourth reading under the wrong tenant scope.
+    """
+    conn = psycopg.connect(dsn, autocommit=True, connect_timeout=CONNECT_TIMEOUT_S)
+    conn.execute("SELECT set_config('recall.tenant_id', %s, false)", (tenant_id,))
+    conn.execute(f"SET statement_timeout = {int(statement_timeout_ms)}")
+    return conn
+
 
 def lock_fact_keys(conn: psycopg.Connection, tenant_id: str, keys: Sequence[str]) -> None:
     """Take the transaction's advisory lock on each conflict key in `keys`, in sorted order.
@@ -907,10 +923,7 @@ class PostgresFactLedger:
         self.last_read: str | None = None
 
     def _connect(self) -> psycopg.Connection:
-        conn = psycopg.connect(self.dsn, autocommit=True, connect_timeout=10)
-        conn.execute("SELECT set_config('recall.tenant_id', %s, false)", (self.tenant_id,))
-        conn.execute(f"SET statement_timeout = {int(self.statement_timeout_ms)}")
-        return conn
+        return connect_tenant(self.dsn, self.tenant_id, self.statement_timeout_ms)
 
     @contextmanager
     def erasure_lock(self, *, shared: bool) -> Iterator[None]:
@@ -1262,10 +1275,7 @@ class PostgresMaterializationOutbox:
         self.statement_timeout_ms = statement_timeout_ms
 
     def _connect(self) -> psycopg.Connection:
-        conn = psycopg.connect(self.dsn, autocommit=True, connect_timeout=10)
-        conn.execute("SELECT set_config('recall.tenant_id', %s, false)", (self.tenant_id,))
-        conn.execute(f"SET statement_timeout = {int(self.statement_timeout_ms)}")
-        return conn
+        return connect_tenant(self.dsn, self.tenant_id, self.statement_timeout_ms)
 
     def enqueue(self, event: FactEvent) -> None:
         if event.tenant_id != self.tenant_id:

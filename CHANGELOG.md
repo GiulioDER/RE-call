@@ -93,6 +93,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ### Changed
 
+- With the supersession arbiter on (`RECALL_SUPERSESSION_ARBITER=1`), `recall rewrite` and the
+  dashboard review page find their candidate memo pairs 9 to 24 times faster, with identical
+  results: on synthetic corpora of 500, 1,000 and 2,000 memos, 7 s, 31 s and 133 s became 0.8 s,
+  2.3 s and 5.5 s. The search still grows roughly with the square of the corpus.
 - The dashboard is restyled to match the project homepage, with the RE-call logo and locally served
   Geist fonts. The 3D graph has readable labels, keyboard and pointer camera controls, and hollow
   rings for superseded memos. It leaves modified browser shortcuts and page scrolling over an

@@ -78,6 +78,19 @@ engine. Red proof, against `recall/rewrite.py`:
   by the test's engine stub.
 - D2 the paying arbiter resolved: the same test, two proposals judged by the (recording) client
   instead of none.
+19. `lexical_neighbours` returns exactly what the plain Python accumulation it replaced returned
+(PERF-001): same pairs, same float values compared with `==`, ties broken by name, a memo never
+its own neighbour. The reference loop is `_reference_neighbours` below, copied from master
+`bb28fcced`. Red proof, 2026-11-18, against `recall/supersession_arbiter.py::lexical_neighbours`,
+run on the test host, each failing `test_lexical_neighbours_matches_the_plain_loop_bit_for_bit`
+on its `==` assertion, then restored (green):
+- N1 the `scores[index[name]] = 0.0` self-exclusion removed: a memo becomes its own neighbour.
+- N2 the postings concatenated in sorted term order instead of the vector's: the same sums in a
+  different order, which differ in the last bits.
+- N3 `kind="stable"` replaced by `kind="quicksort"`: ties no longer broken by name. This one
+  SURVIVED the first version of the test, whose only tie group had three memos (numpy sorts
+  fewer than 16 by insertion, which is stable); the 64-memo tie group is what turns it red.
+- N4 `scores > 0` widened to `scores >= 0`: memos sharing no word ranked as neighbours.
 - D3 the arbiter-off refusal for a listing removed: the same test, regex did not match.
 """
 
@@ -530,3 +543,55 @@ def test_corpus_proposals_cache_only_uses_no_extraction_engine_and_no_model(
     monkeypatch.delenv("RECALL_SUPERSESSION_ARBITER")
     with pytest.raises(RewriteRefused, match="arbiter is off"):
         corpus_proposals(tmp_path, cache_only=True)
+
+
+def _reference_neighbours(bodies, k, focus=None):
+    """The accumulation `lexical_neighbours` used before PERF-001, verbatim from `bb28fcced`."""
+    vectors = arb._tfidf(bodies)
+    postings: dict[str, list[tuple[str, float]]] = {}
+    for name in sorted(vectors):
+        for term, weight in vectors[name].items():
+            postings.setdefault(term, []).append((name, weight))
+    pairs: dict[tuple[str, str], float] = {}
+    for name in sorted(focus if focus is not None else vectors):
+        if name not in vectors:
+            continue
+        scores: dict[str, float] = {}
+        for term, weight in vectors[name].items():
+            for other, other_weight in postings[term]:
+                if other != name:
+                    scores[other] = scores.get(other, 0.0) + weight * other_weight
+        ranked = sorted(scores.items(), key=lambda item: (-item[1], item[0]))[:k]
+        for other, similarity in ranked:
+            if similarity <= 0:
+                continue
+            key = (name, other) if name < other else (other, name)
+            pairs[key] = max(pairs.get(key, 0.0), similarity)
+    return pairs
+
+
+@pytest.mark.parametrize("seed", range(6))
+def test_lexical_neighbours_matches_the_plain_loop_bit_for_bit(seed: int) -> None:
+    import random
+
+    rng = random.Random(seed)
+    vocabulary = [f"w{i}" for i in range(60)]
+    zipf = [1 / (rank + 1) for rank in range(60)]
+    bodies = {
+        f"m{i:03d}.md": " ".join(rng.choices(vocabulary, weights=zipf, k=rng.randint(3, 40)))
+        for i in range(70)
+    }
+    # Exact ties (a duplicated body), a memo with no scoring words, one sharing no word at all.
+    bodies["dup-a.md"] = bodies["dup-b.md"] = bodies["dup-c.md"] = "alpha beta gamma w1 w2"
+    bodies["empty.md"] = ""
+    bodies["only-stopwords.md"] = "the and of"
+    bodies["island.md"] = "zzzunique qqqunique"
+    # A tie group long enough that numpy's quicksort is not stable on it: only a stable sort
+    # keeps "ties by name" (an insertion sort, which numpy uses below 16 items, hides this).
+    for i in range(64):
+        bodies[f"tie{63 - i:02d}.md"] = "delta epsilon zeta"
+    bodies["probe.md"] = "delta epsilon zeta eta"
+    for k in (1, 3, 10, 500):
+        assert arb.lexical_neighbours(bodies, k) == _reference_neighbours(bodies, k)
+    focus = sorted(rng.sample(sorted(bodies), 20)) + ["not-in-corpus.md"]
+    assert arb.lexical_neighbours(bodies, 4, focus) == _reference_neighbours(bodies, 4, focus)
