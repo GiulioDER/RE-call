@@ -85,6 +85,44 @@ def _model_cache_exists() -> bool:
     """Whether the default self-test model has a local cache entry."""
     return _model_cache_root() is not None
 
+
+async def _selftest_mcp(root: Path) -> None:
+    """Run the frozen command written to a scratch client config over real MCP stdio."""
+    import asyncio
+    import json
+
+    from mcp import ClientSession, StdioServerParameters
+    from mcp.client.stdio import stdio_client
+
+    from recall.desktop.runtime import _tool_result
+    from recall.lite.setup import lite_dsn
+    from recall.wizard.wiring import ServerBlock, register_local_scope
+
+    name = "installer-selftest"
+    database = root / "memory.db"
+    client_config = root / ".claude.json"
+    client_config.write_text("{}", encoding="utf-8")
+    block = ServerBlock(name, name, {
+        "RECALL_DSN": lite_dsn(database),
+        "RECALL_EMBEDDER": "hashing",
+        "RECALL_ENV": "development",
+        "RECALL_EMBED_CACHE": "off",
+    }, "disposable installer self-test store")
+    registration = register_local_scope((block,), project_root=root, config_path=client_config)
+    if registration.registered != (name,):
+        raise RuntimeError(f"MCP registration failed: {registration.skipped_reason}")
+    document = json.loads(client_config.read_text(encoding="utf-8"))
+    entry = document["projects"][registration.project_keys[0]]["mcpServers"][name]
+    params = StdioServerParameters(**entry)
+    async with asyncio.timeout(60):
+        async with stdio_client(params) as streams, ClientSession(*streams) as session:
+            await session.initialize()
+            result = await session.call_tool("recall_stats", {})
+    stats = _tool_result(result)
+    if not database.is_file() or not isinstance(stats, dict) or stats.get("chunks") != 0:
+        raise RuntimeError("MCP recall_stats did not read the scratch store")
+
+
 def _selftest() -> int:
     """Prove a packaged build can actually do the thing it exists to do, without a person.
 
@@ -99,6 +137,7 @@ def _selftest() -> int:
     builder, and the engine's own entry points. It stops short of `app.exec()`, so it can run
     unattended in CI, and short of provisioning anything, so it changes nothing.
     """
+    import asyncio
     import os
     import tempfile
     from pathlib import Path
@@ -157,6 +196,18 @@ def _selftest() -> int:
     except Exception as exc:  # noqa: BLE001  # BROAD-CATCH: fail-open
         print(f"selftest: building the window failed: {type(exc).__name__}: {exc}", file=sys.stderr)
         return 1
+
+    # A source install can run the GUI self-test with no MCP extra installed. The bundle ships it.
+    if getattr(sys, "frozen", False):
+        try:
+            with tempfile.TemporaryDirectory(prefix="recall installer ") as raw:
+                asyncio.run(_selftest_mcp(Path(raw)))
+        except Exception as exc:  # noqa: BLE001  # BROAD-CATCH: error-translation
+            from recall.desktop.runtime import _legible
+
+            failures.append(f"frozen MCP stdio failed: {_legible(exc)}")
+        else:
+            print("selftest: frozen MCP stdio started from the client configuration; recall_stats passed")
 
     # Load and probe the same native backend as the installer, but explicitly prohibit downloads.
     # The string resolver cannot express local_files_only. Only an absent TARGET cache skips;
