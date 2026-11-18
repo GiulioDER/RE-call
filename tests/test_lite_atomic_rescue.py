@@ -831,7 +831,9 @@ def test_a_failing_rebuild_keeps_its_warning_until_the_retry(tmp_path: Path, mon
         monkeypatch.setattr(atomic, "ensure_rescue_artifact", broken)
         now[0] += 31
         refresher.before_retrieval()
-        assert refresher.warning() is not None and "disk full" in refresher.warning(), refresher.warning()
+        # The agent is told the type, not the message (CCA SEC-001, owner decision 2026-11-18).
+        warning = refresher.warning() or ""
+        assert "atomic rescue: AtomicRescueArtifactError" in warning and "disk full" not in warning, warning
         now[0] += 31  # inside the retry backoff
         refresher.before_retrieval()
         assert refresher.warning() is not None, "the next check cleared the warning of a failing rebuild"

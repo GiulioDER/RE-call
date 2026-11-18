@@ -31,7 +31,7 @@ from typing import TYPE_CHECKING
 from recall.index_budget import IndexBudget, budget_from_env
 from recall.lite import LiteStore
 from recall.lite.atomic import artifact_in_force, configured_root
-from recall.lite.refresh import Outcome, Snapshot, embedder_refusal, read_state, refresh, snapshot
+from recall.lite.refresh import Outcome, Snapshot, client_reason, embedder_refusal, read_state, refresh, snapshot
 
 if TYPE_CHECKING:
     from recall.embeddings import Embedder
@@ -282,7 +282,7 @@ class LiteAutoRefresher:
         except Exception as exc:  # BROAD-CATCH: fail-open  # logged; the next check retries
             _log.warning("lite auto refresh failed: %s", exc)
             with self._lock:
-                self._failure = f"{type(exc).__name__}: {exc}"
+                self._failure = client_reason(str(exc), type(exc).__name__)
             return
         _log.info("lite auto refresh: %s (%s)", report.outcome.value, report.reason)
         with self._lock:
@@ -290,7 +290,7 @@ class LiteAutoRefresher:
                 self._refreshed, self._failed, self._backoff_s = report.fingerprint, None, 0.0
                 self._failure = None
             elif report.outcome is Outcome.FAILED or report.facts_stated < 0:
-                self._failure = report.stated if report.facts_stated < 0 else report.reason
+                self._failure = report.stated if report.facts_stated < 0 else client_reason(report.reason, report.error_type)
                 repeated = report.fingerprint == self._failed
                 self._backoff_s = (
                     min(self._backoff_s * 2, MAX_BACKOFF_S) if repeated else max(2 * self._interval_s, MIN_BACKOFF_S)

@@ -295,6 +295,18 @@ def _write_state(db: Path, document: dict[str, Any]) -> None:
             time.sleep(0.05 * attempt)
 
 
+def client_reason(reason: str, error_type: str) -> str:
+    """`reason` as an MCP client is told it: only the type when an exception's text built it.
+
+    A provider's exception can carry a request URL with a key in it, a header or the rejected
+    input, and what a client is told reaches its model provider's transcript (CCA SEC-001, owner
+    decision 2026-11-18). The state file, `recall doctor` and the CLI keep the whole text.
+    """
+    if not error_type:
+        return reason
+    return f"{error_type} (its message is withheld from MCP clients; `recall lite refresh --check` shows it)"
+
+
 @dataclass
 class RefreshReport:
     """One refresh: its outcome and reason, what it indexed, and the calibration it left.
@@ -323,6 +335,9 @@ class RefreshReport:
     holder: dict[str, object] | None = None
     started_utc: str = ""
     finished_utc: str = ""
+    #: The type of the exception `reason` was built from (with its stage); empty when the code
+    #: wrote `reason` itself. An MCP client is told this instead of `reason` (`client_reason`).
+    error_type: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         values = asdict(self)
@@ -633,6 +648,7 @@ def _refresh_locked(
     except Exception as exc:  # BROAD-CATCH: fail-open  # recorded in the state file and returned
         _log.warning("lite refresh of %s failed: %s", db, exc)
         report.outcome, report.reason = Outcome.FAILED, f"{type(exc).__name__}: {exc}"
+        report.error_type = type(exc).__name__
         if isinstance(exc, PruneGuardTripped):
             # The guard's own advice names `recall index`; a lite user runs this command.
             report.reason += " To accept the deletions, run `recall lite refresh --allow-prune`."
@@ -664,6 +680,7 @@ def _refresh_locked(
     except Exception as exc:  # BROAD-CATCH: fail-closed  # FAILED is not a success, so the next refresh builds again
         _log.warning("atomic rescue build for %s failed: %s", db, exc)
         report.outcome, report.reason = Outcome.FAILED, f"atomic rescue: {type(exc).__name__}: {exc}"
+        report.error_type = f"atomic rescue: {type(exc).__name__}"
         # The failure may be the store's own, as above (CCA BUG-002).
         with suppress(Exception):
             report.chunks_total = store.count()
@@ -685,6 +702,7 @@ def _refresh_locked(
     except Exception as exc:  # BROAD-CATCH: fail-closed  # FAILED is not a success, so the next refresh builds again
         _log.warning("semantic graph build for %s failed: %s", db, exc)
         report.outcome, report.reason = Outcome.FAILED, f"semantic graph: {type(exc).__name__}: {exc}"
+        report.error_type = f"semantic graph: {type(exc).__name__}"
         with suppress(Exception):
             report.chunks_total = store.count()
         return _finish(db, roots, report, key_root=key_root)

@@ -602,3 +602,106 @@ def test_an_unreadable_embedder_record_refuses_rather_than_passes(
     monkeypatch.setattr(inspect_mod, "lite_file_meta", lambda path: None)
     refusal = embedder_refusal(store, ContentWordEmbedder(), {"RECALL_EMBEDDER": "content-words"})  # type: ignore[arg-type]
     assert refusal is not None and "could not be read" in refusal, refusal
+
+
+# A provider error that echoes its request (CCA SEC-001): the canary stands for a key in a URL.
+_CANARY = "CANARY-7f3a"
+_PROVIDER_ERROR = f"POST https://embed.invalid/v1/embed?api_key={_CANARY} returned 401"
+
+
+@pytest.mark.parametrize("stage", ["index", "atomic rescue", "semantic graph"])
+def test_an_exception_s_text_stays_local_and_a_client_is_told_its_type(
+    setup: tuple[LiteStore, Path, Clock], monkeypatch: pytest.MonkeyPatch, stage: str
+) -> None:
+    """E1 (CCA SEC-001, owner decision 2026-11-18): each failing stage keeps the whole text in the
+    state file, and `client_reason` gives an MCP client the type only.
+
+    Red proof, 2026-11-18, on Linux: for each stage, its `report.error_type = ...` line in
+    `recall.lite.refresh._refresh_locked` deleted, the node
+    `test_an_exception_s_text_stays_local_and_a_client_is_told_its_type[<stage>]` failed at
+    "a client was told the exception's text"; restored, all three passed.
+    """
+    import recall.lite.atomic as atomic_mod
+    import recall.lite.refresh as refresh_mod
+
+    store, root, _ = setup
+
+    def provider_failure(*args: object, **kwargs: object) -> Any:
+        raise RuntimeError(_PROVIDER_ERROR)
+
+    if stage == "index":
+        monkeypatch.setattr(refresh_mod, "_calibrate", provider_failure)
+    elif stage == "atomic rescue":
+        monkeypatch.setattr(atomic_mod, "ensure_rescue_artifact", provider_failure)
+    else:
+        monkeypatch.setattr(store, "rebuild_semantic_graph", provider_failure)
+    report = refresh_mod.refresh(store, [root], ContentWordEmbedder())  # type: ignore[arg-type]
+    assert report.outcome is Outcome.FAILED, report.reason
+    last = refresh_mod.read_state(store.path)["last"]
+    assert _CANARY in last["reason"], f"the state file lost the full error: {last}"
+    told = refresh_mod.client_reason(last["reason"], last["error_type"])
+    assert _CANARY not in told, f"a client was told the exception's text: {told}"
+    assert "RuntimeError" in told and "recall lite refresh --check" in told, told
+
+
+def test_recall_stats_tells_a_client_only_the_exception_s_type(
+    lite_env: dict[str, str], monkeypatch: pytest.MonkeyPatch  # noqa: F811
+) -> None:
+    """E2 (CCA SEC-001): `recall_stats.refresh.reason` carries no exception text.
+
+    Red proof, 2026-11-18, on Linux: `recall_stats` in `recall_mcp.server_memory_admin` given the
+    state file's `last` unchanged again; this test failed at "recall_stats served the exception's
+    text"; restored, it passed.
+    """
+    import recall.lite.refresh as refresh_mod
+
+    root = Path(lite_env["RECALL_INDEX_ROOT"])
+    _write_memos(root, 3)
+
+    def provider_failure(*args: object, **kwargs: object) -> Any:
+        raise RuntimeError(_PROVIDER_ERROR)
+
+    monkeypatch.setattr(refresh_mod, "_calibrate", provider_failure)
+    db = Path(lite_env["RECALL_DSN"].removeprefix("sqlite:///"))
+    with LiteStore(db, dim=DIM) as store:
+        refresh_mod.refresh(store, [root], ContentWordEmbedder())  # type: ignore[arg-type]
+
+    async def body(state: dict[str, Any], call: Any) -> None:
+        refresh = json.loads(await call("recall_stats")).get("refresh") or {}
+        assert refresh.get("outcome") == "failed", f"no failed refresh to serve: {refresh}"
+        assert _CANARY not in json.dumps(refresh), f"recall_stats served the exception's text: {refresh}"
+        assert "RuntimeError" in refresh["reason"], refresh
+
+    _serve(lite_env, body)
+
+
+@pytest.mark.parametrize("path", ["report", "raised"])
+def test_the_search_warning_tells_only_the_exception_s_type(
+    setup: tuple[LiteStore, Path, Clock], monkeypatch: pytest.MonkeyPatch, path: str
+) -> None:
+    """E3 (CCA SEC-001): the warning on every search, whether the refresh reported the failure
+    or raised it.
+
+    Red proof, 2026-11-18, on Linux, each mutation alone in `recall_mcp.lite_refresh._run`:
+    `self._failure = report.reason` again failed node `[report]`, and
+    `self._failure = f"{type(exc).__name__}: {exc}"` again failed node `[raised]`, both at "the
+    search warning carried the exception's text"; restored, both passed.
+    """
+    store, root, clock = setup
+
+    def failing(store_: object, roots: list[Path], *args: object, **kwargs: object) -> RefreshReport:
+        if path == "raised":
+            raise RuntimeError(_PROVIDER_ERROR)
+        return RefreshReport(
+            Outcome.FAILED,
+            f"RuntimeError: {_PROVIDER_ERROR}",
+            fingerprint=auto.snapshot(roots).fingerprint,
+            error_type="RuntimeError",
+        )
+
+    monkeypatch.setattr(auto, "refresh", failing)
+    refresher = LiteAutoRefresher(store, ContentWordEmbedder(), [root], interval_s=0, wait_s=5, clock=clock)  # type: ignore[arg-type]
+    refresher._kick()[0].join(30)
+    warning = refresher.warning() or ""
+    assert "RuntimeError" in warning, f"no warning for the failing refresh: {warning!r}"
+    assert _CANARY not in warning, f"the search warning carried the exception's text: {warning}"

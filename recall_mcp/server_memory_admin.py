@@ -14,6 +14,7 @@ from mcp.types import ToolAnnotations
 
 from recall.observability import METRICS
 from recall.lite import LiteStore, LiteWriterBusy
+from recall.lite.refresh import client_reason
 from recall.lite.refresh import read_state as read_refresh_state
 from recall_mcp.auth import SCOPE_FORGET, SCOPE_READ
 from recall_mcp.lifecycle import (
@@ -265,7 +266,10 @@ def _register_memory_admin_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
             if isinstance(store, LiteStore):
                 # The last automatic refresh, so an agent can see why a memo it just wrote is not
                 # found yet (failed, over the budget, or a calibration still below its floor).
-                result.refresh = read_refresh_state(store.path).get("last")
+                last = read_refresh_state(store.path).get("last")
+                if isinstance(last, dict):
+                    last = {**last, "reason": client_reason(str(last.get("reason", "")), str(last.get("error_type") or ""))}
+                result.refresh = last
             return result.model_dump_json(indent=2)
 
         return await _to_thread(stats)

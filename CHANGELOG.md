@@ -218,6 +218,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   PyInstaller pin, and the checkout installed with no index access), and the job that signs it
   checks out and installs nothing. The desktop Dockerfile pins its Python base image, and both
   compose files the pgvector image, by digest.
+- A lite refresh that fails on an exception no longer shows that exception's message to MCP
+  clients. `recall_stats` and the warning on `recall_search` name only its type (for example
+  `RuntimeError`, or `atomic rescue: RuntimeError`), because a provider's error can carry a request
+  URL with a key in it or the input it rejected, and what an agent is told reaches its model
+  provider. The state file, `recall lite refresh --check` and `recall doctor` keep the full text on
+  the store's host. A state file written before this release is served unchanged until the next
+  refresh.
 
 ## [0.15.0] (2026-11-08)
 
