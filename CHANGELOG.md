@@ -109,6 +109,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ### Fixed
 
+- A standalone SQLite fact ledger (`recall provenance --sqlite-path`) reloaded its events in the
+  order of their time text, so an event written with a UTC offset other than zero could be
+  listed before an earlier one. It now orders them by time. Current facts were not affected.
 - On PostgreSQL, a `RECALL_STATED_FACT_SOURCES` absolute path that runs through a symlink is
   matched on the path it resolves to, so memos stored under the link's own path stated no facts
   and nothing said why. That prefix now logs a warning naming both paths. What it admits is
