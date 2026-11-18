@@ -215,8 +215,7 @@ into overlapping 24 word views (stride 12), the views are embedded, and a search
 parent chunk, the one whose best view matches the query most closely outside the dense top five, to
 dense rank six before fusion. Fusion can move it into the final top five. That chunk is scored
 by its own cosine, never the view's, so a rescue changes rank only:
-it cannot turn an abstention into an answer. No release contains it yet (0.15.0 does not): install
-from a clone, as above.
+it cannot turn an abstention into an answer. It ships from 0.16.0; 0.15.0 does not have it.
 
 `recall setup --lite` turns it on. It registers two variables for the MCP server,
 `RECALL_ATOMIC_RESCUE_MODE=active` and `RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT`, a folder beside the
@@ -224,7 +223,7 @@ store (`.recall/memory.db.atomic`), and builds the first artifact before it retu
 line says what it built. That build is most of setup's time on a large memory folder: measured on
 a loaded host with the default local model, 1,776 chunks took about 35 minutes to index and about
 two hours to build (2026-11-15). On a small project the difference is small. Its two packages, `numpy` and `threadpoolctl`, come with the `fastembed`
-extra. In an environment without them, setup leaves the rescue off and says so; install the
+and `desktop` extras. In an environment without them, setup leaves the rescue off and says so; install the
 `atomic` extra and run setup again to turn it on. A mode set in the shell that runs setup is registered as it is, so to keep the rescue
 off, run setup with `RECALL_ATOMIC_RESCUE_MODE=off`. The CLI does not read the server's settings:
 to use the rescue from `recall search`, set the same two variables in your shell.
