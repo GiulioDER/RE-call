@@ -282,3 +282,30 @@ def test_a_module_split_out_of_store_is_mutated_with_the_tests_of_store(tmp_path
 
     assert "Changed modules that no test imports" not in summary
     assert _selection(env) == ["tests/test_store.py"]
+
+
+def test_a_split_module_is_mutated_with_tests_that_import_its_origin_from_the_parent(
+    tmp_path: Path,
+) -> None:
+    """CCA of #1359, CODE-001: tests reach code split out of a module through that module, and
+    they import it in the parent form too (`from recall.desktop import ui` is how the one test of
+    the SPLADE probe split out to recall/desktop/hardware.py reaches it). The REACHED_THROUGH
+    fallback matched only `import recall.store` and `from recall.store import`, so a module whose
+    tests all use `from recall import store` was listed as untested and never mutated.
+
+    Red proof, 2026-11-18, on the test host, with this test unchanged: against
+    `scripts/mutation_changed.sh` before the fix (the REACHED_THROUGH fallback grep without the
+    parent form; the audit run's pre-fix snapshot) it failed at its first assert, because the
+    summary listed recall/store_mutation.py under "Changed modules that no test imports"; with the
+    fix restored it passed.
+    """
+    importer = "from recall import store\n\n\ndef test_s():\n    assert store.store_value() == 0\n"
+    repo, env = _repository(tmp_path, {
+        "test_store.py": importer,
+    }, modules=("store", "store_mutation"))
+    env["MUTATE_FILES"] = "recall/store_mutation.py"
+
+    summary = _summary(repo, env)
+
+    assert "Changed modules that no test imports" not in summary
+    assert _selection(env) == ["tests/test_store.py"]

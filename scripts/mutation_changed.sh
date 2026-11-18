@@ -117,7 +117,10 @@ for file in "${changed[@]}"; do
     # ranked as that module's are, or the cap below keeps whichever importers sort first.
     rank_leaf="${REACHED_THROUGH[$module]##*.}"
     via="${REACHED_THROUGH[$module]//./\\.}"
-    mapfile -t found < <(grep -lE "^[[:space:]]*(import ${via}([[:space:],]|$)|from ${via}[[:space:]]+import)" tests/*.py 2>/dev/null || true)
+    via_parent="${REACHED_THROUGH[$module]%.*}"
+    # The parent form too, as for the module itself: `from recall.desktop import ui` is how the one
+    # test of the probe split out of the desktop UI reaches it.
+    mapfile -t found < <(grep -lE "^[[:space:]]*(import ${via}([[:space:],]|$)|from ${via}[[:space:]]+import|from ${via_parent//./\\.}[[:space:]]+import[[:space:]].*\\b${rank_leaf}\\b)" tests/*.py 2>/dev/null || true)
   fi
   # Only test files: conftest.py and helper modules hold no tests (pytest loads conftest.py
   # anyway), and under the cap below each one would push a real test file out.
