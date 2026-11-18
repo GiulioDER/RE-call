@@ -10,7 +10,7 @@ import json
 import re
 import threading
 from collections.abc import AsyncIterator, Callable, Mapping, Sequence
-from contextlib import AbstractAsyncContextManager, asynccontextmanager
+from contextlib import AbstractAsyncContextManager, AbstractContextManager, ExitStack, asynccontextmanager, nullcontext
 from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
 from typing import Annotated, Any, Literal, Protocol, TypedDict, TypeVar, cast
@@ -113,7 +113,15 @@ from recall_mcp.related_api import records_memory, related_memory
 from recall.records import RecordsQueryError
 from recall_mcp.stale_reports_api import report_stale
 from recall.stale_reports import StaleReportRefused
-from recall_mcp.use_reports_api import EFFECTS, MAX_SOURCES, UseReportRefused, _basename, authorized_report_rows, report_use
+from recall_mcp.use_reports_api import (
+    EFFECTS,
+    MAX_SOURCES,
+    UseReportRefused,
+    _basename,
+    authorized_report_aliases,
+    authorized_report_rows,
+    report_use,
+)
 # Through the service facade on purpose: this wrapper injects the service-level retrieval seams.
 from recall_mcp.service import query_construction_challenge, tenant_scopes
 from recall_mcp.status import JobLedger, calibration_status, job_status
@@ -2008,7 +2016,17 @@ def _register_fact_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         return payload
 
 
-def _paths_named(store: Any, names: Sequence[object]) -> dict[str, str]:
+def _report_snapshot(store: PgVectorStore) -> AbstractContextManager[object]:
+    from recall.generation_store import GenerationStore
+
+    # Lite snapshots are read transactions. Keep them separate from a report's ledger write.
+    return store.snapshot() if isinstance(store, GenerationStore) else nullcontext()
+
+
+def _paths_named(
+    store: Any, names: Sequence[object], *,
+    security_policy: SourceSecurityPolicy | None = None, access_context: AccessContext | None = None,
+) -> dict[str, str]:
     """`{name: stored source}` for each name that search shows (a memo's file under the index
     root) and that names exactly one served memo; the ledger knows a memo only by its stored
     source (an absolute path, or a generation's URI). Both sides of the association belong to
@@ -2017,16 +2035,20 @@ def _paths_named(store: Any, names: Sequence[object]) -> dict[str, str]:
     let a hidden namesake change the answer."""
     lookup = getattr(store, "served_sources_for_identifiers", None)
     paths = [n for n in (str(raw).strip() for raw in names) if n != _basename(n)]
-    if callable(lookup):
-        return {name: hits[0] for name, hits in lookup(paths).items() if len(hits) == 1}
-    lookup, present = getattr(store, "sources_for_identifiers", None), getattr(store, "sources_present", None)
-    # The ledger recognises a store by its methods (`stale_reports_api._database_backed`); one
-    # without this lookup has nothing to resolve, and the ledger judges the names as written.
-    if not paths or not callable(lookup) or not callable(present):
+    if not paths:
         return {}
-    found = lookup(paths)
-    served = present(sorted({s for n in paths for s in found.get(n, ())}))
-    matches = {n: [s for s in found.get(n, ()) if s in served] for n in paths}
+    if callable(lookup):
+        matches = lookup(paths)
+    else:
+        lookup, present = getattr(store, "sources_for_identifiers", None), getattr(store, "sources_present", None)
+        if not callable(lookup) or not callable(present):
+            return {}
+        found = lookup(paths)
+        served = present(sorted({s for n in paths for s in found.get(n, ())}))
+        matches = {n: [s for s in found.get(n, ()) if s in served] for n in paths}
+    if security_policy is not None:
+        assert access_context is not None
+        return authorized_report_aliases(store, matches, security_policy, access_context)
     return {n: hits[0] for n, hits in matches.items() if len(hits) == 1}
 
 
@@ -2574,42 +2596,41 @@ def _register_reasoning_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         assistant = deps.assistant
 
         names = (stale_source, replacing_source)
-        try:
-            named = await _to_thread(
-                lambda: (
-                    assistant.files_named(cast(LiteStore, store), list(names))
-                    if assistant is not None
-                    else {n: (n, s) for n, s in _paths_named(store, names).items()}
-                )
-            )
-        except Exception:  # BROAD-CATCH: fail-open  # plain local names can still reach the sidecar
-            if sidecar and assistant is None and not report_access:
-                named = {}
-            else:
-                await _release_mutation_reservation(state, store.tenant, idempotency_key)
-                raise
+        write_started = threading.Event()
 
         def run() -> dict[str, Any]:
-            # The queue reads a memo's file under the root, and runs only with no source policy,
-            # where nothing is hidden from the caller. Under a policy the caller's names go to the
-            # ledger as written, so a refusal names them and an unreadable memo reads as absent.
-            queued = sidecar and not report_access
+            with ExitStack() as stack:
+                try:
+                    stack.enter_context(_report_snapshot(store))
+                    named = (
+                        assistant.files_named(cast(LiteStore, store), list(names))
+                        if assistant is not None
+                        else {n: (n, s) for n, s in _paths_named(store, names, **report_access).items()}
+                    )
+                except Exception:  # BROAD-CATCH: fail-open  # local names can still reach the sidecar
+                    if not (sidecar and assistant is None and not report_access):
+                        raise
+                    named = {}
+                # Under a policy the caller's names go to the ledger as written, so a refusal
+                # still names the caller's input.
+                queued = sidecar and not report_access
 
-            def name(given: str) -> str:
-                return named[given.strip()][0] if queued and given.strip() in named else given
+                def name(given: str) -> str:
+                    return named[given.strip()][0] if queued and given.strip() in named else given
 
-            return report_stale(
-                store,
-                stale_source=name(stale_source),
-                replacing_source=name(replacing_source),
-                stale_quote=stale_quote,
-                current_quote=current_quote,
-                task=task,
-                env=_runtime_env_for(state),
-                sidecar=sidecar,
-                aliases={name(n).strip(): named[n.strip()][1] for n in names if n.strip() in named},
-                **report_access,
-            )
+                return report_stale(
+                    store,
+                    stale_source=name(stale_source),
+                    replacing_source=name(replacing_source),
+                    stale_quote=stale_quote,
+                    current_quote=current_quote,
+                    task=task,
+                    env=_runtime_env_for(state),
+                    sidecar=sidecar,
+                    aliases={name(n).strip(): named[n.strip()][1] for n in names if n.strip() in named},
+                    before_write=write_started.set,
+                    **report_access,
+                )
 
         with METRICS.timer("recall_tool_latency_ms", tool="report_stale"):
             try:
@@ -2619,6 +2640,10 @@ def _register_reasoning_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
                 raise ToolError(
                     json.dumps({"error": "stale_report_refused", "reason": str(exc)}, sort_keys=True)
                 ) from exc
+            except Exception:  # BROAD-CATCH: cleanup-only
+                if not write_started.is_set():
+                    await _release_mutation_reservation(state, store.tenant, idempotency_key)
+                raise
         payload = json.dumps(result, indent=2)
         await _record_mutation_result(
             state,
@@ -2691,33 +2716,32 @@ def _register_reasoning_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         assert store is not None
         assistant = deps.assistant
         names: list[object] = [*(used or []), *(wrong or [])]
-        try:
-            aliases = await _to_thread(
-                lambda: (
+        write_started = threading.Event()
+
+        def run() -> dict[str, Any]:
+            with _report_snapshot(store) if names else nullcontext():
+                aliases = (
                     None if len(names) > 2 * MAX_SOURCES
-                    else _paths_named(store, names) if assistant is None
+                    else _paths_named(store, names, **report_access) if assistant is None
                     else {n: s for n, (_, s) in assistant.files_named(cast(LiteStore, store), names).items()}
                 )
-            )
-        except Exception:  # BROAD-CATCH: cleanup-only  # release the unwritten alias phase's reservation
-            await _release_mutation_reservation(state, store.tenant, idempotency_key)
-            raise
+                return report_use(
+                    store,
+                    task=task,
+                    effect=effect,
+                    used=used or [],
+                    wrong=wrong or [],
+                    task_succeeded=task_succeeded,
+                    query=query,
+                    note=note,
+                    aliases=aliases,
+                    before_write=write_started.set,
+                    **report_access,
+                )
+
         with METRICS.timer("recall_tool_latency_ms", tool="report_use"):
             try:
-                result = await _to_thread(
-                    lambda: report_use(
-                        store,
-                        task=task,
-                        effect=effect,
-                        used=used or [],
-                        wrong=wrong or [],
-                        task_succeeded=task_succeeded,
-                        query=query,
-                        note=note,
-                        aliases=aliases,
-                        **report_access,
-                    )
-                )
+                result = await _to_thread(run)
             except UseReportRefused as exc:
                 await _release_mutation_reservation(state, store.tenant, idempotency_key)
                 raise ToolError(
@@ -2726,6 +2750,10 @@ def _register_reasoning_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
                         sort_keys=True,
                     )
                 ) from exc
+            except Exception:  # BROAD-CATCH: cleanup-only
+                if not write_started.is_set():
+                    await _release_mutation_reservation(state, store.tenant, idempotency_key)
+                raise
         payload = json.dumps(result, indent=2)
         await _record_mutation_result(
             state,
@@ -3480,6 +3508,8 @@ def _register_memory_admin_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
 _ASSISTANT_VIEWS: frozenset[str] = frozenset(
     {"recall_search", "recall_evidence", "recall_current_facts", "recall_apply_fact"}
 )
+#: The views, and `recall_withdraw`, which the assistant surface serves with memo ids too.
+_ASSISTANT_HELD: frozenset[str] = _ASSISTANT_VIEWS | {"recall_withdraw"}
 
 
 class _HeldTools:
@@ -3634,6 +3664,63 @@ def _register_assistant_tools(mcp: MCPServer, deps: _ToolDeps, held: _HeldTools)
                 )
             )
         return assistant_dumps(result)
+
+    if "recall_withdraw" in held.held:
+        plain_withdraw = held.held["recall_withdraw"][1]
+
+        async def recall_withdraw(
+            sources: list[str], ctx: Context[dict, object], idempotency_key: str | None = None
+        ) -> str:
+            # A memo of the folder, named by its id (as hits name it here) or by its file, is
+            # withdrawn as `recall_forget_memo` forgets one, file included. The plain tool matched
+            # no id, and for a path it left the file, which the next refresh indexed again
+            # (a live agent run, 2026-11-18). Every other source goes to it unchanged.
+            memos = {source: memo for source in sources if (memo := assistant.folder_memo(source)) is not None}
+            rest = [source for source in sources if source not in memos]
+            done: list[tuple[str, WithdrawResult]] = []
+            if memos:
+                state = _state(ctx)
+                store = await _require(SCOPE_FORGET, ctx)
+                refresh = _policy(state, store)
+                for source, memo in memos.items():
+                    with METRICS.timer("recall_tool_latency_ms", tool="withdraw"):
+                        # Awaited before the loop moves on, so the closure reads this `memo`.
+                        result = await _to_thread(
+                            lambda: assistant.withdraw(
+                                cast(LiteStore, store),
+                                state["embedder"],
+                                memo,
+                                security_policy=refresh["security_policy"],
+                                security_context=_access_context(state, store, purpose="erasure"),
+                                refresh_context=refresh["security_context"],
+                            )
+                        )
+                    if result is None:
+                        rest.append(str(assistant.path_of(memo)))  # no file: by the name it had
+                    else:
+                        done.append((source, result))
+            if not done:
+                return cast(str, await plain_withdraw(rest, ctx, idempotency_key))
+            parts = [result for _, result in done]
+            if rest:
+                parts.append(WithdrawResult.model_validate_json(await plain_withdraw(rest, ctx, idempotency_key)))
+
+            def total(field: str) -> int:
+                values = [getattr(part, field) for part in parts]
+                return -1 if -1 in values else sum(values)
+
+            return WithdrawResult(
+                chunks_removed=total("chunks_removed"),
+                sources_withdrawn=[source for source, _ in done] + [s for part in parts[len(done):] for s in part.sources_withdrawn],
+                sources_not_found=[s for part in parts[len(done):] for s in part.sources_not_found],
+                message=" ".join(part.message for part in parts),
+                outbox_events_scrubbed=total("outbox_events_scrubbed"),
+                staged_files_removed=total("staged_files_removed"),
+                facts_withdrawn=total("facts_withdrawn"),
+                facts_redacted=total("facts_redacted"),
+            ).model_dump_json(indent=2)
+
+        held.register("recall_withdraw", recall_withdraw)
 
     _register_assistant_views(held, deps, assistant)
 
@@ -3986,7 +4073,7 @@ def build_server(settings: Settings | None = None) -> MCPServer:
     registrar = cast(MCPServer, FilteredToolRegistrar(mcp, surface))
     # With the assistant surface on, four tools are registered in their compact form by
     # `_register_assistant_tools`, which reuses the held declarations' annotations and descriptions.
-    held = _HeldTools(registrar, _ASSISTANT_VIEWS if assistant is not None else frozenset())
+    held = _HeldTools(registrar, _ASSISTANT_HELD if assistant is not None else frozenset())
     tools = cast(MCPServer, held)
     _register_search_tools(tools, deps)
     _register_fact_tools(tools, deps)

@@ -595,8 +595,7 @@ def test_g17_graph_status_without_an_active_generation_is_a_message(monkeypatch:
 
 def test_g18_status_of_a_stored_graph_hashes_no_corpus(store: LiteStore, monkeypatch: pytest.MonkeyPatch) -> None:
     """G18. With a graph stored for the corpus as it is now, its readiness comes from the marker:
-    the search matrix is not loaded. Catches the corpus hashed on every `recall graph status`
-    (CCA PERF-004)."""
+    the search matrix is not loaded by `LiteStore.graph_readiness` (CCA PERF-004)."""
     real, loads = LiteStore._load, []
 
     def counted(self: LiteStore) -> object:
@@ -606,6 +605,25 @@ def test_g18_status_of_a_stored_graph_hashes_no_corpus(store: LiteStore, monkeyp
     monkeypatch.setattr(LiteStore, "_load", counted)
     ready = store.graph_readiness()
     assert ready.ready and not loads, f"{len(loads)} corpus load(s) for a stored graph's readiness"
+
+
+def test_cli_graph_status_uses_the_marker_without_hashing_the_corpus(
+    store: LiteStore, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """CODE-001. The CLI reads its stored marker without hashing the chunks."""
+    from recall.lite import store as lite_store
+
+    real_hash = lite_store.corpus_fingerprint_of
+    hashes: list[int] = []
+
+    def counted(rows: Iterator[tuple[str, str, bytes]]) -> str:
+        hashes.append(1)
+        return real_hash(rows)
+
+    monkeypatch.setattr(lite_store, "corpus_fingerprint_of", counted)
+    out = run_cli(["--dsn", "sqlite:///" + store.path.as_posix(), "graph", "status"])
+    assert json.loads(out)["ready"] is True, out
+    assert not hashes, "graph status hashed the corpus despite a current marker"
 
 
 def test_g19_a_marker_missing_its_graph_id_is_no_graph(store: LiteStore) -> None:

@@ -246,6 +246,8 @@ def withdraw_memory(
     control_plane: ControlPlane | None = None,
     security_policy: SourceSecurityPolicy | None = None,
     security_context: AccessContext | None = None,
+    *,
+    erase_memo_requests: bool = True,
 ) -> WithdrawResult:
     """Withdraw memos that were a mistake: erase them as `forget_memory` does, and give back what
     they superseded (owner decision, 2026-10-22).
@@ -257,6 +259,9 @@ def withdraw_memory(
     (`recall.fact_ledger.plan_withdrawals`). Withdrawing the head of a line makes its predecessor
     current, withdrawing the middle splices the chain, and a memo forgotten or pruned earlier can
     be withdrawn by the name it had.
+
+    `erase_memo_requests=False` is for an assistant memo withdrawn by its id
+    (`recall_mcp.assistant.AssistantMemos.withdraw`), as `forget_memory`'s is for one forgotten.
     """
     from recall.backends import write_session
     from recall.lite import LiteStore
@@ -267,7 +272,7 @@ def withdraw_memory(
     with write_session(store, "forget"), _erasure_lock(store), erasing, pending as scrub_pending:
         result = _forget_memory_unlocked(
             store, sources, shadow_store, scrub_pending, security_policy, security_context,
-            withdraw=True,
+            withdraw=True, erase_memo_requests=erase_memo_requests,
         )
     return WithdrawResult(
         chunks_removed=result.chunks_removed,

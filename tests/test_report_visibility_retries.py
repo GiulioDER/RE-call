@@ -1,21 +1,31 @@
 """Visibility and retry contracts for the release MCP repairs.
 
-The exact nodes are run red against ac67de930 before the production changes.
+The original regressions were proved on ac67de930. The generation, source-read
+and alias eligibility cases were proved on 31e6841dc. The append cases target
+the write-start notification at each ledger append.
 """
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator
+from contextlib import contextmanager
+from pathlib import Path
 from typing import Any
 
 import pytest
 
+from recall.generation_types import NoActiveGeneration
+from recall.security_policy import AccessContext, SourceRule, SourceSecurityPolicy
+from recall.types import Chunk
 from recall_mcp import server, use_reports_api
-from recall_mcp.auth import SCOPE_WRITE
+from recall_mcp.auth import SCOPE_READ, SCOPE_WRITE
+from recall_mcp.stale_reports_api import report_stale
 from recall_mcp.use_reports_api import report_use
 from tests.test_mcp_auth_hunt_regressions import (
     _IdempotentLimiter, _Registry, _Token, _authenticated, _run,
 )
-from tests.test_report_tools_database_names import GenerationLikeStore, SERVED
+from tests.test_report_tools_database_names import FILES, NEW_QUOTE, OLD_QUOTE, SERVED, GenerationLikeStore
+from tests.test_report_tools_database_names import call as call  # noqa: F401
 
 
 def test_hidden_alias_does_not_change_a_readable_basename_report(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -95,4 +105,191 @@ def test_a_failed_alias_lookup_releases_the_unwritten_request(
     ))
     result = _run(tool, state, monkeypatch, token, idempotency_key="same-request", **arguments)
     assert json.loads(result) == {"recorded": True}
+    assert len(store.rows) == 1
+
+
+def _report_arguments(tool: str) -> dict[str, Any]:
+    if tool == "recall_report_use":
+        return {"task": "Identify the current release.", "effect": "helped", "used": ["recall/new.md"]}
+    return {"stale_source": "recall/old.md", "replacing_source": "recall/new.md",
+            "stale_quote": OLD_QUOTE, "current_quote": NEW_QUOTE}
+
+
+@pytest.mark.parametrize("tool", ["recall_report_use", "recall_report_stale"])
+def test_alias_and_report_reads_share_a_served_generation(
+    call: Any, monkeypatch: pytest.MonkeyPatch, tool: str,
+) -> None:
+    """BUG-001. A promotion after alias resolution cannot split the report's source reads."""
+    store = call.store
+    active = SERVED
+    pinned = None
+
+    @contextmanager
+    def snapshot() -> Iterator[None]:
+        nonlocal pinned
+        pinned = active
+        try:
+            yield
+        finally:
+            pinned = None
+
+    def lookup(names: list[str]) -> dict[str, list[str]]:
+        nonlocal active
+        mappings = {name: [(pinned or active) + name] for name in names}
+        active = "s3://example.test/promoted/"
+        return mappings
+
+    monkeypatch.setattr("recall.generation_store.GenerationStore", type(store))
+    monkeypatch.setattr(store, "snapshot", snapshot, raising=False)
+    monkeypatch.setattr(store, "served_sources_for_identifiers", lookup, raising=False)
+    monkeypatch.setattr(store, "source_content_hashes", lambda: {(pinned or active) + f: "h" for f in FILES})
+    monkeypatch.setattr(store, "source_chunk_texts", lambda source: [FILES[source.removeprefix(pinned or active)]])
+
+    result = call(tool, **_report_arguments(tool))
+    assert not result.startswith("RAISED"), f"promotion changed report source validation: {result}"
+    ((_, payload),) = store.rows
+    assert payload.get("used", [payload.get("replacing_source")]) == [SERVED + "recall/new.md"]
+
+
+@pytest.mark.parametrize("tool", ["recall_report_use", "recall_report_stale"])
+@pytest.mark.parametrize("failure", ["read", "append"])
+def test_report_reservation_tracks_the_write_boundary(
+    monkeypatch: pytest.MonkeyPatch, tool: str, failure: str,
+) -> None:
+    """BUG-002. Retry an unwritten report and retain an indeterminate append for reconciliation."""
+    store = GenerationLikeStore()
+    store.tenant = "acme"
+    pending: set[str] = set()
+
+    class Registry(_Registry):
+        def get(self, tenant: str) -> Any:
+            return store
+
+    class Limiter(_IdempotentLimiter):
+        async def check(self, tenant: str, key: str, **kwargs: Any) -> None:
+            request = kwargs.get("idempotency_key")
+            if request:
+                assert request not in pending
+                pending.add(request)
+
+        async def release_idempotency_reservation(self, tenant: str, key: str) -> None:
+            pending.discard(key)
+
+    def broken_read() -> dict[str, str]:
+        raise OSError("synthetic source read interruption")
+
+    append = store.append_audit_event
+
+    def interrupted_append(*args: Any, **kwargs: Any) -> str:
+        append(*args, **kwargs)
+        raise OSError("synthetic acknowledgement interruption")
+
+    state, token = _authenticated(Registry(), Limiter()), _Token([SCOPE_WRITE])
+    args = {"idempotency_key": "same-request", **_report_arguments(tool)}
+    with monkeypatch.context() as fault:
+        if failure == "read":
+            fault.setattr(store, "source_content_hashes", broken_read)
+        else:
+            fault.setattr(store, "append_audit_event", interrupted_append)
+        with pytest.raises(OSError, match="synthetic .* interruption"):
+            _run(tool, state, fault, token, **args)
+
+    if failure == "append":
+        assert pending == {"same-request"}, "an indeterminate append lost its reservation"
+    else:
+        assert pending == set(), "the reservation survived a failure before the first write"
+        assert not store.rows
+        _run(tool, state, monkeypatch, token, **args)
+    assert len(store.rows) == 1
+
+
+@pytest.mark.parametrize("tool", ["recall_report_use", "recall_report_stale"])
+def test_a_qualified_alias_resolves_among_eligible_rows(
+    monkeypatch: pytest.MonkeyPatch, tool: str,
+) -> None:
+    """SEC-001. A legacy row outside the current policy cannot invalidate an eligible alias."""
+    store = GenerationLikeStore()
+    store.tenant = "acme"
+    policy = SourceSecurityPolicy((SourceRule("recall"),))
+    old_root = "s3://example.test/old-root/"
+    chunks = [
+        Chunk(id=f"fixture-{index}-{root}", source=root + file, text=FILES[file], metadata={"file": file, **stamp})
+        for index, file in enumerate(FILES)
+        for root, stamp in [(SERVED, {"security_policy_digest": policy.digest}), (old_root, {})]
+    ]
+
+    class Registry(_Registry):
+        def get(self, tenant: str) -> Any:
+            return store
+
+    def lookup(names: list[str]) -> dict[str, list[str]]:
+        return {name: [SERVED + name, old_root + name] for name in names}
+
+    monkeypatch.setattr(store, "served_sources_for_identifiers", lookup, raising=False)
+    monkeypatch.setattr(store, "iter_chunks", lambda: iter(chunks), raising=False)
+    state = _authenticated(Registry())
+    state["source_security_policy"] = policy
+    try:
+        result = _run(tool, state, monkeypatch, _Token([SCOPE_READ, SCOPE_WRITE]), **_report_arguments(tool))
+    except server.ToolError as exc:
+        result = f"RAISED {exc}"
+    assert not result.startswith("RAISED"), f"the eligible display name was refused: {result}"
+    ((_, payload),) = store.rows
+    assert payload.get("used", [payload.get("replacing_source")]) == [SERVED + "recall/new.md"]
+
+
+def test_a_report_without_sources_needs_no_served_generation(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The generation pin exists to bind source reads, so a source-free report needs no pin."""
+    store = GenerationLikeStore()
+    store.tenant = "acme"
+
+    class Registry(_Registry):
+        def get(self, tenant: str) -> Any:
+            return store
+
+    def no_generation() -> None:
+        raise NoActiveGeneration("no served generation")
+
+    monkeypatch.setattr("recall.generation_store.GenerationStore", type(store))
+    monkeypatch.setattr(store, "snapshot", no_generation, raising=False)
+    state = _authenticated(Registry())
+    state["source_security_policy"] = SourceSecurityPolicy((SourceRule("recall"),))
+    try:
+        result = _run("recall_report_use", state, monkeypatch, _Token([SCOPE_READ, SCOPE_WRITE]),
+                      task="Check the release.", effect="no_difference")
+    except NoActiveGeneration as exc:
+        result = f"RAISED {exc}"
+    assert not result.startswith("RAISED"), f"a source-free report required a generation: {result}"
+    assert len(store.rows) == 1
+
+
+@pytest.mark.parametrize("tool", ["recall_report_use", "recall_report_stale"])
+def test_policy_reports_read_unchanged_names_once(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, tool: str,
+) -> None:
+    """PERF-001. Check source metadata once and retain the stale report's quote read."""
+    store = GenerationLikeStore()
+    policy = SourceSecurityPolicy((SourceRule("recall"),))
+    access = AccessContext(principal="fixture", tenant=store.tenant, purpose="retrieval")
+    reads: list[bool] = []
+    chunks = [
+        Chunk(file, SERVED + file, text, {"file": file, "security_policy_digest": policy.digest})
+        for file, text in FILES.items()
+    ]
+
+    def scoped_chunks(_scope: object, *, include_text: bool, **_kwargs: object) -> Iterator[Chunk]:
+        reads.append(include_text)
+        return iter(chunks)
+
+    monkeypatch.setattr(store, "iter_scoped_chunks", scoped_chunks, raising=False)
+    if tool == "recall_report_use":
+        report_use(store, task="Check the release.", effect="helped", used=["new.md"],
+                   security_policy=policy, access_context=access)
+        expected = [False]
+    else:
+        report_stale(store, stale_source="old.md", replacing_source="new.md", stale_quote=OLD_QUOTE,
+                     current_quote=NEW_QUOTE, task=None, env={"RECALL_INDEX_ROOT": str(tmp_path)},
+                     security_policy=policy, access_context=access)
+        expected = [False, True]
+    assert reads == expected, f"unexpected scoped reads: {reads}"
     assert len(store.rows) == 1
