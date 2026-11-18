@@ -8,13 +8,22 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ## [Unreleased]
 
+### Upgrade notes
+
+* **The lock moves `onnxruntime` from 1.31.0 to 1.31.1.** Every FastEmbed profile records the
+  installed `onnxruntime` version, so an install from the lock (`uv sync --frozen`, the Windows
+  installer) turns each generation that recorded a FastEmbed profile into `LINEAGE_MISMATCH` until
+  it is rebuilt. Pin `onnxruntime==1.31.0` or rebuild before switching traffic. Hosted (Voyage,
+  OpenAI) and sentence-transformers profiles are unaffected.
+
 ### Added
 
 - The atomic rescue is on at first install. `recall setup --lite` and the PostgreSQL wizard register
   it `active`, with its artifacts beside the Lite store or under `<project_root>/.recall/atomic`,
   and build the first artifact before they finish, which on Lite takes most of the install (the
-  first build embeds about ten views per 120 word chunk). Without the `atomic` dependencies, or beside the
-  desktop app's Docker services, it stays off with a note. The code default of
+  first build embeds about ten views per 120 word chunk). Without the `atomic` dependencies it stays
+  off with a note; beside the desktop app's Docker services the wizard registers it with
+  `RECALL_ATOMIC_RESCUE_WHEN_MISSING=skip` (see below). The code default of
   `RECALL_ATOMIC_RESCUE_MODE` is still `off`, so an existing deployment changes only when it sets it.
   On a Lite store with the rescue active, every write that keeps a calibration in force builds the
   artifact the trust gate serves, and a search can move one parent chunk to dense rank six before
@@ -32,7 +41,37 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT is not set still erases under it, and names a recorded root
   it cannot reach. A build overtaken by a newer calibration's publish refuses rather than
   replacing that calibration's artifact with its own.
-- The `fastembed` extra installs `numpy` and `threadpoolctl`, which the rescue needs.
+- The rescue applies only to a search with no folder, source or other scope and no source policy;
+  a certified Lite store or generation of five or fewer chunks serves ordinary trusted results
+  without an artifact. `recall setup --lite` refuses a relative `RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT`
+  before it writes anything, and the wizard refuses one too. Each Lite store keeps its
+  artifacts in a `store-<digest>` folder of its own under the root, so several stores can share
+  one root and its `micro-views.sqlite`. A rescue build embeds a batch's views in one call when the
+  embedder has no group method (fastembed among them), instead of one call per chunk.
+- On PostgreSQL, a rescue build that loses a race to another build of the same generation keeps
+  the winner's artifact; `recall generation rollback` refuses (`not rolled back: ...`) when a
+  promote moved its target while the target's artifact was built; a forget that lands while a
+  build assembles or writes makes the build erase the views it stored and refuse; and an active
+  rescue with no `RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT` refuses the promotion.
+- New `RECALL_ATOMIC_RESCUE_WHEN_MISSING`, `refuse` (the default) or `skip`. Under `skip` an active
+  rescue whose artifact is missing, built for another calibration, or damaged answers as with the
+  rescue off and says why in the new `atomic_rescue_skipped` field of `recall_search` and
+  `recall_evidence`; configuration errors still refuse. A PostgreSQL MCP server with `active` and
+  `skip` then builds the missing artifact in the background: it checks at most every 30 s after a
+  search, one process builds at a time under a lock file, a failed build is retried after 60 s
+  doubling to 600 s for every server of the tenant, and afterwards it removes the artifacts of older
+  retired, failed and collected generations. The wizard registers `skip` on the host servers
+  beside the desktop app's Docker services, whose uploads and recalibrations run in containers that
+  cannot reach the artifact root; only the memory tenant stays off there, and every other install
+  keeps `refuse`. A PostgreSQL build now writes `<root>/<generation_id>.<calibration_id>/`, and
+  artifacts under the earlier `<root>/<generation_id>/` key keep serving without a rebuild.
+- New `RECALL_ATOMIC_RESCUE_MODE_BY_TENANT=tenant:mode,...` sets the rescue mode of the tenants it
+  names on a server that serves several; every other tenant keeps `RECALL_ATOMIC_RESCUE_MODE`. The
+  server, `recall search` and the rescue builders resolve it the same way. A malformed or repeated
+  entry, or an `active` entry without `RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT`, refuses at startup, and
+  a tenant the server does not serve is named in a startup warning. `recall setup --lite` and the
+  wizard ignore it in the shell, since they do not register it.
+- The `fastembed` and `desktop` extras install `numpy` and `threadpoolctl`, which the rescue needs.
 - `recall_remember`'s `supersedes` accepts another assistant's memo of the same index root by the
   id search names it by (`agent-b/note-0001`), so agents with memo folders of their own can retire
   each other's memos. Its folder's ledger decides authorship; `recall_forget_memo` is unchanged.
@@ -43,6 +82,30 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   opens each file's page from it. Search does not read the graph.
 - `recall graph status` reports the graph build marker and its recorded counts. On PostgreSQL,
   source removal can invalidate graph members while retaining this marker until a rebuild.
+- An authenticated HTTP MCP server writes one line per authorization decision on the
+  `recall.mcp.access` logger: the outcome (`allowed` at INFO, `denied` at WARNING), the principal,
+  tenant, scope and tool, and the caller's session and client. The session is the `threadId` a tool
+  call carries in `_meta`, else the `X-Recall-Session` header; the client is the `X-Recall-Client`
+  header. Both are claims by whoever holds the token: they attribute a call and never authorize
+  one, and a value outside `[A-Za-z0-9._:@-]` or longer than 128 characters is logged as
+  `invalid`. A call the rate limiter refuses after authorization is logged `allowed`, and stdio
+  writes nothing. See [docs/AUTH.md](docs/AUTH.md).
+
+### Changed
+
+- The dashboard is restyled to match the project homepage, with the RE-call logo and locally served
+  Geist fonts. The 3D graph has readable labels, keyboard and pointer camera controls, and hollow
+  rings for superseded memos. It leaves modified browser shortcuts and page scrolling over an
+  empty graph to the browser, keeps the magnification across a resize and the point under a
+  pinch, and its accessible instructions name the touch gestures and the search shortcut. On a
+  Lite store, a graph requested after a forget no longer shows the forgotten source, where a cached
+  response could show it for up to five minutes.
+- The Claude plugin has a directory listing icon, documentation and support links in its
+  manifest, and a Privacy section in `plugin/README.md` naming everything it can send and where.
+- The README is a short landing page; its detail moved to
+  [docs/GETTING_STARTED.md](docs/GETTING_STARTED.md) and [docs/HOW_IT_WORKS.md](docs/HOW_IT_WORKS.md).
+  The GitHub Pages site is retired, and the package's homepage and documentation links, the MCP
+  Registry entry and the plugin manifests point at the repository instead.
 
 ### Fixed
 
@@ -63,6 +126,57 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   `RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT`, which also name its source. They now erase its views with
   SQLite `secure_delete` and a truncating checkpoint, remove every artifact built before it, and
   report an erasure that failed.
+- On PostgreSQL, a forget that waited on a generation build of the same source now also erases from
+  the embedding cache the text that build committed meanwhile, and a build whose source write fails
+  erases the vectors it had just cached.
+- A forget of a memo that another assistant folder corrected (through `recall_forget_memo`,
+  `recall forget`, the MCP `recall_forget` or a refresh that prunes the deleted file) left the
+  memo's revision hash in the correcting folder's request journal. It now drops it and marks the
+  correction `target_forgotten`, so a retry of that correction replays without reading the erased
+  memo. A retry of a correction journalled by 0.15.0 replays instead of reading `request_mismatch`,
+  and a correction whose target name would resolve ambiguously is refused as `ambiguous_target`.
+- `recall_report_use` and `recall_report_stale` refused the names `recall_search` had just shown:
+  the memo's file under the index root on a plain server, where the store keeps an absolute path
+  (Lite and the legacy table) or a `file://` URI (a generation), and the `memo_id` on the assistant
+  surface (`RECALL_ASSISTANT_MEMOS`). Both now accept those names, resolved within the served
+  generation, and on a stdio server with no source policy a stale report reaches the review queue
+  and the audit ledger under one name. Under a source policy a memo the caller may not read is
+  refused exactly as a missing one, and a bare file name is still matched only among the memos the
+  caller may read. A name lookup that fails before the write releases the call's idempotency
+  reservation.
+- `recall provenance current` now applies `RECALL_SOURCE_POLICY_FILE` as `recall_current_facts`
+  does: a memo the caller may not read whole is not named, and a fact left with no readable memo
+  is not listed.
+- `RECALL_STATED_FACT_SOURCES` is in the settings schema, so `python -m recall_mcp.config_report`
+  and the dashboard's Configuration page report it.
+- A Lite calibration fit sampled its generated questions in chunk id order, which hashes each
+  file's path, so the same memos in another folder fitted another threshold (0.628 to 0.660 over
+  seven copies of one corpus, measured 2026-11-11). The questions are now drawn from the chunk
+  texts sorted by content. Fits already stored are unchanged; only new fits differ.
+- `recall_related`'s `source` and `ordinal` windows on PostgreSQL ranked and truncated rows
+  differently from the resolver: the `source` window returned the lowest ordinals rather than the
+  nearest to the seed, the `ordinal` window admitted a string `"1"`, skipped a negative ordinal and
+  failed on one past 2**31, and rows a source policy denied used up the window. The stores now rank
+  as the resolver does, and under a policy the window widens until it holds `max_items` readable
+  chunks or the relation is exhausted. The lexical leg's tie order reads `ord` the same way, no
+  longer fails a search on an ordinal past 2**63, and breaks a final tie by chunk id in code point
+  order (`COLLATE "C"`, which matches Python only on a UTF-8 database).
+- In a clone with no `origin` remote, the auditor brief hook logged a git `CalledProcessError` on
+  every dispatch. It now stops with `no origin remote, so no prior records can apply` and leaves the
+  prompt unchanged.
+- The Claude plugin marketplace entry named the license as Apache-2.0; it now says AGPL-3.0-only,
+  as the plugin manifest and the package do.
+
+### Security
+
+- The lock file moves `soupsieve` to 4.1 (2.10 on Python below 3.11.5) for CVE-2026-126192 and
+  CVE-2026-126190, and `opentelemetry-api`, which the MCP SDK uses, to 1.45.2 for CVE-2026-126360.
+  Only `uv.lock` changes, so a pip install resolves these itself, and on Python 3.11.0 to 3.11.4
+  soupsieve 2.10 still carries CVE-2026-126190.
+- The Windows installer is built only from hashed packages (the locked dependencies, a hashed
+  PyInstaller pin, and the checkout installed with no index access), and the job that signs it
+  checks out and installs nothing. The desktop Dockerfile pins its Python base image, and both
+  compose files the pgvector image, by digest.
 
 ## [0.15.0] (2026-11-08)
 

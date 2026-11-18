@@ -32,6 +32,19 @@ means the default, with a warning for the last two, and text that is not a numbe
 the indexing budgets; `--check` writes nothing. A refresh failure appears in `refresh_warning`,
 doctor, and `recall_stats`. See [API.md](API.md) for command results and refusal behavior.
 
+## Atomic rescue
+
+`recall setup --lite` and the PostgreSQL wizard register these for the MCP server; the CLI reads
+them from its own shell. See [LITE.md](LITE.md#atomic-rescue), [GENERATIONS.md](GENERATIONS.md#atomic-rescue)
+and [WIZARD.md](WIZARD.md).
+
+| Variable | Default or setup value | Purpose |
+|---|---|---|
+| `RECALL_ATOMIC_RESCUE_MODE` | `off`; setup and the wizard write `active` | `off`, `shadow` (sampled) or `active`. |
+| `RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT` | Unset; Lite setup writes a folder beside the store, the wizard `<project_root>/.recall/atomic` | Absolute folder holding the artifacts; `active` refuses without it. |
+| `RECALL_ATOMIC_RESCUE_MODE_BY_TENANT` | Unset | `tenant:mode,...` for a server that serves several tenants; a tenant it does not name keeps `RECALL_ATOMIC_RESCUE_MODE`. |
+| `RECALL_ATOMIC_RESCUE_WHEN_MISSING` | `refuse`; the wizard writes `skip` beside the desktop app's Docker services | `skip` answers as with the rescue off when the artifact is missing, for another calibration or damaged, reports why in `atomic_rescue_skipped`, and lets a PostgreSQL server build it in the background. |
+
 ## Claude Code and Codex hooks
 
 The `recall-hooks` and `recall-codex-hooks` entry points (package `recall_hooks`) read these from
