@@ -35,7 +35,10 @@ def sync_logos() -> None:
     ):
         copyfile(LOGO, destination)
 
-    save(logo_layer(1024, opacity=255), project / "plugin/.claude-plugin/icon.png")
+    # A 256-colour palette, as #1284 shipped it: the Claude directory screens plugin files for
+    # embedded text and download words, and the RGBA icon's compressed bytes matched by chance.
+    icon = logo_layer(1024, opacity=255).quantize(colors=256, method=Image.Quantize.FASTOCTREE)
+    save(icon, project / "plugin/.claude-plugin/icon.png")
     logo_layer(192, opacity=255).save(
         project / "recall/dashboard/static/recall-logo.webp", format="WEBP", lossless=True,
     )
