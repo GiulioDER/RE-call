@@ -73,12 +73,14 @@ fi
 files=()
 untested=()
 skipped=()
-# Modules split out of recall/store.py (S7d) and recall/calibration_v2.py. Tests reach them through
-# the module they came from, which re-exports their names (and, for the store, inherits the mixins),
-# so that module's importers are their tests.
+# Modules split out of recall/store.py (S7d), recall/calibration_v2.py and recall/desktop/ui.py.
+# Tests reach them through the module they came from, which re-exports their names (and, for the
+# store, inherits the mixins), so that module's importers are their tests.
 declare -A REACHED_THROUGH=(
   [recall.calibration_v2_artifact]=recall.calibration_v2
   [recall.calibration_v2_bounds]=recall.calibration_v2
+  [recall.desktop.hardware]=recall.desktop.ui
+  [recall.desktop.main_window]=recall.desktop.ui
   [recall.dsn_security]=recall.store
   [recall.store_mutation]=recall.store
   [recall.store_receipts]=recall.store

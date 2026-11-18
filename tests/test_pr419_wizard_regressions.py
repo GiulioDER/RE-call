@@ -246,7 +246,7 @@ def test_reserved_project_refusal_keeps_selection_and_next_drop_target(
             pass
 
     monkeypatch.setattr(MainWindow, "_run", lambda *a, **kw: None)
-    monkeypatch.setattr("recall.desktop.ui.load_pipelines", lambda: {})
+    monkeypatch.setattr("recall.desktop.main_window.load_pipelines", lambda: {})
     monkeypatch.setattr("recall.desktop.profiles.profile_path", lambda: tmp_path / "profile.json")
     monkeypatch.setattr(QInputDialog, "getText", lambda *a, **kw: ("user", True))
     app = QApplication.instance() or QApplication([])
