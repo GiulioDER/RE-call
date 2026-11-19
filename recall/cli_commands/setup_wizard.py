@@ -87,8 +87,8 @@ def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
             "Install recall as a repeatable pipeline: provision the database stack, build and "
             "calibrate every corpus, publish its calibration, promote a generation, and register "
             "the MCP servers. Answers become a JSON config that can be replayed or driven "
-            "headlessly by CI. `recall setup` configures the installation and offers legacy "
-            "calibration; it does not build or promote a generation."
+            "headlessly by CI. `recall setup` configures the installation; it does not "
+            "calibrate, and it does not build or promote a generation."
         ),
     )
     p_wizard.set_defaults(_opens_db=True, func=_cmd_wizard)

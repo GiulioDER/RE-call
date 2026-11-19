@@ -109,6 +109,10 @@ def require_multimodal_enabled(env: Mapping[str, str]) -> None:
         )
 
 
+#: Where the `openai` spellings go when `OPENAI_API_KEY` is set and `OPENROUTER_API_KEY` is not.
+OPENAI_DIRECT_BASE_URL = "https://api.openai.com/v1"
+
+
 def resolve_embedder(name: str, env: dict[str, str] | None = None) -> Embedder:
     """Build an embedder from a short config string.
 
@@ -214,6 +218,19 @@ def resolve_embedder(name: str, env: dict[str, str] | None = None) -> Embedder:
         return resolve_registered_embedder(
             MULTIMODAL_EMBEDDING_PROFILE,
             {**source, "RECALL_EMBED_PROFILE": MULTIMODAL_EMBEDDING_PROFILE},
+        )
+    if (
+        (name == "openai" or name.startswith("openai:"))
+        and source.get("OPENAI_API_KEY")
+        and not source.get("OPENROUTER_API_KEY")
+    ):
+        # With OPENROUTER_API_KEY set these spellings keep going to OpenRouter, as they always
+        # did; an OpenAI key alone goes to OpenAI (#1397). Its model ids carry no `openai/` prefix.
+        return OpenAICompatEmbedder(
+            model=name[len("openai:"):] or "text-embedding-3-small",
+            api_key=source.get("OPENAI_API_KEY"),
+            dimensions=_optional_dimensions(source),
+            base_url=OPENAI_DIRECT_BASE_URL,
         )
     if name == "openai":
         return OpenAICompatEmbedder(

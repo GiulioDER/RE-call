@@ -109,6 +109,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ### Changed
 
+- `recall setup` no longer writes settings that nothing reads, and no longer offers a calibration
+  that search never uses. It still asks "Is data security necessary for this installation?" and
+  still hides the cloud choices for that run, but it no longer saves `RECALL_SECURITY_REQUIRED`,
+  which nothing read afterwards, and its closing summary says the answer applied to that run only
+  (#1396). It no longer writes `RECALL_SPARSE=fts`, the built-in behaviour, which nothing read
+  (#1398). It no longer asks to "calibrate the threshold now": the `calibration.json` it fitted
+  was never loaded by search, which serves only a calibration published against a generation, so
+  setup now points at `recall wizard` instead (#1395). `recall calibrate` still writes that file
+  as a measurement. A rerun of setup drops both keys from the managed block in `.env`.
 - Two documented settings that nothing applied are no longer offered (#1406, #1409).
   `RECALL_REASONING_MODEL` is gone from `.env.example` and the environment reference; with
   `RECALL_REASONING_EXPANSION` on and no `RECALL_REASONING_EXPANSION_MODEL`, a config that still
@@ -146,14 +155,20 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ### Fixed
 
+- `recall setup` offered the OpenAI-compatible cloud embedder when only `OPENAI_API_KEY` was
+  entered, and that embedder then refused to start for want of `OPENROUTER_API_KEY` (#1397). The
+  `openai` and `openai:<model>` spellings now use `OPENAI_API_KEY` against `api.openai.com` when it
+  is the only one of the two keys set; with `OPENROUTER_API_KEY` set they go to OpenRouter, as
+  before. Bare `openai` there means OpenAI's `text-embedding-3-small`.
 - `recall setup` saved its reranking and reasoning-arm answers, and the API keys a cloud embedder
   needs, only to `./.env`, which the MCP server it registers never reads (#1393, #1394). The
   server therefore never reranked, never had the reasoning arm, and started a Voyage or
   OpenAI-compatible embedder without its key unless the shell happened to export it. Setup now
-  also writes those values into the server's registration in the Claude Code configuration, so
-  the keys you enter are stored there too, beside the DSN. The "bge reranker" choice now writes
-  its pinned revision, without which the server refuses it. Re-run `recall setup` to update an
-  existing registration.
+  also writes those values into the server's registration in the Claude Code configuration and,
+  when it wires Codex, into a `server_env` block of Codex's `recall-hook.json`, which the Codex
+  launcher applies. The keys you enter are therefore stored in those files too, beside the DSN.
+  The "bge reranker" choice now writes its pinned revision, without which the server refuses it.
+  Re-run `recall setup` to update an existing registration.
 - `RECALL_REASONING_ANSWER_MAX_CALLS_PER_MIN`, documented as the only bound on paid answer calls,
   was read by nothing from 0.13.0 on, so answer and proof calls had no ceiling at all (#1405). It is
   enforced again: one budget per process, shared by every answer and proof provider and by both

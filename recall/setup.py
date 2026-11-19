@@ -11,7 +11,7 @@ import urllib.request
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
-from typing import Callable, Literal, Sequence
+from typing import Callable, Literal, Mapping, Sequence
 
 from recall._env import _unquote, refuse_removed_entailment
 from recall.calibration import Calibration, from_samples, save
@@ -77,6 +77,21 @@ SERVER_SETTING_KEYS = (
     "OPENAI_API_KEY",
     "OPENROUTER_API_KEY",
 )
+
+
+
+def _server_settings(values: Mapping[str, str]) -> dict[str, str]:
+    """The `SERVER_SETTING_KEYS` values to hand a registered server, Claude Code's or Codex's.
+
+    "0" is left out with the empty values: unset already means off, and an explicit
+    RECALL_RERANK=0 conflicts with a RECALL_RETRIEVAL_PROFILE the client exports.
+    """
+    return {
+        key: values[key]
+        for key in SERVER_SETTING_KEYS
+        if values.get(key) not in (None, "", "0")
+    }
+
 
 DEFAULT_CALIBRATION_PATH = Path("calibration.json")
 MODEL_DOWNLOAD_FLOOR_BYTES = 1_500_000_000
@@ -1351,13 +1366,7 @@ def run_setup_wizard(
                 dsn=dsn,
                 embedder=embedder.value,
                 table=table or DEFAULT_TABLE,
-                # "0" is left out with the empty values: unset already means off, and an explicit
-                # RECALL_RERANK=0 conflicts with a RECALL_RETRIEVAL_PROFILE the client exports.
-                settings={
-                    key: values[key]
-                    for key in SERVER_SETTING_KEYS
-                    if values.get(key) not in (None, "", "0")
-                },
+                settings=_server_settings(values),
                 project_root=project_root,
                 print_fn=print_fn,
             )
@@ -1395,6 +1404,7 @@ def run_setup_wizard(
                 write_time=write_time_requested,
                 prompt_time=prompt_time_requested,
                 project_root=project_root,
+                server_env=_server_settings(values),
                 print_fn=print_fn,
             )
             print_fn(
@@ -1433,11 +1443,11 @@ def run_setup_wizard(
                     f"Copy them into {user_skill_dir()} by hand."
                 )
 
+    # The security answer is not saved: it only filtered the choices above, and nothing reads it
+    # after setup (#1396). RECALL_SPARSE is not written either: nothing reads it (#1398).
     values: dict[str, str] = {
         "RECALL_DSN": dsn,
-        "RECALL_SECURITY_REQUIRED": "1" if security_required else "0",
         "RECALL_EMBEDDER": embedder.value,
-        "RECALL_SPARSE": "fts",
     }
     if reranker.value == "RECALL_RERANK=1":
         values["RECALL_RERANK"] = "1"
@@ -1453,72 +1463,19 @@ def run_setup_wizard(
     values.update(reasoning_values)
     values.update(cloud_keys)
 
-    if _ask_yes_no(
-        input_fn,
-        print_fn,
-        "Do you want to calibrate the threshold now against a labeled query file?",
-        default=False,
-    ):
-        queries_raw = _prompt(
-            input_fn, print_fn, "Path to labeled queries JSON [leave blank to skip]: "
-        )
-        corpus_raw = _prompt(
-            input_fn, print_fn, "Path to your corpus [leave blank to skip]: "
-        )
-        if not queries_raw or not corpus_raw:
-            print_fn(
-                "Calibration skipped. Run recall calibrate later with a labeled query file "
-                "when you have one."
-            )
-            _update_env_block(env_path, values)
-            print_fn(f"Wrote {env_path}")
-            if scaffold_requested:
-                _run_scaffold()
-            if seed_requested:
-                _run_seed()
-            if claude_wiring_requested:
-                _run_claude_wiring()
-            if codex_wiring_requested:
-                _run_codex_wiring()
-            _run_plugin_step()
-            return values
-        queries = _require_local_path(queries_raw, label="Path to labeled queries JSON")
-        corpus = _require_local_path(corpus_raw, label="Path to your corpus")
-        out_raw = _prompt(input_fn, print_fn, "Calibration output path [calibration.json]: ")
-        try:
-            result = calibrate_from_files(
-                dsn=dsn,
-                embedder_name=embedder.value,
-                queries_path=queries,
-                corpus_dir=corpus,
-                out=_require_local_output_path(
-                    out_raw or None,
-                    label="Calibration output path",
-                    default=DEFAULT_CALIBRATION_PATH,
-                ),
-                env=cloud_keys,
-            )
-        except ValueError as exc:
-            print_fn(str(exc))
-            # This path never wrote `.env` even before this function grew a scaffold step — a
-            # bad calibration path aborts the whole wizard. But scaffolding was requested
-            # independently of calibration succeeding, so still attempt it best-effort on the
-            # way out rather than silently dropping a completed part of the interview.
-            if scaffold_requested:
-                _run_scaffold()
-            raise SystemExit(2) from exc
-        values["RECALL_CALIBRATION"] = str(result.path)
-        print_fn(
-            f"Calibration saved to {result.path}. Threshold={result.calibration.threshold:.3f}"
-        )
-    else:
-        print_fn(
-            "Calibration skipped. Run recall calibrate later with a labeled query file "
-            "when you have one."
-        )
-
     _update_env_block(env_path, values)
     print_fn(f"Wrote {env_path}")
+    print_fn(
+        f"Data security required: {'yes' if security_required else 'no'}. This answer applied "
+        "to this setup run only: it chose which options were offered above. It is not saved, "
+        "and nothing enforces it after setup."
+    )
+    # Setup no longer offers to calibrate (#1395): the file it fitted was never read by search,
+    # which serves only a calibration published against a generation.
+    print_fn(
+        "Search threshold: not calibrated by setup. Run recall wizard to build, calibrate and "
+        "publish a generation, which is the calibration search uses."
+    )
     if scaffold_requested:
         _run_scaffold()
     if seed_requested:

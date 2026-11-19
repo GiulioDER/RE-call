@@ -16,7 +16,7 @@ import tomllib
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from typing import Any, Callable, cast
 
 from recall.atomic_write import atomic_write_bytes
@@ -177,8 +177,12 @@ def _write_hook_config(
     write_time_connection_mode: str = "relay",
     project_root: Path | None = None,
     memory_root: Path | None = None,
+    server_env: Mapping[str, str] | None = None,
 ) -> None:
-    """The same document the Claude Code installer writes, at the Codex integration path."""
+    """The same document the Claude Code installer writes, at the Codex integration path.
+
+    Plus `server_env`, which only the Codex launcher reads (`recall_mcp.codex_server`): the
+    environment the Claude Code installer puts in that client's server registration instead."""
     from recall.claude_code import hook_config_document
 
     destination = codex_hook_config_path()
@@ -195,6 +199,8 @@ def _write_hook_config(
         prompt_time=prompt_time,
         memory_root=memory_root,
     )
+    if server_env:
+        document["server_env"] = dict(server_env)
     atomic_write_bytes(destination, (json.dumps(document, indent=2) + "\n").encode("utf-8"))
     try:
         destination.chmod(0o600)
@@ -290,6 +296,7 @@ def install_codex_hooks(
     memory_root: Path | None = None,
     python_executable: str | None = None,
     hooks_path: Path | None = None,
+    server_env: Mapping[str, str] | None = None,
 ) -> Path:
     """Write the shared hook config and merge RE-call's user-level hooks into Codex's hooks file.
 
@@ -308,6 +315,7 @@ def install_codex_hooks(
             write_time_connection_mode=write_time_connection_mode,
             project_root=root,
             memory_root=memory_root,
+            server_env=server_env,
         )
         target.parent.mkdir(parents=True, exist_ok=True)
         settings: dict[str, Any] = {}
@@ -337,6 +345,7 @@ def install_codex_integration(
     hooks_path: Path | None = None,
     marketplace_path: Path | None = None,
     plugin_destination: Path | None = None,
+    server_env: Mapping[str, str] | None = None,
     print_fn: Callable[..., None] = print,
 ) -> None:
     """Install the plugin, personal marketplace entry, shared config, and Codex hooks.
@@ -367,6 +376,7 @@ def install_codex_integration(
         project_root=root,
         python_executable=python_executable,
         hooks_path=hooks_path,
+        server_env=server_env,
     )
     print_fn(
         f"Installed RE-call for Codex: plugin={destination}, marketplace={marketplace}, hooks={target}"
