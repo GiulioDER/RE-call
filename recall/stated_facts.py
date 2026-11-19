@@ -29,7 +29,7 @@ from pathlib import Path
 from typing import Any
 
 from recall.evidence import _evidence_links
-from recall.frontmatter import GRAPH_KEY, validity_bounds
+from recall.frontmatter import GRAPH_KEY, holds_nonfinite, validity_bounds
 from recall.observability import get_logger
 from recall.provenance_controller import (
     RETRACTION_REQUEST_PREFIX,
@@ -222,7 +222,8 @@ def memo_facts(chunk: Chunk) -> tuple[tuple[AtomicFact, ...], int]:
 
     A fact that names no `valid_from` or `valid_until` takes its memo's, so the ledger agrees with
     search's `expired` and `not_yet_valid` verdicts. A malformed `recall_graph` line counts once;
-    each fact that does not parse, or whose value canonical JSON refuses (NaN), counts once.
+    each fact that does not parse, or whose value is not JSON (a NaN or Infinity, which the
+    frontmatter parser stores as a `NONFINITE_KEY` marker), counts once.
     """
     metadata = chunk.metadata or {}
     graph = metadata.get(GRAPH_KEY)
@@ -238,7 +239,7 @@ def memo_facts(chunk: Chunk) -> tuple[tuple[AtomicFact, ...], int]:
     facts: dict[str, AtomicFact] = {}
     malformed = 0
     for item in raw:
-        if not isinstance(item, Mapping):
+        if not isinstance(item, Mapping) or holds_nonfinite(item):
             malformed += 1
             continue
         try:

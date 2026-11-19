@@ -36,6 +36,11 @@ RECORD_KEY = "recall_record"
 #: The memo labels a record is returned with. Kept ONLY beside a `recall_record`, so the metadata
 #: of every other document is unchanged by this parser learning them.
 RECORD_LABEL_KEYS = ("name", "description")
+#: What a `NaN`, `Infinity` or `-Infinity` in `recall_graph` is parsed to. `json.loads` accepts
+#: them, but they are not JSON: PostgreSQL's jsonb and SQLite before 3.42 refuse to store them, so
+#: one memo stating one failed the whole index write. As `{NONFINITE_KEY: token}` it stores
+#: everywhere, and `recall.stated_facts.memo_facts` counts a fact holding it malformed.
+NONFINITE_KEY = "__nonfinite__"
 Authority = Literal[
     "policy",
     "user_confirmed_decision",
@@ -369,7 +374,7 @@ def parse_frontmatter(text: str) -> tuple[dict[str, object], str]:
             elif key == GRAPH_KEY:
                 value = value.strip()
                 try:
-                    parsed = json.loads(value)
+                    parsed = json.loads(value, parse_constant=_nonfinite)
                 except (ValueError, RecursionError):
                     # Keep malformed graph metadata visible to the derived graph builder. It can
                     # report a sanitized diagnostic without making ordinary retrieval fail.
@@ -385,12 +390,13 @@ def parse_frontmatter(text: str) -> tuple[dict[str, object], str]:
                     meta[key] = {"__parse_error__": "recall_record declared more than once"}
                     continue
                 try:
-                    meta[key] = json.loads(value.strip())
+                    meta[key] = json.loads(value.strip(), parse_constant=_refuse_nonfinite)
                 except (ValueError, RecursionError):
                     # Kept as a marker, so the writer of chunk metadata can warn naming the file
                     # (`recall.records.admit_record`) rather than the record vanishing in silence.
                     # RecursionError too: a line nested thousands deep is not JSON this code can
-                    # read, and it must not stop the index run or the generation build.
+                    # read, and it must not stop the index run or the generation build. A NaN or
+                    # Infinity lands here too: it is not JSON, and no store can hold it.
                     meta[key] = {"__parse_error__": "recall_record must be one line of JSON"}
             elif key in RECORD_LABEL_KEYS and line[:1].strip():
                 labels[key] = _label_value(value.strip())
@@ -399,6 +405,28 @@ def parse_frontmatter(text: str) -> tuple[dict[str, object], str]:
     if RECORD_KEY in meta:
         meta.update(labels)
     return meta, "\n".join(lines[span + 1 :]).lstrip("\n")
+
+
+def _nonfinite(token: str) -> dict[str, str]:
+    return {NONFINITE_KEY: token}
+
+
+def _refuse_nonfinite(token: str) -> object:
+    raise ValueError(f"{token} is not JSON")
+
+
+def holds_nonfinite(value: object) -> bool:
+    """Whether `value` holds a `NONFINITE_KEY` marker at any depth. Iterative: no depth limit."""
+    stack = [value]
+    while stack:
+        item = stack.pop()
+        if isinstance(item, Mapping):
+            if NONFINITE_KEY in item:
+                return True
+            stack.extend(item.values())
+        elif isinstance(item, list):
+            stack.extend(item)
+    return False
 
 
 def _label_value(value: str) -> str:

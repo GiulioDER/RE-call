@@ -56,6 +56,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+import sys
 import threading
 import time
 import uuid
@@ -735,6 +736,52 @@ def test_lite_detail_reuses_decoded_rows_until_a_write(tmp_path: Path, monkeypat
         with store.erasing():
             store.delete_sources(["a.md"])
         assert lite_db.source_detail(dsn, store.tenant, "a.md") is None
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the stamp reads Windows change time, not POSIX ctime")
+def test_lite_detail_reuse_survives_sqlite_chowning_the_wal_as_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Run as root, SQLite chowns the WAL whenever a connection opens it; that is not a write.
+
+    It moves only the WAL's ctime, which the cache stamp held, so a dashboard running as root
+    (a container without USER) decoded the whole corpus on every request. Simulated here without
+    root: `os.geteuid` reads 0, and a same-mode chmod moves the ctime as the chown does. Red proof
+    (2026-11-19, Linux): with the `geteuid() == 0` branch removed from `_corpus_stamp`, this fails
+    on "a chown of the WAL made the warm detail decode the corpus again"; restored, it passes.
+    The real-root case is `test_lite_detail_reuses_decoded_rows_until_a_write` run as root, red
+    the same way before the fix.
+    """
+    import os
+
+    from recall.dashboard import lite_db
+    from recall.lite import LiteStore
+    from recall.types import Chunk
+
+    monkeypatch.setattr(lite_db, "_GRAPHS", {})
+    monkeypatch.setattr(lite_db, "_CORPORA", {})
+    monkeypatch.setattr(os, "geteuid", lambda: 0, raising=False)
+    with LiteStore(tmp_path / "cache.db", dim=2) as store:
+        store.upsert([Chunk("a", "a.md", "old text", {"file": "a.md"})], [[1.0, 0.0]])
+        dsn = "sqlite:///" + store.path.as_posix()
+        wal = store.path.with_name(store.path.name + "-wal")
+        decode = lite_db._payload
+        decoded = []
+
+        def counted(raw: Any) -> dict[str, Any]:
+            decoded.append(raw)
+            return decode(raw)
+
+        monkeypatch.setattr(lite_db, "_payload", counted)
+        first = lite_db.source_detail(dsn, store.tenant, "a.md")
+        count = len(decoded)
+        assert count > 0 and first is not None and wal.stat().st_size > 0
+        os.chmod(wal, wal.stat().st_mode)
+        assert lite_db.source_detail(dsn, store.tenant, "a.md") == first
+        assert len(decoded) == count, "a chown of the WAL made the warm detail decode the corpus again"
+        store.upsert([Chunk("a", "a.md", "new text", {"file": "a.md"})], [[1.0, 0.0]])
+        changed = lite_db.source_detail(dsn, store.tenant, "a.md")
+        assert changed is not None and changed["chunks"][0]["text"] == "new text"
 
 
 def test_lite_replaced_vectors_change_the_cached_generation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
