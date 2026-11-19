@@ -119,6 +119,23 @@ def test_a_ceiling_below_one_call_a_minute_still_allows_a_call(transport: list[s
     assert len(transport) == 1
 
 
+
+def test_the_refusal_names_the_configured_ceiling(transport: list[str]) -> None:
+    """Invariant: the refusal states the ceiling the operator set, not the window's rounding.
+
+    Failure mode (CCA NUM-003, run 20261119T182325Z): the message printed the window's capacity,
+    which rounds a ceiling under 1/min up to one call, so 0.5 was reported as "1 calls/min".
+
+    Red proof, 2026-11-19, against `CallRateGate.take` at cb289667c (it formatted `_capacity`):
+    failed at the `match`, the message reading "ceiling of 1 calls/min".
+    """
+    provider = ap.resolve_answer_provider({**_PAID, "RECALL_REASONING_ANSWER_MAX_CALLS_PER_MIN": "0.5"})
+    assert provider is not None
+    provider("system", "user")
+    with pytest.raises(ap.AnswerRateLimited, match=r"ceiling of 0\.5 calls/min"):
+        provider("system", "user")
+
+
 def test_no_sixty_second_span_admits_more_than_the_ceiling(
     transport: list[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:

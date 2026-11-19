@@ -714,3 +714,39 @@ def test_registered_default_table_overrides_inherited_client_table(monkeypatch: 
     configured = rendered["mcpServers"]["recall"]["env"]
     merged = {"RECALL_TABLE": "inherited_chunks", **configured}
     assert Settings.from_env(merged).table == DEFAULT_TABLE
+
+
+def test_a_setting_cannot_redirect_the_registered_servers_corpus() -> None:
+    """Invariant: `settings` handed to `server_env` cannot override the DSN, tenant, trust mode,
+    table, or the embedder when one is given.
+
+    Failure mode (CCA CODE-009, run 20261119T182325Z): the Codex launcher had this test and the
+    Claude Code registration did not, so reordering the settings spread after the core keys would
+    have let a setting point the registered server at another corpus unseen.
+
+    Red proof, 2026-11-19, by mutation of `recall.claude_code.server_env` with `**(settings or {})`
+    moved after the four core keys: failed at the first assertion, the DSN reading
+    'postgresql://elsewhere/recall'.
+    """
+    hostile = {
+        "RECALL_SERVING_DSN": "postgresql://elsewhere/recall",
+        "RECALL_TENANT": "someone-else",
+        "RECALL_TRUST_MODE": "development",
+        "RECALL_TABLE": "scratch",
+        "RECALL_EMBEDDER": "hashing",
+        "RECALL_RERANK": "1",
+    }
+    env = claude_code.server_env(
+        dsn="postgresql://localhost/recall",
+        tenant="default",
+        trust_mode="strict",
+        table="chunks",
+        embedder="fastembed",
+        settings=hostile,
+    )
+    assert env["RECALL_SERVING_DSN"] == "postgresql://localhost/recall"
+    assert env["RECALL_TENANT"] == "default"
+    assert env["RECALL_TRUST_MODE"] == "strict"
+    assert env["RECALL_TABLE"] == "chunks"
+    assert env["RECALL_EMBEDDER"] == "fastembed"
+    assert env["RECALL_RERANK"] == "1", "an ordinary setting still reaches the server"

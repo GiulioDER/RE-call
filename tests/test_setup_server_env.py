@@ -28,6 +28,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from recall.rerank import PINNED_RERANKER_SHA256
 from recall.setup import HardwareProbe, run_setup_wizard
 
 
@@ -52,7 +53,6 @@ def _registered_env(
     probe = HardwareProbe(
         cpu_count=8,
         gpu=None,
-        cuda_available=False,
         free_bytes=100 * 2**30,
         internet=True,
         fastembed_available=True,
@@ -156,6 +156,135 @@ def test_the_reranker_and_reasoning_arm_reach_the_registered_server(
     assert resolve_expansion_provider(env) is not None, env
 
 
+@pytest.mark.parametrize("reranker", ["ms marco reranker", "bge reranker"])
+def test_a_setup_reranker_runs_one_search_at_a_time_in_the_server(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, reranker: str
+) -> None:
+    """Invariant: a server setup registers with a local reranker admits one search at a time.
+
+    Failure mode (CCA PERF-002, owner decision 2026-11-19): RECALL_RERANK=1 resolves the legacy
+    profile, which admits four concurrent searches, each a cross-encoder predict on every core,
+    in every stdio server a client opens, with no latency budget.
+
+    Red proof, 2026-11-19, against `recall.setup._server_settings` at 9d7b61420 (no concurrency
+    written): both cases failed at `assert 4 == 1`.
+    """
+    from recall.profiles import resolve_retrieval_profile
+    from recall_mcp.factories import resolve_reranker
+
+    env, _ = _registered_env(
+        tmp_path, monkeypatch,
+        security="n", embedder="fastembed", reranker=reranker, reasoning=False,
+        total_ram_bytes=16 * 2**30,  # bge is offered only where it fits
+    )
+    assert resolve_reranker(env) is not None, env
+    assert resolve_retrieval_profile(env).max_concurrency == 1
+
+
+def test_setup_warns_when_an_exported_profile_would_stop_the_server(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Invariant: when the shell setup runs in exports a RECALL_RETRIEVAL_PROFILE that conflicts
+    with the reranker it registers, setup says so before it registers.
+
+    Failure mode (CCA DEPLOY-003, owner decision 2026-11-19: warn at setup): the client lays the
+    registration over its own environment, and RECALL_RETRIEVAL_PROFILE=fast with RECALL_RERANK=1
+    makes the server refuse to start, which a client shows only as a server with no tools.
+
+    Red proof, 2026-11-19, against `recall.setup.run_setup_wizard` at 4b070f4c0 (no check): failed
+    at the first assertion, nothing printed about the profile.
+    """
+    from recall.profiles import resolve_retrieval_profile
+
+    monkeypatch.setenv("RECALL_RETRIEVAL_PROFILE", "fast")
+    env, output = _registered_env(
+        tmp_path, monkeypatch,
+        security="y", embedder="fastembed", reranker="ms marco reranker", reasoning=False,
+    )
+    assert "RECALL_RETRIEVAL_PROFILE=fast" in output and "refuse to start" in output, output
+    # The warning is true: the server the client would start does refuse.
+    with pytest.raises(ValueError, match="conflicts"):
+        resolve_retrieval_profile({"RECALL_RETRIEVAL_PROFILE": "fast", **env})
+
+
+_PINNED_QUALITY = {
+    "RECALL_RERANK_PATH": "/models/ms-marco",
+    "RECALL_RERANK_SHA256": PINNED_RERANKER_SHA256,
+}
+
+
+@pytest.mark.parametrize(
+    ("exported", "extra", "reranker", "expected"),
+    [
+        ("quality", {}, "ms marco reranker", "refuse to start"),
+        ("quality", _PINNED_QUALITY, "ms marco reranker", "one search at a time"),
+        ("code", {}, "ms marco reranker", "refuse to start"),
+        ("code", {"RECALL_ACCEPT_REMOTE_MODEL_CODE": "1"}, "ms marco reranker", None),
+        ("fast", {}, "none", None),
+        ("", {}, "ms marco reranker", None),
+    ],
+    ids=["quality-unpinned", "quality-pinned", "code-no-consent", "code-consent", "no-reranker",
+         "no-profile"],
+)
+def test_the_profile_warning_names_only_what_will_happen(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    exported: str,
+    extra: dict[str, str],
+    reranker: str,
+    expected: str | None,
+) -> None:
+    """What setup says matches what the server's own startup check does with that profile.
+
+    A refusal names it (quality without its pinned artifact, code without the coreb-code
+    consent); a pinned quality server that starts gets the one-search-at-a-time note; a profile
+    that starts at one search already, no reranker, and no profile get nothing.
+
+    Red proof, 2026-11-19: against 4b070f4c0 (no check) `quality-unpinned`, `quality-pinned` and
+    `code-no-consent` failed at `assert expected in output`. Against the first version of the
+    check, which used `recall.profiles.resolve_retrieval_profile` instead of the server's startup
+    check, `quality-unpinned` (it printed the note) and `code-no-consent` (it printed nothing)
+    failed there. The three no-message cases passed in both, as they must.
+    """
+    for name in ("RECALL_RERANK_PATH", "RECALL_RERANK_SHA256", "RECALL_ACCEPT_REMOTE_MODEL_CODE",
+                 "RECALL_ROUTING_MODE", "RECALL_SEARCH_CONCURRENCY", "RECALL_SEARCH_QUEUE"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("RECALL_RETRIEVAL_PROFILE", exported)
+    for name, value in extra.items():
+        monkeypatch.setenv(name, value)
+    _, output = _registered_env(
+        tmp_path, monkeypatch,
+        security="y", embedder="fastembed", reranker=reranker, reasoning=False,
+    )
+    if expected is None:
+        assert "RECALL_RETRIEVAL_PROFILE" not in output, output
+    else:
+        assert expected in output, output
+
+
+@pytest.mark.parametrize(
+    ("name", "value"), [("RECALL_SEARCH_CONCURRENCY", "lots"), ("RECALL_ROUTING_MODE", "bogus")]
+)
+def test_the_profile_check_never_stops_setup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str, value: str
+) -> None:
+    """A malformed value in the shell must not make setup itself fail: setup finishes and
+    registers the server whatever the warning says. Red proof, 2026-11-19: against the first
+    version of the check (no guard on the second resolve) the RECALL_SEARCH_CONCURRENCY case
+    failed with `ValueError: RECALL_SEARCH_CONCURRENCY must be an integer` out of setup; with the
+    first `except ValueError` mutated to `except KeyError`, the RECALL_ROUTING_MODE case failed
+    with `ValueError: routing mode must be shadow or active`."""
+    monkeypatch.setenv("RECALL_RETRIEVAL_PROFILE", "quality")
+    for key, pinned in _PINNED_QUALITY.items():
+        monkeypatch.setenv(key, pinned)
+    monkeypatch.setenv(name, value)
+    env, _ = _registered_env(
+        tmp_path, monkeypatch,
+        security="y", embedder="fastembed", reranker="ms marco reranker", reasoning=False,
+    )
+    assert env["RECALL_SEARCH_CONCURRENCY"] == "1"
+
+
 def test_declined_choices_reach_the_registered_server_as_off(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -170,6 +299,8 @@ def test_declined_choices_reach_the_registered_server_as_off(
 
     assert resolve_reranker(env) is None
     assert resolve_expansion_provider(env) is None
+    # No reranker, no cap: the default concurrency is left alone.
+    assert "RECALL_SEARCH_CONCURRENCY" not in env
     # Off is left unset rather than written as "0": an explicit RECALL_RERANK=0 makes the server
     # refuse to start beside a RECALL_RETRIEVAL_PROFILE=quality the client exports.
     from recall.profiles import resolve_retrieval_profile
@@ -315,14 +446,16 @@ def test_the_reranker_and_reasoning_arm_reach_the_codex_server(
 
     Red proof, 2026-11-19, on the test host against `dac217681`: failed on the `spec` assertion,
     `resolve_reranker` returning None, because the Codex launcher set only DSN, tenant, embedder,
-    table and transport."""
+    table and transport. The one-search-at-a-time cap (CCA PERF-002) is asserted here too: red
+    against 9d7b61420 at `assert 4 == 1`."""
     import os
 
+    from recall.profiles import resolve_retrieval_profile
     from recall.rerank import DEFAULT_RERANKER_MODEL
     from recall.reasoning_expansion import resolve_expansion_provider
     from recall_mcp.factories import resolve_reranker
 
-    for key in ("RECALL_RERANK", "RECALL_REASONING_EXPANSION"):
+    for key in ("RECALL_RERANK", "RECALL_REASONING_EXPANSION", "RECALL_SEARCH_CONCURRENCY"):
         monkeypatch.delenv(key, raising=False)
     codex_home = tmp_path / "codex"
     _registered_env(
@@ -336,6 +469,7 @@ def test_the_reranker_and_reasoning_arm_reach_the_codex_server(
     assert status == 0
     spec = resolve_reranker(env)
     assert spec is not None and spec[0] == DEFAULT_RERANKER_MODEL
+    assert resolve_retrieval_profile(env).max_concurrency == 1
     monkeypatch.setitem(sys.modules, "openai", SimpleNamespace(OpenAI=lambda **kwargs: object()))
     assert resolve_expansion_provider(env) is not None
     assert "RECALL_RERANK" not in os.environ, "the launcher must restore the environment it changed"

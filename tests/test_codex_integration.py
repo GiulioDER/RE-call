@@ -409,7 +409,6 @@ def test_setup_installs_codex_integration_by_default_when_detected(tmp_path, mon
     probe = HardwareProbe(
         cpu_count=8,
         gpu=None,
-        cuda_available=False,
         free_bytes=100 * 1024**3,
         internet=True,
         fastembed_available=True,

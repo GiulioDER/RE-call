@@ -25,7 +25,7 @@ from recall.claude_code import (
     user_skill_dir,
 )
 from recall.codex import codex_code_detected, install_codex_integration
-from recall.embeddings import resolve_embedder
+from recall.embeddings import OPENAI_DIRECT_BASE_URL as OPENAI_BASE_URL, resolve_embedder
 from recall.eval.calibrate import CalibrationReport
 from recall.seed import plan_seed, seed_corpus
 from recall.store import DEFAULT_TABLE
@@ -44,7 +44,6 @@ DEFAULT_ENV_PATH = Path(".env")
 #: it into an audit identity, so a separate provider name would be a second source of truth for
 #: the same fact.
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
-OPENAI_BASE_URL = "https://api.openai.com/v1"
 
 #: Sentinel for "ask me for a base URL", distinct from any real URL.
 LOCAL_PROVIDER = "local"
@@ -93,13 +92,63 @@ def _server_settings(values: Mapping[str, str]) -> dict[str, str]:
     reasoning arm is passed as RECALL_REASONING_EXPANSION=0: nothing conflicts with it, and the
     client lays the registration over its own environment, so left out, an inherited
     RECALL_REASONING_EXPANSION=1 would turn on the paid arm the user declined (CCA ENV-001).
+
+    A local reranker also gets RECALL_SEARCH_CONCURRENCY=1. RECALL_RERANK=1 runs the legacy
+    profile, which has no latency budget and admits four searches at once, each a cross-encoder
+    predict on every core, in every stdio server a client opens (CCA PERF-002, owner decision
+    2026-11-19). One at a time bounds that; the queue still holds the others.
     """
-    return {
+    settings = {
         key: values[key]
         for key in SERVER_SETTING_KEYS
         if values.get(key) not in (None, "")
         and not (key == "RECALL_RERANK" and values[key] == "0")
     }
+    if settings.get("RECALL_RERANK") == "1":
+        settings["RECALL_SEARCH_CONCURRENCY"] = "1"
+    return settings
+
+
+def _retrieval_profile_warning(
+    settings: Mapping[str, str], environ: Mapping[str, str]
+) -> str | None:
+    """What an exported RECALL_RETRIEVAL_PROFILE will do to the server setup registers, or None.
+
+    The client lays the registration over its own environment, so a profile it exports meets the
+    reranker setup chose. RECALL_RETRIEVAL_PROFILE=fast with RECALL_RERANK=1 makes the server
+    refuse to start, which a client shows only as a server with no tools (CCA DEPLOY-003, owner
+    decision 2026-11-19: warn at setup). Setup can see only its own shell, so the warning says
+    that the client's environment is what decides. The check is the server's own startup check,
+    which also refuses `quality` without its pinned artifact and `code` without coreb-code.
+    """
+    exported = environ.get("RECALL_RETRIEVAL_PROFILE", "").strip()
+    if not exported or settings.get("RECALL_RERANK") != "1":
+        return None
+    from recall.profiles import resolve_retrieval_profile
+    from recall_mcp.retrieval import startup_retrieval_profile
+
+    try:
+        startup_retrieval_profile(dict({**environ, **settings}))
+    except ValueError as exc:
+        return (
+            f"Warning: this shell exports RECALL_RETRIEVAL_PROFILE={exported}. If the client that "
+            f"starts the registered server exports it too, that server will refuse to start ({exc}). "
+            "Unset it in that client, or set what this message names."
+        )
+    without_cap = {k: v for k, v in settings.items() if k != "RECALL_SEARCH_CONCURRENCY"}
+    try:
+        own = resolve_retrieval_profile({**environ, **without_cap}).max_concurrency
+    except ValueError:
+        # A malformed RECALL_SEARCH_CONCURRENCY in this shell: the registration's value wins on
+        # the server, so there is nothing to say, and setup must not fail over a note.
+        return None
+    if own > 1 and settings.get("RECALL_SEARCH_CONCURRENCY") == "1":
+        return (
+            f"Note: this shell exports RECALL_RETRIEVAL_PROFILE={exported}. The registered server "
+            f"runs the reranker one search at a time (RECALL_SEARCH_CONCURRENCY=1), not the {own} "
+            "that profile allows, so under its latency budget a waiting search may be shed."
+        )
+    return None
 
 
 DEFAULT_CALIBRATION_PATH = Path("calibration.json")
@@ -113,7 +162,6 @@ DEFAULT_CLAUDE_MD_PATH = Path("CLAUDE.md")
 class HardwareProbe:
     cpu_count: int | None
     gpu: str | None
-    cuda_available: bool
     free_bytes: int
     internet: bool
     fastembed_available: bool
@@ -176,17 +224,6 @@ def _probe_gpu() -> str | None:
     return None
 
 
-def _probe_cuda() -> bool:
-    try:
-        import torch
-    except Exception:  # BROAD-CATCH: fail-open
-        return False
-    try:
-        return bool(torch.cuda.is_available())
-    except Exception:  # BROAD-CATCH: fail-open
-        return False
-
-
 def _probe_internet(url: str = "https://pypi.org", timeout: float = 2.0) -> bool:
     try:
         with urllib.request.urlopen(url, timeout=timeout):  # noqa: S310 - install-time probe
@@ -198,11 +235,9 @@ def _probe_internet(url: str = "https://pypi.org", timeout: float = 2.0) -> bool
 def probe_hardware(path: Path | None = None) -> HardwareProbe:
     root = path or Path.cwd()
     free_bytes = shutil.disk_usage(root).free
-    cuda_available = _probe_cuda()
     return HardwareProbe(
         cpu_count=os.cpu_count(),
         gpu=_probe_gpu(),
-        cuda_available=cuda_available,
         free_bytes=free_bytes,
         internet=_probe_internet(),
         fastembed_available=_module_available("fastembed"),
@@ -524,7 +559,10 @@ def reranker_choices(
                     "RECALL_RERANK=1;RECALL_RERANK_MODEL=BAAI/bge-reranker-base;"
                     "RECALL_RERANK_REVISION=2cfc18c9415c912f9d8155881c133215df768a70"
                 ),
-                description="Heavier local reranker, available if you want to try it",
+                description=(
+                    "Heavier local reranker: about 6.3 times the ms marco cost per search, "
+                    "measured no better (docs/USING_WITH_CLAUDE.md)"
+                ),
                 available=runnable and shortfall is None,
                 unavailable_note=bge_note,
                 unavailable_tag=bge_tag,
@@ -1199,7 +1237,6 @@ def run_setup_wizard(
     *,
     dsn: str,
     migration_dsn: str | None = None,
-    tenant: str | None = None,
     table: str | None = None,
     env_path: Path = DEFAULT_ENV_PATH,
     claude_md_path: Path = DEFAULT_CLAUDE_MD_PATH,
@@ -1348,7 +1385,6 @@ def run_setup_wizard(
                 dsn=dsn,
                 embedder_name=embedder.value,
                 memory_dir=memory_dir,
-                tenant=tenant,
                 table=table,
                 env=cloud_keys,
                 print_fn=print_fn,
@@ -1413,7 +1449,7 @@ def run_setup_wizard(
         try:
             install_codex_integration(
                 dsn=dsn,
-                tenant=tenant or "default",
+                tenant="default",
                 embedder=embedder.value,
                 table=table or DEFAULT_TABLE,
                 write_time=write_time_requested,
@@ -1492,6 +1528,10 @@ def run_setup_wizard(
         "Search threshold: not calibrated by setup. Run recall wizard to build, calibrate and "
         "publish a generation, which is the calibration search uses."
     )
+    if claude_wiring_requested or codex_wiring_requested:
+        warning = _retrieval_profile_warning(_server_settings(values), os.environ)
+        if warning:
+            print_fn(warning)
     if scaffold_requested:
         _run_scaffold()
     if seed_requested:

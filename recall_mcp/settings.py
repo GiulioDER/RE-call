@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Any, Literal, Protocol
 
+from recall.answer_provider import DEFAULT_ANSWER_CALLS_PER_MIN
 from recall.multimodal import MultimodalTenantConfig
 from recall.ops.secrets import aws_region
 from recall.ops.secret_mapping import (  # noqa: F401  # re-exported
@@ -36,6 +37,7 @@ from recall.constants import (
 )
 from recall.paged_evidence import paged_evidence_mode
 from recall.federation import FederationConfig
+from recall.reasoning_expansion import DEFAULT_EXPANSION_CALLS_PER_MIN
 from recall.trust_policy import TrustPolicy, dependency_mode_from_env
 
 
@@ -187,7 +189,7 @@ ENVIRONMENT_SCHEMA: tuple[EnvironmentSpec, ...] = (
     EnvironmentSpec("RECALL_REASONING_EXPANSION_EFFORT", "Reasoning", "reasoning expansion effort", "minimal"),
     EnvironmentSpec("RECALL_REASONING_EXPANSION_REVISION", "Reasoning", "reasoning expansion revision", "unpinned"),
     EnvironmentSpec("RECALL_REASONING_EXPANSION_COST_PER_1K_TOKENS", "Reasoning", "reasoning cost metadata"),
-    EnvironmentSpec("RECALL_REASONING_EXPANSION_MAX_CALLS_PER_MIN", "Reasoning", "expansion call budget", "30"),
+    EnvironmentSpec("RECALL_REASONING_EXPANSION_MAX_CALLS_PER_MIN", "Reasoning", "expansion call budget", f"{DEFAULT_EXPANSION_CALLS_PER_MIN:g}"),
     EnvironmentSpec("RECALL_REASONING_BASE_URL", "Reasoning", "legacy reasoning base URL"),
     EnvironmentSpec("RECALL_REASONING_API_KEY", "Reasoning", "legacy reasoning API key", secret=True),
     EnvironmentSpec("RECALL_REASONING_TIMEOUT", "Reasoning", "legacy reasoning timeout", "30"),
@@ -276,7 +278,7 @@ ENVIRONMENT_SCHEMA: tuple[EnvironmentSpec, ...] = (
     EnvironmentSpec("RECALL_SCHEMA_LOCK_TIMEOUT_MS", "Operations", "schema lock timeout", "5000"),
     EnvironmentSpec("RECALL_DECISION_LEDGER", "Operations", "decision ledger audit", "0"),
     EnvironmentSpec("RECALL_REASONING_ANSWER_COST_PER_1K_TOKENS", "Answer provider", "answer cost metadata"),
-    EnvironmentSpec("RECALL_REASONING_ANSWER_MAX_CALLS_PER_MIN", "Answer provider", "answer call budget", "30"),
+    EnvironmentSpec("RECALL_REASONING_ANSWER_MAX_CALLS_PER_MIN", "Answer provider", "answer call budget", f"{DEFAULT_ANSWER_CALLS_PER_MIN:g}"),
     EnvironmentSpec("RECALL_SHADOW_MODEL_CACHE", "Retrieval", "shadow model cache"),
     EnvironmentSpec("RECALL_SHADOW_MODEL_SHA256", "Retrieval", "shadow model digest"),
     EnvironmentSpec("RECALL_SHADOW_QWEN_MODEL_PATH", "Retrieval", "shadow Qwen model path"),

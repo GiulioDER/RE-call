@@ -187,13 +187,13 @@ def test_a_machine_sold_as_4_gb_is_not_refused_for_reporting_less(monkeypatch: p
     reported = int(3.9 * 1024**3)
     system = probe.SystemProbe(
         hardware=HardwareProbe(
-            cpu_count=4, gpu=None, cuda_available=False, free_bytes=0, internet=False,
+            cpu_count=4, gpu=None, free_bytes=0, internet=False,
             fastembed_available=False, sentence_transformers_available=False,
             total_ram_bytes=reported,
         ),
         total_ram_bytes=reported, available_ram_bytes=reported, docker_installed=True,
         docker_running=False, wsl2_available=None, virtualization_enabled=None,
-        cuda_vram_bytes=None, python_executable="python", python_is_store_build=False,
+        python_executable="python", python_is_store_build=False,
     )
     assert not [b for b in probe.blockers(system) if "memory" in b]
 

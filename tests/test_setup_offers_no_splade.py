@@ -25,7 +25,6 @@ def test_setup_neither_offers_nor_writes_splade_on_a_machine_that_could_run_it(
     probe = HardwareProbe(
         cpu_count=8,
         gpu="nvidia",
-        cuda_available=True,
         free_bytes=100 * 2**30,
         internet=True,
         fastembed_available=True,

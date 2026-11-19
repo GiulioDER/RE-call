@@ -37,9 +37,9 @@ def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
         description=(
             "The guided install. Asks which embedder and reranker you need, "
             "prepares the database schema at that embedder's width, and offers to register the MCP "
-            "server and session hooks with Claude Code. It does not calibrate. Writes a local .env "
-            "with the answers; every step that touches something outside this directory is asked "
-            "for first. Run `recall doctor` afterwards "
+            "server and session hooks with Claude Code. Without --lite it does not calibrate. "
+            "Writes a local .env with the answers; every step that touches something outside "
+            "this directory is asked for first. Run `recall doctor` afterwards "
             "to check the result. To build and promote a calibrated generation, use the separate "
             "`recall wizard` pipeline, interactively or from a saved JSON config."
         ),
@@ -268,7 +268,6 @@ def _cmd_setup(args: argparse.Namespace) -> None:
     run_setup_wizard(
         dsn=args.dsn,
         migration_dsn=args.migration_dsn,
-        tenant=args.tenant,
         table=args.table,
     )
 

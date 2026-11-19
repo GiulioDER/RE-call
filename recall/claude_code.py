@@ -205,8 +205,9 @@ def server_env(
 
     `settings` carries the other choices `recall setup` made for this server (reranking, the
     reasoning arm, a cloud embedder's API key). The server never reads `.env`, so a choice left
-    only there is a choice the server never sees (issues 1393, 1394). The five keys above it are
-    set last, so a setting cannot redirect the DSN, tenant, trust mode, table or embedder.
+    only there is a choice the server never sees (issues 1393, 1394). The DSN, tenant, trust mode
+    and table are set after it, and so is the embedder when one is given, so a setting cannot
+    redirect them.
 
     `RECALL_TRUST_MODE` is not optional at install time and leaving it out is the single most
     likely way for a correct installation to look broken. A client merges this block over its own

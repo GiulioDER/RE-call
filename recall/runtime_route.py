@@ -65,9 +65,9 @@ class RuntimeRoute:
             return None
         return (
             f"{command}: --table {table!r} cannot be honoured on the generation route "
-            f"({self.source}): every generation is kept in {self.generation_table!r}, so this "
-            "would act on that table instead. Nothing was read or changed. Drop --table, or use "
-            "that table on the legacy route (RECALL_INDEX_MODE=legacy, development only)."
+            f"({self.source}): this route reads no --table, because every generation is kept in "
+            f"{self.generation_table!r}. Nothing was read or changed. Drop --table, or name the "
+            "table on the legacy route (RECALL_INDEX_MODE=legacy, development only)."
         )
 
     def describe(self) -> str:

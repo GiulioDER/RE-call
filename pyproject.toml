@@ -517,6 +517,9 @@ ignore_imports = [
     "recall.cli_commands.reasoning_cmd -> recall_mcp.reasoning_api",
     "recall.enterprise_cli -> recall_mcp.factories",
     "recall.eval.promotion.__main__ -> recall_mcp.factories",
+    # `recall setup` warns with the registered server's own startup check (CCA DEPLOY-003); a
+    # copy of that check in `recall` would drift from the server it predicts.
+    "recall.setup -> recall_mcp.retrieval",
 ]
 
 # recall_mcp/service.py is a compatibility facade over the modules that own its names (S5, #857;

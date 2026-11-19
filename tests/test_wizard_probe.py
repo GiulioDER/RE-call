@@ -35,7 +35,6 @@ from recall.wizard import probe as P
         P.probe_docker,
         P.probe_wsl2,
         P.probe_virtualization,
-        P.probe_cuda_vram,
     ],
 )
 def test_a_probe_never_raises_even_when_everything_below_it_explodes(
@@ -50,7 +49,6 @@ def test_a_probe_never_raises_even_when_everything_below_it_explodes(
     monkeypatch.setattr(P.shutil, "which", boom)
     monkeypatch.setattr(P, "_read_proc_meminfo", boom)
     monkeypatch.setattr(P, "_windows_memory_status", boom)
-    monkeypatch.setattr(P, "_torch", boom)
 
     func()  # must return, not raise
 
@@ -61,7 +59,6 @@ def test_probe_system_never_raises_and_always_reports(monkeypatch: pytest.Monkey
 
     monkeypatch.setattr(subprocess, "run", boom)
     monkeypatch.setattr(P.shutil, "which", boom)
-    monkeypatch.setattr(P, "_torch", boom)
 
     result = P.probe_system()
     assert isinstance(result, P.SystemProbe)
@@ -85,12 +82,10 @@ def test_parsing_probes_survive_an_adverse_stdout(
     """
     monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.setattr(P.shutil, "which", lambda _: "nvidia-smi")
-    monkeypatch.setattr(P, "_torch", lambda: None)
     monkeypatch.setattr(
         P, "_run", lambda *a, **k: subprocess.CompletedProcess(a, 0, stdout, "")
     )
     assert P.probe_virtualization() is None
-    assert P.probe_cuda_vram() is None
 
 
 def test_windows_memory_status_owns_its_own_guard(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -207,36 +202,6 @@ def test_store_python_survives_a_missing_executable(monkeypatch: pytest.MonkeyPa
     assert P.probe_store_python() is False
 
 
-# --------------------------------------------------------------------------------------
-# CUDA VRAM, which is what decides whether SPLADE is worth offering
-# --------------------------------------------------------------------------------------
-
-
-def test_cuda_vram_is_none_without_torch(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(P, "_torch", lambda: None)
-    monkeypatch.setattr(P.shutil, "which", lambda _: None)
-    assert P.probe_cuda_vram() is None
-
-
-def test_cuda_vram_from_nvidia_smi_when_torch_is_absent(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A machine with a driver but no torch still has a GPU worth reporting."""
-    monkeypatch.setattr(P, "_torch", lambda: None)
-    monkeypatch.setattr(P.shutil, "which", lambda _: "nvidia-smi")
-    monkeypatch.setattr(
-        subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(a, 0, "24576\n", "")
-    )
-    assert P.probe_cuda_vram() == 24576 * 1024**2
-
-
-def test_cuda_vram_ignores_unparseable_output(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(P, "_torch", lambda: None)
-    monkeypatch.setattr(P.shutil, "which", lambda _: "nvidia-smi")
-    monkeypatch.setattr(
-        subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(a, 0, "N/A\n", "")
-    )
-    assert P.probe_cuda_vram() is None
-
-
 def test_heavy_local_models_need_an_eight_gb_class_machine() -> None:
     """Invariant: bge-large and the bge reranker are selectable only on a machine sold with 8 GB
     or more, and unknown memory withholds them.
@@ -277,7 +242,6 @@ def test_the_setup_probe_carries_total_memory(
     import recall.setup as S
 
     monkeypatch.setattr(S, "_probe_internet", lambda: False)
-    monkeypatch.setattr(S, "_probe_cuda", lambda: False)
     monkeypatch.setattr(S, "_probe_gpu", lambda: None)
     monkeypatch.setattr(P, "probe_ram", lambda: (5 * 1024**3, 1 * 1024**3))
     assert S.probe_hardware(tmp_path).total_ram_bytes == 5 * 1024**3
@@ -310,7 +274,6 @@ def test_the_fallback_hardware_probe_keeps_the_memory_it_measured(
     monkeypatch.setattr(P, "probe_docker", lambda: (True, True))
     monkeypatch.setattr(P, "probe_compose", lambda: (False, (2, 29, 7)))
     monkeypatch.setattr(P, "probe_wsl2", lambda: None)
-    monkeypatch.setattr(P, "probe_cuda_vram", lambda: None)
     monkeypatch.setattr(P, "probe_store_python", lambda: False)
     system = P.probe_system()
     assert system.hardware.total_ram_bytes == 5 * 1024**3
@@ -377,7 +340,6 @@ def test_virtualization_is_unknown_rather_than_false_off_windows(
             docker_running=True,
             wsl2_available=None,
             virtualization_enabled=None,
-            cuda_vram_bytes=None,
             python_executable="/usr/bin/python3",
             python_is_store_build=False,
         )

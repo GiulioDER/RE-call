@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import replace
 import os
+import re
 
 from recall._env import strict_bool
 from recall.answer_provider import OllamaAnswerProvider, resolve_answer_provider
@@ -81,7 +82,11 @@ def resolve_proof_provider(
     except ValueError as exc:
         # The proof values were validated under the answer provider's names; report the names
         # the operator actually set.
-        message = str(exc).replace("RECALL_REASONING_ANSWER_", "RECALL_REASONING_PROOF_")
+        # Except the answer call ceiling, which the proof provider shares under its own name
+        # (CCA ENV-002): it has no proof spelling, so renaming it named a variable nothing reads.
+        message = re.sub(
+            r"RECALL_REASONING_ANSWER_(?!MAX_CALLS_PER_MIN)", "RECALL_REASONING_PROOF_", str(exc)
+        )
         raise ValueError(message) from exc
     if delegate is None:
         raise AssertionError("enabled proof provider resolved to None")

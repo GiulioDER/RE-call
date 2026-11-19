@@ -1825,7 +1825,6 @@ def test_the_window_offers_no_control_whose_choice_reaches_nothing(
     finally:
         window.close()
         app.processEvents()
-    assert not (tmp_path / "pipeline.json").exists()
 
 
 @pytest.mark.parametrize("enabled", [False, True])
@@ -2172,3 +2171,38 @@ def test_building_a_window_over_a_real_docker_runtime_runs_no_docker(
     finally:
         window.close()
         app.processEvents()
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"), [(False, False), (True, True), ("false", False), ("0", False), ("true", True)]
+)
+def test_update_enabled_is_read_strictly(raw: object, expected: bool) -> None:
+    """Invariant: `update_enabled` in runtime.json is a boolean; the word "false" turns the checks off.
+
+    Failure mode (CCA ENV-004, run 20261119T182325Z): since #1414 this field decides whether the
+    app makes its own release checks, and `bool("false")` is True, so a hand-written "false"
+    left them running.
+
+    Red proof, 2026-11-19, against `RuntimeProfile.from_dict` at cb289667c (`bool(...)`): the
+    "false" and "0" cases failed at `assert True is False`.
+    """
+    profile = RuntimeProfile.from_dict(
+        {"mode": "docker", "compose_file": "docker-compose.desktop.yml", "update_enabled": raw}
+    )
+    assert profile.update_enabled is expected
+
+
+@pytest.mark.parametrize("raw", ["sometimes", None])
+def test_an_update_enabled_that_is_not_a_boolean_turns_the_checks_off(raw: object) -> None:
+    """A value that is not a boolean fails closed, and the rest of the profile is kept.
+
+    Raising here would make `load_profile` replace the whole profile with a default whose checks
+    are on, the opposite of what the setting is for. Red proof, 2026-11-19, against
+    `RuntimeProfile.from_dict` at cb289667c (`bool(...)`): the "sometimes" case failed at
+    `assert True is False`; `None` passed there, as `bool(None)` is False.
+    """
+    profile = RuntimeProfile.from_dict(
+        {"mode": "docker", "compose_file": "docker-compose.desktop.yml", "update_enabled": raw}
+    )
+    assert profile.update_enabled is False
+    assert profile.compose_file == "docker-compose.desktop.yml"

@@ -130,6 +130,27 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   as a measurement. A rerun of setup drops `RECALL_SECURITY_REQUIRED`, `RECALL_SPARSE` and
   `RECALL_CALIBRATION` from the managed block in `.env`; a calibration file kept at a custom path
   needs `RECALL_CALIBRATION` set again by hand, outside that block.
+- `recall.setup.HardwareProbe` no longer has `cuda_available`, `recall.wizard.probe.SystemProbe`
+  no longer has `cuda_vram_bytes`, and the wizard preflight no longer probes VRAM: their only
+  readers were the SPLADE choices, whose removal is under Fixed. `run_setup_wizard` no longer
+  takes `tenant`, which the CLI already refused and the function applied to only part of the
+  install. Setup's bge reranker choice now says it costs about 6.3 times the ms marco reranker
+  per search, measured no better.
+- A server `recall setup` registers with a local reranker (Claude Code or Codex) now runs one
+  search at a time: setup also writes `RECALL_SEARCH_CONCURRENCY=1` there. The reranker runs
+  on the legacy profile, which has no latency budget and admitted four searches at once, each a
+  cross-encoder predict on every core, in every server a client opens. Re-run `recall setup` to
+  update an existing registration; set the variable in the registration to choose otherwise.
+- When the shell `recall setup` runs in exports `RECALL_RETRIEVAL_PROFILE` and a reranker is chosen,
+  setup now runs the server's own startup check and says what that profile will do to the
+  server it registers. A profile the server would refuse with that reranker (`fast`; `quality`
+  without its pinned artifact; `code` without coreb-code consent; an unknown name) gets a
+  warning, since a client shows a refused server only as one with no tools. A `quality` or
+  `hosted-quality` server that starts gets a note that it runs one search at a time under its
+  latency budget. Setup sees only its own shell; the client's environment is what decides.
+- The desktop's `update_enabled` in `runtime.json` is read as a boolean: the string `"false"`
+  (or `0`, `no`, `off`) now turns the release checks off, where `bool("false")` left them on, and
+  any other value that is not a boolean turns them off too; the rest of the profile is kept.
 - Two documented settings that nothing applied are no longer offered (#1406, #1409).
   `RECALL_REASONING_MODEL` is gone from `.env.example` and the environment reference; with
   `RECALL_REASONING_EXPANSION` on and no `RECALL_REASONING_EXPANSION_MODEL`, a config that still
@@ -208,7 +229,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   enforced again: one budget per process, shared by every answer and proof provider and by both
   backends, debited before the request is sent. `off` removes it; `0`, a negative or a non-number
   is refused naming the variable. A refused call reports no tokens and no cost, rather than the
-  previous call's.
+  previous call's. Its refusal names the ceiling as set (0.5, not the 1 it
+  rounds to), and a proof provider reports a bad value under this variable's name rather than a
+  `RECALL_REASONING_PROOF_` one that does not exist.
 - Paid reasoning expansion calls had no per minute ceiling, and since the registration change
   above they run in the server `recall setup` registers. `RECALL_REASONING_EXPANSION_MAX_CALLS_PER_MIN`
   (default 30, `off` to remove it) now bounds them the same way, with its own budget: no 60
