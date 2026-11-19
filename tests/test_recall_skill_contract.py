@@ -57,6 +57,9 @@ def test_reference_routes_every_mcp_tool_exactly_once() -> None:
 
     No tool-routing reference existed before this test, so the first run fails on the missing
     file rather than passing against a partial hand-written list.
+
+    Red proof receipt ``tool-routing-count-prose-01``, 2026-11-19: the intro's count said 26
+    while the table routed 29; the last assertion failed against that text and passes on 29.
     """
 
     reference = (CLAUDE_SKILL / "references" / "tool-routing.md").read_text(encoding="utf-8")
@@ -64,6 +67,7 @@ def test_reference_routes_every_mcp_tool_exactly_once() -> None:
     assert len(routed) == len(set(routed)), "a tool appears in more than one routing row"
     assert set(routed) == _tool_names()
     assert len(routed) == 29
+    assert f"the {len(routed)} RE-call MCP tools" in reference
 
 
 def test_the_skill_asks_for_one_honest_report_after_a_task() -> None:

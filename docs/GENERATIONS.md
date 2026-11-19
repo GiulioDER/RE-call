@@ -101,8 +101,10 @@ The one exception is an active atomic rescue: rollback then builds the target's 
 refuses when it cannot, since the target would refuse every unscoped search without one
 ([below](#atomic-rescue)).
 
-What is still deferred is strict refusal at **read** time: an active generation whose calibration is
-absent or stale still answers, marked uncalibrated.
+Strict refusal at **read** time has landed too: under the default strict policy, a search against
+an active generation whose calibration is absent, stale or uncertified raises `TrustRefusal`
+before any corpus text is fetched. Only development mode still answers, marked `degraded` with
+the reason in `failure_code` ([CALIBRATION.md](CALIBRATION.md#the-seven-failure-codes)).
 
 ## Atomic rescue
 

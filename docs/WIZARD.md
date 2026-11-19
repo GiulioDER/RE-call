@@ -363,8 +363,8 @@ whoever is reclaiming disk want opposite things.
 
 ## The Windows executable
 
-The 0.14.0 GitHub release does not ship this executable as a downloadable asset. Build it locally
-from the repository when you need a Python-free Windows bundle.
+GitHub releases do not ship this executable as a downloadable asset (none has, through 0.15.0).
+Build it locally from the repository when you need a Python-free Windows bundle.
 
 `packaging/recall-install.spec` builds a frozen bundle of the graphical installer, for somebody who
 has no Python and is not going to get one.

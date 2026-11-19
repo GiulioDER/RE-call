@@ -1,6 +1,6 @@
 # RE-call tool routing
 
-This is the complete routing map for the 26 RE-call MCP tools. The default quality path is
+This is the complete routing map for the 29 RE-call MCP tools. The default quality path is
 `recall_search`: its `evidence` field says which hits an answer may rely on and cite
 (`evidence.citable`), by the rule `recall_evidence` applies, over the search's own hits. Call
 `recall_evidence` with the selected source only when you need its card warrants, its rendered

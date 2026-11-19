@@ -288,6 +288,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   checkpoint from truncating the write-ahead log, or when its one-time VACUUM could not run, so
   erased bytes could stay on disk while the answer read as complete. Its JSON now carries a
   `warning` naming what is left and the command that finishes it, as `recall forget` already did.
+- Documentation that disagreed with the code: the plugin README said there is no embedded mode
+  (Lite is one); the tool routing map counted 26 tools while routing 29, now pinned by test;
+  `docs/PRODUCTION.md` said four auth scopes and six failure codes (six and seven), and it and
+  `docs/GENERATIONS.md` said strict refusal at read time had not landed (it has, under the default
+  strict policy). Lite is installed from the PyPI wheel rather than from source, and the Agent SDK
+  example installs `recall-rag[agent,fastembed]`.
 
 ### Security
 

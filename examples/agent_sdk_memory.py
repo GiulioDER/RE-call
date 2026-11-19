@@ -2,10 +2,11 @@
 
 Where `self_recall_agent.decide` calls the service layer directly, this example hands the same
 memory to a real Claude Agent SDK session as in-process tools and lets the MODEL do the
-consulting, which is the shape a production agent has. Needs the `agent` extra and the Claude
-Code CLI:
+consulting, which is the shape a production agent has. Needs the `agent` and `fastembed` extras
+and the Claude Code CLI (`agent` alone fails on the first tool call; see
+docs/USING_WITH_AGENT_SDK.md):
 
-    pip install "recall-rag[agent]"
+    pip install "recall-rag[agent,fastembed]"
 """
 from __future__ import annotations
 
