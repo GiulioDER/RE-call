@@ -216,7 +216,40 @@ def register_quickstart(sub: argparse._SubParsersAction[argparse.ArgumentParser]
     # RECALL_EMBEDDER. A second one would shadow the first depending on argument order.
 
 
+def _refuse_ignored_setup_flags(args: argparse.Namespace) -> None:
+    """Refuse a flag `recall setup` would accept and then not apply (#1402, #1403, #1404).
+
+    `--tenant` is refused on the PostgreSQL path too, rather than threaded through: only the
+    scaffolded memory and the Codex wiring took it, while the seed, the Claude Code server and its
+    hooks used `default`, so the registered server could not see the memory setup had just written.
+    """
+    command = "recall setup --lite" if args.lite else "recall setup"
+
+    def refuse(flag: str, why: str) -> None:
+        raise SystemExit(f"`{command}` does not accept {flag}: {why}, so {flag} would be ignored.")
+
+    if args.lite:
+        if args.tenant != DEFAULT_TENANT:
+            refuse("--tenant", f"a Lite store has one tenant, {DEFAULT_TENANT!r}")
+        if args.table != DEFAULT_TABLE:
+            refuse("--table", "a Lite store has one table; use --store <file> instead")
+        return
+    if getattr(args, "embedder_given", False):
+        refuse("--embedder", "the interview asks which embedder to use")
+    if args.tenant != DEFAULT_TENANT:
+        refuse("--tenant", f"the seed, the Claude Code server and its hooks use {DEFAULT_TENANT!r}")
+    for flag, given in (
+        ("--memory", args.memory is not None),
+        ("--store", args.store is not None),
+        ("--no-register", args.no_register),
+    ):
+        if given:
+            raise SystemExit(f"`recall setup` takes {flag} only with --lite; without it "
+                             f"{flag} would be ignored.")
+
+
 def _cmd_setup(args: argparse.Namespace) -> None:
+    _refuse_ignored_setup_flags(args)
     if args.lite:
         _setup_lite(args)
         return
