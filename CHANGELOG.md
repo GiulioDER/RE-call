@@ -146,6 +146,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ### Fixed
 
+- The write-time hook ("Search memory on every write") searched only the active generation, but
+  plain `recall setup` indexes memos into the legacy table, so on a setup-only install it never
+  found anything (#1425). With no active generation for the tenant, the hook now searches the
+  legacy table its config names, under that table's tenant isolation; a missing table counts as
+  no hits. Installs with an active generation are unchanged and still pay one round trip.
+- The Codex MCP server that `recall setup` wires ran under the strict trust default and refused
+  the uncalibrated corpus setup had just built, which the Claude Code server serves under
+  `development` (#1427). Both registrations now take the same trust mode. Re-run `recall setup`
+  to update an existing Codex install.
 - `recall setup` offered the OpenAI-compatible cloud embedder when only `OPENAI_API_KEY` was
   entered, and that embedder then refused to start for want of `OPENROUTER_API_KEY` (#1397). The
   `openai` and `openai:<model>` spellings now use `OPENAI_API_KEY` against `api.openai.com` when it
