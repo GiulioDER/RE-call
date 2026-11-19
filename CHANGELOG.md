@@ -208,10 +208,6 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   `uncertified`, and strict search refuses as before. `recall_calibration_run` still fits on demand,
   and `recall_calibration_status` and `recall doctor` name it rather than indexing during that wait.
   A fit from before this release, which recorded no chunk count, is refitted at its next change.
-- The setup wizard and the desktop app withheld SPLADE from a 6 GB GPU whenever torch was
-  installed, because torch reports a card's memory a little under its nominal size and the floor
-  was exactly 6 GiB; through nvidia-smi the same card qualified. The floor now allows 512 MiB of
-  slack, so a 6 GB card qualifies either way and a 5 GB one does not.
 - A correction through `recall_remember` wrote its target as a bare file name, which matched every
   memo folder's memo of that id under the index root: with two agent folders numbering from
   `note-0001`, the corrected memo and the other folder's memo both read `ambiguous_supersession`.
@@ -293,6 +289,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   PostgreSQL full text. Setup now writes `RECALL_SPARSE=fts` without asking; SPLADE remains a
   library option through `HybridRetriever(sparse_backend=...)`. A scripted run of setup has one
   answer fewer.
+- The desktop app's configuration page no longer shows a SPLADE checkbox, for the same reason:
+  ticking it saved `"splade": true` to `pipeline.json`, which only the page itself reads back. A
+  `pipeline.json` that still holds the key is read without error and the key is dropped on the
+  next save. The page's other choices are not applied to indexing or search either
+  ([#1392](https://github.com/GiulioDER/RE-call/issues/1392)); they stay until that is decided.
 - Documentation that disagreed with the code: the plugin README said there is no embedded mode
   (Lite is one); the tool routing map counted 26 tools while routing 29, now pinned by test;
   `docs/PRODUCTION.md` said four auth scopes and six failure codes (six and seven), and it and
