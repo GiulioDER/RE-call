@@ -6,7 +6,7 @@ surfaced closed decision (that isn't a `gap_warning`) tells it to back off inste
 
 Works with **Claude Code** and **Claude Desktop** — both take the same MCP server block.
 
-For one project's local memory, [install Lite from source](LITE.md) and run
+For one project's local memory, [install Lite](LITE.md) (in the PyPI wheel from 0.15.0) and run
 `recall setup --lite --memory ./notes`. This registers Claude Code directly with strict trust and
 automatic memo refresh; no PostgreSQL or plugin is required. For Claude Desktop, use
 [Lite's manual client wiring](LITE.md#connect-another-client). The schema commands and PostgreSQL

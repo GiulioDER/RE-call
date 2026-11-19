@@ -8,9 +8,6 @@ from typing import Any
 
 from recall.desktop.models import RuntimeProfile
 from recall.desktop.runtime import RuntimeErrorBase
-from recall.desktop.hardware import (  # re-exported: moved out of this module
-    _splade_hardware_probe as _splade_hardware_probe,
-)
 
 
 _qt_widgets: Any = None

@@ -282,8 +282,9 @@ OPENROUTER_API_KEY=
 # local OpenAI-compatible gateway is reached.
 
 # --- Which tools the MCP server serves ---
-# Unset serves all 18, which is the historical behaviour. Every tool definition is re-sent on
-# every turn whether or not it is ever called: measured 2026-08-27 on claude-haiku-4.5, about
+# Unset serves every tool (`ALL_TOOL_NAMES` in `recall_mcp/tool_surface.py`, 29 tools), which is
+# the historical behaviour. Every tool definition is re-sent on every turn whether or not it is
+# ever called: measured 2026-08-27 on claude-haiku-4.5, when the server had 18 tools, about
 # 153 input tokens per tool per turn, so all 18 cost 5,727 input tokens against 3,731 for the
 # `search` preset. A read-only client pays for the indexing and calibration tools regardless,
 # because scopes gate EXECUTION and not LISTING.
@@ -494,7 +495,7 @@ RECALL_MULTIMODAL_MAX_ITEMS=20
 # `RECALL_EMBED_PROFILE` is consumed consistently by the CLI, MCP service, setup, calibration,
 # and generation builders. Selecting a section profile changes the passage sent to the embedder
 # while leaving stored evidence text unchanged. The 384-dimensional BGE-small profile is useful on
-# a 384-dimensional schema; VPS2's current 1024-dimensional schema must use
+# a 384-dimensional schema; a 1024-dimensional schema must use
 # `bge-large-context-section-v1`. Either profile requires a new generation, reindexing the corpus,
 # and independent profile-specific calibration. No database schema migration is required when the
 # selected profile matches the installed vector dimension; profile and heading metadata are stored

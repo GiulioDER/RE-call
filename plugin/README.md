@@ -158,7 +158,8 @@ the network:
 ## What it measurably does, and honest limits
 
 The measured claim first: **adding this memory to a good `CLAUDE.md` reliably stops a known
-hazard being repeated.** Over 40 pairs, additive memory gave a hazard rate of 0.000 against
+hazard being repeated.** Over 40 pairs (four known hazards, ten repetitions each; three of the
+four improved), additive memory gave a hazard rate of 0.000 against
 0.525 and roughly doubled answer correctness
 ([record](https://github.com/GiulioDER/RE-call/blob/master/docs/preregistrations/2026-08-21-claude-md-plus-recall-additive.md)).
 That is the reason to install it. The limits:
@@ -170,7 +171,10 @@ That is the reason to install it. The limits:
   uplift**: 54 admitted pairs over 8 tasks, delta +0.154 with the cluster interval crossing zero,
   sign test p=1.0. It also costs about 56,000 extra input tokens and 25 seconds per session.
   ([record](https://github.com/GiulioDER/RE-call/blob/master/docs/preregistrations/2026-08-21-task-success-executable-endpoint.md))
-- **It needs PostgreSQL with pgvector.** There is no embedded mode.
+- **The full service needs PostgreSQL with pgvector.** [Lite](../docs/LITE.md) keeps one
+  project's memory in a local SQLite file instead, with no database server; choose PostgreSQL for
+  immutable generations, multi-tenant serving, authentication, or a database shared across
+  machines.
 - **`recall quickstart`'s corpus is uncalibrated**, so every result carries
   `DEGRADED:INDEX_NOT_READY`. That is the store saying its threshold was never fitted to this
   corpus, not an error. `recall setup` fits a real one.

@@ -94,7 +94,6 @@ def test_setup_wizard_writes_env_and_accepts_api_keys(tmp_path, monkeypatch):
         "openrouter-key",
         "6",  # embedder: voyage cloud, now 6th since bge base and large were added
         "1",  # reranker menu
-        "1",  # sparse backend menu
         "n",  # reasoning arm declined
         "n",  # scaffold CLAUDE.md / memory/? declined
         "n",
@@ -147,7 +146,6 @@ def test_setup_wizard_skips_blank_calibration_inputs(tmp_path, monkeypatch):
         "openrouter-key",
         "6",  # embedder: voyage cloud, now 6th since bge base and large were added
         "1",  # reranker menu
-        "1",  # sparse backend menu
         "n",  # reasoning arm declined
         "n",  # scaffold CLAUDE.md / memory/? declined
         "y",
@@ -208,7 +206,6 @@ def test_setup_wizard_treats_calibration_directory_as_output_folder(tmp_path, mo
         "openrouter-key",
         "6",  # embedder: voyage cloud, now 6th since bge base and large were added
         "1",  # reranker menu
-        "1",  # sparse backend menu
         "n",  # reasoning arm declined
         "n",  # scaffold CLAUDE.md / memory/? declined
         "y",
@@ -243,36 +240,6 @@ def test_setup_wizard_rejects_windows_host_path_for_calibration_output(tmp_path,
             label="Calibration output path",
             default=tmp_path / "calibration.json",
         )
-
-
-def test_splade_choice_requires_cuda_gpu():
-    from recall.setup import sparse_choices
-
-    no_cuda = HardwareProbe(
-        cpu_count=8,
-        gpu="nvidia",
-        cuda_available=False,
-        free_bytes=10_000_000_000,
-        internet=True,
-        fastembed_available=True,
-        sentence_transformers_available=True,
-    )
-    with_cuda = HardwareProbe(
-        cpu_count=8,
-        gpu="nvidia",
-        cuda_available=True,
-        free_bytes=10_000_000_000,
-        internet=True,
-        fastembed_available=True,
-        sentence_transformers_available=True,
-    )
-    # splade is listed either way now, because hiding it makes the product look like it does not
-    # have the feature. What CUDA governs is whether it can be selected and run.
-    without = next(c for c in sparse_choices(no_cuda) if c.label == "splade")
-    withit = next(c for c in sparse_choices(with_cuda) if c.label == "splade")
-    assert without.available is False
-    assert "CUDA" in without.unavailable_note
-    assert withit.available is True
 
 
 def test_update_markdown_block_creates_file_when_absent(tmp_path):
@@ -713,7 +680,6 @@ def test_setup_wizard_scaffolds_claude_md_and_memory_and_indexes(tmp_path, monke
         "openrouter-key",
         "6",  # embedder: voyage cloud, now 6th since bge base and large were added
         "1",  # reranker menu
-        "1",  # sparse backend menu
         "n",  # reasoning arm declined
         "y",  # scaffold CLAUDE.md / memory/? accepted
         "n",
@@ -768,7 +734,6 @@ def test_setup_wizard_survives_scaffold_failure_and_still_writes_env(tmp_path, m
         "openrouter-key",
         "6",  # embedder: voyage cloud, now 6th since bge base and large were added
         "1",  # reranker menu
-        "1",  # sparse backend menu
         "n",  # reasoning arm declined
         "y",  # scaffold CLAUDE.md / memory/? accepted, but scaffold_claude_md raises
         "n",
@@ -824,7 +789,6 @@ def test_setup_wizard_skips_scaffold_when_declined(tmp_path, monkeypatch):
         "openrouter-key",
         "6",  # embedder: voyage cloud, now 6th since bge base and large were added
         "1",  # reranker menu
-        "1",  # sparse backend menu
         "n",  # reasoning arm declined
         "n",  # scaffold CLAUDE.md / memory/? declined
         "n",
@@ -878,7 +842,6 @@ def test_setup_wizard_scaffold_prompt_defaults_to_yes_on_blank_answer(tmp_path, 
         "openrouter-key",
         "6",  # embedder: voyage cloud, now 6th since bge base and large were added
         "1",  # reranker menu
-        "1",  # sparse backend menu
         "n",  # reasoning arm declined
         "",  # scaffold CLAUDE.md / memory/? blank answer takes the default (yes)
         "n",
@@ -935,7 +898,6 @@ def test_setup_wizard_still_scaffolds_when_calibration_output_path_is_invalid(
         "openrouter-key",
         "6",  # embedder: voyage cloud, now 6th since bge base and large were added
         "1",  # reranker menu
-        "1",  # sparse backend menu
         "n",  # reasoning arm declined
         "y",  # scaffold CLAUDE.md / memory/? accepted
         "y",  # calibrate now? accepted
@@ -974,9 +936,9 @@ def test_setup_wizard_still_scaffolds_when_calibration_output_path_is_invalid(
 def test_a_real_choice_is_still_offered_as_a_menu(tmp_path, monkeypatch):
     """The shortcut must not swallow a decision the machine can actually make.
 
-    With CUDA and sentence-transformers present, sparse has two backends and reranking has three,
-    so both menus appear and both answers are consumed. Widen the `sole_note` branch to fire on
-    more than one choice and this goes red.
+    With CUDA and sentence-transformers present, reranking has three options, so its menu appears
+    and its answer is consumed. Widen the `sole_note` branch to fire on more than one choice and
+    this goes red. (It used the sparse menu until setup stopped offering SPLADE, 2026-11-19.)
     """
     probe = HardwareProbe(
         cpu_count=8,
@@ -993,8 +955,7 @@ def test_a_real_choice_is_still_offered_as_a_menu(tmp_path, monkeypatch):
         "n",  # security
         "", "", "",  # the three API keys
         "1",  # embedder
-        "1",  # reranker menu, genuinely offered
-        "2",  # sparse menu, genuinely offered: splade
+        "2",  # reranker menu, genuinely offered: ms marco
         "n",  # reasoning arm declined
         "n",  # scaffold
         "n",  # calibrate
@@ -1009,10 +970,9 @@ def test_a_real_choice_is_still_offered_as_a_menu(tmp_path, monkeypatch):
     )
 
     text = output.getvalue()
-    assert "Choose the sparse retrieval backend:" in text
-    assert "SPLADE is unavailable" not in text
+    assert "Choose whether to enable reranking:" in text
     assert next(answers, None) is None
-    assert "RECALL_SPARSE=splade" in (tmp_path / ".env").read_text(encoding="utf-8")
+    assert "RECALL_RERANK=1" in (tmp_path / ".env").read_text(encoding="utf-8")
 
 
 def test_a_sole_embedder_says_what_it_costs_rather_than_offering_a_menu(tmp_path, monkeypatch):
@@ -1036,7 +996,6 @@ def test_a_sole_embedder_says_what_it_costs_rather_than_offering_a_menu(tmp_path
         "n",  # security
         "", "", "",  # the three API keys, all blank, so no cloud embedder appears
         "1",  # reranker menu, still offered because unavailable options are listed
-        "1",  # sparse backend menu, same
         "n",  # reasoning arm declined
         "n",  # scaffold
         "n",  # calibrate
@@ -1079,7 +1038,7 @@ def test_options_this_machine_cannot_run_are_still_listed_and_marked(tmp_path, m
     """
     monkeypatch.setattr("recall.setup.probe_hardware", _no_extras_probe)
     monkeypatch.setattr("recall.setup._module_available", lambda name: False)
-    answers = iter(["n", "", "", "", "1", "1", "1", "n", "n", "n"])
+    answers = iter(["n", "", "", "", "1", "1", "n", "n", "n"])
     output = io.StringIO()
 
     run_setup_wizard(
@@ -1092,7 +1051,6 @@ def test_options_this_machine_cannot_run_are_still_listed_and_marked(tmp_path, m
     text = output.getvalue()
     assert "ms marco reranker" in text
     assert "bge reranker" in text
-    assert "splade" in text
     assert "(not installed yet)" in text
     assert next(answers, None) is None
 
@@ -1107,7 +1065,7 @@ def test_picking_an_unavailable_reranker_explains_and_keeps_the_baseline(
     """
     monkeypatch.setattr("recall.setup.probe_hardware", _no_extras_probe)
     monkeypatch.setattr("recall.setup._module_available", lambda name: False)
-    answers = iter(["n", "", "", "", "1", "2", "1", "n", "n", "n"])  # reranker 2 is not installed
+    answers = iter(["n", "", "", "", "1", "2", "n", "n", "n"])  # reranker 2 is not installed
     output = io.StringIO()
 
     run_setup_wizard(
@@ -1124,27 +1082,6 @@ def test_picking_an_unavailable_reranker_explains_and_keeps_the_baseline(
     assert next(answers, None) is None
 
 
-def test_picking_unavailable_splade_explains_and_keeps_postgres_fts(tmp_path, monkeypatch) -> None:
-    """Same rule on the sparse menu, where the baseline is `postgres fts` rather than `none`."""
-    monkeypatch.setattr("recall.setup.probe_hardware", _no_extras_probe)
-    monkeypatch.setattr("recall.setup._module_available", lambda name: False)
-    answers = iter(["n", "", "", "", "1", "1", "2", "n", "n", "n"])  # sparse 2 is not installed
-    output = io.StringIO()
-
-    run_setup_wizard(
-        dsn="postgresql://example/recall",
-        env_path=tmp_path / ".env",
-        input_fn=lambda _prompt="": next(answers),
-        print_fn=lambda *a, **k: print(*a, **k, file=output),
-    )
-
-    text = output.getvalue()
-    assert 'pip install "recall-rag[sparse]"' in text
-    assert "Keeping postgres fts for now." in text
-    assert "RECALL_SPARSE=fts" in (tmp_path / ".env").read_text(encoding="utf-8")
-    assert next(answers, None) is None
-
-
 def test_the_note_names_the_condition_that_actually_failed() -> None:
     """Telling somebody to install what they already have sends them to fix the wrong thing.
 
@@ -1152,7 +1089,7 @@ def test_the_note_names_the_condition_that_actually_failed() -> None:
     blaming sentence-transformers is wrong whenever the real blocker is disk. Replace
     `_why_unavailable(probe)` with a constant and the disk case goes red.
     """
-    from recall.setup import reranker_choices, sparse_choices
+    from recall.setup import reranker_choices
 
     no_package = HardwareProbe(
         cpu_count=8, gpu=None, cuda_available=False, free_bytes=10_000_000_000,
@@ -1174,9 +1111,6 @@ def test_the_note_names_the_condition_that_actually_failed() -> None:
     assert missing_disk.available is False
     assert "free disk" in missing_disk.unavailable_note
     assert "sentence-transformers is not installed" not in missing_disk.unavailable_note
-
-    splade = next(c for c in sparse_choices(no_disk) if c.label == "splade")
-    assert "no CUDA device was detected" in splade.unavailable_note
 
 
 def test_a_choice_list_whose_baseline_cannot_run_is_refused() -> None:
@@ -1357,7 +1291,6 @@ def test_picking_a_withheld_embedder_asks_again_instead_of_keeping_hashing(
         "4",  # fastembed large: withheld on this machine
         "3",  # fastembed base, asked again
         "1",  # reranker
-        "1",  # sparse
         "n",  # reasoning arm declined
         "n",  # scaffold
         "n",  # calibrate
@@ -1402,7 +1335,7 @@ def test_setup_refuses_to_replace_an_empty_mismatched_schema(tmp_path, monkeypat
         "recall.schema.apply_migrations",
         lambda *args, **kwargs: applied.append((args, kwargs)) or (),
     )
-    answers = iter(["n", "", "", "", "4", "1", "1", "n", "n", "n"])
+    answers = iter(["n", "", "", "", "4", "1", "n", "n", "n"])
     with pytest.raises(SystemExit, match="will not rebuild"):
         run_setup_wizard(
             dsn="postgresql://example/recall",
@@ -1434,7 +1367,7 @@ def test_setup_requires_a_migration_dsn_to_fix_a_dimension_mismatch(tmp_path, mo
         "recall.schema.apply_migrations",
         lambda dsn, *, table, dim: applied.append((dsn, table, dim)) or (),
     )
-    answers = iter(["n", "", "", "", "4", "1", "1", "n", "n", "n"])
+    answers = iter(["n", "", "", "", "4", "1", "n", "n", "n"])
 
     run_setup_wizard(
         dsn="postgresql://example/recall",
@@ -1457,7 +1390,7 @@ def test_the_width_check_asks_about_the_table_the_caller_uses(tmp_path, monkeypa
     monkeypatch.setattr("recall.setup.probe_hardware", lambda: _roomy_probe(10 * 1024**3))
     monkeypatch.setattr("recall.setup._module_available", lambda name: False)
     monkeypatch.setattr("recall.setup._schema_prepare_state", spy)
-    answers = iter(["n", "", "", "", "2", "1", "1", "n", "n", "n"])
+    answers = iter(["n", "", "", "", "2", "1", "n", "n", "n"])
 
     run_setup_wizard(
         dsn="postgresql://example/recall",
@@ -1551,8 +1484,8 @@ def test_reasoning_providers_offer_cloud_when_security_is_not_required(monkeypat
 
 def test_reasoning_providers_mark_cloud_unavailable_without_the_openai_package(monkeypatch):
     """Offered but marked, never hidden: hiding makes the product look like it lacks the feature
-    and leaves no way to ask for it. This is the same rule `reranker_choices` and
-    `sparse_choices` follow. `embedder_choices` differs: it omits cloud entries conditionally
+    and leaves no way to ask for it. This is the same rule `reranker_choices`
+    follows. `embedder_choices` differs: it omits cloud entries conditionally
     rather than offering them marked unavailable."""
     monkeypatch.setattr("recall.setup._module_available", lambda name: name != "openai")
     probe = HardwareProbe(
@@ -1758,7 +1691,6 @@ def test_declining_the_reasoning_arm_writes_only_the_off_flag(tmp_path, monkeypa
             "y",   # security required
             "2",   # embedder: fastembed
             "1",   # reranker: none
-            "1",   # sparse: fts
             "n",   # reasoning arm declined
             "n",   # scaffold declined
             "n",   # calibrate declined
@@ -1792,7 +1724,6 @@ def test_seeding_runs_before_the_hooks_are_installed(tmp_path, monkeypatch):
             "y",   # security required
             "2",   # embedder: fastembed
             "1",   # reranker: none
-            "1",   # sparse: fts
             "n",   # reasoning arm declined
             "y",   # scaffold
             "y",   # seed
@@ -1835,7 +1766,6 @@ def test_each_injection_answer_reaches_the_installer(
             "y",             # security required
             "2",             # embedder: fastembed
             "1",             # reranker: none
-            "1",             # sparse: fts
             "n",             # reasoning arm declined
             "n",             # scaffold declined
             "y",             # wire up Claude Code
@@ -1933,7 +1863,6 @@ def test_accepting_the_wiring_prompt_registers_the_server_and_installs_the_hooks
             "y",   # security required
             "2",   # embedder: fastembed
             "1",   # reranker: none
-            "1",   # sparse: fts
             "n",   # reasoning arm declined
             "n",   # scaffold declined
             "y",   # wire up Claude Code
@@ -1994,9 +1923,9 @@ def test_a_failed_wiring_step_does_not_lose_the_completed_interview(tmp_path, mo
     env, output = _run_wizard(
         tmp_path,
         monkeypatch,
-        # security y, embedder 2, reranker 1, sparse 1, reasoning n, scaffold n,
+        # security y, embedder 2, reranker 1, reasoning n, scaffold n,
         # wiring y, write-time hook y, prompt-time hook y, calibrate n
-        ["y", "2", "1", "1", "n", "n", "y", "y", "y", "n"],
+        ["y", "2", "1", "n", "n", "y", "y", "y", "n"],
     )
 
     assert "RECALL_EMBEDDER=fastembed" in env
@@ -2213,7 +2142,6 @@ def test_choosing_openrouter_and_deepseek_writes_all_four_keys(tmp_path, monkeyp
             "router-key",     # OPENROUTER_API_KEY
             "2",              # embedder: fastembed
             "1",              # reranker: none
-            "1",              # sparse: fts
             "y",              # reasoning arm enabled
             "2",              # provider: openrouter
             "2",              # model: deepseek chat, second now that deepseek v4.1 flash leads
@@ -2246,7 +2174,6 @@ def test_a_key_captured_during_the_interview_is_also_written_under_its_provider_
             "",               # OPENROUTER_API_KEY skipped at step 1b
             "2",              # embedder: fastembed
             "1",              # reranker: none
-            "1",              # sparse: fts
             "y",              # reasoning arm enabled
             "2",              # provider: openrouter
             "captured-key",   # OPENROUTER_API_KEY, typed during the interview
@@ -2268,7 +2195,6 @@ def test_a_local_endpoint_takes_the_default_base_url(tmp_path, monkeypatch):
             "y",        # security required, so only the local provider is offered
             "2",        # embedder: fastembed
             "1",        # reranker: none
-            "1",        # sparse: fts
             "y",        # reasoning arm enabled
             # provider: local endpoint is the sole choice and is announced, not asked
             "",         # base URL: take the default
@@ -2301,7 +2227,6 @@ def test_a_malformed_base_url_does_not_end_the_interview(tmp_path, monkeypatch):
             "y",                      # security required
             "2",                      # embedder: fastembed
             "1",                      # reranker: none
-            "1",                      # sparse: fts
             "y",                      # reasoning arm enabled
             "http://[::1:11434/v1",   # base URL with an unclosed IPv6 bracket
             "qwen2.5",                # model id
@@ -2326,7 +2251,6 @@ def test_a_failing_probe_still_writes_the_configuration(tmp_path, monkeypatch):
             "y",       # security required
             "2",       # embedder: fastembed
             "1",       # reranker: none
-            "1",       # sparse: fts
             "y",       # reasoning arm enabled
             # provider: local endpoint is the sole choice and is announced, not asked
             "",        # base URL default
@@ -2348,7 +2272,6 @@ def test_a_blank_model_id_twice_turns_the_arm_off(tmp_path, monkeypatch):
             "y",   # security required
             "2",   # embedder: fastembed
             "1",   # reranker: none
-            "1",   # sparse: fts
             "y",   # reasoning arm enabled
             # provider: local endpoint is the sole choice and is announced, not asked
             "",    # base URL default
@@ -2377,7 +2300,6 @@ def test_a_blank_cloud_api_key_twice_turns_the_arm_off(tmp_path, monkeypatch):
             "",    # OPENROUTER_API_KEY skipped
             "2",   # embedder: fastembed
             "1",   # reranker: none
-            "1",   # sparse: fts
             "y",   # reasoning arm enabled
             "2",   # provider: openrouter
             "",    # OPENROUTER_API_KEY blank
@@ -2440,7 +2362,6 @@ def test_the_interview_enables_the_flag_the_runtime_actually_reads(tmp_path, mon
             "y",        # security required, so only the local provider is offered
             "2",        # embedder: fastembed
             "1",        # reranker: none
-            "1",        # sparse: fts
             "y",        # reasoning arm enabled
             "",         # base URL: take the default
             "qwen2.5",  # model id
@@ -2470,7 +2391,6 @@ def test_unreachable_database_reports_a_message_instead_of_staying_silent(tmp_pa
         "y",  # security required, so no cloud API key prompts
         "2",  # embedder: fastembed
         "1",  # reranker: none
-        "1",  # sparse: fts
         "n",  # reasoning arm declined
         "n",  # scaffold declined
         "n",  # calibrate declined
@@ -2507,7 +2427,6 @@ def test_a_remote_local_endpoint_base_url_warns_about_the_tradeoff(tmp_path, mon
             "y",  # security required, so only the local provider is offered
             "2",  # embedder: fastembed
             "1",  # reranker: none
-            "1",  # sparse: fts
             "y",  # reasoning arm enabled
             "https://reasoning.example.com/v1",  # base URL, not obviously local
             "qwen2.5",  # model id
@@ -2530,7 +2449,6 @@ def test_the_default_local_base_url_prints_no_warning(tmp_path, monkeypatch):
             "y",  # security required, so only the local provider is offered
             "2",  # embedder: fastembed
             "1",  # reranker: none
-            "1",  # sparse: fts
             "y",  # reasoning arm enabled
             "",  # base URL, take the default, obviously local
             "qwen2.5",  # model id
@@ -2627,7 +2545,7 @@ def test_setup_registration_preserves_selected_table(tmp_path, monkeypatch, sele
         )
 
     monkeypatch.setattr(wiring, "register_local_scope", capture)
-    answers = iter(["y", "2", "1", "1", "n", "n", "y", "n", "n", "n"])
+    answers = iter(["y", "2", "1", "n", "n", "y", "n", "n", "n"])
     run_setup_wizard(
         dsn="postgresql://example/recall",
         table=selected_table,

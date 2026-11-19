@@ -80,7 +80,6 @@ skipped=()
 declare -A REACHED_THROUGH=(
   [recall.calibration_v2_artifact]=recall.calibration_v2
   [recall.calibration_v2_bounds]=recall.calibration_v2
-  [recall.desktop.hardware]=recall.desktop.ui
   [recall.desktop.main_window]=recall.desktop.ui
   [recall.dsn_security]=recall.store
   [recall.store_mutation]=recall.store

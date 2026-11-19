@@ -428,7 +428,7 @@ def test_setup_installs_codex_integration_by_default_when_detected(tmp_path, mon
         "recall.setup.install_codex_integration",
         lambda **kwargs: captured.update(kwargs),
     )
-    answers = iter(["y", "2", "1", "1", "n", "n", "y", "n"])
+    answers = iter(["y", "2", "1", "n", "n", "y", "n"])
     output = io.StringIO()
 
     run_setup_wizard(

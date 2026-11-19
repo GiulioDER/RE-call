@@ -45,46 +45,6 @@ def test_an_empty_serving_dsn_falls_through_to_recall_dsn(tmp_path: Path) -> Non
 
 
 # ----------------------------------------------------------------------------------------------
-# PERF-007 (DEF-2): the desktop configuration page's hardware probe
-# ----------------------------------------------------------------------------------------------
-
-
-def test_the_splade_check_probes_only_what_it_reads(monkeypatch: pytest.MonkeyPatch) -> None:
-    """PERF-007 (DEF-2). Invariant: the configuration page's SPLADE probe asks only the hardware
-    probe and the CUDA VRAM probe, the two answers `_hardware_probe_done` reads. Failure caught:
-    it ran `probe_system`, which also runs docker, wsl and systeminfo serially (up to about 88 s)
-    and kept the checkbox disabled meanwhile.
-    Red proof: a mutation of `recall.desktop.ui._splade_hardware_probe` returning
-    `probe_system()` (the pre-fix body of `MainWindow._probe_hardware`) failed the `calls`
-    assertion. The pre-fix module has no such function, and `MainWindow` needs PySide6, which the
-    test host lacks, so the proof is by mutation."""
-    import recall.wizard.probe as probe
-    from recall.desktop import ui
-
-    calls: list[str] = []
-
-    def _record(name: str, value: object) -> Any:
-        def probe_fn(*args: object, **kwargs: object) -> object:
-            calls.append(name)
-            return value
-        return probe_fn
-
-    hardware = SimpleNamespace(cuda_available=True)
-    monkeypatch.setattr(probe, "probe_system", _record("system", SimpleNamespace(hardware=hardware, cuda_vram_bytes=1)))
-    monkeypatch.setattr(probe, "probe_docker", _record("docker", (True, False)))
-    monkeypatch.setattr(probe, "probe_wsl2", _record("wsl2", None))
-    monkeypatch.setattr(probe, "probe_virtualization", _record("virtualization", None))
-    monkeypatch.setattr(probe, "probe_hardware", _record("hardware", hardware))
-    monkeypatch.setattr(probe, "probe_cuda_vram", _record("vram", 8 * 1024**3))
-
-    result = ui._splade_hardware_probe()
-
-    assert sorted(calls) == ["hardware", "vram"], calls
-    assert result.hardware.cuda_available is True
-    assert result.cuda_vram_bytes == 8 * 1024**3
-
-
-# ----------------------------------------------------------------------------------------------
 # PERF-010 (DEF-3): forget and withdraw look up only the named sources on PostgreSQL
 # ----------------------------------------------------------------------------------------------
 

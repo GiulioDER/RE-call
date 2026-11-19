@@ -47,9 +47,9 @@ shared RE-call lifecycle:
     rather than a Claude-only `CLAUDE_PID` variable. Its 15-second bound covers process inspection
     and teardown of multiple transports.
 
-For VPS2-backed MCP, each generated server command also carries `RECALL_MCP_SESSION_ID`. The value
-comes from the worktree's live session claim, so a new session in the same checkout gets a new
-opaque identity while a resume keeps the old one. Cleanup uses client process ancestry when a client
+An MCP server launched on a remote host over ssh can also carry `RECALL_MCP_SESSION_ID` on its
+command line. Give each session its own opaque value, and keep it across a resume, so a new
+session in the same checkout gets a new identity while a resumed one keeps the old one. Cleanup uses client process ancestry when a client
 PID is available. Otherwise it uses the session ID, then the legacy `RECALL_MCP_CLIENT` marker.
 Conflicting identities in a config stop discovery without adopting an ancestor or shared marker.
 The fleet sweep uses the same ID to

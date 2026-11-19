@@ -19,7 +19,6 @@ from PySide6.QtGui import QColor, QPixmap, QPolygon
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
-    QCheckBox,
     QFileDialog,
     QFrame,
     QFormLayout,
@@ -69,7 +68,6 @@ from recall.desktop.github import GithubImport, download_repository
 from recall.desktop.uploads import upload_batches
 from recall.desktop.jobs import CLOSE_WAIT_MS
 from recall.desktop.jobs import Job as _Worker
-from recall.desktop.hardware import _splade_hardware_probe
 from recall.store import scrub_dsn_secrets
 from recall.wizard.database import probe_database
 
@@ -306,7 +304,6 @@ class MainWindow(QMainWindow):
             source_type: {
                 "embedder": "Hashing offline",
                 "reranker": "Disabled",
-                "splade": False,
                 "judge": "Disabled",
                 "reasoning": "Disabled",
                 "model": "hashing-64",
@@ -317,10 +314,13 @@ class MainWindow(QMainWindow):
         }
         # Saved choices layered OVER the defaults, key by key. A wholesale replacement would
         # drop any setting added after the file was written, so an upgrade would silently lose
-        # a control's value rather than keep the new default for it.
+        # a control's value rather than keep the new default for it. Only keys the page still
+        # has are taken, so a choice whose control was removed (SPLADE, 2026-11-19) is not saved
+        # back as though it still applied.
         for source_type, saved in load_pipelines().items():
             if source_type in self._pipeline_configs:
-                self._pipeline_configs[source_type].update(saved)
+                defaults = self._pipeline_configs[source_type]
+                defaults.update({key: value for key, value in saved.items() if key in defaults})
         self.setWindowTitle("RE-call")
         self.resize(980, 760)
         self._build_ui()
@@ -751,15 +751,6 @@ class MainWindow(QMainWindow):
             self.reranker_combo,
             {"Voyage reranker (unavailable)", "BGE reranker (unavailable)"},
         )
-        self.splade_check = QCheckBox("Enable learned sparse SPLADE retrieval")
-        self.splade_check.setEnabled(False)
-        self.splade_status = QLabel("Checking CUDA and VRAM capability…")
-        self.splade_status.setObjectName("mutedLabel")
-        splade_row = QWidget()
-        splade_layout = QHBoxLayout(splade_row)
-        splade_layout.setContentsMargins(0, 0, 0, 0)
-        splade_layout.addWidget(self.splade_check)
-        splade_layout.addWidget(self.splade_status, 1)
         self.judge_combo = QComboBox()
         self.judge_combo.addItems(["Disabled", "Remote LLM judge"])
         self.reasoning_combo = QComboBox()
@@ -774,7 +765,6 @@ class MainWindow(QMainWindow):
         self.arm_combo.setEnabled(False)
         form.addRow("Embedder", self.embedder_combo)
         form.addRow("Re-ranker", self.reranker_combo)
-        form.addRow("SPLADE", splade_row)
         form.addRow("Judge", self.judge_combo)
         form.addRow("Reasoning", self.reasoning_combo)
         form.addRow("Embedder model", self.model_edit)
@@ -804,11 +794,9 @@ class MainWindow(QMainWindow):
             self.arm_combo,
         ):
             control.currentTextChanged.connect(self._configuration_changed)
-        self.splade_check.stateChanged.connect(self._configuration_changed)
         self.model_edit.textChanged.connect(self._configuration_changed)
         self.reranker_model_edit.textChanged.connect(self._configuration_changed)
         self._load_config_type(self._active_config_type)
-        self._run(self._probe_hardware, self._hardware_probe_done, self._hardware_probe_failed)
         self._add_page_watermark(page)
         return page
 
@@ -826,7 +814,6 @@ class MainWindow(QMainWindow):
         return (
             self.embedder_combo,
             self.reranker_combo,
-            self.splade_check,
             self.judge_combo,
             self.reasoning_combo,
             self.model_edit,
@@ -838,7 +825,6 @@ class MainWindow(QMainWindow):
         return {
             "embedder": self.embedder_combo.currentText(),
             "reranker": self.reranker_combo.currentText(),
-            "splade": self.splade_check.isChecked(),
             "judge": self.judge_combo.currentText(),
             "reasoning": self.reasoning_combo.currentText(),
             "model": self.model_edit.text(),
@@ -868,12 +854,6 @@ class MainWindow(QMainWindow):
                 combo.setCurrentText(wanted)
             else:
                 values[key] = combo.currentText()
-        # SPLADE is restored only when this machine can actually run it. The probe DISABLES the
-        # checkbox without unticking it, and `_save_configuration` refuses while it is ticked,
-        # so a config saved on a CUDA machine (or one that hit a transient probe failure) would
-        # restore a ticked, disabled box the user cannot clear: Save wedged permanently.
-        values["splade"] = bool(values["splade"]) and self.splade_check.isEnabled()
-        self.splade_check.setChecked(bool(values["splade"]))
         self.model_edit.setText(str(values["model"]))
         self.reranker_model_edit.setText(str(values["reranker_model"]))
         for control in controls:
@@ -1263,9 +1243,6 @@ class MainWindow(QMainWindow):
         )
 
     def _save_configuration(self) -> None:
-        if self.splade_check.isChecked() and not self.splade_check.isEnabled():
-            self.status.setText("SPLADE cannot be enabled because this machine does not meet the CUDA and VRAM requirements.")
-            return
         forbidden = ("bge", "voyage")
         selected_models = (self.model_edit.text().lower(), self.reranker_model_edit.text().lower())
         if any(token in model for model in selected_models for token in forbidden):
@@ -1293,30 +1270,6 @@ class MainWindow(QMainWindow):
             f"{self._active_config_type} configuration saved. A complete calibration is required before this set can be activated."
         )
         self.status.setText("Configuration saved. Open Calibration to certify the new set.")
-
-    def _probe_hardware(self) -> Any:
-        return _splade_hardware_probe()
-
-    def _hardware_probe_done(self, result: Any) -> None:
-        from recall.wizard.probe import splade_is_feasible
-
-        hardware = getattr(result, "hardware", None)
-        cuda = bool(getattr(hardware, "cuda_available", False))
-        vram = getattr(result, "cuda_vram_bytes", None)
-        feasible = splade_is_feasible(cuda_available=cuda, vram_bytes=vram)
-        self.splade_check.setEnabled(feasible)
-        if feasible:
-            gib = vram / (1024**3) if isinstance(vram, int) else 0
-            self.splade_status.setText(f"CUDA available, {gib:.1f} GiB VRAM detected")
-            self.splade_status.setObjectName("successLabel")
-        else:
-            self.splade_status.setText("Unavailable: CUDA GPU with at least 6 GiB VRAM is required")
-        self.splade_status.style().unpolish(self.splade_status)
-        self.splade_status.style().polish(self.splade_status)
-
-    def _hardware_probe_failed(self, message: str) -> None:
-        self.splade_check.setEnabled(False)
-        self.splade_status.setText(f"Hardware check failed: {message}")
 
     def _calibration_targets(self) -> list[tuple[str, str, str]]:
         """One row per corpus that exists, naming the tenant it actually reports on.
