@@ -472,16 +472,36 @@ def _index_and_refresh(payload: dict[str, Any]) -> int:
     # and before searches, and the indexer below writes PostgreSQL only.
     if not dsn or str(dsn).startswith("sqlite:///"):
         return 0
+    memory_dir = _project_memory_dir(config, cwd)
+    if memory_dir is None:
+        return 0
+    if memory_dir.is_dir():
+        try:
+            from .memory_refresh import needs_index, start_background_index
+
+            if needs_index(config, memory_dir):
+                # Detached, because indexing can outlast Codex's synchronous 15 s SessionEnd
+                # (#1454). The child refreshes the cached count itself when it finishes.
+                start_background_index(str(cwd))
+                return 0
+        except Exception:  # BROAD-CATCH: fail-open
+            return 0
+    refresh_stats(config)
+    return 0
+
+
+def _project_memory_dir(config: dict[str, Any], cwd: object) -> Path | None:
+    """`<cwd>/memory`, resolved, when `cwd` lies inside the configured `project_root`; else None."""
     configured = config.get("project_root")
     if not isinstance(configured, str) or not isinstance(cwd, str):
-        return 0
+        return None
     from recall.confinement import within
 
     try:
         root_path = Path(configured).expanduser()
         event_path = Path(cwd).expanduser()
         if not root_path.is_absolute() or not event_path.is_absolute():
-            return 0
+            return None
         root = root_path.resolve(strict=True)
         event_root = event_path.resolve(strict=True)
         confined_memory_dir = within(root, event_root / "memory")
@@ -491,26 +511,10 @@ def _index_and_refresh(payload: dict[str, Any]) -> int:
             or within(root, event_root) is None
             or confined_memory_dir is None
         ):
-            return 0
-        memory_dir = confined_memory_dir
+            return None
+        return confined_memory_dir
     except (OSError, RuntimeError, ValueError):
-        return 0
-    if memory_dir.is_dir():
-        try:
-            from recall.memory_index import index_memory_directory
-
-            index_memory_directory(
-                dsn=str(dsn),
-                embedder_name=str(config.get("embedder", "fastembed")),
-                memory_dir=memory_dir,
-                tenant=str(config.get("tenant", "default")),
-                table=str(config.get("table", "chunks")),
-                print_fn=lambda *args, **kwargs: None,
-            )
-        except Exception:  # BROAD-CATCH: fail-open
-            return 0
-    refresh_stats(config)
-    return 0
+        return None
 
 
 def session_end(payload: dict[str, Any]) -> int:
@@ -688,6 +692,11 @@ def _dispatch(argv: list[str] | None = None) -> int:
         from .auditor_brief import warm
 
         return warm()
+    if args[0] == "index-memory":
+        # The detached child `_index_and_refresh` starts; it reads no payload.
+        from .memory_refresh import run
+
+        return run(args[1:])
     try:
         # Bytes, decoded as UTF-8, which is what the client writes. `json.load(sys.stdin)` decoded
         # with the console code page (cp1252 on Windows), and `pre-agent` writes the prompt back,
