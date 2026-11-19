@@ -62,7 +62,7 @@
             "type": "command",
             "command": "recall-codex-hooks",
             "args": ["session-end"],
-            "timeout": 15,
+            "timeout": 3,
             "statusMessage": "Indexing session into recall"
           }
         ]

@@ -1,22 +1,21 @@
 """Keep a project's memo folder indexed without making the end of a session wait for it (#1454).
 
-Codex runs `SessionEnd` synchronously and kills it at 15 s. Measured 2026-11-19 on Windows with a
-PostgreSQL store and the hashing embedder: re-indexing an UNCHANGED folder of 1,000 memos cost a
-median 3.3 s in process, most of it importing the indexer and opening the store, and a first index
-of the same folder 37.8 s. So the hook does only two cheap things:
+Codex runs `SessionEnd` synchronously and kills it at 3 s, whatever its config asks for
+(`SESSION_END_MAX_TIMEOUT_SEC` in openai/codex). Measured 2026-11-19 on Windows with a PostgreSQL
+store and the hashing embedder: re-indexing an UNCHANGED folder of 1,000 memos cost a median 3.3 s
+in process, and a first index of the same folder 37.8 s. Even the check for "unchanged" costs
+about 0.8 s once the count refresh's `import psycopg` is included. So the hook only starts
+`python -m recall_hooks index-memory <cwd>`, detached, and returns. That child:
 
-1. It compares a stat walk of the folder with the walk recorded after the last successful index.
-   The comparison is equality, not "newer than": a renamed, deleted or back-dated memo changes the
-   walk as surely as an edited one, and no clock is trusted to order anything.
-2. Only when they differ does it start `python -m recall_hooks index-memory <cwd>`, detached. That
-   child indexes, records the walk, and refreshes the cached count. One child indexes at a time
-   (a lock held for its whole life, which the OS releases if it dies), and each is killed at
-   `TIME_LIMIT_SECONDS`.
+1. compares a stat walk of the folder with the walk recorded after the last successful index. The
+   comparison is equality, not "newer than": a renamed, deleted or back-dated memo changes the
+   walk as surely as an edited one, and no clock is trusted to order anything;
+2. indexes only when they differ, or when the tenant has lost its rows;
+3. refreshes the cached count either way.
 
-The child runs whenever indexing is needed, not only for a large first index, because the hook
-cannot know the cost in advance: it depends on the embedder (a local model loads, a hosted one
-calls out) as much as on how many memos changed, and the unchanged index alone already takes most
-of the 5 s budget registered for #1454.
+One child works at a time (a lock held for its whole life, which the OS releases if it dies), and
+each is killed at `TIME_LIMIT_SECONDS`. Codex keeps a detached child running when the hook it came
+from completed in time (`command_runner.rs`); the hook now does too little to come near the cap.
 """
 
 from __future__ import annotations
@@ -121,21 +120,6 @@ def _record(key: str, digest: str) -> None:
     atomic_write_bytes(_home() / STATE_NAME, json.dumps(document, indent=2).encode("utf-8"))
 
 
-def needs_index(config: dict[str, Any], memory_dir: Path) -> bool:
-    """Whether `memory_dir` differs from what was last indexed, or its rows are gone."""
-    entry = _recorded().get(folder_key(config, memory_dir))
-    digest, count, _racy = walk(memory_dir)
-    if not isinstance(entry, dict) or entry.get("digest") != digest:
-        return True
-    if count == 0:
-        return False
-    from recall_hooks import refresh_stats
-
-    # The folder is unchanged but the tenant holds no rows: a recreated database, say. Indexed
-    # again rather than trusted, which is what every session end did before #1454.
-    return refresh_stats(config) == 0
-
-
 def start_background_index(cwd: str) -> None:
     """Start the detached child for the project at `cwd` and return at once."""
     home = _home()
@@ -194,12 +178,12 @@ def run(args: list[str]) -> int:
     watchdog.daemon = True
     watchdog.start()
     try:
-        return _run(args, time.time())
+        return _run(args)
     finally:
         watchdog.cancel()
 
 
-def _run(args: list[str], started: float) -> int:
+def _run(args: list[str]) -> int:
     from recall.memory_index import index_memory_directory
     from recall_hooks import _project_memory_dir, load_config, refresh_stats
 
@@ -220,15 +204,10 @@ def _run(args: list[str], started: float) -> int:
         while not _try_lock(lock):
             time.sleep(1.0)
         key = folder_key(config, memory_dir)
+        # Read only once the lock is held, so a walk another child recorded while this one waited
+        # counts as done.
         entry = _recorded().get(key)
-        indexed_at = entry.get("indexed_at") if isinstance(entry, dict) else None
-        # Another child indexed this folder while this one waited for the lock; if nothing has
-        # changed since, there is nothing to do.
-        done = (
-            entry.get("digest")
-            if isinstance(entry, dict) and isinstance(indexed_at, (int, float)) and indexed_at >= started
-            else None
-        )
+        done = entry.get("digest") if isinstance(entry, dict) else None
         # The settings the corpus was built under (an embedding profile, its key), which the
         # client's own environment need not carry; without them another model would embed.
         extra = config.get("server_env")
@@ -237,10 +216,14 @@ def _run(args: list[str], started: float) -> int:
             if isinstance(extra, dict) and all(isinstance(v, str) for v in extra.values())
             else None
         )
+        first = True
         for _ in range(MAX_PASSES):
-            digest, _count, racy = walk(memory_dir)
-            if digest == done:
+            digest, count, racy = walk(memory_dir)
+            # An unchanged folder beside a tenant with no rows (a recreated database, say) is
+            # indexed again rather than trusted, which is what every session end did before #1454.
+            if digest == done and not (first and count and refresh_stats(config) == 0):
                 break
+            first = False
             indexed = index_memory_directory(
                 dsn=str(dsn),
                 embedder_name=str(config.get("embedder", "fastembed")),

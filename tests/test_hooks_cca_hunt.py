@@ -227,6 +227,8 @@ def test_bug003_an_undecodable_process_table_is_unreadable_not_a_crash(
     line made the strict UTF-8 decode fail, `stdout` came back None, and `None.splitlines()`
     raised AttributeError, so cleanup closed nothing on that machine.
     Production line: `errors="replace"` and the `output is None` check in `_process_table`.
+    Since #1454 Windows reads the table from the Win32 API and decodes nothing, so this runs the
+    `ps` branch on every platform.
     """
     cleanup = _cleanup_module(monkeypatch)
     calls: list[dict[str, Any]] = []
@@ -236,40 +238,53 @@ def test_bug003_an_undecodable_process_table_is_unreadable_not_a_crash(
         return types.SimpleNamespace(stdout=None)
 
     monkeypatch.setattr(cleanup.subprocess, "run", fake_run)
+    monkeypatch.setattr(cleanup.os, "name", "posix")
     raised = False
     rows: Any = "not called"
     try:
         rows = cleanup._process_table()
     except Exception:  # noqa: BLE001 - asserted below, after the decode mode
         raised = True
+    finally:
+        monkeypatch.undo()
     assert calls and calls[0].get("errors") == "replace", calls
     assert not raised, "an undecodable table must read as unknown, not raise"
     assert rows is None
 
 
-def test_deploy001_the_windows_process_table_has_time_to_finish(
+@pytest.mark.skipif(os.name != "nt", reason="reads the real Windows process table")
+def test_deploy001_the_windows_process_table_starts_no_child_and_is_right(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """DEPLOY-001. Invariant: the Windows process listing is given longer than it takes.
+    """DEPLOY-001, superseded by #1454. Invariant: the Windows listing starts no process, and the
+    row for this very process carries its real parent pid and command line.
 
-    Defect caught: Get-CimInstance Win32_Process took 2.2 to 9 s on a Windows 11 workstation
-    (measured 2026-11-04) against a 2 s timeout, so cleanup reported `unknown` every time.
-    Production line: the `timeout=` of the PowerShell `subprocess.run` in `_process_table`.
+    Defect caught first: Get-CimInstance Win32_Process took 2.2 to 9 s (2026-11-04) against a 2 s
+    timeout, so cleanup reported `unknown` every time; the timeout was raised to 8 s. Then: Codex
+    caps SessionEnd at 3 s (`SESSION_END_MAX_TIMEOUT_SEC`, openai/codex), so any PowerShell
+    listing (1.2 to 2.4 s on 2026-11-20) leaves the hook no room. Production line: the
+    `_windows_process_rows()` call in `_process_table`.
+    Red proof (2026-11-20): `_process_table` restored to the PowerShell `subprocess.run`; fails
+    `started == []`.
     """
     cleanup = _cleanup_module(monkeypatch)
-    calls: list[dict[str, Any]] = []
+    started: list[Any] = []
 
-    def fake_run(*_args: Any, **kwargs: Any) -> Any:
-        calls.append(kwargs)
-        return types.SimpleNamespace(stdout="")
+    def refuse(*args: Any, **_kwargs: Any) -> Any:
+        started.append(args[0] if args else None)
+        raise OSError("no child process may be started")
 
-    monkeypatch.setattr(cleanup.subprocess, "run", fake_run)
-    monkeypatch.setattr(cleanup.os, "name", "nt")
-    try:
-        cleanup._process_table()
-    finally:
-        monkeypatch.undo()
-    assert calls and calls[0]["timeout"] >= 5
+    monkeypatch.setattr(cleanup.subprocess, "run", refuse)
+    monkeypatch.setattr(cleanup.subprocess, "Popen", refuse)
+    rows = cleanup._process_table()
+
+    assert started == []
+    assert rows, "the native listing returned nothing"
+    own = [row for row in rows if row[0] == str(os.getpid())]
+    assert len(own) == 1
+    assert own[0][1] == str(os.getppid())
+    # An xdist worker's command line does not name pytest, but it is always this interpreter.
+    assert "python" in own[0][2].lower()
 
 
 def test_bug005_the_relay_does_not_inherit_the_hooks_pipes_on_windows(

@@ -13,6 +13,7 @@ MCP_PATTERN = "recall_mcp.server"
 _MARKER_RE = re.compile(r"(?<!\S)RECALL_MCP_CLIENT=([^\s;&\"']+)")
 _SESSION_ID_RE = re.compile(r"(?<!\S)RECALL_MCP_SESSION_ID=([^\s;&\"']+)")
 _LAUNCHER_RE = re.compile(r"(?<!\S)(?:\S*[\\/])?recall-(?:codex-)?mcp(?:\s|$)")
+_NEWLINES = re.compile(r"[\r\n]+")
 
 
 def _mcp_pattern() -> str:
@@ -32,28 +33,20 @@ def _is_mcp_transport(command: str) -> bool:
 
 def _process_table() -> list[tuple[str, str, str]] | None:
     override = os.environ.get("RECALL_MCP_PS_FILE")
+    output: str | None
     if override:
         try:
             output = Path(override).read_text(encoding="utf-8", errors="replace")
         except OSError:
             return None
     elif os.name == "nt":
-        # CommandLine is flattened to one line: a multi-line command line (a shell heredoc) could
-        # otherwise carry a line shaped like a row and name an arbitrary pid as the client's.
-        command = [
-            "powershell", "-NoProfile", "-Command",
-            r'''Get-CimInstance Win32_Process | ForEach-Object { "$(($_.ProcessId)) $(($_.ParentProcessId)) $(($_.CommandLine) -replace '[\r\n]+', ' ')" }''',
-        ]
+        # From the Win32 API, not PowerShell's Get-CimInstance, which took 2.2 to 9 s
+        # (2026-11-04) and 1.2 to 2.4 s (2026-11-20) here, against Codex's SessionEnd cap of 3 s
+        # (#1454). The native listing took 0.06 to 0.27 s for the same processes.
         try:
-            # Measured 2026-11-04 on a Windows 11 workstation: this listing takes 2.2 to 9 s, so
-            # the old 2 s bound timed out every time and nothing was ever closed. SessionEnd is
-            # async in Claude Code and has a 15 s budget in Codex. Windows PowerShell writes
-            # piped output in the OEM code page, so one non-ASCII command line must not void it.
-            output = subprocess.run(
-                command, capture_output=True, text=True, encoding="utf-8", errors="replace",
-                timeout=8,
-            ).stdout
-        except (OSError, subprocess.SubprocessError):
+            output = _windows_process_rows()
+        except (OSError, ValueError):
+            # A refused API call is an unreadable table: report `unknown` and close nothing.
             return None
     else:
         try:
@@ -77,6 +70,81 @@ def _process_table() -> list[tuple[str, str, str]] | None:
     for pid, _ppid, _command in rows:
         seen[pid] = seen.get(pid, 0) + 1
     return [row for row in rows if seen[row[0]] == 1]
+
+
+def _windows_process_rows() -> str | None:
+    """`pid ppid command line` per process, one per line, read with the Win32 API; None on failure.
+
+    Every pid and parent pid comes from one Toolhelp snapshot, so the parent chain is consistent.
+    A command line comes from `NtQueryInformationProcess(ProcessCommandLineInformation)`; a
+    process this user cannot open (another user's, an elevated one) gets an empty one, as WMI
+    gave. Each command line is flattened to one line: a multi-line one (a shell heredoc) could
+    otherwise carry a line shaped like a row and name an arbitrary pid as the client's.
+    """
+    import ctypes
+    from ctypes import wintypes
+
+    class ProcessEntry(ctypes.Structure):
+        _fields_ = [
+            ("dwSize", wintypes.DWORD), ("cntUsage", wintypes.DWORD),
+            ("th32ProcessID", wintypes.DWORD), ("th32DefaultHeapID", ctypes.c_void_p),
+            ("th32ModuleID", wintypes.DWORD), ("cntThreads", wintypes.DWORD),
+            ("th32ParentProcessID", wintypes.DWORD), ("pcPriClassBase", ctypes.c_long),
+            ("dwFlags", wintypes.DWORD), ("szExeFile", wintypes.WCHAR * 260),
+        ]
+
+    class UnicodeString(ctypes.Structure):
+        _fields_ = [
+            ("Length", wintypes.USHORT), ("MaximumLength", wintypes.USHORT),
+            ("Buffer", ctypes.c_void_p),
+        ]
+
+    windll = getattr(ctypes, "WinDLL")
+    kernel32 = windll("kernel32", use_last_error=True)
+    ntdll = windll("ntdll")
+    kernel32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    ntdll.NtQueryInformationProcess.argtypes = [
+        wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.ULONG,
+        ctypes.POINTER(wintypes.ULONG),
+    ]
+    th32cs_snapprocess, process_query_limited_information, command_line_class = 0x2, 0x1000, 60
+
+    def command_line(pid: int) -> str:
+        handle = kernel32.OpenProcess(process_query_limited_information, False, pid)
+        if not handle:
+            return ""
+        try:
+            size = wintypes.ULONG(0)
+            ntdll.NtQueryInformationProcess(handle, command_line_class, None, 0, ctypes.byref(size))
+            if not size.value:
+                return ""
+            buffer = ctypes.create_string_buffer(size.value)
+            if ntdll.NtQueryInformationProcess(
+                handle, command_line_class, buffer, size, ctypes.byref(size)
+            ) != 0:
+                return ""
+            text = UnicodeString.from_buffer(buffer)
+            return ctypes.wstring_at(text.Buffer, text.Length // 2) if text.Buffer else ""
+        finally:
+            kernel32.CloseHandle(handle)
+
+    snapshot = kernel32.CreateToolhelp32Snapshot(th32cs_snapprocess, 0)
+    if not snapshot or snapshot == wintypes.HANDLE(-1).value:
+        return None
+    pairs: list[tuple[int, int]] = []
+    try:
+        entry = ProcessEntry()
+        entry.dwSize = ctypes.sizeof(entry)
+        found = kernel32.Process32FirstW(snapshot, ctypes.byref(entry))
+        while found:
+            pairs.append((entry.th32ProcessID, entry.th32ParentProcessID))
+            found = kernel32.Process32NextW(snapshot, ctypes.byref(entry))
+    finally:
+        kernel32.CloseHandle(snapshot)
+    if not pairs:
+        return None
+    return "\n".join(f"{pid} {ppid} {_NEWLINES.sub(' ', command_line(pid))}" for pid, ppid in pairs)
 
 
 def _same_invocation(parent_command: str, own_command: str) -> bool:

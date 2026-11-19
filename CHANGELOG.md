@@ -221,6 +221,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   after 30 minutes, and refreshes the cached count when it finishes. Claude Code's `SessionEnd` and
   `PreCompact` take the same path. The walks are kept in `recall-memory-index.json` beside the hook
   config.
+- Codex's `SessionEnd` hook now fits within the 3 s Codex allows it (#1454). Codex clamps a
+  `SessionEnd` timeout to at most 3 s, so the 15 s RE-call wrote was never honoured. On a
+  PostgreSQL store the hook now only closes this session's MCP transports and starts the detached
+  `python -m recall_hooks index-memory`, which does the walk, any index and the count refresh. On
+  Windows, MCP cleanup reads the process table through the Win32 API instead of PowerShell (1.2 to
+  2.4 s before, about 0.1 s now). The generated Codex `SessionEnd` timeout is 3 s.
 - Plain `recall setup` scaffolded `memory/` but wrote no `memory_root` into the hook config, so
   prompt-time search read the client's own project memory folder instead (#1426). When the
   scaffold is accepted, setup now writes that folder for Claude Code and Codex.

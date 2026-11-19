@@ -71,14 +71,26 @@ def test_codex_plugin_bundle_has_manifest_hooks_and_shared_skills() -> None:
     session_end = json.loads((root / "hooks" / "hooks.json").read_text(encoding="utf-8"))[
         "hooks"
     ]["SessionEnd"][0]["hooks"][0]
-    assert session_end["timeout"] == 15
+    from recall.codex import SESSION_END_TIMEOUT_SECONDS
+
+    assert session_end["timeout"] == SESSION_END_TIMEOUT_SECONDS
 
 
-def test_codex_generated_session_end_has_time_for_mcp_teardown() -> None:
+#: `SESSION_END_MAX_TIMEOUT_SEC` in openai/codex `codex-rs/hooks/src/events/session_end.rs`.
+CODEX_SESSION_END_CAP_SECONDS = 3
+
+
+def test_codex_generated_session_end_asks_for_no_more_than_codex_allows() -> None:
+    """Invariant: the generated SessionEnd timeout is one Codex honours, not one it clamps.
+
+    Codex clamps a SessionEnd timeout to 1 to 3 s and logs a warning, so the 15 s written before
+    #1454 promised the hook a budget it never had. Red proof (2026-11-20):
+    `SESSION_END_TIMEOUT_SECONDS = 15` fails the first assertion.
+    """
     from recall.codex import SESSION_END_TIMEOUT_SECONDS, _hook_entries
 
     session_end = _hook_entries("python-test")["SessionEnd"][0]["hooks"][0]
-    assert SESSION_END_TIMEOUT_SECONDS == 15
+    assert 1 <= SESSION_END_TIMEOUT_SECONDS <= CODEX_SESSION_END_CAP_SECONDS
     assert session_end["timeout"] == SESSION_END_TIMEOUT_SECONDS
 
 
