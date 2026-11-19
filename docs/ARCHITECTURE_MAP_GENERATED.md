@@ -569,7 +569,7 @@ They are observations, not automatic failures.
 | `recall._frozen` | 0 | 0 |
 | `recall._voyage_http` | 1 | 1 |
 | `recall.anchors` | 0 | 0 |
-| `recall.answer_provider` | 2 | 8 |
+| `recall.answer_provider` | 3 | 8 |
 | `recall.atomic_rescue` | 5 | 18 |
 | `recall.atomic_view_store` | 1 | 1 |
 | `recall.atomic_write` | 0 | 0 |
