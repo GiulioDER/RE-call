@@ -13,7 +13,7 @@ import shutil
 import sys
 from contextlib import contextmanager
 from pathlib import Path
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from typing import Any, Callable, cast
 
 from recall.atomic_write import atomic_write_bytes
@@ -173,8 +173,12 @@ def _write_hook_config(
     prompt_time: bool,
     write_time_connection_mode: str = "relay",
     project_root: Path | None = None,
+    server_env: Mapping[str, str] | None = None,
 ) -> None:
-    """The same document the Claude Code installer writes, at the Codex integration path."""
+    """The same document the Claude Code installer writes, at the Codex integration path.
+
+    Plus `server_env`, which only the Codex launcher reads (`recall_mcp.codex_server`): the
+    environment the Claude Code installer puts in that client's server registration instead."""
     from recall.claude_code import hook_config_document
 
     destination = codex_hook_config_path()
@@ -190,6 +194,8 @@ def _write_hook_config(
         project_root=project_root,
         prompt_time=prompt_time,
     )
+    if server_env:
+        document["server_env"] = dict(server_env)
     atomic_write_bytes(destination, (json.dumps(document, indent=2) + "\n").encode("utf-8"))
     try:
         destination.chmod(0o600)
@@ -286,6 +292,7 @@ def install_codex_integration(
     hooks_path: Path | None = None,
     marketplace_path: Path | None = None,
     plugin_destination: Path | None = None,
+    server_env: Mapping[str, str] | None = None,
     print_fn: Callable[..., None] = print,
 ) -> None:
     """Install the plugin, personal marketplace entry, shared config, and Codex hooks.
@@ -315,6 +322,7 @@ def install_codex_integration(
             prompt_time=prompt_time,
             write_time_connection_mode=write_time_connection_mode,
             project_root=root,
+            server_env=server_env,
         )
         target.parent.mkdir(parents=True, exist_ok=True)
         settings: dict[str, Any] = {}

@@ -29,13 +29,25 @@ def main() -> int:
     if not isinstance(document, dict) or not str(document.get("dsn", "")).strip():
         print(f"recall-codex-mcp: {path} has no usable dsn", file=sys.stderr)
         return 2
+    # The other choices `recall setup` made for this server (reranking, the reasoning arm, a cloud
+    # embedder's key). The server never reads `.env`, so without this block they never reached it
+    # (issues 1393, 1394). Refused when malformed rather than half applied.
+    server_env = document.get("server_env", {})
+    if not isinstance(server_env, dict) or not all(
+        isinstance(key, str) and isinstance(value, str) for key, value in server_env.items()
+    ):
+        print(f"recall-codex-mcp: {path} has a server_env that is not an object of strings", file=sys.stderr)
+        return 2
     # The installer-owned file is the source of truth. Codex inherits the user's environment, which
     # may contain stale RECALL_* values from another project; set these explicitly or the server can
     # silently serve the wrong corpus.
-    keys = ("RECALL_SERVING_DSN", "RECALL_TENANT", "RECALL_EMBEDDER", "RECALL_TABLE", "RECALL_TRANSPORT")
+    core = ("RECALL_SERVING_DSN", "RECALL_TENANT", "RECALL_EMBEDDER", "RECALL_TABLE", "RECALL_TRANSPORT")
+    keys = tuple(dict.fromkeys((*server_env, *core)))
     previous = {key: os.environ.get(key) for key in keys}
     previous_mark = os.environ.get("RECALL_MCP_CLIENT")
     try:
+        # Before the five keys below, so `server_env` cannot redirect the corpus.
+        os.environ.update(server_env)
         os.environ["RECALL_SERVING_DSN"] = str(document["dsn"])
         os.environ["RECALL_TENANT"] = str(document.get("tenant", "default"))
         os.environ["RECALL_EMBEDDER"] = str(document.get("embedder", "fastembed"))

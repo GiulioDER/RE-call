@@ -11,7 +11,7 @@ import urllib.request
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
-from typing import Callable, Literal, Sequence
+from typing import Callable, Literal, Mapping, Sequence
 
 from recall._env import _unquote, refuse_removed_entailment
 from recall.calibration import Calibration, from_samples, save
@@ -77,6 +77,21 @@ SERVER_SETTING_KEYS = (
     "OPENAI_API_KEY",
     "OPENROUTER_API_KEY",
 )
+
+
+
+def _server_settings(values: Mapping[str, str]) -> dict[str, str]:
+    """The `SERVER_SETTING_KEYS` values to hand a registered server, Claude Code's or Codex's.
+
+    "0" is left out with the empty values: unset already means off, and an explicit
+    RECALL_RERANK=0 conflicts with a RECALL_RETRIEVAL_PROFILE the client exports.
+    """
+    return {
+        key: values[key]
+        for key in SERVER_SETTING_KEYS
+        if values.get(key) not in (None, "", "0")
+    }
+
 
 DEFAULT_CALIBRATION_PATH = Path("calibration.json")
 MODEL_DOWNLOAD_FLOOR_BYTES = 1_500_000_000
@@ -1351,13 +1366,7 @@ def run_setup_wizard(
                 dsn=dsn,
                 embedder=embedder.value,
                 table=table or DEFAULT_TABLE,
-                # "0" is left out with the empty values: unset already means off, and an explicit
-                # RECALL_RERANK=0 conflicts with a RECALL_RETRIEVAL_PROFILE the client exports.
-                settings={
-                    key: values[key]
-                    for key in SERVER_SETTING_KEYS
-                    if values.get(key) not in (None, "", "0")
-                },
+                settings=_server_settings(values),
                 project_root=project_root,
                 print_fn=print_fn,
             )
@@ -1395,6 +1404,7 @@ def run_setup_wizard(
                 write_time=write_time_requested,
                 prompt_time=prompt_time_requested,
                 project_root=project_root,
+                server_env=_server_settings(values),
                 print_fn=print_fn,
             )
             print_fn(
