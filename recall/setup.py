@@ -62,6 +62,22 @@ LOCAL_API_KEY = "unused-local-key"
 #: string cannot collide with a real model id, so it needs no separate flag on `Choice`.
 MANUAL_MODEL = ""
 
+#: The `.env` keys the registered MCP server also needs. The server never reads `.env`, so each
+#: of these is copied into its registration as well; left only in `.env`, reranking and the
+#: reasoning arm never ran there and a cloud embedder had no key (issues 1393, 1394).
+SERVER_SETTING_KEYS = (
+    "RECALL_RERANK",
+    "RECALL_RERANK_MODEL",
+    "RECALL_RERANK_REVISION",
+    "RECALL_REASONING_EXPANSION",
+    "RECALL_REASONING_EXPANSION_MODEL",
+    "RECALL_REASONING_EXPANSION_BASE_URL",
+    "RECALL_REASONING_EXPANSION_API_KEY",
+    "VOYAGE_API_KEY",
+    "OPENAI_API_KEY",
+    "OPENROUTER_API_KEY",
+)
+
 DEFAULT_CALIBRATION_PATH = Path("calibration.json")
 MODEL_DOWNLOAD_FLOOR_BYTES = 1_500_000_000
 CLAUDE_MD_BEGIN = "<!-- recall setup begin -->"
@@ -478,7 +494,12 @@ def reranker_choices(
         choices.append(
             Choice(
                 label="bge reranker",
-                value="RECALL_RERANK=1;RECALL_RERANK_MODEL=BAAI/bge-reranker-base",
+                # With its revision: the server refuses an unpinned reranker model. This is the
+                # revision the LoCoMo arms were measured with (`scripts/run_locomo_arms.sh`).
+                value=(
+                    "RECALL_RERANK=1;RECALL_RERANK_MODEL=BAAI/bge-reranker-base;"
+                    "RECALL_RERANK_REVISION=2cfc18c9415c912f9d8155881c133215df768a70"
+                ),
                 description="Heavier local reranker, available if you want to try it",
                 available=runnable and shortfall is None,
                 unavailable_note=bge_note,
@@ -1330,6 +1351,13 @@ def run_setup_wizard(
                 dsn=dsn,
                 embedder=embedder.value,
                 table=table or DEFAULT_TABLE,
+                # "0" is left out with the empty values: unset already means off, and an explicit
+                # RECALL_RERANK=0 conflicts with a RECALL_RETRIEVAL_PROFILE the client exports.
+                settings={
+                    key: values[key]
+                    for key in SERVER_SETTING_KEYS
+                    if values.get(key) not in (None, "", "0")
+                },
                 project_root=project_root,
                 print_fn=print_fn,
             )

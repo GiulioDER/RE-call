@@ -62,7 +62,7 @@ import sys
 from recall.db_constants import DEFAULT_TABLE
 from recall.dsn_security import redacted_dsn
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Mapping
 
 from recall.atomic_write import atomic_write_bytes
 from recall_hooks import (
@@ -187,8 +187,14 @@ def server_env(
     trust_mode: str,
     table: str = DEFAULT_TABLE,
     embedder: str = "",
+    settings: Mapping[str, str] | None = None,
 ) -> dict[str, str]:
     """The environment the MCP server is launched with.
+
+    `settings` carries the other choices `recall setup` made for this server (reranking, the
+    reasoning arm, a cloud embedder's API key). The server never reads `.env`, so a choice left
+    only there is a choice the server never sees (issues 1393, 1394). The five keys above it are
+    set last, so a setting cannot redirect the DSN, tenant, trust mode, table or embedder.
 
     `RECALL_TRUST_MODE` is not optional at install time and leaving it out is the single most
     likely way for a correct installation to look broken. A client merges this block over its own
@@ -200,6 +206,7 @@ def server_env(
     calibration is the upgrade, not a footnote.
     """
     env = {
+        **(settings or {}),
         "RECALL_SERVING_DSN": dsn,
         "RECALL_TENANT": tenant,
         "RECALL_TRUST_MODE": trust_mode,
@@ -224,6 +231,7 @@ def register_mcp_server(
     trust_mode: str = "development",
     table: str = DEFAULT_TABLE,
     embedder: str = "",
+    settings: Mapping[str, str] | None = None,
     project_root: Path | None = None,
     python_executable: str | None = None,
     print_fn: Callable[..., None] = print,
@@ -261,6 +269,7 @@ def register_mcp_server(
                 trust_mode=trust_mode,
                 table=table,
                 embedder=embedder,
+                settings=settings,
             ),
             rationale=(
                 "registered by `recall setup` for this project, at local scope so the tenant's "
