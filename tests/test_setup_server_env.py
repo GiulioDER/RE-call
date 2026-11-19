@@ -325,3 +325,29 @@ def test_a_malformed_codex_server_env_is_refused(
 
     assert status == 2
     assert env == {}, "the server must not start"
+
+
+def test_the_codex_server_gets_the_trust_mode_the_claude_server_gets(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Issue 1427. Setup's fresh corpus is uncalibrated, which a strict server refuses with
+    `INDEX_NOT_READY`, so setup registers the Claude Code server under `development`. The Codex
+    server it wires got no trust mode and so ran strict, refusing the corpus Claude Code serves.
+
+    Red proof, 2026-11-19, on the test host against `2e546bec1`: failed on the `strict` assertion,
+    the Codex launcher's environment resolving to the strict default."""
+    from recall.trust_policy import TrustPolicy
+
+    monkeypatch.delenv("RECALL_TRUST_MODE", raising=False)
+    codex_home = tmp_path / "codex"
+    claude_env, _ = _registered_env(
+        tmp_path, monkeypatch,
+        security="y", embedder="fastembed", reranker="none", reasoning=False,
+        codex_home=codex_home,
+    )
+
+    status, codex_env = _codex_server_env(monkeypatch, codex_home / "re-call" / "recall-hook.json")
+
+    assert status == 0
+    assert TrustPolicy.from_env(claude_env).strict is False
+    assert TrustPolicy.from_env(codex_env).strict is False, codex_env.get("RECALL_TRUST_MODE")
