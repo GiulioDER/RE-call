@@ -97,6 +97,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ### Changed
 
+- Two documented settings that nothing applied are no longer offered (#1406, #1409).
+  `RECALL_REASONING_MODEL` is gone from `.env.example` and the environment reference; with
+  `RECALL_REASONING_EXPANSION` on and no `RECALL_REASONING_EXPANSION_MODEL`, a config that still
+  sets it now refuses with a message saying it is no longer read, rather than only saying a model
+  is missing. It is not used as a fallback, because older setup files wrote it for another
+  reasoning arm. `RECALL_MULTIMODAL_MAX_MEDIA_BYTES`, `RECALL_MULTIMODAL_MAX_RESPONSE_BYTES` and
+  `RECALL_MULTIMODAL_MAX_ITEMS` are no longer read or validated, so an out of range value no longer
+  refuses startup; the 30 MiB module bounds still apply, and `MultimodalTenantConfig` loses its
+  three `max_*` fields.
 - With the supersession arbiter on (`RECALL_SUPERSESSION_ARBITER=1`), `recall rewrite` and the
   dashboard review page find their candidate memo pairs 9 to 24 times faster, with identical
   results: on synthetic corpora of 500, 1,000 and 2,000 memos, 7 s, 31 s and 133 s became 0.8 s,

@@ -16,12 +16,7 @@ from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Any, Literal, Protocol
 
-from recall.multimodal import (
-    DEFAULT_MAX_ITEMS,
-    DEFAULT_MAX_MEDIA_BYTES,
-    DEFAULT_MAX_RESPONSE_BYTES,
-    MultimodalTenantConfig,
-)
+from recall.multimodal import MultimodalTenantConfig
 from recall.ops.secrets import aws_region
 from recall.ops.secret_mapping import (  # noqa: F401  # re-exported
     SECRET_DESTINATIONS,
@@ -136,9 +131,6 @@ ENVIRONMENT_SCHEMA: tuple[EnvironmentSpec, ...] = (
     EnvironmentSpec("RECALL_MULTIMODAL_TENANT", "Multimodal", "fixed multimodal tenant", "re-call-multimodal"),
     EnvironmentSpec("RECALL_MULTIMODAL_EMBED_PROFILE", "Multimodal", "fixed multimodal embedding profile", "voyage-multimodal-3.5-v1"),
     EnvironmentSpec("RECALL_MULTIMODAL_OBJECT_ROOT", "Multimodal", "controlled original media object root"),
-    EnvironmentSpec("RECALL_MULTIMODAL_MAX_MEDIA_BYTES", "Multimodal", "validated admission bound; reserved, no serving path applies it yet", str(DEFAULT_MAX_MEDIA_BYTES)),
-    EnvironmentSpec("RECALL_MULTIMODAL_MAX_RESPONSE_BYTES", "Multimodal", "validated response bound; reserved, no serving path applies it yet", str(DEFAULT_MAX_RESPONSE_BYTES)),
-    EnvironmentSpec("RECALL_MULTIMODAL_MAX_ITEMS", "Multimodal", "validated item bound; reserved, not enforced yet", str(DEFAULT_MAX_ITEMS)),
     EnvironmentSpec("RECALL_TRANSPORT", "MCP", "stdio, sse, or streamable-http", "stdio"),
     EnvironmentSpec("RECALL_HOST", "MCP", "HTTP bind host", "127.0.0.1"),
     EnvironmentSpec("RECALL_PORT", "MCP", "HTTP bind port", "8000"),
@@ -195,7 +187,6 @@ ENVIRONMENT_SCHEMA: tuple[EnvironmentSpec, ...] = (
     EnvironmentSpec("RECALL_REASONING_EXPANSION_EFFORT", "Reasoning", "reasoning expansion effort", "minimal"),
     EnvironmentSpec("RECALL_REASONING_EXPANSION_REVISION", "Reasoning", "reasoning expansion revision", "unpinned"),
     EnvironmentSpec("RECALL_REASONING_EXPANSION_COST_PER_1K_TOKENS", "Reasoning", "reasoning cost metadata"),
-    EnvironmentSpec("RECALL_REASONING_MODEL", "Reasoning", "legacy reasoning model"),
     EnvironmentSpec("RECALL_REASONING_BASE_URL", "Reasoning", "legacy reasoning base URL"),
     EnvironmentSpec("RECALL_REASONING_API_KEY", "Reasoning", "legacy reasoning API key", secret=True),
     EnvironmentSpec("RECALL_REASONING_TIMEOUT", "Reasoning", "legacy reasoning timeout", "30"),
@@ -443,9 +434,6 @@ def _validate_runtime_options(source: Mapping[str, str]) -> None:
         ("RECALL_REDIS_MAX_CONNECTIONS", DEFAULT_REDIS_MAX_CONNECTIONS),
         ("RECALL_RERANK_BATCH_SIZE", 4),
         ("RECALL_RERANK_THREADS", 1),
-        ("RECALL_MULTIMODAL_MAX_MEDIA_BYTES", DEFAULT_MAX_MEDIA_BYTES),
-        ("RECALL_MULTIMODAL_MAX_RESPONSE_BYTES", DEFAULT_MAX_RESPONSE_BYTES),
-        ("RECALL_MULTIMODAL_MAX_ITEMS", DEFAULT_MAX_ITEMS),
     ):
         _int(source, name, default_int, minimum=1)
     for name, default_float in (

@@ -487,10 +487,6 @@ RECALL_MULTIMODAL_ENABLED=0
 RECALL_MULTIMODAL_TENANT=re-call-multimodal
 RECALL_MULTIMODAL_EMBED_PROFILE=voyage-multimodal-3.5-v1
 RECALL_MULTIMODAL_OBJECT_ROOT=
-# The three bounds below are validated but reserved: no serving path applies them yet.
-RECALL_MULTIMODAL_MAX_MEDIA_BYTES=31457280
-RECALL_MULTIMODAL_MAX_RESPONSE_BYTES=31457280
-RECALL_MULTIMODAL_MAX_ITEMS=20
 
 # `RECALL_EMBED_PROFILE` is consumed consistently by the CLI, MCP service, setup, calibration,
 # and generation builders. Selecting a section profile changes the passage sent to the embedder

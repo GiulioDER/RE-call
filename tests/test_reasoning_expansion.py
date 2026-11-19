@@ -178,6 +178,28 @@ def test_expansion_provider_is_off_by_default_and_requires_cheap_model_settings(
         )
 
 
+def test_a_legacy_reasoning_model_is_named_rather_than_used() -> None:
+    """#1406: nothing reads `RECALL_REASONING_MODEL`, so a config that still sets it with
+    expansion on must be told why its model was ignored, not only that a model is missing.
+
+    The legacy name is deliberately not a fallback: older setup files wrote it for the generic
+    reasoning arm, so a model chosen for another purpose would silently become the expansion
+    model and spend under it.
+
+    Red proof (2026-11-19, against master 63b7c3ea2, where ``resolve_expansion_provider`` raised
+    only "RECALL_REASONING_EXPANSION_MODEL is required when expansion is enabled"): this node
+    failed with "Regex pattern did not match".
+    """
+    with pytest.raises(ValueError, match=r"RECALL_REASONING_MODEL is no longer read.*_EXPANSION_MODEL"):
+        resolve_expansion_provider(
+            {
+                "RECALL_REASONING_EXPANSION": "1",
+                "RECALL_REASONING_MODEL": "cheap/old-model",
+                "RECALL_REASONING_API_KEY": "key",
+            }
+        )
+
+
 def test_expansion_flag_tolerates_surrounding_whitespace() -> None:
     """A padded boolean (a trailing space from a systemd EnvironmentFile or a Windows `set`) must
     read as its stripped value, matching the sibling RECALL_REASONING_ANSWER_ENABLED reader."""
