@@ -138,8 +138,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   server therefore never reranked, never had the reasoning arm, and started a Voyage or
   OpenAI-compatible embedder without its key unless the shell happened to export it. Setup now
   also writes those values into the server's registration in the Claude Code configuration, so
-  the API key the chosen embedder reads is stored there too, beside the DSN; keys entered for
-  anything else are not copied. The "bge reranker" choice now writes
+  the keys you enter are stored there too, beside the DSN. The "bge reranker" choice now writes
   its pinned revision, without which the server refuses it. Re-run `recall setup` to update an
   existing registration.
 - `RECALL_REASONING_ANSWER_MAX_CALLS_PER_MIN`, documented as the only bound on paid answer calls,

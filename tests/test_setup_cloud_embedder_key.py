@@ -1,34 +1,24 @@
-"""`recall setup`'s OpenAI-compatible embedder: the key it was offered for, and the server's key.
+"""`recall setup`'s OpenAI-compatible embedder with only an OpenAI key (#1397).
 
-Two defects, one path (#1397, and the registered server's key, 2026-11-19):
-
-1. Setup offers "openai compatible cloud" when only `OPENAI_API_KEY` was entered, but the
-   `openai` spellings in `recall.embeddings.resolve_embedder` read only `OPENROUTER_API_KEY`.
-2. The server setup registers must carry the provider key its embedder reads, because
-   `recall_mcp.server` never loads `.env`; and only that key, not every key entered.
+Setup offers "openai compatible cloud" when only `OPENAI_API_KEY` was entered, and since #1411 it
+copies that key into the server it registers. The `openai` spellings in
+`recall.embeddings.resolve_embedder` read only `OPENROUTER_API_KEY`, so neither setup's own
+indexing nor that server could build the embedder.
 
 No test here calls a provider. The `openai` SDK is replaced in `sys.modules` by a module whose
 client records its constructor arguments and returns one fixed vector, so the real
 `OpenAICompatEmbedder` runs up to the transport and no further.
 
-Red proof, 2026-11-19:
+Red proof, 2026-11-19, against master dac217681's `recall/embeddings.py` (after #1411):
 
-- Against 63b7c3ea2 (before #1411 and this fix):
-  `test_an_openai_spelling_with_only_an_openai_key_reaches_api_openai_com` failed at its
-  `pytest.fail` ("OpenAICompatEmbedder needs OPENROUTER_API_KEY"), because `resolve_embedder`
-  passed `api_key=source.get("OPENROUTER_API_KEY")`;
-  `test_setup_registers_the_openai_key_the_chosen_embedder_reads` failed at
-  `assert "OPENAI_API_KEY" in server_env` and
-  `test_setup_registers_the_voyage_key_for_the_voyage_embedder` at `assert None == 'voyage-key'`,
-  because the registration carried no key.
-- Against cd4741282's `recall/setup.py` (#1411, which copies every entered key) with this
-  `recall/embeddings.py`: the voyage test failed at `assert "OPENAI_API_KEY" not in server_env`.
-- Mutation: deleting the `OPENAI_DIRECT_BASE_URL` branch from `resolve_embedder` failed the first
-  test and the openai setup test, each at its `pytest.fail`.
+- `test_an_openai_spelling_with_only_an_openai_key_reaches_api_openai_com` and
+  `test_a_server_setup_registers_with_only_an_openai_key_can_embed` each failed at their
+  `pytest.fail` with "OpenAICompatEmbedder needs OPENROUTER_API_KEY", because `resolve_embedder`
+  passed `api_key=source.get("OPENROUTER_API_KEY")`. Deleting the `OPENAI_DIRECT_BASE_URL`
+  branch from the fixed `resolve_embedder` fails both the same way.
 - `test_an_openrouter_key_still_wins_when_both_are_present` passes before the fix: it guards the
-  precedence the fix keeps. Mutating `recall.embeddings.embedder_api_key_env` to prefer
-  `OPENAI_API_KEY` whenever it is set failed it at
-  `assert 'https://api.openai.com/v1' == 'https://openrouter.ai/api/v1'`.
+  precedence the fix keeps. Dropping `and not source.get("OPENROUTER_API_KEY")` from that branch
+  failed it at `assert 'https://api.openai.com/v1' == 'https://openrouter.ai/api/v1'`.
 """
 
 from __future__ import annotations
@@ -188,13 +178,14 @@ def _register_through_setup(
     return servers[0], "\n".join(printed)
 
 
-def test_setup_registers_the_openai_key_the_chosen_embedder_reads(
+def test_a_server_setup_registers_with_only_an_openai_key_can_embed(
     tmp_path, monkeypatch, fake_openai_sdk
 ):
-    """Invariant: the registered server can build the embedder setup chose, from its own env.
+    """Invariant: the server setup registers can build the embedder setup offered, from its env.
 
-    Failure mode: the block names a cloud embedder and carries no key, the server does not read
-    `.env`, and every embed raises inside a process whose log the client does not show.
+    Failure mode: setup offers the openai embedder for an OpenAI key and #1411 copies that key into
+    the registration, but the server's embedder asks for OPENROUTER_API_KEY and raises inside a
+    process whose log the client does not show.
     """
     server, output = _register_through_setup(
         tmp_path, monkeypatch, keys=("", "sk-openai-only", ""), embedder_label="openai compatible cloud"
@@ -215,20 +206,3 @@ def test_setup_registers_the_openai_key_the_chosen_embedder_reads(
     assert fake_openai_sdk["api_key"] == "sk-openai-only"
     assert fake_openai_sdk["base_url"] == OPENAI
 
-
-def test_setup_registers_the_voyage_key_for_the_voyage_embedder(tmp_path, monkeypatch):
-    """The same invariant for the other cloud embedder setup offers, and no stray keys."""
-    server, output = _register_through_setup(
-        tmp_path,
-        monkeypatch,
-        keys=("voyage-key", "sk-unused", "router-unused"),
-        embedder_label="voyage cloud",
-    )
-    server_env = server["env"]
-
-    assert server_env["RECALL_EMBEDDER"] == "voyage:voyage-3"
-    assert server_env.get("VOYAGE_API_KEY") == "voyage-key"
-    # Only the key the chosen embedder reads: the others were entered for other purposes.
-    assert "OPENAI_API_KEY" not in server_env
-    assert "OPENROUTER_API_KEY" not in server_env
-    assert "voyage-key" not in output

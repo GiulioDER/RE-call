@@ -126,8 +126,8 @@ The wizard can:
 4. fit and publish calibration when you provide labeled queries
 5. register MCP servers and offer memory scaffolding for the selected agent
 
-With a cloud embedder, the Claude Code registration carries that embedder's API key in its
-environment block, because the server does not read `.env`.
+The provider API keys you enter are also written into the Claude Code registration's environment
+block, because the server does not read `.env`.
 
 When asked whether to calibrate, use queries labeled against the same corpus being installed. A
 calibration made from the bundled sample corpus demonstrates the mechanism but is not valid for
