@@ -1351,7 +1351,13 @@ def run_setup_wizard(
                 dsn=dsn,
                 embedder=embedder.value,
                 table=table or DEFAULT_TABLE,
-                settings={key: values[key] for key in SERVER_SETTING_KEYS if values.get(key)},
+                # "0" is left out with the empty values: unset already means off, and an explicit
+                # RECALL_RERANK=0 conflicts with a RECALL_RETRIEVAL_PROFILE the client exports.
+                settings={
+                    key: values[key]
+                    for key in SERVER_SETTING_KEYS
+                    if values.get(key) not in (None, "", "0")
+                },
                 project_root=project_root,
                 print_fn=print_fn,
             )

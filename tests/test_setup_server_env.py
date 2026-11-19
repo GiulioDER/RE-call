@@ -147,6 +147,11 @@ def test_declined_choices_reach_the_registered_server_as_off(
 
     assert resolve_reranker(env) is None
     assert resolve_expansion_provider(env) is None
+    # Off is left unset rather than written as "0": an explicit RECALL_RERANK=0 makes the server
+    # refuse to start beside a RECALL_RETRIEVAL_PROFILE=quality the client exports.
+    from recall.profiles import resolve_retrieval_profile
+
+    assert resolve_retrieval_profile({**env, "RECALL_RETRIEVAL_PROFILE": "quality"}).name == "quality"
 
 
 def test_a_cloud_embedder_key_reaches_the_registered_server(
