@@ -299,6 +299,9 @@ prior decision. Each has its own switch in `~/.claude/recall-hook.json`, `write_
 `prompt_time.enabled`, and the entry is installed whichever way the flag is set, so switching one
 off survives a later `recall hooks upgrade`.
 
+When `recall setup` scaffolds `memory/`, it writes that folder as the hook config's `memory_root`,
+so prompt-time search reads the memos the scaffolded `CLAUDE.md` tells the agent to write there.
+
 ⚠️ **Only one of the two has a measured benefit, and it did not reach the bar its own
 pre-registration set**: the write-time hook rescued 6 tasks and regressed 1 at p = 0.125 on a
 partial sample. The prompt-time hook has no A/B behind it at all. Both are defaults by decision,

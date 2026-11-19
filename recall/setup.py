@@ -1365,6 +1365,10 @@ def run_setup_wizard(
         except Exception as exc:  # BROAD-CATCH: fail-open
             print_fn(f"Could not seed the corpus: {_safe_error(exc, dsn)}")
 
+    # Prompt-time search reads this folder, the one the scaffolded CLAUDE.md tells the agent to
+    # write to, rather than the client's own project memory folder (#1426).
+    memory_root = memory_dir if scaffold_requested else None
+
     def _run_claude_wiring() -> None:
         try:
             registration = register_mcp_server(
@@ -1389,6 +1393,7 @@ def run_setup_wizard(
                 write_time=write_time_requested,
                 prompt_time=prompt_time_requested,
                 project_root=project_root,
+                memory_root=memory_root,
                 print_fn=print_fn,
             )
             print_fn(
@@ -1410,6 +1415,7 @@ def run_setup_wizard(
                 write_time=write_time_requested,
                 prompt_time=prompt_time_requested,
                 project_root=project_root,
+                memory_root=memory_root,
                 server_env={**_server_settings(values), "RECALL_TRUST_MODE": SETUP_TRUST_MODE},
                 print_fn=print_fn,
             )

@@ -155,6 +155,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ### Fixed
 
+- Plain `recall setup` scaffolded `memory/` but wrote no `memory_root` into the hook config, so
+  prompt-time search read the client's own project memory folder instead (#1426). When the
+  scaffold is accepted, setup now writes that folder for Claude Code and Codex.
 - The write-time hook ("Search memory on every write") searched only the active generation, but
   plain `recall setup` indexes memos into the legacy table, so on a setup-only install it never
   found anything (#1425). With no active generation for the tenant, the hook now searches the
