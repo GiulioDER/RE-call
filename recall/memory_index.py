@@ -29,13 +29,14 @@ def index_memory_directory(
     table: str | None = None,
     env: dict[str, str] | None = None,
     print_fn: Callable[..., None] = print,
-) -> None:
+) -> bool:
+    """Index `memory_dir`. Never raises; returns whether the index ran to completion."""
     if env_is_production(env):
         print_fn(
             f"Skipping auto-index: RECALL_ENV is production. Index {memory_dir} via your "
             "production build pipeline instead."
         )
-        return
+        return False
     try:
         from recall.context import context_policy_for_profile
         from recall.cache import default_cache
@@ -66,5 +67,6 @@ def index_memory_directory(
             f"'python -m recall.cli index {memory_dir}' once the schema is applied for this "
             "embedder's dimension."
         )
-        return
+        return False
     print_fn(f"Indexed {stats.chunks} chunks from {stats.files} files in {memory_dir}")
+    return True
