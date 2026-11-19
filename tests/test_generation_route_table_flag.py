@@ -1,4 +1,4 @@
-"""The global `--table` flag on the generation route: refused, never dropped (issue #ISSUE).
+"""The global `--table` flag on the generation route: refused, never dropped.
 
 Invariant: under `RECALL_INDEX_MODE=generation` every generation is kept in `recall_chunks_v1`,
 so a command that opens the generation store reads or erases that table whatever `--table`
