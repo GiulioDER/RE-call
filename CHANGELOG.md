@@ -141,6 +141,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   enforced again: one budget per process, shared by every answer and proof provider and by both
   backends, debited before the request is sent. `off` removes it; `0`, a negative or a non-number
   is refused naming the variable.
+- Under `RECALL_INDEX_MODE=generation` the global `--table` flag was silently dropped: every
+  generation is kept in `recall_chunks_v1`, so `recall --table scratch forget --yes` erased from
+  the real store, and `withdraw`, `search`, `scopes`, `reasoning` and `records` acted on it too.
+  Those six commands now refuse a table other than `chunks` on the generation route before
+  opening anything, as the MCP server already refused `RECALL_TABLE`. The legacy route honours
+  `--table` as before.
 - `recall setup` refuses the flags it accepted and then ignored, naming each one, instead of
   running without them. Without `--lite` it refuses the global `--embedder` (the interview chooses
   the embedder), `--tenant` other than `default`, and the Lite-only `--memory`, `--store` and

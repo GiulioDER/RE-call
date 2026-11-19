@@ -113,6 +113,8 @@ def _cmd_reasoning(args: argparse.Namespace) -> None:
     calibration = None
 
     route = _runtime_route(args)
+    if (refusal := route.table_refusal(args.table, "recall reasoning")) is not None:
+        raise SystemExit(refusal)
     embedder = _make_embedder(args.embedder)
     from recall.answer_provider import resolve_answer_profile, resolve_answer_provider
     from recall.generation_store import GenerationStore
