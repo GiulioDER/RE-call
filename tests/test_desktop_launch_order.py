@@ -165,7 +165,7 @@ def test_run_app_does_not_build_the_window_before_the_application(
     app_class = _recording_application(events)
 
     class Window:
-        def __init__(self, profile: Any) -> None:
+        def __init__(self, profile: Any, **kwargs: Any) -> None:
             events.append("window")
 
         def show(self) -> None:

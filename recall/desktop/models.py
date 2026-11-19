@@ -35,7 +35,12 @@ class RuntimeProfile:
     dsn: str | None = None
     default_tenant: str = "default"
     shared_profile: str = "user"
-    pinned_version: str | None = None
+    #: The embedder a `LOCAL_DATABASE` server resolves, handed to it as `RECALL_EMBEDDER`. Without
+    #: it the server fell back to its own default (`fastembed`) whatever the database was built
+    #: with. Docker carries the embedder in its compose file and a remote server in its own config.
+    #: There is no `pinned_version`: nothing read or wrote it, so a `runtime.json` that still names
+    #: one loads, and the key is dropped on the next save.
+    embedder: str | None = None
     #: False stops the release checks the app makes by itself (on start and every 6 hours); the
     #: Settings page's "Check for updates" still works. There is no update channel: the check
     #: always reads the latest GitHub release, so a `runtime.json` that still names one loads,
@@ -69,7 +74,7 @@ class RuntimeProfile:
             dsn=value.get("dsn"),
             default_tenant=str(value.get("default_tenant", "default")),
             shared_profile=str(value.get("shared_profile", "user")),
-            pinned_version=value.get("pinned_version"),
+            embedder=value.get("embedder"),
             update_enabled=bool(value.get("update_enabled", True)),
             token_key=value.get("token_key"),
         )

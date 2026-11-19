@@ -26,6 +26,9 @@ def _installer(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, **kwargs: Any) -
     from recall.desktop.install_ui import InstallerWindow
 
     QApplication.instance() or QApplication([])
+    # A completed install into an existing database writes the desktop profile, so no test may
+    # reach the real one under %APPDATA%.
+    monkeypatch.setenv("APPDATA", str(tmp_path / "appdata"))
     kwargs.setdefault("default_root", tmp_path / "recall")
     kwargs.setdefault("writer", lambda config, path: path)
     kwargs.setdefault("runner", lambda config, path, progress: None)
@@ -898,3 +901,48 @@ def test_an_unusable_engine_fails_the_selftest_rather_than_being_mentioned(
         "a cache that is present and unusable is a BUNDLE problem, because the bundle supplies the "
         "runtime; reporting it to stderr and exiting 0 is a check that cannot fail"
     )
+
+
+def test_an_existing_database_install_hands_the_desktop_its_database_and_embedder(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """#1429: after an install into an existing database the desktop got neither it nor the embedder.
+
+    Invariant: a completed install with a `dsn` writes the desktop profile, in local database
+    mode with this install's project and embedder, and the server the desktop then starts is
+    handed that embedder. A managed install writes nothing here, because the engine writes its
+    Docker profile itself. Failure mode: the engine hands over a profile only when `data_root`
+    is set, so the desktop kept its old profile, and a server pointed at the database by hand
+    resolved its own default embedder.
+
+    Red proof (2026-11-19, local offscreen Qt): with the `self._hand_over_profile()` call in
+    `InstallerWindow._finished` deleted, this failed in `assert written is not None`.
+    """
+    from recall.desktop.models import RuntimeMode
+    from recall.desktop.profiles import load_profile, profile_path
+    from recall.desktop.runtime import create_runtime
+
+    class _Report:
+        corpora: tuple[object, ...] = ()
+
+    window = _installer(monkeypatch, tmp_path)
+    try:
+        window.config = {"project": "acme", "embedder": "fastembed", "data_root": str(tmp_path / "d")}
+        window._finished(_Report())
+        assert load_profile(profile_path()) is None, "a managed install leaves this to the engine"
+
+        window.config = {
+            "project": "acme",
+            "embedder": "voyage:voyage-4",
+            "dsn": "postgresql://u:p@127.0.0.1:5432/r",
+        }
+        window._finished(_Report())
+    finally:
+        window.close()
+
+    written = load_profile(profile_path())
+    assert written is not None
+    assert written.mode is RuntimeMode.LOCAL_DATABASE
+    assert (written.dsn, written.default_tenant) == ("postgresql://u:p@127.0.0.1:5432/r", "acme")
+    assert create_runtime(written)._env_for("acme-docs")["RECALL_EMBEDDER"] == "voyage:voyage-4"  # type: ignore[attr-defined]
+    assert "desktop:" in window.log.toPlainText()

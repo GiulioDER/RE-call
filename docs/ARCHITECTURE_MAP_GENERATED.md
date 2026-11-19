@@ -25,8 +25,8 @@ Cross package edges: 450
 | 190 | `recall.dashboard.server` |
 | 188 | `recall.cli_commands.setup_wizard` |
 | 184 | `recall.desktop.main` |
-| 180 | `recall.desktop.ui` |
-| 179 | `recall.desktop.main_window` |
+| 183 | `recall.desktop.ui` |
+| 182 | `recall.desktop.main_window` |
 | 177 | `recall.cli_commands.reasoning_cmd` |
 | 175 | `recall.desktop.install_ui` |
 | 174 | `recall_mcp.reasoning_api` |
@@ -632,15 +632,15 @@ They are observations, not automatic failures.
 | `recall.derived_block` | 3 | 14 |
 | `recall.desktop` | 1 | 1 |
 | `recall.desktop.github` | 3 | 6 |
-| `recall.desktop.install_ui` | 8 | 175 |
+| `recall.desktop.install_ui` | 10 | 175 |
 | `recall.desktop.jobs` | 0 | 0 |
 | `recall.desktop.main` | 13 | 184 |
-| `recall.desktop.main_window` | 11 | 179 |
+| `recall.desktop.main_window` | 13 | 182 |
 | `recall.desktop.models` | 0 | 0 |
 | `recall.desktop.profiles` | 2 | 2 |
 | `recall.desktop.runtime` | 5 | 45 |
 | `recall.desktop.sources` | 3 | 5 |
-| `recall.desktop.ui` | 3 | 180 |
+| `recall.desktop.ui` | 3 | 183 |
 | `recall.desktop.updates` | 2 | 2 |
 | `recall.desktop.uploads` | 4 | 18 |
 | `recall.doctor` | 15 | 168 |

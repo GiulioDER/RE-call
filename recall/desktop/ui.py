@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 from recall.desktop.models import RuntimeProfile
@@ -80,8 +81,8 @@ def run_window(build_window: Callable[[], Any]) -> int:
     return int(app.exec())
 
 
-def run_app(profile: RuntimeProfile) -> int:
-    """The main desktop window. Unchanged behaviour; the launcher underneath it is now shared."""
+def run_app(profile: RuntimeProfile, profile_path: Path | None = None) -> int:
+    """The main desktop window, saving its settings to `profile_path` (None: the default file)."""
     if QApplication is None:
         raise RuntimeErrorBase('The desktop extra is required. Install with: pip install "recall-rag[desktop]"')
-    return run_window(lambda: MainWindow(profile))
+    return run_window(lambda: MainWindow(profile, profile_path=profile_path))
