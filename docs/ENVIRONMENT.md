@@ -148,6 +148,8 @@ OPENROUTER_API_KEY=
 # RECALL_EMBEDDER=fastembed          # or "hashing" for the fully-offline embedder
 # RECALL_EMBEDDER=gemini-embedding-2 # OpenRouter google/gemini-embedding-2
 # RECALL_EMBEDDER=openrouter:<provider/model>  # any other OpenRouter embedding model
+# RECALL_EMBEDDER=openai:<model>     # OpenRouter with OPENROUTER_API_KEY; api.openai.com with
+#                                    # OPENAI_API_KEY when that is the only one of the two set
 # RECALL_EMBED_DIMENSIONS=1536       # optional for OpenAI-compatible embedders
 # RECALL_EMBEDDER=st-prompted:<hf-id>  # a local model with its published query/document prompts,
 #                                    # pinned in recall/embedding_prompts.py; its own name and

@@ -240,6 +240,11 @@ cloud embedder over the local one, etc.).
 - **`OPENROUTER_API_KEY` and `OPENAI_API_KEY`** are read by `OpenAICompatEmbedder` for OpenRouter or
   other OpenAI-compatible embedding endpoints. They carry the same process-environment exposure as
   `VOYAGE_API_KEY`.
+- **`recall setup` copies the provider keys you enter into the MCP server it registers**
+  (`VOYAGE_API_KEY`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY`), because the server does not read
+  `.env`. They are written to the server's `env` block in the Claude Code configuration file (user
+  level, outside the repository), never to the command line or the printed report. `recall setup
+  --lite` copies the one key a hosted profile names. Anyone who can read that file can read them.
 - **The Postgres DSNs (`RECALL_SERVING_DSN` and `RECALL_MIGRATION_DSN`)** carry passwords in their
   connection strings. The serving credential must not own schema objects or have DDL privileges;
   the migration credential must not be present in the MCP process. `RECALL_DSN` is a deprecated
