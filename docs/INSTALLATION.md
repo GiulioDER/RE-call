@@ -130,7 +130,7 @@ The provider API keys you enter are also written into the Claude Code registrati
 block and, when Codex is wired, into the `server_env` block of Codex's `recall-hook.json`, because
 the server does not read `.env`.
 
-To calibrate, run `recall wizard` with queries labeled against the same corpus being installed. A
+To calibrate, run `recall wizard`, which calibrates against the same corpus being installed. A
 calibration made from the bundled sample corpus demonstrates the mechanism but is not valid for
 your own corpus.
 

@@ -233,13 +233,14 @@ def _refuse_ignored_setup_flags(args: argparse.Namespace) -> None:
             refuse("--tenant", f"a Lite store has one tenant, {DEFAULT_TENANT!r}")
         if args.table != DEFAULT_TABLE:
             refuse("--table", "a Lite store has one table; use --store <file> instead")
-        # Typed flags only: both default from the environment (CCA BUG-003).
-        for flag, given in (
-            ("--serving-dsn", getattr(args, "dsn_given", False)),
-            ("--migration-dsn", getattr(args, "migration_dsn_given", False)),
-        ):
-            if given:
-                refuse(flag, "Lite builds the store named by --store <file>, not a DSN")
+        # A typed sqlite:/// DSN names a Lite store, and Lite builds the one --store names, so it
+        # would be ignored (CCA BUG-003). Typed only, since the flag defaults from the
+        # environment; a PostgreSQL DSN is credentials Lite does not use, and is ignored on
+        # purpose (tests/test_lite_setup_boundaries.py).
+        from recall.backends import is_lite_dsn
+
+        if getattr(args, "dsn_given", False) and is_lite_dsn(args.dsn):
+            refuse("--serving-dsn", "Lite builds the store named by --store <file>; use that")
         return
     if getattr(args, "embedder_given", False):
         refuse("--embedder", "the interview asks which embedder to use")

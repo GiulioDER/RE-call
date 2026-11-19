@@ -190,8 +190,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   `--no-register`. A tenant was only half applied: the scaffolded memory and the Codex wiring used
   it, while the seed, the Claude Code server and its hooks used `default`, so the registered server
   could not see that memory. `recall setup --lite` refuses `--tenant` and `--table` other than their
-  defaults, since a Lite store has one tenant and one table, and a typed `--serving-dsn` (`--dsn`)
-  or `--migration-dsn`, since it builds the store `--store` names; use `--store` for another file.
+  defaults, since a Lite store has one tenant and one table, and a typed `sqlite:///` DSN in
+  `--serving-dsn` (`--dsn`), since it builds the store `--store` names; use `--store` for another
+  file. A PostgreSQL DSN it does not use is still accepted.
   `--embedder` with `--lite` and `--table` without it are applied as before.
 - A memo whose `recall_graph` held a `NaN` or `Infinity` failed the whole Lite refresh with
   "malformed JSON" on SQLite before 3.42 (Debian 12 ships 3.40, Ubuntu 22.04 3.37), and the same
