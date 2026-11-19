@@ -128,12 +128,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ### Fixed
 
+- `recall setup` offered the OpenAI-compatible cloud embedder when only `OPENAI_API_KEY` was
+  entered, and that embedder then refused to start for want of `OPENROUTER_API_KEY` (#1397). The
+  `openai` and `openai:<model>` spellings now use `OPENAI_API_KEY` against `api.openai.com` when it
+  is the only one of the two keys set; with `OPENROUTER_API_KEY` set they go to OpenRouter, as
+  before. Bare `openai` there means OpenAI's `text-embedding-3-small`.
 - `recall setup` saved its reranking and reasoning-arm answers, and the API keys a cloud embedder
   needs, only to `./.env`, which the MCP server it registers never reads (#1393, #1394). The
   server therefore never reranked, never had the reasoning arm, and started a Voyage or
   OpenAI-compatible embedder without its key unless the shell happened to export it. Setup now
   also writes those values into the server's registration in the Claude Code configuration, so
-  the keys you enter are stored there too, beside the DSN. The "bge reranker" choice now writes
+  the API key the chosen embedder reads is stored there too, beside the DSN; keys entered for
+  anything else are not copied. The "bge reranker" choice now writes
   its pinned revision, without which the server refuses it. Re-run `recall setup` to update an
   existing registration.
 - `RECALL_REASONING_ANSWER_MAX_CALLS_PER_MIN`, documented as the only bound on paid answer calls,

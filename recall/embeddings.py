@@ -109,6 +109,31 @@ def require_multimodal_enabled(env: Mapping[str, str]) -> None:
         )
 
 
+#: Where the `openai` spellings go when `OPENAI_API_KEY` is the only OpenAI-compatible key.
+OPENAI_DIRECT_BASE_URL = "https://api.openai.com/v1"
+
+
+def embedder_api_key_env(name: str, env: Mapping[str, str]) -> str | None:
+    """The provider key `resolve_embedder(name, env)` reads, or None for a local embedder.
+
+    The one place that decides it, so an installer that copies the key into a server's environment
+    copies the key the server will read. `RECALL_EMBED_PROFILE` is not consulted: a registered
+    profile names its own key (`RegisteredProfile.api_key_env`).
+
+    For `openai` and `openai:<model>`, `OPENROUTER_API_KEY` wins whenever it is set, which is what
+    those spellings always meant; `OPENAI_API_KEY` is used only when it is the one present (#1397).
+    """
+    if name.startswith("voyage"):
+        return "VOYAGE_API_KEY"
+    if name in ("openrouter", "gemini-embedding-2") or name.startswith("openrouter:"):
+        return "OPENROUTER_API_KEY"
+    if name == "openai" or name.startswith("openai:"):
+        if not env.get("OPENROUTER_API_KEY") and env.get("OPENAI_API_KEY"):
+            return "OPENAI_API_KEY"
+        return "OPENROUTER_API_KEY"
+    return None
+
+
 def resolve_embedder(name: str, env: dict[str, str] | None = None) -> Embedder:
     """Build an embedder from a short config string.
 
@@ -214,6 +239,16 @@ def resolve_embedder(name: str, env: dict[str, str] | None = None) -> Embedder:
         return resolve_registered_embedder(
             MULTIMODAL_EMBEDDING_PROFILE,
             {**source, "RECALL_EMBED_PROFILE": MULTIMODAL_EMBEDDING_PROFILE},
+        )
+    if (name == "openai" or name.startswith("openai:")) and (
+        embedder_api_key_env(name, source) == "OPENAI_API_KEY"
+    ):
+        # OpenAI's own model ids carry no `openai/` prefix, unlike OpenRouter's.
+        return OpenAICompatEmbedder(
+            model=name[len("openai:"):] or "text-embedding-3-small",
+            api_key=source.get("OPENAI_API_KEY"),
+            dimensions=_optional_dimensions(source),
+            base_url=OPENAI_DIRECT_BASE_URL,
         )
     if name == "openai":
         return OpenAICompatEmbedder(

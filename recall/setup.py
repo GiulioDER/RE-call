@@ -25,7 +25,7 @@ from recall.claude_code import (
     user_skill_dir,
 )
 from recall.codex import codex_code_detected, install_codex_integration
-from recall.embeddings import resolve_embedder
+from recall.embeddings import embedder_api_key_env, resolve_embedder
 from recall.eval.calibrate import CalibrationReport
 from recall.seed import plan_seed, seed_corpus
 from recall.store import DEFAULT_TABLE
@@ -64,7 +64,8 @@ MANUAL_MODEL = ""
 
 #: The `.env` keys the registered MCP server also needs. The server never reads `.env`, so each
 #: of these is copied into its registration as well; left only in `.env`, reranking and the
-#: reasoning arm never ran there and a cloud embedder had no key (issues 1393, 1394).
+#: reasoning arm never ran there (issues 1393, 1394). A cloud embedder's API key is copied too,
+#: but only the one key that embedder reads (`embedder_api_key_env`), not every key entered.
 SERVER_SETTING_KEYS = (
     "RECALL_RERANK",
     "RECALL_RERANK_MODEL",
@@ -73,9 +74,6 @@ SERVER_SETTING_KEYS = (
     "RECALL_REASONING_EXPANSION_MODEL",
     "RECALL_REASONING_EXPANSION_BASE_URL",
     "RECALL_REASONING_EXPANSION_API_KEY",
-    "VOYAGE_API_KEY",
-    "OPENAI_API_KEY",
-    "OPENROUTER_API_KEY",
 )
 
 DEFAULT_CALIBRATION_PATH = Path("calibration.json")
@@ -1346,18 +1344,21 @@ def run_setup_wizard(
             print_fn(f"Could not seed the corpus: {_safe_error(exc, dsn)}")
 
     def _run_claude_wiring() -> None:
+        # "0" is left out with the empty values: unset already means off, and an explicit
+        # RECALL_RERANK=0 conflicts with a RECALL_RETRIEVAL_PROFILE the client exports.
+        settings = {
+            key: values[key] for key in SERVER_SETTING_KEYS if values.get(key) not in (None, "", "0")
+        }
+        # The server never reads `.env`, so without this a cloud embedder has no key there.
+        key_env = embedder_api_key_env(embedder.value, cloud_keys)
+        if key_env and cloud_keys.get(key_env):
+            settings[key_env] = cloud_keys[key_env]
         try:
             registration = register_mcp_server(
                 dsn=dsn,
                 embedder=embedder.value,
                 table=table or DEFAULT_TABLE,
-                # "0" is left out with the empty values: unset already means off, and an explicit
-                # RECALL_RERANK=0 conflicts with a RECALL_RETRIEVAL_PROFILE the client exports.
-                settings={
-                    key: values[key]
-                    for key in SERVER_SETTING_KEYS
-                    if values.get(key) not in (None, "", "0")
-                },
+                settings=settings,
                 project_root=project_root,
                 print_fn=print_fn,
             )
