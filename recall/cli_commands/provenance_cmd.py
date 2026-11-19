@@ -315,6 +315,13 @@ def _cmd_provenance(args: argparse.Namespace) -> None:
         return
     if args.provenance_cmd != "apply":
         raise SystemExit(f"unknown provenance command {args.provenance_cmd!r}")
+    if args.source_root and not args.sqlite_path:
+        # Only the `--sqlite-path` adapter hashes card sources beneath a root; the Lite and
+        # PostgreSQL paths apply through `apply_fact_memory`, which takes none (#1440).
+        raise SystemExit(
+            "provenance apply: --source-root would be ignored: it applies only with --sqlite-path. "
+            "Nothing was read or changed. Drop --source-root, or add --sqlite-path."
+        )
     claim_payload = json.loads(Path(args.claim).read_text(encoding="utf-8"))
     cards = _read_cards(args.cards)
     claim = AtomicFact.from_payload(claim_payload)

@@ -598,7 +598,7 @@ They are observations, not automatic failures.
 | `recall.cli_commands.graph_cmd` | 11 | 142 |
 | `recall.cli_commands.idempotency_cmd` | 2 | 40 |
 | `recall.cli_commands.index_search` | 30 | 155 |
-| `recall.cli_commands.lint_check` | 7 | 146 |
+| `recall.cli_commands.lint_check` | 8 | 146 |
 | `recall.cli_commands.lite_cmd` | 9 | 169 |
 | `recall.cli_commands.manifest_cmd` | 4 | 142 |
 | `recall.cli_commands.provenance_cmd` | 16 | 158 |

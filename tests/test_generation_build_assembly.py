@@ -290,9 +290,10 @@ def test_the_text_chunker_records_its_name_version_and_both_parameters(
 def test_the_code_chunker_records_no_overlap(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """`chunk_code` takes no overlap, so recording one would describe a pipeline that never ran."""
+    """`chunk_code` takes no overlap, so recording the default one would describe a pipeline that
+    never ran. An explicit `--overlap` is refused (`tests/test_ignored_flags_refused.py`, #1438)."""
     chunker = _run_build(
-        tmp_path, monkeypatch, "--chunker", "code", "--max-chars", "300", "--overlap", "20"
+        tmp_path, monkeypatch, "--chunker", "code", "--max-chars", "300"
     )["pipeline"].chunker
 
     assert chunker.algorithm == "recall.chunk_code"

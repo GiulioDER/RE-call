@@ -185,6 +185,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   `calibration import`) changed the tenant's real generations and calibrations (#1421). They now
   refuse a table other than `chunks` before opening anything; use another `--tenant` to keep an
   experiment apart. A Lite store already refused another table.
+- Three flags that were accepted and then ignored are now refused, naming the flag, before
+  anything is read or built: `recall generation build --overlap` with `--chunker code`, which
+  splits on `--max-chars` alone (#1438; the default overlap is not refused, so a code build without
+  `--overlap` runs as before); `recall provenance apply --source-root` without `--sqlite-path`, the
+  only path that reads it (#1440); and the global `--table` other than `chunks` or `--tenant` other
+  than `default` on `recall calibrate` and `recall lint --semantic`, which embed into a throwaway
+  table of their own (#1441).
 - `recall setup` refuses the flags it accepted and then ignored, naming each one, instead of
   running without them. Without `--lite` it refuses the global `--embedder` (the interview chooses
   the embedder), `--tenant` other than `default`, and the Lite-only `--memory`, `--store` and

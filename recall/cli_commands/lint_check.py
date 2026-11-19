@@ -106,7 +106,13 @@ def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
 
 def _cmd_lint(args: argparse.Namespace) -> None:
     from recall.lint import lint_corpus
+    from recall.runtime_route import throwaway_table_refusal
 
+    # Before `--fix` can write anything.
+    if args.semantic and (refusal := throwaway_table_refusal(
+        getattr(args, "table", None), getattr(args, "tenant", None), "recall lint --semantic"
+    )) is not None:
+        raise SystemExit(refusal)
     if args.apply is not None and not args.fix:
         print("recall lint: --apply writes the edges --fix proposes; add --fix", file=sys.stderr)
         raise SystemExit(2)
