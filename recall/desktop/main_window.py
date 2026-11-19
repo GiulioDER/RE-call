@@ -308,7 +308,6 @@ class MainWindow(QMainWindow):
         self._last_scope_index = 0
         self._calibration_targets_by_row: list[tuple[str, str, str]] = []
         self._calibration_results: dict[str, Any] = {}
-        self._latest_release: Any = None
         self._calibration_running = False
         self.github_pending: list[tuple[Path, SourceCategory]] = []
         self.github_root: Path | None = None
@@ -2009,7 +2008,6 @@ class MainWindow(QMainWindow):
             return None
 
     def _update_checked(self, release: Any) -> None:
-        self._latest_release = release
         if release is None:
             return
         from recall.desktop.updates import is_newer
