@@ -77,9 +77,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   written. Both hook configs carry the server's own settings as `server_env`: the Codex launcher
   starts its server with them, and the session-end index embeds with them. On Lite, write-time
   search stays off, prompt-time search reads the `--memory` folder, and the session-start note
-  counts the store's chunks. A hook config that serves another project, names none or cannot be
-  read is left alone and reported. A prompt-time or write-time switch turned off in this project's
-  hook config stays off on a rerun. A skill of the same name that RE-call did not install is left
+  counts the store's chunks. A hook config that serves another project, a hosted one, or one that
+  cannot be read is left alone and reported; a local one that names no project is bound to this
+  one. A prompt-time or write-time switch turned off in this project's hook config stays off on a
+  rerun. A later run keeps the Codex servers an earlier run registered in `.codex/config.toml`, as
+  Claude Code's local scope does, and removes and reports anything else between RE-call's markers;
+  the Codex plugin counts as installed only once `CODEX_HOME/config.toml` enables it. A skill of the same name that RE-call did not install is left
   alone and reported; RE-call's own copies now carry an `.installed-by-recall` marker, which
   `recall setup` writes too. The wizard counts an install whose Claude Code registration was
   refused as complete when Codex got the servers, and its report names the client that was
