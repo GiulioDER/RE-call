@@ -599,7 +599,7 @@ They are observations, not automatic failures.
 | `recall.cli_commands.idempotency_cmd` | 2 | 40 |
 | `recall.cli_commands.index_search` | 30 | 155 |
 | `recall.cli_commands.lint_check` | 8 | 146 |
-| `recall.cli_commands.lite_cmd` | 9 | 169 |
+| `recall.cli_commands.lite_cmd` | 10 | 169 |
 | `recall.cli_commands.manifest_cmd` | 5 | 147 |
 | `recall.cli_commands.provenance_cmd` | 16 | 158 |
 | `recall.cli_commands.reasoning_cmd` | 11 | 177 |
