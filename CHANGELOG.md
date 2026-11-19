@@ -316,8 +316,29 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 - The desktop app's configuration page no longer shows a SPLADE checkbox, for the same reason:
   ticking it saved `"splade": true` to `pipeline.json`, which only the page itself reads back. A
   `pipeline.json` that still holds the key is read without error and the key is dropped on the
-  next save. The page's other choices are not applied to indexing or search either
-  ([#1392](https://github.com/GiulioDER/RE-call/issues/1392)); they stay until that is decided.
+  next save. The page's other choices were not applied to indexing or search either, and the page
+  is now gone (next entry).
+- The desktop app no longer offers controls that changed nothing:
+  - The CONFIG page ([#1392](https://github.com/GiulioDER/RE-call/issues/1392)). Its embedder,
+    reranker, judge, reasoning, model and calibration arm choices were saved to `pipeline.json`,
+    which only the page read back; the servers the app starts receive the database and the tenant
+    only. The app no longer reads or writes `pipeline.json`, and an existing one is left in place
+    unread. The calibration page no longer marks every corpus "RECALIBRATION SUGGESTED" after an
+    edit on that page.
+  - "Provider API keys" on the Settings page
+    ([#1399](https://github.com/GiulioDER/RE-call/issues/1399)): the keys were held in memory and
+    passed to nothing.
+  - "Language" on the Settings page ([#1400](https://github.com/GiulioDER/RE-call/issues/1400)):
+    the interface is English only, and the choice only changed a status line.
+  - "Cancel" on the Calibration page ([#1401](https://github.com/GiulioDER/RE-call/issues/1401)):
+    it refused while a calibration ran, the only time there was one to cancel, and otherwise
+    cleared the table selection.
+  - `update_channel` in `runtime.json` ([#1408](https://github.com/GiulioDER/RE-call/issues/1408)):
+    the update check always reads the latest GitHub release. A file that still names a channel
+    loads, and the key is dropped on the next save.
+- `update_enabled: false` in the desktop app's `runtime.json` now stops the app's own release checks,
+  at start and every 6 hours ([#1407](https://github.com/GiulioDER/RE-call/issues/1407)); it was
+  read and never used. "Check for updates" on the Settings page still checks when pressed.
 - Documentation that disagreed with the code: the plugin README said there is no embedded mode
   (Lite is one); the tool routing map counted 26 tools while routing 29, now pinned by test;
   `docs/PRODUCTION.md` said four auth scopes and six failure codes (six and seven), and it and
