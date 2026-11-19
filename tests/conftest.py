@@ -4,6 +4,7 @@ import functools
 import logging
 import os
 import socket
+import subprocess
 import sys
 import uuid
 from typing import TYPE_CHECKING, Any
@@ -842,6 +843,41 @@ def _isolate_recall_logger() -> Iterator[None]:
         logger.setLevel(saved[1])
         logger.propagate = saved[2]
         logger.disabled = saved[3]
+
+
+#: What a test sees in place of a real `docker` command. An `OSError`, because that is what
+#: `subprocess.run` raises when docker is not installed, so `DockerRuntime._compose` reports it as
+#: a machine without docker, which is what CI's runners are.
+REAL_DOCKER_REFUSED = "tests never run the real docker; stub subprocess.run"
+
+
+@pytest.fixture(autouse=True)
+def _no_real_docker(monkeypatch) -> Iterator[None]:
+    """Refuse a real `docker` command from Python for EVERY test.
+
+    ⚠️ **Building a desktop window starts its runtime.** `MainWindow._build_ui` hands
+    `_prepare_runtime` (`runtime.start()`) to the worker pool, so a test that builds a window over a
+    real `DockerRuntime` with `compose_file="docker-compose.desktop.yml"` ran `docker compose up -d
+    --wait` against the repository's own compose file. Measured 2026-11-19: one local run of
+    `tests/test_desktop.py` left a five-container stack and two volumes running for an hour. CI
+    never showed it, because its runners cannot start that stack.
+
+    Autouse, because the hazard is reached by OMISSION: a new window test inherits the refusal
+    without knowing it exists. A test that wants a docker result stubs `subprocess.run` in its body,
+    and wins, since its `monkeypatch.setattr` runs after this. Commands that are not docker pass
+    through untouched; tests that put a fake `docker` on PATH run it through bash, which this does
+    not intercept.
+    """
+    real_run = subprocess.run
+
+    def _guarded(args: Any, *rest: Any, **kwargs: Any) -> Any:
+        argv = args if isinstance(args, (list, tuple)) else str(args).split()
+        if argv and os.path.basename(str(argv[0])).lower() in {"docker", "docker.exe"}:
+            raise OSError(REAL_DOCKER_REFUSED)
+        return real_run(args, *rest, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", _guarded)
+    yield
 
 
 @pytest.fixture
