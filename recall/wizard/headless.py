@@ -296,16 +296,23 @@ class HeadlessReport:
         configuration still be unable to reach them.
 
         **And an install nothing was registered with is not ok either.** The servers go into Claude
-        Code's own config at local scope, and when that write is skipped there is no other place a
-        client will find them: not now, and not after a restart. The corpora would be perfect and
+        Code's own config at local scope, and into the project's `.codex/config.toml` for Codex;
+        when neither write happened there is no other place a client will find them: not now, and
+        not after a restart. The corpora would be perfect and
         the user would meet an assistant with no recall tools and nothing naming the cause, which is
         this project's recurring failure and the reason the exit code has to carry it.
         """
         raised = any(s.error for s in self.smoke)
         unregistered = self.registration is not None and (
-            not self.registration.recorded or bool(self.registration.conflicts)
+            (not self.registration.recorded and not self.codex_registered)
+            or bool(self.registration.conflicts)
         )
         return not (self.refused or self.failures or self.unserved or raised or unregistered)
+
+    @property
+    def codex_registered(self) -> bool:
+        """Whether the servers went into this project's `.codex/config.toml` for Codex."""
+        return any(client == "codex" and text.startswith("registered ") for client, text in self.clients)
 
     @property
     def degraded(self) -> tuple[str, ...]:
@@ -460,9 +467,13 @@ class HeadlessReport:
             else:
                 lines.append(
                     detail(
-                        f"the MCP servers were NOT registered: {self.registration.skipped_reason}. "
-                        "The corpora are built and reachable, but no client is configured to "
-                        "reach them yet."
+                        f"the MCP servers were NOT registered with Claude Code: "
+                        f"{self.registration.skipped_reason}. The corpora are built and reachable, "
+                        + (
+                            "and Codex is configured for them (below)."
+                            if self.codex_registered
+                            else "but no client is configured to reach them yet."
+                        )
                     )
                 )
             # A refused name is the one thing here a user must act on, so it is never folded into
@@ -494,6 +505,7 @@ class HeadlessReport:
         elif (
             self.registration is not None
             and not self.registration.recorded
+            and not self.codex_registered
             and not (self.refused or self.failures or self.unserved)
         ):
             # Named separately because every corpus succeeded: blaming one of them would send the

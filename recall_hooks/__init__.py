@@ -128,6 +128,9 @@ def refresh_stats(config: dict[str, Any] | None = None) -> int:
     dsn = config.get("dsn")
     if not dsn:
         return 0
+    if str(dsn).startswith(LITE_DSN_PREFIX):
+        lite = _lite_chunk_count(str(dsn))
+        return _cached_count(config) if lite is None else _save_count(config, lite)
     try:
         import psycopg
         from psycopg import sql
@@ -164,6 +167,28 @@ def refresh_stats(config: dict[str, Any] | None = None) -> int:
             pass
         return _cached_count(config)
 
+    return _save_count(config, count)
+
+
+#: `recall.lite.store.LITE_DSN_PREFIX`, repeated so a hook does not import the Lite store to compare.
+LITE_DSN_PREFIX = "sqlite:///"
+
+
+def _lite_chunk_count(dsn: str) -> int | None:
+    """The chunk count of a Lite store, read only; None when the file cannot be read."""
+    import sqlite3
+    from contextlib import closing
+
+    try:
+        uri = Path(dsn[len(LITE_DSN_PREFIX):]).as_uri() + "?mode=ro"
+        with closing(sqlite3.connect(uri, uri=True, timeout=3)) as conn:
+            row = conn.execute("SELECT count(*) FROM chunks").fetchone()
+    except (sqlite3.Error, ValueError, OSError):
+        return None
+    return int(row[0]) if row else 0
+
+
+def _save_count(config: dict[str, Any], count: int) -> int:
     # Re-read rather than write back the snapshot: indexing can take minutes, and an install or
     # a hand edit made meanwhile must survive. A count taken against another corpus is dropped.
     current = load_config()
@@ -468,9 +493,12 @@ def _index_and_refresh(payload: dict[str, Any]) -> int:
                 pass
         return 0
     dsn = config.get("dsn")
+    if not dsn:
+        return 0
     # A Lite store (`sqlite:///`) refreshes itself from its memory folder when its server starts
-    # and before searches, and the indexer below writes PostgreSQL only.
-    if not dsn or str(dsn).startswith("sqlite:///"):
+    # and before searches, and the indexer below writes PostgreSQL only: only the count is taken.
+    if str(dsn).startswith(LITE_DSN_PREFIX):
+        refresh_stats(config)
         return 0
     configured = config.get("project_root")
     if not isinstance(configured, str) or not isinstance(cwd, str):
@@ -484,18 +512,23 @@ def _index_and_refresh(payload: dict[str, Any]) -> int:
             return 0
         root = root_path.resolve(strict=True)
         event_root = event_path.resolve(strict=True)
-        confined_memory_dir = within(root, event_root / "memory")
-        if (
-            not root.is_dir()
-            or not event_root.is_dir()
-            or within(root, event_root) is None
-            or confined_memory_dir is None
-        ):
+        if not root.is_dir() or not event_root.is_dir() or within(root, event_root) is None:
             return 0
-        memory_dir = confined_memory_dir
+        override = config.get("memory_root")
+        if isinstance(override, str) and override.strip():
+            # The folder the installer pointed the agent and prompt-time search at, which need not
+            # sit inside the project (the wizard's default is under its data root). A relative or
+            # missing one indexes nothing below, as a missing `<cwd>/memory` does.
+            candidate = Path(override).expanduser()
+            memory_dir: Path | None = candidate.resolve() if candidate.is_absolute() else None
+        else:
+            confined_memory_dir = within(root, event_root / "memory")
+            if confined_memory_dir is None:
+                return 0
+            memory_dir = confined_memory_dir
     except (OSError, RuntimeError, ValueError):
         return 0
-    if memory_dir.is_dir():
+    if memory_dir is not None and memory_dir.is_dir():
         try:
             from recall.memory_index import index_memory_directory
 

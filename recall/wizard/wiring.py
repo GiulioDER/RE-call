@@ -846,6 +846,52 @@ def _hooks_bound_elsewhere(path: Path, project_root: Path) -> str | None:
     return str(configured) if isinstance(configured, str) and configured else "no named project"
 
 
+#: The keys `recall_mcp.codex_server` sets itself from the hook config; `server_env` carries the rest.
+_CODEX_LAUNCHER_KEYS = frozenset(
+    {"RECALL_SERVING_DSN", "RECALL_TENANT", "RECALL_EMBEDDER", "RECALL_TABLE", "RECALL_TRANSPORT"}
+)
+
+
+def _operator_choices(path: Path) -> tuple[bool, bool, str]:
+    """`(prompt-time on, write-time allowed, connection mode)` from this project's hook config.
+
+    A rewrite by Lite or the wizard must not switch back on what the operator turned off by
+    editing the file, which is how these hooks are documented to be turned off.
+    """
+    try:
+        document = json.loads(path.read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        document = {}
+    if not isinstance(document, dict):
+        document = {}
+    prompt = document.get("prompt_time")
+    write = document.get("write_time")
+    mode = write.get("connection_mode") if isinstance(write, dict) else None
+    return (
+        not (isinstance(prompt, dict) and prompt.get("enabled") is False),
+        not (isinstance(write, dict) and write.get("enabled") is False),
+        mode if mode in ("relay", "cold") else "relay",
+    )
+
+
+def _foreign_skills(sources: Mapping[str, Path], root: Path) -> list[str]:
+    """Skills in `root` named like one of `sources` that this installer did not put there."""
+    from recall.claude_code import SKILL_MARKER
+
+    foreign = []
+    for name, source in sources.items():
+        dest = root / name
+        if not dest.exists() or (dest / SKILL_MARKER).exists():
+            continue
+        try:
+            same = (dest / "SKILL.md").read_bytes() == source.read_bytes()
+        except OSError:
+            same = False
+        if not same:
+            foreign.append(name)
+    return foreign
+
+
 def install_client_extras(
     blocks: tuple[ServerBlock, ...],
     *,
@@ -862,9 +908,10 @@ def install_client_extras(
     and the skills its plugin bundle carries. Returns `(client, line)` pairs for the report.
 
     `hook_block` is the server whose store the hooks read (None: no hooks). `write_time` is False
-    for a Lite store, because the write-time search reads PostgreSQL only. Every step is reported
-    rather than raised: the corpora are built by now, and losing that to a skill copy would be the
-    expensive half of the trade.
+    for a Lite store, because the write-time search reads PostgreSQL only. A switch the operator
+    turned off in this project's hook config stays off, and a skill of the same name the user
+    wrote is left alone. Every step is reported rather than raised: the corpora are built by now,
+    and losing that to a skill copy would be the expensive half of the trade.
     """
     from recall.claude_code import (
         _write_hook_config,
@@ -893,11 +940,13 @@ def install_client_extras(
     tenant = hook_block.tenant if hook_block is not None else "default"
     embedder = env.get("RECALL_EMBEDDER", "fastembed")
     table = env.get("RECALL_TABLE", "chunks")
+    # The Codex plugin's server launches from the Codex hook config, so it needs the rest of the
+    # block's settings (trust, route, index root, embedding profile, rescue) as `server_env`.
+    server_env = {key: value for key, value in env.items() if key not in _CODEX_LAUNCHER_KEYS}
     # A frozen installer cannot run `-m recall_hooks`, so it has no command to register.
     hookless = "" if dsn else "no store for them to read"
     if not hookless and not interpreter and getattr(sys, "frozen", False):
         hookless = "this installer is a frozen executable, which cannot run the hook module"
-    scope = "write-time search off: it reads PostgreSQL only; " if not write_time else ""
 
     def step(client: str, action: Callable[[], str]) -> None:
         try:
@@ -905,45 +954,69 @@ def install_client_extras(
         except Exception as exc:  # noqa: BLE001 - reported per step, see the docstring  # BROAD-CATCH: fail-open
             lines.append((client, f"failed: {exc}"))
 
+    def scope(write_on: bool) -> str:
+        if not write_time:
+            return "write-time search off: it reads PostgreSQL only; "
+        return "" if write_on else "write-time search left off, as set; "
+
     def claude_hooks() -> str:
         if hookless:
             return f"hooks not installed: {hookless}"
         elsewhere = _hooks_bound_elsewhere(hook_config_path(), project_root)
         if elsewhere:
             return f"hooks left bound to {elsewhere}; {hook_config_path()} serves that project"
-        if claude_plugin_installed():
+        prompt_on, write_on, mode = _operator_choices(hook_config_path())
+        if claude_plugin_installed(project_root):
             # The plugin registers the same hooks; they need only the config to read.
             _write_hook_config(
                 dsn=dsn,
                 tenant=tenant,
                 embedder=embedder,
                 table=table,
-                write_time=write_time,
+                write_time=write_time and write_on,
+                write_time_connection_mode=mode,
                 project_root=project_root,
+                prompt_time=prompt_on,
                 memory_root=memory_root,
             )
             return (
                 f"hooks: the RE-call plugin's, configured in {hook_config_path()} "
-                f"({scope}bound to {project_root})"
+                f"({scope(write_on)}bound to {project_root})"
             )
         install_hooks(
             dsn=dsn,
             tenant=tenant,
             embedder=embedder,
             table=table,
-            write_time=write_time,
+            write_time=write_time and write_on,
+            write_time_connection_mode=mode,
             project_root=project_root,
+            prompt_time=prompt_on,
             memory_root=memory_root,
             python_executable=interpreter,
             print_fn=lambda *_a, **_k: None,
         )
-        return f"hooks installed in {settings_path()} ({scope}bound to {project_root})"
+        return f"hooks installed in {settings_path()} ({scope(write_on)}bound to {project_root})"
+
+    def skills(sources: Mapping[str, Path], root: Path) -> str:
+        foreign = _foreign_skills(sources, root)
+        installed = install_user_skills(
+            {name: path for name, path in sources.items() if name not in foreign},
+            root=root,
+            print_fn=lambda *_a, **_k: None,
+        )
+        text = f"skills {', '.join(installed) or 'none'} in {root}"
+        if foreign:
+            text += (
+                f"; left {', '.join(foreign)} alone: a skill of that name carries no RE-call marker, so "
+                "it is yours or a copy from before 0.16.0; delete it and re-run to install RE-call's"
+            )
+        return text
 
     def claude_skills() -> str:
-        if claude_plugin_installed():
+        if claude_plugin_installed(project_root):
             return "skills: the RE-call plugin's"
-        installed = install_user_skills(plugin_skill_sources(), print_fn=lambda *_a, **_k: None)
-        return f"skills {', '.join(installed) or 'none'} in {user_skill_dir()}"
+        return skills(plugin_skill_sources(), user_skill_dir())
 
     def codex_servers() -> str:
         servers = mcp_config(blocks, project_root=project_root, interpreter=interpreter)["mcpServers"]
@@ -955,10 +1028,10 @@ def install_client_extras(
         text = f"registered {', '.join(reg.registered)} for this project in {reg.config_path}"
         if reg.conflicts:
             text += f"; left {', '.join(reg.conflicts)} alone, already defined there"
+        if reg.gitignore is not None:
+            text += f"; added `.codex/config.toml` to {reg.gitignore}: it holds this machine's store settings"
         if not reg.trusted:
             text += "; Codex loads them once you trust this project (open it in Codex and accept)"
-        if reg.unignored:
-            text += "; add `.codex/config.toml` to .gitignore: it holds this machine's store settings"
         return text
 
     def codex_hooks() -> str:
@@ -967,29 +1040,29 @@ def install_client_extras(
         elsewhere = _hooks_bound_elsewhere(codex_hook_config_path(), project_root)
         if elsewhere:
             return f"hooks left bound to {elsewhere}; {codex_hook_config_path()} serves that project"
+        prompt_on, write_on, mode = _operator_choices(codex_hook_config_path())
         target = install_codex_hooks(
             dsn=dsn,
             tenant=tenant,
             embedder=embedder,
             table=table,
-            write_time=write_time,
+            write_time=write_time and write_on,
+            prompt_time=prompt_on,
+            write_time_connection_mode=mode,
             project_root=project_root,
             memory_root=memory_root,
             python_executable=interpreter,
+            server_env=server_env,
         )
         return (
-            f"hooks installed in {target} ({scope}bound to {project_root}); "
+            f"hooks installed in {target} ({scope(write_on)}bound to {project_root}); "
             "Codex asks you to review and trust them before they run"
         )
 
     def codex_skills() -> str:
         if codex_plugin_installed():
             return "skills: the RE-call plugin's"
-        root = codex_user_skill_dir()
-        installed = install_user_skills(
-            codex_skill_sources(), root=root, print_fn=lambda *_a, **_k: None
-        )
-        return f"skills {', '.join(installed) or 'none'} in {root}"
+        return skills(codex_skill_sources(), codex_user_skill_dir())
 
     if claude_code_detected():
         step("claude code", claude_hooks)

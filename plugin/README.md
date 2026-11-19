@@ -22,8 +22,9 @@ look like.
 
 ## Install for Codex
 
-For Lite, use [manual MCP wiring](../docs/LITE.md#connect-another-client); Lite setup does not
-install Codex hooks or its plugin. For PostgreSQL, install the Python package and run
+For Lite, `recall setup --lite` installs the Codex server in the project's `.codex/config.toml`,
+the hooks and the skills, but not this plugin bundle; see
+[Lite client wiring](../docs/LITE.md#connect-another-client). For PostgreSQL, install the Python package and run
 `recall setup` from the project. When Codex is detected, the
 wizard automatically installs the Codex plugin bundle, registers its MCP server, and merges the
 same lifecycle hooks into `CODEX_HOME/hooks.json`. Restart Codex after setup. The Codex bundle uses

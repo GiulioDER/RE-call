@@ -439,8 +439,8 @@ class ProjectServerRegistration:
     skipped_reason: str = ""
     #: Whether the user config marks this project trusted. Codex ignores project config otherwise.
     trusted: bool = False
-    #: Set when git does not ignore the file, which holds this machine's store settings.
-    unignored: bool = False
+    #: The `.gitignore` this call added `.codex/config.toml` to, when it had to.
+    gitignore: Path | None = None
 
 
 def _toml_string(value: str) -> str:
@@ -525,13 +525,26 @@ def register_project_servers(
 
     Codex reads project config only for a trusted project, and the result says whether this one
     is. A server name the user already defines outside RE-call's block is reported and left alone,
-    and a file git tracks is refused, since it would commit this machine's store settings.
+    and a file git tracks is refused, since it would commit this machine's store settings (the
+    env holds a DSN and may hold a provider key). Inside a git work tree it is also refused when
+    git cannot say whether it tracks the file, and otherwise added to the project's `.gitignore`.
+    The file is written 0600, and a `.codex` that leads outside the project is refused.
     """
+    from recall.wizard.wiring import _write_private_configuration
+
     root = project_root.resolve()
     target = root / ".codex" / "config.toml"
     if not servers:
         return ProjectServerRegistration(target, skipped_reason="no servers to register")
-    if _git(root, "ls-files", "--error-unmatch", "--", ".codex/config.toml") == 0:
+    # A linked `.codex` (or config.toml) would land the credentials outside this project, where
+    # neither the tracked-file check below nor the `.gitignore` entry applies.
+    if os.path.normcase(os.path.realpath(target)) != os.path.normcase(str(target)):
+        return ProjectServerRegistration(
+            target, skipped_reason=f"{target} leads outside this project through a link; left untouched"
+        )
+    in_work_tree = any((folder / ".git").exists() for folder in (root, *root.parents))
+    tracked = _git(root, "ls-files", "--error-unmatch", "--", ".codex/config.toml")
+    if tracked == 0:
         return ProjectServerRegistration(
             target,
             skipped_reason=(
@@ -539,8 +552,16 @@ def register_project_servers(
                 "settings into a committed file"
             ),
         )
-    if target.is_symlink():
-        return ProjectServerRegistration(target, skipped_reason=f"{target} is a symlink; left untouched")
+    # 1 is git's answer for "not tracked"; anything else (no git, a timeout, a refused
+    # repository) is no answer, and inside a work tree that must not read as "not tracked".
+    if in_work_tree and tracked != 1:
+        return ProjectServerRegistration(
+            target,
+            skipped_reason=(
+                f"git could not say whether it tracks {target} (git missing, or the repository "
+                "refused), so RE-call will not write this machine's store settings there"
+            ),
+        )
     try:
         user_text = _without_managed_block(target.read_text(encoding="utf-8") if target.exists() else "")
         user_servers = tomllib.loads(user_text).get("mcp_servers", {})
@@ -558,14 +579,23 @@ def register_project_servers(
     kept = user_text.rstrip("\r\n")
     text = (kept + "\n\n" if kept else "") + _render_servers(mine)
     tomllib.loads(text)  # never write a file Codex would refuse to parse
+    gitignore = None
+    if in_work_tree and _git(root, "check-ignore", "-q", "--", ".codex/config.toml") != 0:
+        # As `recall.wizard.wiring.write_project_files` does for `.env`: a `git add .` in the
+        # project must not commit the credentials.
+        gitignore = root / ".gitignore"
+        existing = gitignore.read_text(encoding="utf-8", errors="replace") if gitignore.exists() else ""
+        separator = "" if not existing or existing.endswith("\n") else "\n"
+        with gitignore.open("a", encoding="utf-8", newline="\n") as handle:
+            handle.write(f"{separator}.codex/config.toml\n")
     target.parent.mkdir(parents=True, exist_ok=True)
-    atomic_write_bytes(target, text.encode("utf-8"))
+    _write_private_configuration(target, text)
     return ProjectServerRegistration(
         target,
         registered=tuple(mine),
         conflicts=conflicts,
         trusted=_project_trusted(root),
-        unignored=_git(root, "check-ignore", "-q", "--", ".codex/config.toml") == 1,
+        gitignore=gitignore,
     )
 
 

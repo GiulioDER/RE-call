@@ -109,9 +109,12 @@ USER_PROMPT_SUBMIT_TIMEOUT_SECONDS = 10
 #: The commands that install the Claude Code plugin, exactly as `plugin/README.md` states them.
 #: They are typed into Claude Code itself, not a shell, which is why the wizard prints them
 #: rather than running them: there is nothing on this machine they could be executed against.
+#: The plugin's id in Claude Code's plugin records.
+PLUGIN_ID = "recall@re-call"
+
 PLUGIN_INSTALL_LINES = (
     "/plugin marketplace add GiulioDER/RE-call",
-    "/plugin install recall@re-call",
+    f"/plugin install {PLUGIN_ID}",
 )
 
 #: Where skills live in each of the two layouts this package is used from. A checkout has
@@ -127,6 +130,10 @@ _SKILL_ROOTS = (
     Path(__file__).resolve().parent.parent / "plugin" / "skills",
     Path(__file__).resolve().parent / "_skills",
 )
+
+#: Written into every skill directory this installer fills, so a later install can tell its own
+#: copy from a user's skill of the same name (`recall.wizard.wiring.install_client_extras`).
+SKILL_MARKER = ".installed-by-recall"
 
 #: Kept as the name of the first skill for callers and messages that predate there being two.
 SKILL_NAME = "check-memory-before-acting"
@@ -180,16 +187,39 @@ def claude_code_detected() -> bool:
     return _claude_cli() is not None or claude_config_home().is_dir()
 
 
-def claude_plugin_installed() -> bool:
-    """Whether Claude Code has the RE-call plugin (`recall@re-call`), which carries hooks and skills."""
+def claude_plugin_installed(project_root: Path) -> bool:
+    """Whether the RE-call plugin (`recall@re-call`) supplies hooks and skills in `project_root`.
+
+    Only when an install of it covers this project (user scope, or a project or local scope whose
+    `projectPath` is this project), `enabledPlugins` does not switch it off, and the bare
+    `recall-hooks` its hooks run resolves. Otherwise the caller installs its own: a plugin that is
+    off here, or whose command is not on PATH, runs no hook at all.
+    """
+    home = claude_config_home()
     try:
-        document = json.loads(
-            (claude_config_home() / "plugins" / "installed_plugins.json").read_text(encoding="utf-8")
-        )
+        document = json.loads((home / "plugins" / "installed_plugins.json").read_text(encoding="utf-8"))
+        settings = json.loads(settings_path().read_text(encoding="utf-8")) if settings_path().exists() else {}
     except (OSError, ValueError):
         return False
     plugins = document.get("plugins") if isinstance(document, dict) else None
-    return isinstance(plugins, dict) and "recall@re-call" in plugins
+    entries = plugins.get(PLUGIN_ID) if isinstance(plugins, dict) else None
+    enabled = settings.get("enabledPlugins") if isinstance(settings, dict) else None
+    if not isinstance(entries, list) or (isinstance(enabled, dict) and enabled.get(PLUGIN_ID) is False):
+        return False
+    root = project_root.resolve()
+
+    def covers(entry: object) -> bool:
+        if not isinstance(entry, dict):
+            return False
+        if entry.get("scope") == "user":
+            return True
+        where = entry.get("projectPath")
+        try:
+            return isinstance(where, str) and Path(where).resolve() == root
+        except (OSError, ValueError):
+            return False
+
+    return any(covers(entry) for entry in entries) and shutil.which("recall-hooks") is not None
 
 
 def server_env(
@@ -400,6 +430,7 @@ def install_user_skill(
         and (dest_dir / path.relative_to(source_dir)).read_bytes() == path.read_bytes()
         for path in source_files
     ):
+        atomic_write_bytes(dest_dir / SKILL_MARKER, b"Installed by RE-call.\n")
         print_fn(f"The {skill_name} skill at {dest} is already current, left unchanged.")
         return
     replaced = dest.exists()
@@ -407,6 +438,7 @@ def install_user_skill(
         destination = dest_dir / path.relative_to(source_dir)
         destination.parent.mkdir(parents=True, exist_ok=True)
         atomic_write_bytes(destination, path.read_bytes())
+    atomic_write_bytes(dest_dir / SKILL_MARKER, b"Installed by RE-call.\n")
     verb = "Replaced" if replaced else "Installed"
     print_fn(f"{verb} the {skill_name} skill at {dest}. It loads in every project's sessions.")
 
@@ -860,6 +892,9 @@ def hook_config_document(
         previous = None
     except (OSError, ValueError, RecursionError):
         unreadable = True
+    tuning = previous.get("prompt_time") if isinstance(previous, dict) else None
+    if isinstance(tuning, dict):
+        config["prompt_time"] = {**tuning, "enabled": bool(prompt_time)}
     if isinstance(previous, dict) and "general_knowledge" in previous:
         config["general_knowledge"] = previous["general_knowledge"]
     elif unreadable or (previous is not None and not isinstance(previous, dict)):
