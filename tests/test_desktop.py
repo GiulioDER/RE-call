@@ -2054,6 +2054,9 @@ def test_test_connection_runs_the_embedder_check_its_label_names(
     Red proof (2026-11-19, local offscreen Qt): with `expected_dimension=dimension` removed from
     `MainWindow._probe`, this failed in `assert probed == [1024]` (it was `[None]`).
     """
+    # Before the patches below, which import `recall.desktop.main_window` and so need PySide6;
+    # the jobs without the desktop extra must skip here rather than fail on that import.
+    pytest.importorskip("PySide6")
     probed: list[Any] = []
 
     class _Report:
