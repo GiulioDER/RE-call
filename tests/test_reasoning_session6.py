@@ -5,7 +5,7 @@ from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from hypothesis import given, strategies as st
+from hypothesis import given, settings, strategies as st
 import pytest
 
 from recall.eval.reasoning_session6 import (
@@ -107,6 +107,9 @@ def test_reasoning_session6_rejects_nonfinite_latency(tmp_path: Path, token: str
 
 
 @given(exponent=st.integers(min_value=309, max_value=400))
+# Each example writes and loads a fixture from disk, so its first run on a loaded CI runner can
+# exceed the default 200 ms deadline and report Flaky with nothing wrong (#1449).
+@settings(deadline=None)
 def test_reasoning_session6_rejects_overflowing_json_exponents(exponent: int) -> None:
     """NUM-001: JSON exponent overflow must never produce accepted latency."""
     with TemporaryDirectory() as directory:
