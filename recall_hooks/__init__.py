@@ -532,12 +532,21 @@ def _index_and_refresh(payload: dict[str, Any]) -> int:
         try:
             from recall.memory_index import index_memory_directory
 
+            # The settings the corpus was built under (an embedding profile, its key), which the
+            # client's own environment need not carry; without them another model would embed.
+            extra = config.get("server_env")
+            env = (
+                {**os.environ, **extra}
+                if isinstance(extra, dict) and all(isinstance(v, str) for v in extra.values())
+                else None
+            )
             index_memory_directory(
                 dsn=str(dsn),
                 embedder_name=str(config.get("embedder", "fastembed")),
                 memory_dir=memory_dir,
                 tenant=str(config.get("tenant", "default")),
                 table=str(config.get("table", "chunks")),
+                env=env,
                 print_fn=lambda *args, **kwargs: None,
             )
         except Exception:  # BROAD-CATCH: fail-open

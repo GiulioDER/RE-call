@@ -1,8 +1,9 @@
 # The installation wizard
 
 This page describes the PostgreSQL installer. For local SQLite memory without a database server,
-use [RE-call Lite](LITE.md). `recall setup --lite` is a separate noninteractive path and does not
-run the PostgreSQL wizard or its automatic Codex integration.
+use [RE-call Lite](LITE.md). `recall setup --lite` is a separate noninteractive path that does not
+run this wizard; it wires Claude Code and Codex the same way this wizard does (see
+[What it writes](#what-it-writes)).
 
 > **When to prefer this page:** use `recall wizard` for a calibrated, promoted generation. It can
 > ask questions interactively or run a saved config with `--headless --config` for CI and
@@ -199,10 +200,21 @@ With `project_root` set:
 
   **The wizard will not create `~/.claude.json` if it is absent**, because inventing another
   application's configuration file is not an installer's business; start Claude Code once and
-  re-run. In the refusal cases the report says so and the install is reported incomplete, since
-  servers no client can see are the whole failure this step exists to prevent.
+  re-run. In the refusal cases the report says so, and the install is reported incomplete unless
+  Codex got the servers (below), since servers no client can see are the whole failure this step
+  exists to prevent.
 
   Restart Claude Code afterwards. It reads this file at startup.
+- **For each client found on the machine, its hooks and skills**, reported line by line:
+  - Claude Code: the hooks in `~/.claude/settings.json` (or only the hook config, when the RE-call
+    plugin is installed for this project) and the five skills in `~/.claude/skills/`.
+  - Codex: the same servers in this project's `.codex/config.toml` (which Codex reads only for a
+    trusted project, and which is added to the project's `.gitignore` inside a git work tree),
+    the hooks in `CODEX_HOME/hooks.json`, and the skills in `~/.agents/skills/`.
+
+  The hook config is bound to `project_root` and to the memory tenant, with prompt-time search
+  reading `memory_root`. One that already serves another project is left alone, a switch you
+  turned off in it stays off, and a skill of the same name RE-call did not install is left alone.
 - **`.env`** — the serving DSN and embedder, for the CLI. **Not** for the MCP servers: a stdio server
   launched with an explicit `env` block inherits nothing, so each server carries its own variables.
   It also carries the atomic rescue settings, `RECALL_ATOMIC_RESCUE_MODE_BY_TENANT` (every tenant,

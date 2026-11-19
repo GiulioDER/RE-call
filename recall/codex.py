@@ -1,4 +1,7 @@
-"""Install RE-call's user-level Codex integration.
+"""Install RE-call's Codex integration: user-level hooks, skills and plugin, and per-project servers.
+
+`register_project_servers` writes a project's `.codex/config.toml` (and may add it to that
+project's `.gitignore`); everything else here is user-level, under `CODEX_HOME` and `~/.agents`.
 
 The Claude installer and this module deliberately share the same hook implementation. Codex gets
 an adapter only for its payload shape, while the memory reader, front matter contract, thresholds,
@@ -181,8 +184,8 @@ def _write_hook_config(
 ) -> None:
     """The same document the Claude Code installer writes, at the Codex integration path.
 
-    Plus `server_env`, which only the Codex launcher reads (`recall_mcp.codex_server`): the
-    environment the Claude Code installer puts in that client's server registration instead."""
+    Its `server_env` is the environment the Codex launcher (`recall_mcp.codex_server`) gives the
+    plugin's server, which the Claude Code installer puts in that client's server registration."""
     from recall.claude_code import hook_config_document
 
     destination = codex_hook_config_path()
@@ -198,9 +201,8 @@ def _write_hook_config(
         project_root=project_root,
         prompt_time=prompt_time,
         memory_root=memory_root,
+        server_env=server_env,
     )
-    if server_env:
-        document["server_env"] = dict(server_env)
     atomic_write_bytes(destination, (json.dumps(document, indent=2) + "\n").encode("utf-8"))
     try:
         destination.chmod(0o600)
@@ -333,28 +335,19 @@ def install_codex_hooks(
 
 def install_codex_integration(
     *,
-    dsn: str,
-    tenant: str = "default",
-    embedder: str = "fastembed",
-    table: str = "chunks",
-    write_time: bool = True,
-    prompt_time: bool = True,
-    write_time_connection_mode: str = "relay",
-    project_root: Path | None = None,
-    python_executable: str | None = None,
-    hooks_path: Path | None = None,
     marketplace_path: Path | None = None,
     plugin_destination: Path | None = None,
-    server_env: Mapping[str, str] | None = None,
     print_fn: Callable[..., None] = print,
+    **hook_options: Any,
 ) -> None:
     """Install the plugin, personal marketplace entry, shared config, and Codex hooks.
 
-    `project_root` (default: the current directory) is the project allowed to use the hook
-    config, as for Claude Code: the write-time hook and the session-end memory index refuse an
-    event outside it, and refuse a config that names none.
+    `hook_options` are `install_codex_hooks`' arguments, passed on unchanged. Its `project_root`
+    (default: the current directory) is the project allowed to use the hook config, as for Claude
+    Code: the write-time hook and the session-end memory index refuse an event outside it, and
+    refuse a config that names none.
     """
-    root = (project_root or Path.cwd()).resolve()
+    root = (hook_options.get("project_root") or Path.cwd()).resolve()
     source = codex_plugin_source()
     if source is None:
         raise FileNotFoundError("the RE-call Codex plugin bundle is not present in this install")
@@ -365,23 +358,11 @@ def install_codex_integration(
         _copy_plugin(source, destination)
         marketplace.parent.mkdir(parents=True, exist_ok=True)
         _update_marketplace(marketplace, destination)
-    target = install_codex_hooks(
-        dsn=dsn,
-        tenant=tenant,
-        embedder=embedder,
-        table=table,
-        write_time=write_time,
-        prompt_time=prompt_time,
-        write_time_connection_mode=write_time_connection_mode,
-        project_root=root,
-        python_executable=python_executable,
-        hooks_path=hooks_path,
-        server_env=server_env,
-    )
+    target = install_codex_hooks(**{**hook_options, "project_root": root})
     print_fn(
         f"Installed RE-call for Codex: plugin={destination}, marketplace={marketplace}, hooks={target}"
     )
-    if write_time:
+    if hook_options.get("write_time", True):
         # As in the Claude Code installer: one hook config per machine, so say which project it
         # answers in, since installing in another project moves it.
         print_fn(
@@ -397,14 +378,10 @@ def codex_user_skill_dir() -> Path:
 
 def codex_skill_sources() -> dict[str, Path]:
     """``{skill name: its SKILL.md}`` from the Codex plugin bundle, or empty when it is absent."""
+    from recall.claude_code import skills_under
+
     source = codex_plugin_source()
-    if source is None:
-        return {}
-    return {
-        path.parent.name: path
-        for path in sorted((source / "skills").glob("*/SKILL.md"))
-        if path.is_file()
-    }
+    return {} if source is None else skills_under(source / "skills")
 
 
 def codex_plugin_installed() -> bool:
@@ -420,7 +397,8 @@ def codex_plugin_installed() -> bool:
 
 
 #: The lines that delimit the servers this installer owns inside a project's `.codex/config.toml`.
-#: Everything outside them is the user's and is never rewritten.
+#: Everything outside them is the user's: kept where it is, with its line endings, and backed up
+#: once before RE-call first rewrites the file.
 MANAGED_BEGIN = "# BEGIN RE-call MCP servers (written by recall setup --lite and recall wizard)"
 MANAGED_END = "# END RE-call MCP servers"
 #: Codex waits 10 s for a server by default. A Lite server refreshes its store before it answers
@@ -444,8 +422,11 @@ class ProjectServerRegistration:
 
 
 def _toml_string(value: str) -> str:
-    # Every escape JSON emits (\", \\, \n, \uXXXX and the rest) is valid in a TOML basic string.
-    return json.dumps(value)
+    # A TOML basic string. JSON's escapes for the quote, the backslash and the C0 controls are valid
+    # TOML; every other character is written as itself, because `ensure_ascii` would write one
+    # outside the BMP as a UTF-16 surrogate pair, which TOML refuses. DEL, which JSON leaves raw,
+    # TOML requires escaped.
+    return json.dumps(value, ensure_ascii=False).replace("\x7f", "\\u007f")
 
 
 def _render_servers(servers: dict[str, dict[str, Any]]) -> str:
@@ -467,14 +448,16 @@ def _render_servers(servers: dict[str, dict[str, Any]]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _without_managed_block(text: str) -> str:
-    start = text.find(MANAGED_BEGIN)
-    if start < 0:
-        return text
-    end = text.find(MANAGED_END, start)
-    if end < 0:
+def _split_managed_block(text: str) -> tuple[str, str]:
+    """The user's text `(before, after)` RE-call's block, whose markers must be whole lines."""
+    lines = text.splitlines(keepends=True)
+    begin = next((i for i, line in enumerate(lines) if line.strip() == MANAGED_BEGIN), None)
+    if begin is None:
+        return text, ""
+    end = next((i for i in range(begin + 1, len(lines)) if lines[i].strip() == MANAGED_END), None)
+    if end is None:
         raise ValueError("it has an unterminated RE-call block")
-    return text[:start] + text[end + len(MANAGED_END):].lstrip("\r\n")
+    return "".join(lines[:begin]), "".join(lines[end + 1:])
 
 
 def _git(project_root: Path, *args: str) -> int | None:
@@ -563,8 +546,11 @@ def register_project_servers(
             ),
         )
     try:
-        user_text = _without_managed_block(target.read_text(encoding="utf-8") if target.exists() else "")
-        user_servers = tomllib.loads(user_text).get("mcp_servers", {})
+        raw = target.read_bytes() if target.exists() else b""
+        # `utf-8-sig`: a BOM a Windows editor wrote is not the user's content, and tomllib refuses it.
+        original = raw.decode("utf-8-sig")
+        before, after = _split_managed_block(original.replace("\r\n", "\n"))
+        user_servers = tomllib.loads(before + after).get("mcp_servers", {})
     except (OSError, ValueError) as exc:
         return ProjectServerRegistration(
             target, skipped_reason=f"{target} cannot be read ({exc}); left untouched"
@@ -576,20 +562,26 @@ def register_project_servers(
         return ProjectServerRegistration(
             target, conflicts=conflicts, skipped_reason="every server name is already defined in it"
         )
-    kept = user_text.rstrip("\r\n")
-    text = (kept + "\n\n" if kept else "") + _render_servers(mine)
+    head, tail = before.rstrip("\n"), after.lstrip("\n")
+    text = (head + "\n\n" if head else "") + _render_servers(mine) + ("\n" + tail if tail else "")
     tomllib.loads(text)  # never write a file Codex would refuse to parse
     gitignore = None
-    if in_work_tree and _git(root, "check-ignore", "-q", "--", ".codex/config.toml") != 0:
+    # Each path asked on its own: with several, check-ignore succeeds when any one is ignored, and
+    # the backup can hold the credentials of an earlier RE-call block.
+    covered = (".codex/config.toml", ".codex/config.toml.recall-backup")
+    if in_work_tree and any(_git(root, "check-ignore", "-q", "--", path) != 0 for path in covered):
         # As `recall.wizard.wiring.write_project_files` does for `.env`: a `git add .` in the
         # project must not commit the credentials.
         gitignore = root / ".gitignore"
         existing = gitignore.read_text(encoding="utf-8", errors="replace") if gitignore.exists() else ""
         separator = "" if not existing or existing.endswith("\n") else "\n"
         with gitignore.open("a", encoding="utf-8", newline="\n") as handle:
-            handle.write(f"{separator}.codex/config.toml\n")
+            handle.write(f"{separator}.codex/config.toml*\n")
     target.parent.mkdir(parents=True, exist_ok=True)
-    _write_private_configuration(target, text)
+    backup = target.with_name(target.name + ".recall-backup")
+    if raw and not backup.exists():
+        _write_private_configuration(backup, original)
+    _write_private_configuration(target, text.replace("\n", "\r\n") if b"\r\n" in raw else text)
     return ProjectServerRegistration(
         target,
         registered=tuple(mine),

@@ -69,7 +69,10 @@ def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     p_setup.add_argument(
         "--no-register",
         action="store_true",
-        help="with --lite: build and calibrate the store but leave the Claude Code config alone",
+        help=(
+            "with --lite: build and calibrate the store, and write no client configuration "
+            "(Claude Code or Codex servers, hooks or skills)"
+        ),
     )
 
     # The headless installer path. Separate from `setup`, which is the interactive configuration

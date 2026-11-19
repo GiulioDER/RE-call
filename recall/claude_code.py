@@ -363,14 +363,15 @@ def plugin_skill_sources() -> dict[str, Path]:
     plugin install lines.
     """
     for root in _SKILL_ROOTS:
-        found = {
-            path.parent.name: path
-            for path in sorted(root.glob("*/SKILL.md"))
-            if path.is_file()
-        }
+        found = skills_under(root)
         if found:
             return found
     return {}
+
+
+def skills_under(root: Path) -> dict[str, Path]:
+    """``{skill name: its SKILL.md}`` for each skill folder directly under `root`."""
+    return {path.parent.name: path for path in sorted(root.glob("*/SKILL.md")) if path.is_file()}
 
 
 def plugin_skill_source() -> Path | None:
@@ -689,6 +690,7 @@ def install_hooks(
     python_executable: str | None = None,
     path: Path | None = None,
     memory_root: Path | None = None,
+    server_env: Mapping[str, str] | None = None,
     print_fn: Callable[..., None] = print,
 ) -> None:
     """Write the hook config, then merge the hook entries into the client's settings.
@@ -729,6 +731,7 @@ def install_hooks(
         project_root=root,
         prompt_time=prompt_time,
         memory_root=memory_root,
+        server_env=server_env,
     )
 
     settings: dict[str, Any] = {}
@@ -839,11 +842,14 @@ def hook_config_document(
     project_root: Path | None = None,
     prompt_time: bool = True,
     memory_root: Path | None = None,
+    server_env: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     """The hook config an installer writes to `path`, with the operator's switch carried forward.
 
     `memory_root` is the memo folder prompt-time search reads in this project, for an install whose
     memos are not in the client's own project memory directory (`recall setup --lite --memory`).
+    `server_env` is the server's own settings (embedding profile, keys, route): the Codex launcher
+    starts the plugin's server with them, and the session-end indexer embeds with them.
 
     Shared by the Claude Code and Codex installers, which feed the same `recall_hooks` readers:
     a key one of them leaves out (the Codex writer once omitted `project_root`) silently switches
@@ -876,6 +882,8 @@ def hook_config_document(
     }
     if memory_root is not None:
         config["memory_root"] = str(memory_root.resolve())
+    if server_env:
+        config["server_env"] = dict(server_env)
     # The `general_knowledge` block is the operator's, not the installer's: no install option sets
     # it, and an absent block means ENABLED, so rewriting the file without it would turn an explicit
     # `enabled: false` back on at the next install or upgrade. Carry it forward exactly as found
@@ -913,6 +921,7 @@ def _write_hook_config(
     project_root: Path | None = None,
     prompt_time: bool = True,
     memory_root: Path | None = None,
+    server_env: Mapping[str, str] | None = None,
 ) -> None:
     path = hook_config_path()
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -927,6 +936,7 @@ def _write_hook_config(
         project_root=project_root,
         prompt_time=prompt_time,
         memory_root=memory_root,
+        server_env=server_env,
     )
     _write_json(path, config)
     try:

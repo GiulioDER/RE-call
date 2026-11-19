@@ -455,3 +455,144 @@ def test_an_unusable_memo_folder_skips_the_index_not_the_count(
         recall_hooks._index_and_refresh({"cwd": str(project)})
     assert indexed == [], "an unusable memo folder was indexed"
     assert len(refreshed) == 2, "the count refresh was skipped"
+
+
+# ----------------------------------------------------------------------------------------------
+# CCA deferred run 20261119T203938Z: one test per confirmed P3 with a behaviour change.
+# ----------------------------------------------------------------------------------------------
+
+
+def _server(project: Path, **env: str) -> dict[str, dict[str, object]]:
+    return {"recall-memory": {"command": "python", "args": ["-m", "recall_mcp.server"], "cwd": str(project), "env": env}}
+
+
+def test_a_path_outside_the_bmp_registers(tmp_path: Path, clients: Path) -> None:
+    """DAT-004: a value with a character outside the BMP is written as itself, not as a UTF-16
+    surrogate pair TOML refuses, and DEL is escaped."""
+    from recall.codex import register_project_servers
+
+    project = tmp_path / "project"
+    project.mkdir()
+    value = "C:/notes/" + chr(0x1F600) + chr(0x7F)
+    try:
+        reg = register_project_servers(_server(project, RECALL_INDEX_ROOT=value), project_root=project)
+    except ValueError as exc:  # the write guard: the rendered TOML did not parse
+        pytest.fail(f"the rendered config was not valid TOML: {exc}")
+    assert reg.registered == ("recall-memory",), reg.skipped_reason
+    assert _codex_servers(project)["recall-memory"]["env"]["RECALL_INDEX_ROOT"] == value
+
+
+def test_a_skill_that_cannot_be_copied_is_named(
+    tmp_path: Path, clients: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """BUG-002: a skill whose copy fails is named in the report, not silently missing."""
+    import recall.claude_code
+
+    real = recall.claude_code.install_user_skill
+
+    def failing(source: Path, *, name: str | None = None, **kwargs: object) -> None:
+        if name == "re-call":
+            raise PermissionError("denied")
+        real(source, name=name, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(recall.claude_code, "install_user_skill", failing)
+    _project, _claude, report = _lite(tmp_path)
+    codex = [text for client, text in report.clients if client == "codex" and text.startswith("skills ")]
+    assert codex and "NOT installed: re-call" in codex[0], report.render()
+
+
+def test_session_end_indexes_with_the_corpus_settings(
+    tmp_path: Path, clients: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """DAT-007: the session-end index embeds with the settings the corpus was built under (here an
+    embedding profile), laid over the hook's own environment."""
+    import recall.memory_index
+    import recall_hooks
+
+    project = tmp_path / "project"
+    (project / "memory").mkdir(parents=True)
+    config = clients / ".claude" / "recall-hook.json"
+    config.parent.mkdir(parents=True, exist_ok=True)
+    config.write_text(
+        json.dumps({
+            "dsn": "postgresql://x@127.0.0.1:1/x", "project_root": str(project),
+            "server_env": {"RECALL_EMBED_PROFILE": "a-profile"},
+        }),
+        encoding="utf-8",
+    )
+    seen: list[object] = []
+    monkeypatch.setattr(recall.memory_index, "index_memory_directory", lambda **kw: seen.append(kw.get("env")))
+    recall_hooks._index_and_refresh({"cwd": str(project)})
+    assert seen and isinstance(seen[0], dict), "the indexer ran without the corpus settings"
+    assert seen[0]["RECALL_EMBED_PROFILE"] == "a-profile"
+    assert seen[0].get("PATH") == os.environ.get("PATH"), "the hook's own environment was dropped"
+
+
+def test_the_managed_block_is_matched_by_whole_lines_and_kept_in_place(tmp_path: Path, clients: Path) -> None:
+    """CODE-002 / DOC-007: a marker quoted inside the user's TOML is not RE-call's block, and the
+    user's text after the block stays after it on a rerun."""
+    from recall.codex import MANAGED_BEGIN, register_project_servers
+
+    project = tmp_path / "project"
+    (project / ".codex").mkdir(parents=True)
+    target = project / ".codex" / "config.toml"
+    target.write_text(f'note = "{MANAGED_BEGIN}"\n', encoding="utf-8")
+    first = register_project_servers(_server(project, A="1"), project_root=project)
+    assert first.registered, f"a quoted marker was taken for RE-call's block: {first.skipped_reason}"
+    target.write_text(target.read_text(encoding="utf-8") + '\n[profiles.mine]\nmodel = "x"\n', encoding="utf-8")
+    register_project_servers(_server(project, A="2"), project_root=project)
+    text = target.read_text(encoding="utf-8")
+    assert text.index("# END RE-call") < text.index("[profiles.mine]"), "the user's later table moved above the block"
+    assert tomllib.loads(text)["profiles"]["mine"]["model"] == "x"
+
+
+def test_a_windows_edited_config_keeps_its_shape(tmp_path: Path, clients: Path) -> None:
+    """DAT-005: a BOM is accepted, CRLF line endings stay CRLF, and the original is backed up once."""
+    from recall.codex import register_project_servers
+
+    project = tmp_path / "project"
+    (project / ".codex").mkdir(parents=True)
+    target = project / ".codex" / "config.toml"
+    original = b"\xef\xbb\xbfmodel = \"mine\"\r\n"
+    target.write_bytes(original)
+    reg = register_project_servers(_server(project, A="1"), project_root=project)
+    assert reg.registered, f"a BOM made the file unreadable: {reg.skipped_reason}"
+    raw = target.read_bytes()
+    assert b"\n" not in raw.replace(b"\r\n", b""), "LF lines written into a CRLF file"
+    backup = project / ".codex" / "config.toml.recall-backup"
+    assert backup.exists(), "no backup of the user's file"
+    assert backup.read_bytes() == b'model = "mine"\r\n', "the backup is not the user's file"
+    register_project_servers(_server(project, A="2"), project_root=project)
+    assert backup.read_bytes() == b'model = "mine"\r\n', "the backup was overwritten"
+
+
+def test_a_hook_config_left_alone_says_why(tmp_path: Path, clients: Path) -> None:
+    """CODE-005: an unreadable config and one that names no project are described as such, not as
+    a project they would serve."""
+    from recall.wizard.wiring import _hooks_left_alone
+
+    project = tmp_path / "project"
+    project.mkdir()
+    path = tmp_path / "recall-hook.json"
+    path.write_text("{not json", encoding="utf-8")
+    assert _hooks_left_alone(path, project) == f"hooks left alone: {path} cannot be read"
+    path.write_text(json.dumps({"dsn": "x"}), encoding="utf-8")
+    assert _hooks_left_alone(path, project) == f"hooks left alone: {path} names no project"
+
+
+def test_the_backup_is_ignored_when_the_config_already_was(tmp_path: Path, clients: Path) -> None:
+    """DAT-005 follow-up (L5.5): the backup can hold an earlier block's credentials, so it is ignored
+    by git even when an exact rule already ignored `.codex/config.toml` itself."""
+    from recall.codex import register_project_servers
+
+    project = tmp_path / "project"
+    _git_init(project)
+    (project / ".gitignore").write_text(".codex/config.toml\n", encoding="utf-8")
+    (project / ".codex").mkdir()
+    (project / ".codex" / "config.toml").write_text('model = "mine"\n', encoding="utf-8")
+    register_project_servers(_server(project, A="1"), project_root=project)
+    assert (project / ".codex" / "config.toml.recall-backup").exists()
+    ignored = subprocess.run(
+        ["git", "-C", str(project), "check-ignore", "-q", "--", ".codex/config.toml.recall-backup"], capture_output=True
+    )
+    assert ignored.returncode == 0, "the backup of a credential file is not ignored by git"

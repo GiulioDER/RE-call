@@ -9,8 +9,8 @@ Five steps, each reported, none hidden:
    first artifact during the index, unless the shell sets the mode or its packages are missing
    (`recall.lite.atomic.rescue_settings`);
 5. register the MCP server for THIS project only (Claude Code's local scope), unless asked not to,
-   and give each client found on this machine the rest of what `recall setup` gives it: hooks and
-   skills for Claude Code, and the same server, hooks and skills for Codex
+   and give each client found on this machine its hooks and skills: hooks and skills for Claude
+   Code, and the same server, hooks and skills for Codex, but not the Codex plugin bundle
    (`recall.wizard.wiring.install_client_extras`). Write-time search stays off: it reads PostgreSQL.
 
 Local scope, for the reasons `recall.wizard.wiring.register_local_scope` gives: no approval

@@ -55,6 +55,7 @@ import tempfile
 from collections.abc import Callable, Mapping
 from contextlib import ExitStack
 from dataclasses import dataclass
+from typing import Any
 from pathlib import Path
 
 from recall.wizard.corpora import CorpusPlan, CorpusSpec
@@ -823,8 +824,8 @@ def _register_local_scope_locked(
     )
 
 
-def _hooks_bound_elsewhere(path: Path, project_root: Path) -> str | None:
-    """The project an existing hook config serves, when it is not this one; None when free.
+def _hooks_left_alone(path: Path, project_root: Path) -> str | None:
+    """Why the hook config at `path` must not be rewritten for this project; None when it may be.
 
     There is one hook config per client per machine. An install that rewrote another project's
     would switch that project's hooks off with no message there, so it is left alone and reported.
@@ -834,16 +835,22 @@ def _hooks_bound_elsewhere(path: Path, project_root: Path) -> str | None:
     except FileNotFoundError:
         return None
     except (OSError, ValueError):
-        return f"an unreadable {path}"
+        return f"hooks left alone: {path} cannot be read"
     if not isinstance(document, dict) or not (document.get("dsn") or document.get("endpoint")):
         return None
     configured = document.get("project_root")
+    if not isinstance(configured, str) or not configured:
+        return f"hooks left alone: {path} names no project"
     try:
-        if isinstance(configured, str) and Path(configured).resolve() == project_root.resolve():
+        if Path(configured).resolve() == project_root.resolve():
             return None
     except (OSError, ValueError):
         pass
-    return str(configured) if isinstance(configured, str) and configured else "no named project"
+    return f"hooks left bound to {configured}; {path} serves that project"
+
+
+def _quiet(*_args: object, **_kwargs: object) -> None:
+    """A `print_fn` for installer steps whose outcome the report line states instead."""
 
 
 #: The keys `recall_mcp.codex_server` sets itself from the hook config; `server_env` carries the rest.
@@ -901,11 +908,13 @@ def install_client_extras(
     memory_root: Path | None = None,
     interpreter: str | None = None,
 ) -> tuple[tuple[str, str], ...]:
-    """Give each client on this machine what `recall setup` gives it, beside the MCP servers.
+    """Give each client on this machine its hooks and skills, beside the MCP servers.
 
-    Claude Code already has the servers (`register_local_scope`); it gets the hooks and the skills.
-    Codex gets all three: the same servers in this project's `.codex/config.toml`, the same hooks,
-    and the skills its plugin bundle carries. Returns `(client, line)` pairs for the report.
+    Claude Code was offered the servers by `register_local_scope`; it gets the hooks and the skills
+    whatever that registration's outcome, so its report line is the one that says whether its
+    servers landed. Codex gets all three: the same servers in this project's `.codex/config.toml`,
+    the same hooks, and the skills its plugin bundle carries. Returns `(client, line)` pairs for
+    the report.
 
     `hook_block` is the server whose store the hooks read (None: no hooks). `write_time` is False
     for a Lite store, because the write-time search reads PostgreSQL only. A switch the operator
@@ -937,11 +946,8 @@ def install_client_extras(
     lines: list[tuple[str, str]] = []
     env = hook_block.env if hook_block is not None else {}
     dsn = env.get("RECALL_DSN", "")
-    tenant = hook_block.tenant if hook_block is not None else "default"
-    embedder = env.get("RECALL_EMBEDDER", "fastembed")
-    table = env.get("RECALL_TABLE", "chunks")
-    # The Codex plugin's server launches from the Codex hook config, so it needs the rest of the
-    # block's settings (trust, route, index root, embedding profile, rescue) as `server_env`.
+    # The rest of the block's settings (trust, route, index root, embedding profile, rescue): the
+    # Codex plugin's server launches with them, and the session-end indexer embeds with them.
     server_env = {key: value for key, value in env.items() if key not in _CODEX_LAUNCHER_KEYS}
     # A frozen installer cannot run `-m recall_hooks`, so it has no command to register.
     hookless = "" if dsn else "no store for them to read"
@@ -954,58 +960,50 @@ def install_client_extras(
         except Exception as exc:  # noqa: BLE001 - reported per step, see the docstring  # BROAD-CATCH: fail-open
             lines.append((client, f"failed: {exc}"))
 
-    def scope(write_on: bool) -> str:
+    def refused(config: Path) -> str | None:
+        return f"hooks not installed: {hookless}" if hookless else _hooks_left_alone(config, project_root)
+
+    def hook_args(config: Path) -> dict[str, Any]:
+        """The one set of hook-config values both clients get, with the operator's switches."""
+        prompt_on, write_on, mode = _operator_choices(config)
+        return {
+            "dsn": dsn,
+            "tenant": hook_block.tenant if hook_block is not None else "default",
+            "embedder": env.get("RECALL_EMBEDDER", "fastembed"),
+            "table": env.get("RECALL_TABLE", "chunks"),
+            "write_time": write_time and write_on,
+            "write_time_connection_mode": mode,
+            "prompt_time": prompt_on,
+            "project_root": project_root,
+            "memory_root": memory_root,
+            "server_env": server_env,
+        }
+
+    def scope(args: dict[str, Any]) -> str:
         if not write_time:
-            return "write-time search off: it reads PostgreSQL only; "
-        return "" if write_on else "write-time search left off, as set; "
+            return f"write-time search off: it reads PostgreSQL only; bound to {project_root}"
+        return f"{'' if args['write_time'] else 'write-time search left off, as set; '}bound to {project_root}"
 
     def claude_hooks() -> str:
-        if hookless:
-            return f"hooks not installed: {hookless}"
-        elsewhere = _hooks_bound_elsewhere(hook_config_path(), project_root)
-        if elsewhere:
-            return f"hooks left bound to {elsewhere}; {hook_config_path()} serves that project"
-        prompt_on, write_on, mode = _operator_choices(hook_config_path())
+        left = refused(hook_config_path())
+        if left:
+            return left
+        args = hook_args(hook_config_path())
         if claude_plugin_installed(project_root):
             # The plugin registers the same hooks; they need only the config to read.
-            _write_hook_config(
-                dsn=dsn,
-                tenant=tenant,
-                embedder=embedder,
-                table=table,
-                write_time=write_time and write_on,
-                write_time_connection_mode=mode,
-                project_root=project_root,
-                prompt_time=prompt_on,
-                memory_root=memory_root,
-            )
-            return (
-                f"hooks: the RE-call plugin's, configured in {hook_config_path()} "
-                f"({scope(write_on)}bound to {project_root})"
-            )
-        install_hooks(
-            dsn=dsn,
-            tenant=tenant,
-            embedder=embedder,
-            table=table,
-            write_time=write_time and write_on,
-            write_time_connection_mode=mode,
-            project_root=project_root,
-            prompt_time=prompt_on,
-            memory_root=memory_root,
-            python_executable=interpreter,
-            print_fn=lambda *_a, **_k: None,
-        )
-        return f"hooks installed in {settings_path()} ({scope(write_on)}bound to {project_root})"
+            _write_hook_config(**args)
+            return f"hooks: the RE-call plugin's, configured in {hook_config_path()} ({scope(args)})"
+        install_hooks(**args, python_executable=interpreter, print_fn=_quiet)
+        return f"hooks installed in {settings_path()} ({scope(args)})"
 
     def skills(sources: Mapping[str, Path], root: Path) -> str:
         foreign = _foreign_skills(sources, root)
-        installed = install_user_skills(
-            {name: path for name, path in sources.items() if name not in foreign},
-            root=root,
-            print_fn=lambda *_a, **_k: None,
-        )
+        wanted = {name: path for name, path in sources.items() if name not in foreign}
+        installed = install_user_skills(wanted, root=root, print_fn=_quiet)
         text = f"skills {', '.join(installed) or 'none'} in {root}"
+        missing = sorted(set(wanted) - set(installed))
+        if missing:
+            text += f"; NOT installed: {', '.join(missing)}, which could not be copied there"
         if foreign:
             text += (
                 f"; left {', '.join(foreign)} alone: a skill of that name carries no RE-call marker, so "
@@ -1035,27 +1033,13 @@ def install_client_extras(
         return text
 
     def codex_hooks() -> str:
-        if hookless:
-            return f"hooks not installed: {hookless}"
-        elsewhere = _hooks_bound_elsewhere(codex_hook_config_path(), project_root)
-        if elsewhere:
-            return f"hooks left bound to {elsewhere}; {codex_hook_config_path()} serves that project"
-        prompt_on, write_on, mode = _operator_choices(codex_hook_config_path())
-        target = install_codex_hooks(
-            dsn=dsn,
-            tenant=tenant,
-            embedder=embedder,
-            table=table,
-            write_time=write_time and write_on,
-            prompt_time=prompt_on,
-            write_time_connection_mode=mode,
-            project_root=project_root,
-            memory_root=memory_root,
-            python_executable=interpreter,
-            server_env=server_env,
-        )
+        left = refused(codex_hook_config_path())
+        if left:
+            return left
+        args = hook_args(codex_hook_config_path())
+        target = install_codex_hooks(**args, python_executable=interpreter)
         return (
-            f"hooks installed in {target} ({scope(write_on)}bound to {project_root}); "
+            f"hooks installed in {target} ({scope(args)}); "
             "Codex asks you to review and trust them before they run"
         )
 
