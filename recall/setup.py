@@ -65,6 +65,11 @@ MANUAL_MODEL = ""
 #: The `.env` keys the registered MCP server also needs. The server never reads `.env`, so each
 #: of these is copied into its registration as well; left only in `.env`, reranking and the
 #: reasoning arm never ran there and a cloud embedder had no key (issues 1393, 1394).
+#: The trust mode both registered servers start under. A corpus setup has just built is
+#: uncalibrated, which a strict server refuses with `INDEX_NOT_READY`; the Claude Code server
+#: always got this, while the Codex server got none and so ran strict (issue 1427).
+SETUP_TRUST_MODE = "development"
+
 SERVER_SETTING_KEYS = (
     "RECALL_RERANK",
     "RECALL_RERANK_MODEL",
@@ -1366,6 +1371,7 @@ def run_setup_wizard(
                 dsn=dsn,
                 embedder=embedder.value,
                 table=table or DEFAULT_TABLE,
+                trust_mode=SETUP_TRUST_MODE,
                 settings=_server_settings(values),
                 project_root=project_root,
                 print_fn=print_fn,
@@ -1404,7 +1410,7 @@ def run_setup_wizard(
                 write_time=write_time_requested,
                 prompt_time=prompt_time_requested,
                 project_root=project_root,
-                server_env=_server_settings(values),
+                server_env={**_server_settings(values), "RECALL_TRUST_MODE": SETUP_TRUST_MODE},
                 print_fn=print_fn,
             )
             print_fn(
