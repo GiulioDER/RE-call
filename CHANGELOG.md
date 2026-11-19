@@ -284,6 +284,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 - On a Lite server with the assistant surface, every `remember` and `delete` walked the memo folder
   twice before indexing, once for an unchanged check that a memo write always skips. They now walk
   it once, which saves about 1.4 s per write on a folder of 3,000 memos.
+- `recall provenance erase --yes` on a Lite store said nothing when another reader kept its closing
+  checkpoint from truncating the write-ahead log, or when its one-time VACUUM could not run, so
+  erased bytes could stay on disk while the answer read as complete. Its JSON now carries a
+  `warning` naming what is left and the command that finishes it, as `recall forget` already did.
 
 ### Security
 

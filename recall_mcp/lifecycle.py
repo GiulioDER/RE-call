@@ -235,19 +235,11 @@ def forget_memory(
 
 def _with_checkpoint_note(store: object, message: str) -> str:
     """`message`, saying so when a lite erase's closing checkpoint was blocked by a reader or its
-    one-time VACUUM failed."""
-    if getattr(store, "erase_vacuum_failed", False):
-        message = (
-            f"{message} Its one-time VACUUM could not run (it needs free disk about the size of the "
-            "store, and an unlocked file), so free pages from before this version may still hold "
-            "text deleted earlier; the next forget or withdraw tries it again."
-        )
-    if not getattr(store, "erase_checkpoint_blocked", False):
-        return message
-    return (
-        f"{message} Another reader kept the write-ahead log from being truncated, so erased bytes may "
-        "stay in it until the next checkpoint; run `recall forget --vacuum` once other readers close."
-    )
+    one-time VACUUM failed (`recall.lite.store.erase_note`)."""
+    from recall.lite.store import erase_note
+
+    note = erase_note(store, "recall forget --vacuum")
+    return f"{message} {note}" if note else message
 
 
 def withdraw_memory(
