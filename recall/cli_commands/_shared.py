@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+from collections.abc import Callable
 from typing import NamedTuple
 from pathlib import Path
 
@@ -52,6 +53,20 @@ def _make_embedder(name: str) -> Embedder:
             remediation="check `recall doctor` and install the extra named by the diagnostic",
         )
         raise SystemExit(diagnostic.render()) from exc
+
+
+def _rescue_embedder(name: str) -> Callable[[], Embedder]:
+    """`_make_embedder` for an atomic rescue build, raising RuntimeError where it exits, so each
+    rescue caller reports a failed construction with its own guidance (CCA CODE-012; the parent
+    run's BUG-005 added it for the publish path)."""
+
+    def make() -> Embedder:
+        try:
+            return _make_embedder(name)
+        except SystemExit as exc:
+            raise RuntimeError(f"the embedder could not be built: {exc}") from exc
+
+    return make
 
 
 def _typed_and_shell_embedder(args: argparse.Namespace) -> tuple[str, str]:

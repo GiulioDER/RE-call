@@ -304,15 +304,15 @@ def lexical_neighbours(
     vectors = _tfidf(bodies)
     names = sorted(vectors)
     index = {name: i for i, name in enumerate(names)}
-    rows: dict[str, list[int]] = {}
-    cols: dict[str, list[float]] = {}
+    posting_ids: dict[str, list[int]] = {}
+    posting_weights: dict[str, list[float]] = {}
     for name in names:
         for term, weight in vectors[name].items():
-            rows.setdefault(term, []).append(index[name])
-            cols.setdefault(term, []).append(weight)
+            posting_ids.setdefault(term, []).append(index[name])
+            posting_weights.setdefault(term, []).append(weight)
     postings = {
-        term: (np.array(rows[term], dtype=np.intp), np.array(cols[term], dtype=np.float64))
-        for term in rows
+        term: (np.array(posting_ids[term], dtype=np.intp), np.array(posting_weights[term], dtype=np.float64))
+        for term in posting_ids
     }
     pairs: dict[tuple[str, str], float] = {}
     for name in sorted(focus if focus is not None else vectors):

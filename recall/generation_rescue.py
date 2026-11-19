@@ -531,12 +531,18 @@ def build_lock(root: Path, generation_id: str) -> Iterator[bool]:
                 unlock(fh)
 
 
+#: How a generation's lock and backoff files are named under a root, parsed back by
+#: `_prune_inventory` (CCA CODE-005).
+_RESCUE_PREFIX = ".rescue-"
+_BACKOFF_SUFFIX = ".backoff.json"
+
+
 def _lock_path(root: Path, generation_id: str) -> Path:
-    return root / f".rescue-{generation_id}.lock"
+    return root / f"{_RESCUE_PREFIX}{generation_id}.lock"
 
 
 def _backoff_path(root: Path, generation_id: str) -> Path:
-    return root / f".rescue-{generation_id}.backoff.json"
+    return root / f"{_RESCUE_PREFIX}{generation_id}{_BACKOFF_SUFFIX}"
 
 
 def build_backoff(root: Path, generation_id: str, calibration_id: str) -> tuple[float, float] | None:
@@ -588,8 +594,8 @@ def _prune_inventory(root: Path, generations: set[str], doomed: set[str]) -> dic
     with os.scandir(root) as entries:
         for entry in entries:
             name = entry.name
-            if name.startswith(".rescue-") and name.endswith(".backoff.json"):
-                generation_id = name[len(".rescue-"):-len(".backoff.json")]
+            if name.startswith(_RESCUE_PREFIX) and name.endswith(_BACKOFF_SUFFIX):
+                generation_id = name[len(_RESCUE_PREFIX):-len(_BACKOFF_SUFFIX)]
                 if generation_id in doomed:
                     work.setdefault(generation_id, [])
 
@@ -697,16 +703,30 @@ def erase_forgotten(
     if root is None:
         return 0, 0
     erased = 0
-    views_path = root / VIEW_STORE_NAME
-    if texts and views_path.is_file():
-        with AtomicViewStore(views_path) as views:
-            erased = views.erase_digests({chunk_view_digest(text) for text in texts})
     named = set(sources)
     removed = 0
     failures: list[str] = []
+    views_path = root / VIEW_STORE_NAME
+    if texts and views_path.is_file():
+        try:
+            with AtomicViewStore(views_path) as views:
+                erased = views.erase_digests({chunk_view_digest(text) for text in texts})
+        except Exception as exc:  # BROAD-CATCH: error-translation  # reported below, after the artifacts go
+            # The artifacts hold the same vectors, so a view store that could not be erased (a
+            # reader blocking its checkpoint) must not keep them too (CCA STAKES-005).
+            failures.append(f"the views in {views_path} could not be erased: {exc}")
     for gid in sorted(generation_ids):
         try:
             _key_manifest(root, gid)
+            if (
+                not _lock_path(root, gid).exists()
+                and not generation_artifact_dirs(root, gid)
+                and not _staging_artifact_dirs(root, gid)
+            ):
+                # Nothing was ever built here, so there is nothing to remove, and taking the lock
+                # would create a file for it at every forget (CCA PERF-007). A lock file that
+                # exists is taken as before: a writer may hold it before its stage is visible.
+                continue
             with build_lock(root, gid) as held:
                 if not held:
                     failures.append(f"atomic rescue for {gid} is still being built")

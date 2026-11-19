@@ -2,8 +2,9 @@
 
 The sequence is build, validate, calibrate, publish, rescue, promote. `rescue` builds the
 generation's atomic rescue artifact when the caller passes a builder (`recall.generation_rescue`),
-because a generation promoted without one refuses every unscoped search under an active rescue; a
-build that fails therefore refuses the promotion, exactly as a failed publish does.
+because a generation promoted without one refuses every unscoped search under an active rescue
+with RECALL_ATOMIC_RESCUE_WHEN_MISSING=refuse (the default); a build that fails therefore refuses
+the promotion, exactly as a failed publish does.
 
 **Promote is last because it is the irreversible step**, and because it retires whatever the tenant
 was serving. Between promotion and a published calibration the tenant is live with no calibration

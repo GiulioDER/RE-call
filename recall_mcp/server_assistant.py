@@ -39,7 +39,7 @@ from recall_mcp.server_common import _ToolDeps, _parse_as_of
 class _HeldTools:
     """Holds the named `@mcp.tool(...)` declarations back instead of registering them.
 
-    The assistant surface serves four existing tools in another form. Holding their declarations
+    The assistant surface serves five existing tools in another form. Holding their declarations
     keeps the registration functions untouched (a held tool's body stays callable, and what is not
     held passes straight through), and `register` publishes the replacement under the held
     declaration's annotations and description, so only the parameters and the answer change.
@@ -97,7 +97,8 @@ def _register_assistant_tools(mcp: MCPServer, deps: _ToolDeps, held: _HeldTools)
     Registered only when RECALL_ASSISTANT_MEMOS names a memo folder on a lite store
     (`recall_mcp.assistant`). The compact `recall_search` and `recall_evidence` offer only the
     parameters an assistant uses; `recall_current_facts` and `recall_apply_fact` keep theirs. All
-    six answer in `assistant_dumps` form, and their descriptions are the held declarations'.
+    seven answer in `assistant_dumps` form except `recall_withdraw`, which answers `WithdrawResult`
+    JSON as the plain tool does; their descriptions are the held declarations'.
     """
     assistant = deps.assistant
     if assistant is None:

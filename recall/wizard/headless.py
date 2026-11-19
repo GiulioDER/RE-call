@@ -1512,15 +1512,13 @@ def _with_rescue(
 def _cli_rescue_env(blocks: tuple[ServerBlock, ...]) -> dict[str, str]:
     """The rescue settings for the project `.env`, so a `recall generation promote` run there builds.
 
-    Per tenant, since one `.env` serves every tenant of the project and only some are active.
+    Per tenant, since one `.env` serves every tenant of the project and only some are active. A
+    tenant pinned off is written too: without its entry the CLI fell back to whatever
+    RECALL_ATOMIC_RESCUE_MODE the shell exports, where its server does not (CCA ENV-003).
     """
     from recall.lite.atomic import MODE_BY_TENANT_ENV, MODE_ENV, ROOT_ENV, WHEN_MISSING_ENV
 
-    modes = ",".join(
-        f"{block.tenant}:{block.env[MODE_ENV]}"
-        for block in blocks
-        if block.env.get(MODE_ENV, "off") != "off"
-    )
+    modes = ",".join(f"{block.tenant}:{block.env[MODE_ENV]}" for block in blocks if MODE_ENV in block.env)
     root = next((block.env[ROOT_ENV] for block in blocks if ROOT_ENV in block.env), "")
     when_missing = next((block.env[WHEN_MISSING_ENV] for block in blocks if WHEN_MISSING_ENV in block.env), "")
     return {

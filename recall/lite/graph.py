@@ -275,19 +275,18 @@ def load_graph(conn: sqlite3.Connection, tenant: str) -> SemanticGraphProjection
     return graph if graph.fingerprint == marker.get("graph_fingerprint") else None
 
 
-def graph_of(conn: sqlite3.Connection, tenant: str, chunks: Sequence[Chunk]) -> SemanticGraphProjection:
+def graph_of(
+    conn: sqlite3.Connection, tenant: str, chunks: Sequence[Chunk], corpus_fingerprint: str
+) -> SemanticGraphProjection:
     """The stored graph, else one built in memory from `chunks`, every chunk of the file as the
     caller read it on `conn`, and not stored.
 
     For a reader holding a read-only connection (the dashboard), which cannot write the graph but
-    must not draw a missing one as an empty corpus. Only the vectors are read again, for the
-    fingerprint: the caller has the text already (CCA PERF-003).
+    must not draw a missing one as an empty corpus. `corpus_fingerprint` is
+    `LiteStore.corpus_fingerprint` of those chunks, which the caller computes in the read it made
+    of them: reading every vector again for it doubled a large file's read (CCA PERF-003, PERF-002).
     """
     loaded = load_graph(conn, tenant)
     if loaded is not None:
         return loaded
-    from recall.lite.store import corpus_fingerprint_of
-
-    vectors = dict(conn.execute("SELECT id, embedding FROM chunks").fetchall())
-    fingerprint = corpus_fingerprint_of((c.id, c.text, vectors[c.id]) for c in chunks)
-    return build_graph(chunks, tenant=tenant, corpus_fingerprint=fingerprint)
+    return build_graph(chunks, tenant=tenant, corpus_fingerprint=corpus_fingerprint)

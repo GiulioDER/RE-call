@@ -205,9 +205,9 @@ With `project_root` set:
   Restart Claude Code afterwards. It reads this file at startup.
 - **`.env`** — the serving DSN and embedder, for the CLI. **Not** for the MCP servers: a stdio server
   launched with an explicit `env` block inherits nothing, so each server carries its own variables.
-  It also carries the atomic rescue settings, `RECALL_ATOMIC_RESCUE_MODE_BY_TENANT` and
-  `RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT`, so a `recall generation promote` run in the project builds
-  the artifact its server needs.
+  It also carries the atomic rescue settings, `RECALL_ATOMIC_RESCUE_MODE_BY_TENANT` (every tenant,
+  `off` included), `RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT` and `RECALL_ATOMIC_RESCUE_WHEN_MISSING`, so a
+  `recall generation promote` run in the project builds the artifact its server needs.
 - **`CLAUDE.md`** and **`memory/MEMORY.md`** — block-scoped edits between markers, so your own file
   content is preserved.
 
@@ -373,6 +373,11 @@ has no Python and is not going to get one.
 pip install pyinstaller
 cd packaging && python -m PyInstaller recall-install.spec --noconfirm --distpath ../dist
 ```
+
+The MCP servers a frozen installer registers run `recall-install.exe --mcp-stdio` from the folder
+the bundle was unpacked to, so that folder must stay where it is after the install; moving or
+deleting it stops every registered server until the installer runs again. The installer says so
+when it finishes.
 
 Two choices in that spec are not preferences:
 

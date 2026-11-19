@@ -47,6 +47,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from recall.atomic_rescue import (
+    ARTIFACT_FILES,
     AtomicRescueArtifact,
     AtomicRescueArtifactError,
     artifact_names_any,
@@ -69,10 +70,10 @@ if TYPE_CHECKING:
 _log = get_logger(__name__)
 
 __all__ = [
-    "MODE_BY_TENANT_ENV", "MODE_ENV", "BuildReport", "RescueSettingError", "artifact_in_force",
-    "artifact_root", "configured_root", "ensure_rescue_artifact", "erase_forgotten", "erase_replaced",
-    "manifest_path", "rescue_active", "rescue_settings", "serving_manifest", "store_default_root",
-    "unreached_rescue_roots",
+    "CLI_RESCUE_KEYS", "MODE_BY_TENANT_ENV", "MODE_ENV", "ROOT_ENV", "VIEW_STORE_NAME", "WHEN_MISSING_ENV",
+    "BuildReport", "RescueSettingError", "artifact_in_force", "artifact_root", "configured_root",
+    "ensure_rescue_artifact", "erase_forgotten", "erase_replaced", "manifest_path", "rescue_active",
+    "rescue_settings", "serving_manifest", "store_default_root", "unreached_rescue_roots",
 ]
 
 ROOT_ENV = "RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT"
@@ -83,8 +84,9 @@ VIEW_STORE_NAME = "micro-views.sqlite"
 #: The directory names of artifacts, in a store's folder and, from the flat layout, at the top of
 #: the root: a build counts them and a forget reports any that may retain erased content.
 _ARTIFACT_NAME = re.compile(r"lite-[0-9a-f]{16}\.cal_[0-9a-f]+")
-#: The files `write_atomic_rescue_artifact` publishes in an artifact's directory.
-_MEMBERS = ("manifest.json", "views.json", "matrix.npy")
+#: The settings an installer writes for the CLI, which `recall.wizard.wiring` replaces on every run
+#: (CCA CODE-010).
+CLI_RESCUE_KEYS = (MODE_BY_TENANT_ENV, ROOT_ENV, WHEN_MISSING_ENV)
 
 
 class RescueSettingError(ValueError, RecallError):
@@ -230,7 +232,6 @@ def ensure_rescue_artifact(
     """
     from recall import __version__
     from recall.atomic_view_store import AtomicViewStore, assemble
-    from recall.calibration_v2 import CalibrationStatus
     from recall.embeddings import embed_document_groups, embedding_profile, embedding_profile_id
     from recall.lite.writer_lock import _mutex
 
@@ -240,9 +241,9 @@ def ensure_rescue_artifact(
     # Before an artifact another environment built could be taken for a damaged one and removed.
     require_atomic_dependency()
     resolution = store.resolve_calibration()
-    if resolution.status is not CalibrationStatus.CERTIFIED or resolution.artifact is None:
+    calibration_id = _certified_calibration_id(resolution)
+    if calibration_id is None:
         return BuildReport(None, f"not built: the calibration is {resolution.status.value}")
-    calibration_id = resolution.artifact.calibration_id
     binding = store.generation_binding()
     generation_id, corpus_fingerprint = binding["generation_id"], binding["corpus_fingerprint"]
     manifest = manifest_path(root, store, generation_id, calibration_id)  # refuses a relative root
@@ -263,7 +264,7 @@ def ensure_rescue_artifact(
             # them, unless an interrupted removal left part of it. Checked on disk first, because the
             # loader answers a key it has cached without reading the directory again; then loaded in
             # full, since only the verified load can tell a damaged matrix, which must be rebuilt.
-            if all((manifest.parent / name).is_file() for name in _MEMBERS):
+            if all((manifest.parent / name).is_file() for name in ARTIFACT_FILES):
                 try:
                     load_atomic_rescue_artifact(manifest).assert_lineage(**lineage, embedder=embedder)
                     return BuildReport(manifest, f"in force for {generation_id}")
@@ -369,7 +370,7 @@ def _sibling(
 ) -> AtomicRescueArtifact | None:
     """A complete artifact of this corpus under another calibration, verified; None when there is none."""
     for entry in sorted(directory.parent.glob(f"{generation_id}.*")):
-        if entry == directory or not all((entry / name).is_file() for name in _MEMBERS):
+        if entry == directory or not all((entry / name).is_file() for name in ARTIFACT_FILES):
             continue
         try:
             artifact = load_atomic_rescue_artifact(entry / "manifest.json")
@@ -404,31 +405,42 @@ def erase_forgotten(
     erased = removed = 0
     named = set(sources)
     unowned: list[Path] = []
+    # Each step's failure is reported after the others ran: the views and the artifacts hold the
+    # same vectors, and one root failing must not leave the next ones unerased (CCA STAKES-005).
+    failures: list[str] = []
     for root in _forget_roots(store, env):
         if not root.is_dir():
             continue
         views_path = root / VIEW_STORE_NAME
         if texts and views_path.is_file():
-            with AtomicViewStore(views_path) as views:
-                erased += views.erase_digests({chunk_view_digest(text) for text in texts})
-        own = _store_folder(root, store)
-        own.mkdir(parents=True, exist_ok=True)
-        with _mutex(own, "publish"):
-            keep = _key_in_force(store)
-            doomed = [
-                entry for entry in own.iterdir()
-                if entry.name != keep and entry.is_dir() and _ARTIFACT_NAME.fullmatch(entry.name)
-            ]
-            removed += remove_artifact_directories(doomed, root)
+            try:
+                with AtomicViewStore(views_path) as views:
+                    erased += views.erase_digests({chunk_view_digest(text) for text in texts})
+            except Exception as exc:  # BROAD-CATCH: error-translation  # raised below, after the rest
+                failures.append(f"the views in {views_path} could not be erased: {exc}")
+        try:
+            own = _store_folder(root, store)
+            own.mkdir(parents=True, exist_ok=True)
+            with _mutex(own, "publish"):
+                keep = _key_in_force(store)
+                doomed = [
+                    entry for entry in own.iterdir()
+                    if entry.name != keep and entry.is_dir() and _ARTIFACT_NAME.fullmatch(entry.name)
+                ]
+                removed += remove_artifact_directories(doomed, root)
+        except (AtomicRescueArtifactError, OSError) as exc:
+            failures.append(str(exc))
         unowned += [
             entry for entry in root.iterdir()
             if entry.is_dir() and _ARTIFACT_NAME.fullmatch(entry.name) and artifact_names_any(entry, named)
         ]
     if unowned:
-        raise AtomicRescueArtifactError(
+        failures.append(
             "legacy atomic rescue artifact owner is unknown; confirm ownership before removing "
             + ", ".join(str(entry) for entry in sorted(unowned))
         )
+    if failures:
+        raise AtomicRescueArtifactError("; ".join(failures))
     return erased, removed
 
 
@@ -479,14 +491,22 @@ def unreached_rescue_roots(store: LiteStore) -> list[str]:
     return [root for root in store.rescue_roots() if not Path(root).is_dir()]
 
 
-def _key_in_force(store: LiteStore) -> str | None:
-    """The artifact key the store resolves now (`manifest_path`); None without a certified calibration."""
+def _certified_calibration_id(resolution: Any) -> str | None:
+    """The calibration a rescue artifact is built for: the resolved one when it is certified, else
+    None, one rule for the builder and the in-force checks (CCA CODE-019)."""
     from recall.calibration_v2 import CalibrationStatus
 
-    resolution = store.resolve_calibration()
     if resolution.status is not CalibrationStatus.CERTIFIED or resolution.artifact is None:
         return None
-    return f"{store.generation_binding()['generation_id']}.{resolution.artifact.calibration_id}"
+    return str(resolution.artifact.calibration_id)
+
+
+def _key_in_force(store: LiteStore) -> str | None:
+    """The artifact key the store resolves now (`manifest_path`); None without a certified calibration."""
+    calibration_id = _certified_calibration_id(store.resolve_calibration())
+    if calibration_id is None:
+        return None
+    return f"{store.generation_binding()['generation_id']}.{calibration_id}"
 
 
 def artifact_in_force(store: LiteStore, root: Path) -> bool:
@@ -494,14 +514,12 @@ def artifact_in_force(store: LiteStore, root: Path) -> bool:
 
     The trust gate verifies the artifact and its lineage when it loads it.
     """
-    from recall.calibration_v2 import CalibrationStatus
-
-    resolution = store.resolve_calibration()
-    if resolution.status is not CalibrationStatus.CERTIFIED or resolution.artifact is None:
+    calibration_id = _certified_calibration_id(store.resolve_calibration())
+    if calibration_id is None:
         return False
     generation_id = store.generation_binding()["generation_id"]
-    directory = serving_manifest(root, store, generation_id, resolution.artifact.calibration_id).parent
-    return all((directory / name).is_file() for name in _MEMBERS)
+    directory = serving_manifest(root, store, generation_id, calibration_id).parent
+    return all((directory / name).is_file() for name in ARTIFACT_FILES)
 
 
 def _remove_others(folder: Path, *, keep: Container[str | None]) -> None:

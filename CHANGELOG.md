@@ -134,6 +134,34 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   erasure lock that forget and withdraw hold, so a fact applied between its two reads could be
   retracted without its key's lock. It now holds that lock exclusively while it retracts; a lock
   timeout leaves the retraction to the next gc.
+- On an authenticated server, a forget or withdraw that could not reach an atomic rescue root
+  named its host path in the answer to the calling client. It now says how many roots, and the
+  server log names them; a local (stdio) server and the CLI still name them.
+- A forget whose atomic rescue view store could not be erased (a reader blocking its checkpoint)
+  skipped removing the rescue artifacts that hold the same vectors, and on Lite every root after
+  it. It now removes them and reports the view store's failure.
+- A PostgreSQL forget took, and left, a lock file under the rescue root for every generation the
+  tenant ever built. It now skips a generation with nothing there.
+- A failed `recall generation build` whose embedding cache could not erase the failed source's
+  entries reported the cache error instead of the failure that stopped the build.
+- `recall calibration auto --json` printed the atomic rescue line after its JSON on stdout; it now
+  goes to stderr.
+- `recall generation rollback` on a tenant with no previous generation now refuses at once. Before,
+  it rolled back with no check of its target, so a promote landing meanwhile could be undone.
+- `recall generation promote` or `rollback` under an active rescue whose embedder could not be built
+  exited with only the embedder's error; it now says the generation was not promoted and why.
+- The project `.env` the wizard writes now lists every tenant's rescue mode, `off` included, so a
+  `RECALL_ATOMIC_RESCUE_MODE` exported in the shell no longer reaches a tenant its server keeps off.
+- A server of several tenants with `RECALL_ATOMIC_RESCUE_WHEN_MISSING=skip` builds no missing
+  artifact; it now says so at startup.
+- Under `skip`, a damaged rescue artifact was read and hashed in full on every search; a failed
+  verification is now remembered for a minute while its files are unchanged.
+- The dashboard on a Lite store read every vector twice to draw a graph the store had not kept, and
+  assembled View 1 and the import edges again on every request for an unchanged file.
+- With the system's reduced motion setting on, the dashboard's graph was never laid out: every memo
+  stayed on its starting sphere. It is now laid out at once, then shown still.
+- The frozen Windows installer now says, when it finishes, that the servers it registered run from
+  its folder, which must stay where it is.
 - A Lite forget erased the atomic rescue only under the root its own process named, or the
   default beside the store, so `recall forget` from a shell without
   `RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT` left the view vectors and artifacts under the root the MCP

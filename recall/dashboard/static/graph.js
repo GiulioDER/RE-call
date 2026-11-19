@@ -50,6 +50,8 @@
   let selected = null;
   let matches = null;
   let alpha = 0;
+  // One keypress or button press zooms by this factor, in or out (CCA CODE-018).
+  const ZOOM_STEP = 1.2;
   let palette = {};
   let stars = [];
   let labelBoxes = [];
@@ -70,7 +72,6 @@
     const css = getComputedStyle(document.documentElement);
     const v = (name) => css.getPropertyValue(name).trim();
     palette = {
-      brass: v("--edge-link"),
       ground: v("--ground"),
       current: v("--node-current"),
       superseded: v("--node-superseded"),
@@ -236,11 +237,21 @@
     });
     // Reheat only as much as the change needs, so a filter or a date step does not scramble the
     // picture the person is looking at.
-    alpha = reducedMotion.matches ? 0 : Math.max(alpha, wasEmpty ? 1 : placed ? 0.35 : 0.08);
+    alpha = Math.max(alpha, wasEmpty ? 1 : placed ? 0.35 : 0.08);
+    if (reducedMotion.matches) settle();
     if (hops > 0 && selected) fitDistance();
     updateCounts();
     renderLegend();
     needsDraw = true;
+  }
+
+  // Under reduced motion the layout is computed at once and then held still: zeroing the heat
+  // instead left every memo on its starting sphere, with no link pulling anything together
+  // (CCA BUG-005).
+  function settle() {
+    while (alpha > 0.004) tick();
+    alpha = 0;
+    if (!selected && !flight && !cameraAdjusted) fitDistance();
   }
 
   function tick() {
@@ -396,7 +407,7 @@
     ctx.clearRect(0, 0, w, h);
 
     // An unlabelled, stationary layer of light behind the interactive nodes.
-    ctx.fillStyle = palette.brass;
+    ctx.fillStyle = palette.link;  // the star field shares the link edges' colour
     for (const s of stars) {
       ctx.globalAlpha = s.opacity;
       ctx.beginPath();
@@ -733,14 +744,14 @@
       panX += x;
       panY += y;
       steer();
-    } else if (ev.key === "+" || ev.key === "=") zoom(1.2);
-    else if (ev.key === "-" || ev.key === "−") zoom(1 / 1.2);
+    } else if (ev.key === "+" || ev.key === "=") zoom(ZOOM_STEP);
+    else if (ev.key === "-" || ev.key === "−") zoom(1 / ZOOM_STEP);
     else if (ev.key === "Home") fitGraph();
     else return;
     ev.preventDefault();
   });
-  document.getElementById("zoom-in").addEventListener("click", () => zoom(1.2));
-  document.getElementById("zoom-out").addEventListener("click", () => zoom(1 / 1.2));
+  document.getElementById("zoom-in").addEventListener("click", () => zoom(ZOOM_STEP));
+  document.getElementById("zoom-out").addEventListener("click", () => zoom(1 / ZOOM_STEP));
   document.getElementById("fit").addEventListener("click", fitGraph);
 
   const STATE_LABEL = { current: "current", superseded: "superseded", expired: "expired", not_yet_valid: "not yet valid", invalid_metadata: "validity dates search cannot read", ambiguous: "ambiguous supersession", pending: "pending review" };
@@ -933,7 +944,7 @@
       Object.assign(cam, flight.to);
       flight = null;
     }
-    if (reducedMotion.matches) alpha = 0;
+    if (reducedMotion.matches) settle();
     needsDraw = true;
   }
   toggles.motion.addEventListener("change", () => {

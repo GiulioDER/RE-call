@@ -290,7 +290,8 @@ def test_only_a_tenant_this_run_built_for_is_served_active(tmp_path: Path) -> No
     assert [b.env["RECALL_ATOMIC_RESCUE_MODE"] for b in blocks] == ["active", "off", "off"]
     assert all(b.env[ROOT_ENV] == root for b in blocks)
     assert _cli_rescue_env(blocks) == {
-        "RECALL_ATOMIC_RESCUE_MODE_BY_TENANT": "p-docs:active", ROOT_ENV: root,
+        # Pinned-off tenants are written too, so a shell mode cannot reach them (CCA ENV-003).
+        "RECALL_ATOMIC_RESCUE_MODE_BY_TENANT": "p-docs:active,p-code:off,p-memory:off", ROOT_ENV: root,
         "RECALL_ATOMIC_RESCUE_WHEN_MISSING": "refuse",
     }
 

@@ -15,7 +15,7 @@ from recall.index import (
     DEFAULT_OVERLAP_CHARS,
 )
 
-from recall.cli_commands._shared import _make_embedder, _positive_int
+from recall.cli_commands._shared import _make_embedder, _positive_int, _rescue_embedder
 from recall.security_policy import access_context_from_environment, load_source_policy
 
 if TYPE_CHECKING:
@@ -256,15 +256,16 @@ def _report_stated_facts(count: int) -> None:
 def _rescue_before_serving(args: argparse.Namespace, generation_id: str, action: str) -> None:
     """Build `generation_id`'s atomic rescue when it is active for the tenant, or refuse `action`.
 
-    Under an active rescue a generation without its artifact refuses every unscoped search, so
-    promoting or rolling back to one is refused rather than done (`recall.generation_rescue`).
+    Under an active rescue with RECALL_ATOMIC_RESCUE_WHEN_MISSING=refuse (the default) a generation
+    without its artifact refuses every unscoped search, so promoting or rolling back to one is
+    refused rather than done (`recall.generation_rescue`).
     """
     from recall.atomic_rescue import AtomicRescueArtifactError
     from recall.generation_rescue import ensure_for_promotion
 
     try:
         built = ensure_for_promotion(
-            args.dsn, args.tenant, generation_id, lambda: _make_embedder(args.embedder)
+            args.dsn, args.tenant, generation_id, _rescue_embedder(args.embedder)
         )
     except (AtomicRescueArtifactError, RuntimeError, OSError) as exc:
         raise SystemExit(
@@ -273,8 +274,9 @@ def _rescue_before_serving(args: argparse.Namespace, generation_id: str, action:
             "serve it without the rescue, turn the rescue off for this tenant in its MCP server's "
             "configuration AND here, with tenant:off in RECALL_ATOMIC_RESCUE_MODE_BY_TENANT (an "
             "entry there, which the setup wizard writes to the project .env, overrides "
-            "RECALL_ATOMIC_RESCUE_MODE=off); turned off here only, the server would refuse every "
-            "unscoped search on it."
+            "RECALL_ATOMIC_RESCUE_MODE=off); turned off here only, a server with "
+            "RECALL_ATOMIC_RESCUE_WHEN_MISSING=refuse (the default) would refuse every unscoped "
+            "search on it."
         ) from exc
     if built:
         print(f"atomic rescue: {built}")
@@ -319,8 +321,11 @@ def _cmd_generation(args: argparse.Namespace) -> None:
         from recall.generation_types import InvalidGenerationTransition
 
         target = manager.previous_generation_id()
-        if target is not None:
-            _rescue_before_serving(args, target, "rolled back")
+        if target is None:
+            # `rollback(expected_target=None)` checks no target, so a promote landing meanwhile
+            # would be undone and its predecessor served without its rescue (CCA BUG-004).
+            raise SystemExit("not rolled back: this tenant has no previous generation to roll back to")
+        _rescue_before_serving(args, target, "rolled back")
         try:
             restored = manager.rollback(expected_target=target)
         except InvalidGenerationTransition as exc:

@@ -192,6 +192,7 @@ def forget_memory(
     security_context: AccessContext | None = None,
     *,
     erase_memo_requests: bool = True,
+    name_rescue_roots: bool = True,
 ) -> ForgetResult:
     """Permanently delete every indexed chunk for the given sources, and erase the fact values
     they supplied.
@@ -210,6 +211,9 @@ def forget_memory(
     loses its request journal hashes, whether or not its file is still on disk.
     `erase_memo_requests=False` is for `recall_forget_memo`, which erases them itself just before
     it deletes the file, and puts them back if the delete fails.
+
+    `name_rescue_roots=False` (an authenticated server) puts the atomic rescue roots the erasure
+    could not reach in the server log and only their number in the message.
     """
     from recall.backends import write_session
     from recall.lite import LiteStore
@@ -224,7 +228,7 @@ def forget_memory(
     with write_session(store, "forget"), _erasure_lock(store), erasing, pending as scrub_pending:
         result = _forget_memory_unlocked(
             store, sources, shadow_store, scrub_pending, security_policy, security_context,
-            erase_memo_requests=erase_memo_requests,
+            erase_memo_requests=erase_memo_requests, name_rescue_roots=name_rescue_roots,
         )
     return result.model_copy(update={"message": _with_checkpoint_note(store, result.message)})
 
@@ -255,6 +259,7 @@ def withdraw_memory(
     security_context: AccessContext | None = None,
     *,
     erase_memo_requests: bool = True,
+    name_rescue_roots: bool = True,
 ) -> WithdrawResult:
     """Withdraw memos that were a mistake: erase them as `forget_memory` does, and give back what
     they superseded (owner decision, 2026-10-22).
@@ -279,7 +284,7 @@ def withdraw_memory(
     with write_session(store, "forget"), _erasure_lock(store), erasing, pending as scrub_pending:
         result = _forget_memory_unlocked(
             store, sources, shadow_store, scrub_pending, security_policy, security_context,
-            withdraw=True, erase_memo_requests=erase_memo_requests,
+            withdraw=True, erase_memo_requests=erase_memo_requests, name_rescue_roots=name_rescue_roots,
         )
     return WithdrawResult(
         chunks_removed=result.chunks_removed,
@@ -476,6 +481,7 @@ def _forget_memory_unlocked(
     *,
     withdraw: bool = False,
     erase_memo_requests: bool = True,
+    name_rescue_roots: bool = True,
 ) -> ForgetResult:
     """`forget_memory` (or with `withdraw`, `withdraw_memory`) without the lite store's write
     lane; call one of those."""
@@ -757,10 +763,18 @@ def _forget_memory_unlocked(
             f" Erased {rescue_views_erased} atomic rescue view set(s) and removed "
             f"{rescue_artifacts_removed} rescue artifact(s) built with the deleted text."
         )
+    if (failed_roots or unreached_roots) and not name_rescue_roots:
+        # Host paths stay on the host: an authenticated caller is told how many, and the server
+        # log names them (CCA SEC-002, as #1379 does for a failed refresh).
+        _log.warning(
+            "atomic rescue roots left unerased for tenant %r: failed %s, unreachable %s",
+            store.tenant, failed_roots, unreached_roots,
+        )
     if failed_roots:
+        named = ", ".join(failed_roots) if name_rescue_roots else f"{len(failed_roots)} root(s) the server log names"
         message += (
             f" WARNING: the chunk deletion succeeded but erasing them from the atomic rescue under "
-            f"{', '.join(failed_roots)} failed. A view store or artifact folder there may still "
+            f"{named} failed. A view store or artifact folder there may still "
             "hold the deleted vectors, and a re-run finds no rows to erase them by. Wait for "
             "active rescue builds to finish and confirm artifact ownership before removing affected files."
         )
@@ -772,8 +786,9 @@ def _forget_memory_unlocked(
         )
     if chunks_removed and unreached_roots:
         # A re-run finds no rows to erase them by, so the operator is told where they are.
+        where = ", ".join(unreached_roots) if name_rescue_roots else f"{len(unreached_roots)} root(s) the server log names"
         message += (
-            f" NOTE: an atomic rescue of this tenant was built under {', '.join(unreached_roots)}, "
+            f" NOTE: an atomic rescue of this tenant was built under {where}, "
             "which this process cannot reach, so nothing the rescue keeps there was erased: its "
             "micro-views.sqlite and the artifact folders under it still hold the deleted text's "
             "vectors; delete them there, which costs only a rebuild. A root gone for good is named "

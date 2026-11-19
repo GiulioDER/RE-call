@@ -43,7 +43,7 @@ and [WIZARD.md](WIZARD.md).
 | `RECALL_ATOMIC_RESCUE_MODE` | `off`; setup and the wizard write `active` | `off`, `shadow` (sampled) or `active`. |
 | `RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT` | Unset; Lite setup writes a folder beside the store, the wizard `<project_root>/.recall/atomic` | Absolute folder holding the artifacts; `active` refuses without it. |
 | `RECALL_ATOMIC_RESCUE_MODE_BY_TENANT` | Unset | `tenant:mode,...` for a server that serves several tenants; a tenant it does not name keeps `RECALL_ATOMIC_RESCUE_MODE`. |
-| `RECALL_ATOMIC_RESCUE_WHEN_MISSING` | `refuse`; the wizard writes `skip` beside the desktop app's Docker services | `skip` answers as with the rescue off when the artifact is missing, for another calibration or damaged, reports why in `atomic_rescue_skipped`, and lets a PostgreSQL server build it in the background. |
+| `RECALL_ATOMIC_RESCUE_WHEN_MISSING` | `refuse`; the wizard writes `skip` beside the desktop app's Docker services | `skip` answers as with the rescue off when the artifact is missing, for another calibration or damaged, reports why in `atomic_rescue_skipped`, and lets a PostgreSQL server of one tenant build it in the background (a server of several tenants builds nothing, warns at startup, and needs `recall generation rescue`). |
 
 ## Claude Code and Codex hooks
 

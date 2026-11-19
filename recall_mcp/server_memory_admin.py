@@ -87,6 +87,8 @@ def _register_memory_admin_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
                         control,
                         security_policy=state.get("source_security_policy"),
                         security_context=security_context,
+                        # An authenticated server (a store registry) keeps host paths in its log.
+                        name_rescue_roots=registry is None,
                     ).model_dump_json(indent=2)
                 )
         except (ErasurePreflightRefused, LiteWriterBusy):

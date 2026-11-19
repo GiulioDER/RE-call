@@ -418,9 +418,9 @@ def test_g13_a_file_page_keeps_the_graph_until_the_corpus_moves(numbered: LiteSt
     monkeypatch.setattr(lite_db, "_GRAPHS", {})
     real, calls = lite_graph.graph_of, []
 
-    def counted(conn: sqlite3.Connection, tenant: str, chunks: list[Chunk]) -> object:
+    def counted(conn: sqlite3.Connection, tenant: str, chunks: list[Chunk], fingerprint: str) -> object:
         calls.append(tenant)
-        return real(conn, tenant, chunks)
+        return real(conn, tenant, chunks, fingerprint)
 
     monkeypatch.setattr(lite_graph, "graph_of", counted)
     dsn = "sqlite:///" + numbered.path.as_posix()

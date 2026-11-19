@@ -41,8 +41,12 @@ def store_path(dsn: str) -> Path:
         raise DatabaseUnavailable(str(exc)) from exc
 
 
+#: What `_corpus_stamp` observes of a file and its write-ahead log (CCA CODE-008).
+_FileStamp = tuple[tuple[int, ...] | None, ...] | None
+
+
 class _ReadConnection(sqlite3.Connection):
-    file_stamp: tuple[tuple[int, ...] | None, ...] | None = None
+    file_stamp: _FileStamp = None
 
 
 @contextmanager
@@ -356,7 +360,7 @@ def _corpus(c: sqlite3.Connection, tenant: str) -> tuple[list[_CorpusRow], Super
     # One read view for the rows, the records and the graph, so a graph kept under the rows'
     # digest is the graph of those rows (`recall.lite.inspect` opens one for the same reason).
     c.execute("BEGIN")
-    key = (str(c.execute("PRAGMA database_list").fetchone()[2]), tenant)
+    key = _file_key(c, tenant)
     files = getattr(c, "file_stamp", None)
     if files != _corpus_stamp(Path(key[0])):
         files = None
@@ -371,11 +375,15 @@ def _corpus(c: sqlite3.Connection, tenant: str) -> tuple[list[_CorpusRow], Super
         _CORPORA.pop(key, None)
     digest = hashlib.sha256(version.encode())
     ordered = []
+    # Hashes only, for the corpus fingerprint a graph built here needs: reading every vector again
+    # for it doubled the read of a large file (CCA PERF-002).
+    hashed: list[tuple[str, bytes, bytes]] = []
     for rowid, cid, source, text, raw, indexed, first, embedding in c.execute(
         "SELECT rowid, id, source, text, metadata, indexed_at, first_indexed_at, embedding FROM chunks ORDER BY id"
     ):
         digest.update("\0".join(("", cid, source, text, raw, indexed)).encode())
         digest.update(embedding)
+        hashed.append((cid, hashlib.sha256(text.encode("utf-8")).digest(), hashlib.sha256(embedding).digest()))
         metadata = _payload(raw)
         file = metadata["file"] if isinstance(metadata.get("file"), str) else source
         ordinal = metadata_ordinal(metadata)
@@ -386,16 +394,21 @@ def _corpus(c: sqlite3.Connection, tenant: str) -> tuple[list[_CorpusRow], Super
         sqlite_records(c, "chunks"),
         tenant,
     )
-    result = chunks, winner, _semantic_graph(c, tenant, digest.hexdigest(), chunks)
+    result = chunks, winner, _semantic_graph(c, tenant, digest.hexdigest(), chunks, hashed)
     if files is not None and files == _corpus_stamp(Path(key[0])):
         with _CORPUS_LOCK:
             _CORPORA[key] = (stamp, result)
-            for old in list(_CORPORA)[:-8]:
+            for old in list(_CORPORA)[:-_MAX_CORPORA]:
                 _CORPORA.pop(old, None)
     return result
 
 
-def _corpus_stamp(path: Path) -> tuple[tuple[int, ...] | None, ...] | None:
+def _file_key(c: sqlite3.Connection, tenant: str) -> tuple[str, str]:
+    """`(the file this connection reads, tenant)`: the key of every per-file cache here."""
+    return str(c.execute("PRAGMA database_list").fetchone()[2]), tenant
+
+
+def _corpus_stamp(path: Path) -> _FileStamp:
     """Observe file replacement and SQLite writes, including commits still in the WAL."""
     stamps: list[tuple[int, ...] | None] = []
     for file in (path, path.with_name(path.name + "-wal")):
@@ -441,19 +454,26 @@ def _change_time(path: Path, posix_ctime: int) -> int | None:
 
 _CORPUS_LOCK = threading.RLock()
 
-#: At most eight decoded read views, reused only while file identity and write stamps match.
+#: At most this many decoded read views, reused only while file identity and write stamps match.
+_MAX_CORPORA = 8
 _CORPORA: dict[
     tuple[str, str],
-    tuple[tuple[str, tuple[tuple[int, ...] | None, ...] | None],
-          tuple[list[_CorpusRow], SupersessionGraph, SemanticGraphProjection]],
+    tuple[tuple[str, _FileStamp], tuple[list[_CorpusRow], SupersessionGraph, SemanticGraphProjection]],
 ] = {}
+#: `{(file, tenant): (read view, day, View 1 body)}` and `{(file, tenant): (read view, import edges)}`:
+#: what is derived from a read view `_corpus` returns, kept while it returns the same one, since the
+#: Lite reader caches no response body (CCA PERF-003).
+_BODIES: dict[tuple[str, str], tuple[object, str, dict[str, Any]]] = {}
+_IMPORTS: dict[tuple[str, str], tuple[object, list[tuple[str, str]]]] = {}
 
 
 #: `{(file, tenant): (stamp of its rows, graph)}`, one entry per file this process reads.
 _GRAPHS: dict[tuple[str, str], tuple[str, SemanticGraphProjection]] = {}
 
 
-def _semantic_graph(c: sqlite3.Connection, tenant: str, stamp: str, rows: list[_CorpusRow]) -> SemanticGraphProjection:
+def _semantic_graph(
+    c: sqlite3.Connection, tenant: str, stamp: str, rows: list[_CorpusRow], hashed: list[tuple[str, bytes, bytes]]
+) -> SemanticGraphProjection:
     """`graph_of`, kept while the file's rows are the ones it was built from (CCA PERF-002): built
     in memory it is the whole build, seconds on a large store, and View 2 asks for it on every page.
     `stamp` digests the corpus version and every row's id, source, text, metadata and `indexed_at`,
@@ -463,13 +483,17 @@ def _semantic_graph(c: sqlite3.Connection, tenant: str, stamp: str, rows: list[_
     ids and times (ids are positional, so an edited memo keeps its ids, and under an evaluation
     clock its write time too)."""
     from recall.lite.graph import graph_of
+    from recall.lite.store import corpus_fingerprint_of_hashed
     from recall.types import Chunk
 
-    key = (str(c.execute("PRAGMA database_list").fetchone()[2]), tenant)
+    key = _file_key(c, tenant)
     kept = _GRAPHS.get(key)
     if kept is not None and kept[0] == stamp:
         return kept[1]
-    graph = graph_of(c, tenant, [Chunk(id=r.id, source=r.source, text=r.text, metadata=r.metadata) for r in rows])
+    graph = graph_of(
+        c, tenant, [Chunk(id=r.id, source=r.source, text=r.text, metadata=r.metadata) for r in rows],
+        corpus_fingerprint_of_hashed(hashed),
+    )
     _GRAPHS[key] = (stamp, graph)
     return graph
 
@@ -496,9 +520,14 @@ def corpus_graph(dsn: str, tenant: str, *, today: date | None = None) -> dict[st
 
     now = (today or datetime.now(UTC).date()).isoformat()
     with connect(dsn) as c:
+        file_key = _file_key(c, tenant)
         found = _corpus(c, tenant) if tenant == _tenant(c) else None
     if found is None or not found[0]:
         return empty_graph(tenant, f"{tenant} has no corpus in this file")
+    with _CORPUS_LOCK:
+        body = _BODIES.get(file_key)
+    if body is not None and body[0] is found and body[1] == now:
+        return body[2]
     rows, winner, graph = found
     by_file: dict[tuple[str, str], list[_CorpusRow]] = {}
     for row in rows:
@@ -526,8 +555,34 @@ def corpus_graph(dsn: str, tenant: str, *, today: date | None = None) -> dict[st
         for m in graph.mentions
         if m.chunk_id in located and entities[m.entity_id].kind != "file"
     })
-    imports = _python_imports(rows, {file for file, _source in by_file})
-    return assemble_graph(files, winner, relations, mentions, imports, today=now, tenant=tenant, generation=graph.generation_id)
+    imports = _corpus_imports(file_key, found)
+    payload = assemble_graph(files, winner, relations, mentions, imports, today=now, tenant=tenant, generation=graph.generation_id)
+    _keep(_BODIES, file_key, (found, now, payload))
+    return payload
+
+
+def _corpus_imports(
+    key: tuple[str, str], found: tuple[list[_CorpusRow], SupersessionGraph, SemanticGraphProjection]
+) -> list[tuple[str, str]]:
+    """`_python_imports` over every chunk of a read view, once per view: View 2 asked for it on
+    every page, a regex over every `.py` chunk of the file (CCA PERF-003)."""
+    with _CORPUS_LOCK:
+        kept = _IMPORTS.get(key)
+    if kept is not None and kept[0] is found:
+        return kept[1]
+    rows = found[0]
+    edges = _python_imports(rows, {row.file for row in rows})
+    _keep(_IMPORTS, key, (found, edges))
+    return edges
+
+
+def _keep(cache: dict[tuple[str, str], Any], key: tuple[str, str], value: Any) -> None:
+    """Store `value`, keeping at most `_MAX_CORPORA` files, as `_CORPORA` does."""
+    with _CORPUS_LOCK:
+        cache.pop(key, None)
+        cache[key] = value
+        for old in list(cache)[:-_MAX_CORPORA]:
+            cache.pop(old, None)
 
 
 def source_detail(dsn: str, tenant: str, file: str, *, today: date | None = None) -> dict[str, Any] | None:
@@ -539,7 +594,9 @@ def source_detail(dsn: str, tenant: str, file: str, *, today: date | None = None
     with connect(dsn) as c:
         if tenant != _tenant(c):
             return None
-        rows, graph, semantic = _corpus(c, tenant)
+        file_key = _file_key(c, tenant)
+        found = _corpus(c, tenant)
+    rows, graph, semantic = found
     sources = sorted({row.source for row in rows if file in (row.file, row.source)}, key=lambda s: (s != file, s))
     if not sources or (len(sources) > 1 and sources[0] != file):
         return None
@@ -576,7 +633,7 @@ def source_detail(dsn: str, tenant: str, file: str, *, today: date | None = None
         # This copy's own statements, as Postgres scans `source_uri = %s`: another root's copy of
         # the same path is the same importer by name (CCA BUG-002).
         imports = [pair for pair in _python_imports(mine, files) if pair[0] == canonical]
-        imported_by = [pair for pair in _python_imports(rows, files) if pair[1] == canonical]
+        imported_by = [pair for pair in _corpus_imports(file_key, found) if pair[1] == canonical]
     successor = graph.successor(key, now=_instant(now))
     replaced = sorted(old for old, claims in graph.candidates.items() if any(f == key for f, _when in claims))
     named = {name for name in (successor, *replaced) if name}

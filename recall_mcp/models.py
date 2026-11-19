@@ -15,8 +15,9 @@ from recall.types import DecisionState
 
 _ATOMIC_RESCUE_SKIPPED_DESCRIPTION = (
     "Why an active atomic rescue was not applied to this search under "
-    "RECALL_ATOMIC_RESCUE_WHEN_MISSING=skip: missing, lineage or damaged (its artifact is being "
-    "built); empty when it was applied or not configured."
+    "RECALL_ATOMIC_RESCUE_WHEN_MISSING=skip: missing, lineage, damaged or uncalibrated (a "
+    "PostgreSQL server of one tenant then builds the artifact); empty when it was applied or not "
+    "configured."
 )
 _UNKNOWN_TERM_CHECK_DESCRIPTION = (
     "Vocabulary check: checked | unavailable | disabled | not_run. Unavailable means "

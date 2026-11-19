@@ -55,7 +55,7 @@ import hashlib
 import json
 import threading
 import uuid
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -921,12 +921,26 @@ def _fit_and_build(
 
 def corpus_digest(rows: list[tuple[str, str, bytes]]) -> str:
     """sha256 over ids, text hashes and stored vector hashes, sorted by id."""
+    return _digest_in_order(
+        (cid, hashlib.sha256(text.encode("utf-8")).digest(), hashlib.sha256(embedding).digest())
+        for cid, text, embedding in sorted(rows)
+    )
+
+
+def corpus_digest_hashed(rows: Iterable[tuple[str, bytes, bytes]]) -> str:
+    """`corpus_digest` from `(id, sha256 of the text, sha256 of the vector)`, for a reader that has
+    streamed the rows once and kept only their hashes (CCA PERF-002). The same digest for the same
+    rows, since chunk ids are unique."""
+    return _digest_in_order(sorted(rows))
+
+
+def _digest_in_order(hashed: Iterable[tuple[str, bytes, bytes]]) -> str:
     outer = hashlib.sha256()
-    for cid, text, embedding in sorted(rows):
+    for cid, text_hash, vector_hash in hashed:
         outer.update(cid.encode("utf-8"))
         outer.update(b"\x00")
-        outer.update(hashlib.sha256(text.encode("utf-8")).digest())
-        outer.update(hashlib.sha256(embedding).digest())
+        outer.update(text_hash)
+        outer.update(vector_hash)
     return outer.hexdigest()
 
 
