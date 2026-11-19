@@ -13,6 +13,8 @@ import time
 from typing import Any, Literal, Protocol
 from urllib.parse import urlparse
 
+from recall.answer_provider import CallRateGate, configure_call_rate
+from recall.errors import RecallError
 from recall.provider_metadata import ProviderMetadata
 from recall.reasoning_proposals import ProviderFailure
 from recall.support import merge_calibration_coverage
@@ -30,6 +32,26 @@ MAX_EXPANSION_EVIDENCE_CHARS = 12_000
 #: as JSON, so 512 tokens is generous; named so the bound sits beside the other limits rather
 #: than as a bare literal inside the request.
 EXPANSION_MAX_COMPLETION_TOKENS = 512
+
+#: Ceiling on expansion calls per minute, PER PROCESS, read from
+#: `RECALL_REASONING_EXPANSION_MAX_CALLS_PER_MIN`, on the pattern of the answer ceiling in
+#: `recall.answer_provider`. Since #1411 `recall setup` hands the reasoning arm to the server it
+#: registers, so these paid calls run there, and nothing else bounds how many a process makes
+#: (the MCP read budget is tenant keyed and stdio has no limiter).
+DEFAULT_EXPANSION_CALLS_PER_MIN = 30.0
+
+
+class ExpansionRateLimited(RuntimeError, RecallError):
+    """The process-wide ceiling on reasoning expansion calls was reached.
+
+    `recall.reasoning_expansion_service.run_model_expansion` catches it like any provider failure:
+    the request keeps its initial retrieval and names this class as the failure.
+    """
+
+
+_EXPANSION_RATE_GATE = CallRateGate(
+    "RECALL_REASONING_EXPANSION_MAX_CALLS_PER_MIN", "reasoning expansion", ExpansionRateLimited
+)
 
 
 @dataclass(frozen=True)
@@ -174,6 +196,13 @@ class OpenAIExpansionProvider:
             ensure_ascii=True,
             separators=(",", ":"),
         ).replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
+        # Debited before the call, so a refusal costs nothing; recorded with no usage, so the
+        # metadata does not report the previous call's tokens and cost as this one's.
+        try:
+            _EXPANSION_RATE_GATE.take()
+        except ExpansionRateLimited:
+            self._record_metadata(None, time.perf_counter())
+            raise
         started = time.perf_counter()
         response: object | None = None
         try:
@@ -331,6 +360,11 @@ def resolve_expansion_provider(
     if cost is not None and (not math.isfinite(cost) or cost < 0):
         raise ValueError("RECALL_REASONING_EXPANSION_COST_PER_1K_TOKENS must be finite and non-negative")
     reasoning_effort = source.get("RECALL_REASONING_EXPANSION_EFFORT", "minimal").strip().lower()
+    configure_call_rate(
+        _EXPANSION_RATE_GATE,
+        source.get("RECALL_REASONING_EXPANSION_MAX_CALLS_PER_MIN", ""),
+        DEFAULT_EXPANSION_CALLS_PER_MIN,
+    )
     try:
         from openai import OpenAI
     except ImportError as exc:
@@ -477,6 +511,7 @@ __all__ = [
     "ExpansionMode",
     "ExpansionProposal",
     "ExpansionReport",
+    "ExpansionRateLimited",
     "ExpansionRequest",
     "MAX_EXPANSION_QUERIES",
     "MAX_EXPANSION_QUERY_CHARS",

@@ -74,9 +74,9 @@ Cross package edges: 450
 | 22 | `recall.trust` |
 | 21 | `recall` |
 | 21 | `recall.rewrite` |
+| 20 | `recall.cli_commands.setup_wizard` |
 | 20 | `recall.wizard.headless` |
 | 20 | `recall_mcp.server_ingest` |
-| 19 | `recall.cli_commands.setup_wizard` |
 | 19 | `recall.lite.store` |
 | 19 | `recall_mcp.provenance` |
 | 18 | `recall.cli_commands.calibration_cmd` |
@@ -606,7 +606,7 @@ They are observations, not automatic failures.
 | `recall.cli_commands.records_cmd` | 9 | 142 |
 | `recall.cli_commands.schema_cmd` | 2 | 143 |
 | `recall.cli_commands.secret_cmd` | 1 | 4 |
-| `recall.cli_commands.setup_wizard` | 19 | 188 |
+| `recall.cli_commands.setup_wizard` | 20 | 188 |
 | `recall.codex` | 2 | 164 |
 | `recall.confinement` | 0 | 0 |
 | `recall.constants` | 0 | 0 |
@@ -771,7 +771,7 @@ They are observations, not automatic failures.
 | `recall.quickstart` | 2 | 142 |
 | `recall.readiness` | 5 | 141 |
 | `recall.reasoning` | 13 | 140 |
-| `recall.reasoning_expansion` | 5 | 140 |
+| `recall.reasoning_expansion` | 7 | 140 |
 | `recall.reasoning_expansion_service` | 5 | 140 |
 | `recall.reasoning_graph` | 7 | 30 |
 | `recall.reasoning_graph_service` | 4 | 140 |

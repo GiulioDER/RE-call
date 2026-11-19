@@ -187,6 +187,7 @@ ENVIRONMENT_SCHEMA: tuple[EnvironmentSpec, ...] = (
     EnvironmentSpec("RECALL_REASONING_EXPANSION_EFFORT", "Reasoning", "reasoning expansion effort", "minimal"),
     EnvironmentSpec("RECALL_REASONING_EXPANSION_REVISION", "Reasoning", "reasoning expansion revision", "unpinned"),
     EnvironmentSpec("RECALL_REASONING_EXPANSION_COST_PER_1K_TOKENS", "Reasoning", "reasoning cost metadata"),
+    EnvironmentSpec("RECALL_REASONING_EXPANSION_MAX_CALLS_PER_MIN", "Reasoning", "expansion call budget", "30"),
     EnvironmentSpec("RECALL_REASONING_BASE_URL", "Reasoning", "legacy reasoning base URL"),
     EnvironmentSpec("RECALL_REASONING_API_KEY", "Reasoning", "legacy reasoning API key", secret=True),
     EnvironmentSpec("RECALL_REASONING_TIMEOUT", "Reasoning", "legacy reasoning timeout", "30"),

@@ -128,7 +128,8 @@ def test_no_sixty_second_span_admits_more_than_the_ceiling(
     also refills at N/60 per second admitted 59 calls in the first minute at the default 30.
 
     Red proof, 2026-11-19, against `_AnswerRateGate` at 2e546bec1 (the token bucket): failed at
-    `assert 59 <= 30`. Production symbol: `recall.answer_provider._AnswerRateGate.take`.
+    `assert 59 <= 30`. Production symbol: `recall.answer_provider.CallRateGate.take` (then
+    `_AnswerRateGate.take`).
     """
     clock = [1000.0]
     monkeypatch.setattr(ap.time, "monotonic", lambda: clock[0])
@@ -185,7 +186,8 @@ def test_the_default_ceiling_applies_when_the_variable_is_unset(transport: list[
     Failure mode (CCA CODE-004, run 20261119T182325Z): every other test here sets the variable,
     so the unset branch, which is what bounds spend on a default install, could be lost unseen.
 
-    Red proof, 2026-11-19, by mutation of `_configure_answer_rate`'s unset branch to
+    Red proof, 2026-11-19, by mutation of the unset branch (then in `_configure_answer_rate`, now
+    `configure_call_rate`) to
     `_ANSWER_RATE_GATE.configure(None)`: failed with `DID NOT RAISE` on the 31st call.
     """
     provider = ap.resolve_answer_provider(dict(_PAID))

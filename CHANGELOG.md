@@ -20,6 +20,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   `AnswerRateLimited`. Raise `RECALL_REASONING_ANSWER_MAX_CALLS_PER_MIN`, or set it to `off`.
   The ceiling is a sliding window: no 60 second span admits more than the number set (rounded
   down; under 1 per minute, one call per 60/N seconds), with no burst on top.
+* **Reasoning expansion calls are capped at 30 per minute per process, by default.** A process
+  that makes more paid expansion calls than that keeps the initial retrieval for the rest and
+  names `ExpansionRateLimited` as the provider failure. Raise
+  `RECALL_REASONING_EXPANSION_MAX_CALLS_PER_MIN`, or set it to `off`. The server `recall setup`
+  registers does not read `.env`, so for that server set it in the registration's environment or
+  in the environment the client starts it from. Benchmark runs of `benchmarks/enterprise_rag.py`'s
+  `cheap` and `closed_loop` arms are bounded too: rows past the ceiling record the fallback reason
+  `ExpansionRateLimited`, so set it to `off` for a measured run.
 
 ### Added
 
@@ -173,6 +181,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   backends, debited before the request is sent. `off` removes it; `0`, a negative or a non-number
   is refused naming the variable. A refused call reports no tokens and no cost, rather than the
   previous call's.
+- Paid reasoning expansion calls had no per minute ceiling, and since the registration change
+  above they run in the server `recall setup` registers. `RECALL_REASONING_EXPANSION_MAX_CALLS_PER_MIN`
+  (default 30, `off` to remove it) now bounds them the same way, with its own budget: no 60
+  second span admits more, a refused call is not sent and reports no usage, and `0`, a
+  negative or a non-number is refused naming the variable. `.env.example` no longer calls the
+  answer ceiling the only bound on spend.
 - Under `RECALL_INDEX_MODE=generation` the global `--table` flag was silently dropped: every
   generation is kept in `recall_chunks_v1`, so `recall --table scratch forget --yes` erased from
   the real store, and `withdraw`, `search`, `scopes`, `reasoning` and `records` acted on it too.

@@ -203,6 +203,14 @@ OPENROUTER_API_KEY=
 # RECALL_REASONING_EXPANSION_COST_PER_1K_TOKENS=       # optional, for cost accounting metadata
 # RECALL_REASONING_EXPANSION_EFFORT=minimal            # none | minimal | low | medium | high
 # RECALL_REASONING_EXPANSION_REVISION=unpinned
+# RECALL_REASONING_EXPANSION_MAX_CALLS_PER_MIN=30      # ceiling on PAID expansion calls, per
+#                                                      # PROCESS, as for the answer ceiling below:
+#                                                      # no 60 second span admits more; `off`
+#                                                      # removes it and 0 is refused. A refused
+#                                                      # call keeps the initial retrieval and
+#                                                      # names ExpansionRateLimited. The server
+#                                                      # `recall setup` registers does not read
+#                                                      # .env: set it in that server's environment.
 #
 # Optional answer provider for `recall_reasoning_query`. Disabled unless
 # RECALL_REASONING_ANSWER_ENABLED=1; with it unset the tool abstains with
@@ -224,9 +232,10 @@ OPENROUTER_API_KEY=
 #                                                      # 0 is refused, because `0` reads as both
 #                                                      # "no limit" and "nothing allowed". Applies
 #                                                      # to both backends and to the CLI, and is
-#                                                      # the ONLY bound on the number of paid
-#                                                      # calls: the MCP scope budget is tenant
-#                                                      # keyed and stdio has no limiter at all.
+#                                                      # the only bound on the number of paid
+#                                                      # answer and proof calls (expansion has
+#                                                      # its own, above): the MCP scope budget is
+#                                                      # tenant keyed and stdio has no limiter.
 #                                                      # Exceeding it degrades to an abstention
 #                                                      # carrying a sanitized provider failure.
 #

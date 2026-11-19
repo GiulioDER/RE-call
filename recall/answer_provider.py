@@ -44,8 +44,10 @@ class AnswerRateLimited(RuntimeError, RecallError):
     """
 
 
-class _AnswerRateGate:
-    """A sliding window shared by every provider this process resolves.
+class CallRateGate:
+    """A per-minute ceiling on paid calls, as a sliding window shared by every provider of its
+    kind that this process resolves (`_ANSWER_RATE_GATE`, and the reasoning expansion gate in
+    `recall.reasoning_expansion`).
 
     Module level on purpose: a window on the provider instance would be emptied by every new
     provider, and the MCP server and the proof provider each resolve their own.
@@ -55,7 +57,11 @@ class _AnswerRateGate:
     bound is "N calls per minute" (CCA NUM-001, run 20261119T182325Z).
     """
 
-    def __init__(self) -> None:
+    def __init__(self, variable: str, label: str, error: type[RuntimeError]) -> None:
+        #: The variable that sets it, named in every refusal and parse error.
+        self.variable = variable
+        self._label = label
+        self._error = error
         self._lock = threading.Lock()
         self._rate: float | None = None
         self._capacity = 0.0
@@ -92,7 +98,7 @@ class _AnswerRateGate:
                 self._window = 60.0 / calls_per_min
 
     def take(self) -> None:
-        """Debit one call, or raise `AnswerRateLimited` naming the wait."""
+        """Debit one call, or raise the gate's error naming the wait."""
         with self._lock:
             if self._rate is None:
                 return
@@ -106,36 +112,37 @@ class _AnswerRateGate:
                 self._admitted.append(now)
                 return
             wait = self._admitted[0] + self._window - now
-        raise AnswerRateLimited(
-            f"answer provider ceiling of {self._capacity:g} calls/min reached; retry in "
-            f"{wait:.1f}s, or raise RECALL_REASONING_ANSWER_MAX_CALLS_PER_MIN "
+        raise self._error(
+            f"{self._label} ceiling of {self._capacity:g} calls/min reached; retry in "
+            f"{wait:.1f}s, or raise {self.variable} "
             f"(or set it to '{ANSWER_RATE_OFF}' to remove the ceiling)"
         )
 
 
-_ANSWER_RATE_GATE = _AnswerRateGate()
+_ANSWER_RATE_GATE = CallRateGate(
+    "RECALL_REASONING_ANSWER_MAX_CALLS_PER_MIN", "answer provider", AnswerRateLimited
+)
 
 
-def _configure_answer_rate(raw: str) -> None:
+def configure_call_rate(gate: CallRateGate, raw: str, default: float) -> None:
+    """Set `gate` from its variable's raw value: empty is `default`, `off` removes it."""
     value = raw.strip().lower()
     if value == ANSWER_RATE_OFF:
-        _ANSWER_RATE_GATE.configure(None)
+        gate.configure(None)
         return
     if not value:
-        _ANSWER_RATE_GATE.configure(DEFAULT_ANSWER_CALLS_PER_MIN)
+        gate.configure(default)
         return
     try:
         limit = float(value)
     except ValueError:
-        raise ValueError(
-            f"RECALL_REASONING_ANSWER_MAX_CALLS_PER_MIN must be a number or '{ANSWER_RATE_OFF}'"
-        ) from None
+        raise ValueError(f"{gate.variable} must be a number or '{ANSWER_RATE_OFF}'") from None
     if not math.isfinite(limit) or limit <= 0:
         raise ValueError(
-            "RECALL_REASONING_ANSWER_MAX_CALLS_PER_MIN must be finite and positive, or "
+            f"{gate.variable} must be finite and positive, or "
             f"'{ANSWER_RATE_OFF}' to remove the ceiling"
         )
-    _ANSWER_RATE_GATE.configure(limit)
+    gate.configure(limit)
 
 
 class OllamaAnswerProvider:
@@ -370,7 +377,11 @@ def resolve_answer_provider(
             raise ValueError(
                 "RECALL_REASONING_ANSWER_REASONING_EFFORT must be none, minimal, low, medium, or high"
             )
-    _configure_answer_rate(source.get("RECALL_REASONING_ANSWER_MAX_CALLS_PER_MIN", ""))
+    configure_call_rate(
+        _ANSWER_RATE_GATE,
+        source.get("RECALL_REASONING_ANSWER_MAX_CALLS_PER_MIN", ""),
+        DEFAULT_ANSWER_CALLS_PER_MIN,
+    )
     client: Any
     if provider == "ollama":
         client = _NativeOllamaClient(base_url, timeout=timeout)
