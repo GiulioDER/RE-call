@@ -892,7 +892,7 @@ def run_report(
     atomic: dict[str, object] = {}
     try:
         ensure_rescue_artifact(store, embedder, env=env)
-    except Exception as exc:  # BROAD-CATCH: the fit above is stored and in force, so the run reports it; the next write or refresh builds the artifact again
+    except Exception as exc:  # BROAD-CATCH: fail-open  # the fit above is stored and in force, so the run reports it; the next write or refresh builds the artifact again
         # A raise here reported a failed run for a calibration already in force, and a retry stored
         # another fit (CCA STAKES-002). The type only: this answer reaches an MCP client.
         _log.warning("atomic rescue build after the calibration run of %s failed: %s", store.path, exc)
