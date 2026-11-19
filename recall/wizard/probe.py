@@ -64,18 +64,6 @@ COMFORTABLE_RAM_BYTES = 8 * 1024**3
 #: (`python -c "from recall.wizard.probe import probe_ram; print(probe_ram()[0] / 1024**3)"`).
 RAM_REPORTING_SLACK_BYTES = 1 * 1024**3
 
-#: The SPLADE encoder plus its vocabulary-width activations. Gating on `cuda_available` alone,
-#: as `recall.setup.sparse_choices` did before setup stopped offering it, offers SPLADE on a GPU that
-#: cannot load it — an option that is visible, selectable, and fails later.
-SPLADE_MIN_VRAM_BYTES = 6 * 1024**3
-
-#: How far under the floor a card may report and still count as a 6 GB card (CCA NUM-001, owner
-#: decision 2026-11-18). `probe_cuda_vram` asks torch first, whose `total_memory` comes in under
-#: the nominal size, and nvidia-smi second, which reports the nominal 6144 MiB, so without slack
-#: the same card was feasible or not depending on whether torch was installed. Not measured on a
-#: 6 GB card: half a GiB is chosen to keep every such card in on both routes and a 5 GB one out.
-VRAM_REPORTING_SLACK_BYTES = 512 * 1024**2
-
 #: Path fragments that identify the Microsoft Store interpreter. Matched case-insensitively
 #: against `sys.executable`. `WindowsApps` covers both the per-user shim directory and the
 #: `Program Files\WindowsApps` install root.
@@ -354,23 +342,10 @@ def probe_store_python() -> bool:
     return any(marker in executable for marker in _STORE_PYTHON_MARKERS)
 
 
-def splade_is_feasible(*, cuda_available: bool, vram_bytes: int | None) -> bool:
-    """Whether SPLADE is worth offering on this machine at all.
-
-    Asked before the question is shown, not after it is answered. Unknown VRAM counts as NOT
-    feasible, which is the opposite of how liveness is treated for a session claim: there, a false
-    "dead" costs somebody's work, so unknown means alive. Here a false "feasible" costs a user a
-    selectable option that fails at query time, so unknown means withhold.
-    """
-    if not cuda_available or vram_bytes is None:
-        return False
-    return vram_bytes >= SPLADE_MIN_VRAM_BYTES - VRAM_REPORTING_SLACK_BYTES
-
-
 def heavy_local_models_are_feasible(*, total_ram_bytes: int | None) -> bool:
     """Whether the bge-large embedder and the bge reranker are worth offering as selectable.
 
-    Asked before the menu is shown, like `splade_is_feasible`, and for the same reason unknown
+    Asked before the menu is shown, and unknown
     memory counts as NOT feasible: a false "feasible" gives the user a selectable model that
     exhausts memory at index or query time. This is deliberately the opposite of `blockers`, where
     unknown never refuses the install: withholding one option on a diagnostic costs a user a
