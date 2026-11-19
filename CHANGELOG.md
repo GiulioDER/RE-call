@@ -132,10 +132,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   needs, only to `./.env`, which the MCP server it registers never reads (#1393, #1394). The
   server therefore never reranked, never had the reasoning arm, and started a Voyage or
   OpenAI-compatible embedder without its key unless the shell happened to export it. Setup now
-  also writes those values into the server's registration in the Claude Code configuration, so
-  the keys you enter are stored there too, beside the DSN. The "bge reranker" choice now writes
-  its pinned revision, without which the server refuses it. Re-run `recall setup` to update an
-  existing registration.
+  also writes those values into the server's registration in the Claude Code configuration and,
+  when it wires Codex, into a `server_env` block of Codex's `recall-hook.json`, which the Codex
+  launcher applies. The keys you enter are therefore stored in those files too, beside the DSN.
+  The "bge reranker" choice now writes its pinned revision, without which the server refuses it.
+  Re-run `recall setup` to update an existing registration.
 - `RECALL_REASONING_ANSWER_MAX_CALLS_PER_MIN`, documented as the only bound on paid answer calls,
   was read by nothing from 0.13.0 on, so answer and proof calls had no ceiling at all (#1405). It is
   enforced again: one budget per process, shared by every answer and proof provider and by both

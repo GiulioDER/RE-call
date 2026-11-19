@@ -41,7 +41,12 @@ def _registered_env(
     reasoning: bool,
     keys: dict[str, str] | None = None,
     total_ram_bytes: int | None = None,
+    codex_home: Path | None = None,
 ) -> tuple[dict[str, str], str]:
+    """The registered Claude Code server's environment, and everything setup printed.
+
+    With `codex_home`, setup also wires Codex, through the real installer redirected into that
+    directory, so the caller can launch the Codex server from the file it wrote."""
     from recall.wizard import wiring
 
     probe = HardwareProbe(
@@ -59,7 +64,23 @@ def _registered_env(
     monkeypatch.setattr("recall.setup._module_available", lambda name: True)
     monkeypatch.setattr("recall.setup._prepare_schema_for_embedder", lambda **kw: None)
     monkeypatch.setattr("recall.setup.claude_code_detected", lambda: True)
-    monkeypatch.setattr("recall.setup.codex_code_detected", lambda: False)
+    monkeypatch.setattr("recall.setup.codex_code_detected", lambda: codex_home is not None)
+    if codex_home is not None:
+        import functools
+
+        from recall.codex import install_codex_integration
+
+        monkeypatch.setenv("CODEX_HOME", str(codex_home))
+        marketplace = codex_home / "agents" / "plugins" / "marketplace.json"
+        monkeypatch.setattr(
+            "recall.setup.install_codex_integration",
+            functools.partial(
+                install_codex_integration,
+                hooks_path=codex_home / "hooks.json",
+                marketplace_path=marketplace,
+                plugin_destination=marketplace.parent / ".codex" / "plugins" / "recall",
+            ),
+        )
     monkeypatch.setattr("recall.setup.install_hooks", lambda **kw: None)
     monkeypatch.setattr("recall.setup.probe_reasoning_model", lambda **kw: None)
     blocks: list = []
@@ -95,6 +116,8 @@ def _registered_env(
             return "y" if reasoning else "n"
         if "Register the recall MCP server with Claude Code" in last:
             return "y"
+        if "Register the recall MCP server with Codex" in last:
+            return "y" if codex_home is not None else "n"
         if last.rstrip().endswith("]"):
             return "n"
         name = last.strip().rstrip(":")
@@ -194,3 +217,111 @@ def test_the_bge_reranker_reaches_the_registered_server_pinned(
     except ValueError as exc:
         pytest.fail(f"the registered server refuses the reranker setup chose: {exc}")
     assert spec == ("BAAI/bge-reranker-base", "2cfc18c9415c912f9d8155881c133215df768a70"), env
+
+
+def _codex_server_env(monkeypatch: pytest.MonkeyPatch, config: Path) -> tuple[int, dict[str, str]]:
+    """Launch the Codex MCP entry point on `config` and return what the server would start with."""
+    import os
+
+    from recall_mcp import codex_server
+
+    monkeypatch.setenv("RECALL_CODEX_CONFIG", str(config))
+    captured: dict[str, str] = {}
+    monkeypatch.setattr("recall_mcp.server.main", lambda: captured.update(os.environ))
+    return codex_server.main(), captured
+
+
+def test_the_reranker_and_reasoning_arm_reach_the_codex_server(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The same choices through the Codex registration, which `recall setup` writes to
+    `recall-hook.json` and `recall_mcp.codex_server` launches from.
+
+    Red proof, 2026-11-19, on the test host against `dac217681`: failed on the `spec` assertion,
+    `resolve_reranker` returning None, because the Codex launcher set only DSN, tenant, embedder,
+    table and transport."""
+    import os
+
+    from recall.rerank import DEFAULT_RERANKER_MODEL
+    from recall.reasoning_expansion import resolve_expansion_provider
+    from recall_mcp.factories import resolve_reranker
+
+    for key in ("RECALL_RERANK", "RECALL_REASONING_EXPANSION"):
+        monkeypatch.delenv(key, raising=False)
+    codex_home = tmp_path / "codex"
+    _registered_env(
+        tmp_path, monkeypatch,
+        security="y", embedder="fastembed", reranker="ms marco reranker", reasoning=True,
+        codex_home=codex_home,
+    )
+
+    status, env = _codex_server_env(monkeypatch, codex_home / "re-call" / "recall-hook.json")
+
+    assert status == 0
+    spec = resolve_reranker(env)
+    assert spec is not None and spec[0] == DEFAULT_RERANKER_MODEL
+    monkeypatch.setitem(sys.modules, "openai", SimpleNamespace(OpenAI=lambda **kwargs: object()))
+    assert resolve_expansion_provider(env) is not None
+    assert "RECALL_RERANK" not in os.environ, "the launcher must restore the environment it changed"
+
+
+def test_a_cloud_embedder_key_reaches_the_codex_server(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Red proof, 2026-11-19, on the test host against `dac217681`: failed on
+    `KeyError: 'VOYAGE_API_KEY'`."""
+    monkeypatch.delenv("VOYAGE_API_KEY", raising=False)
+    codex_home = tmp_path / "codex"
+    _registered_env(
+        tmp_path, monkeypatch,
+        security="n", embedder="voyage cloud", reranker="none", reasoning=False,
+        keys={"VOYAGE_API_KEY": "test-voyage-key-not-real"}, codex_home=codex_home,
+    )
+
+    status, env = _codex_server_env(monkeypatch, codex_home / "re-call" / "recall-hook.json")
+
+    assert status == 0
+    assert env["VOYAGE_API_KEY"] == "test-voyage-key-not-real"
+
+
+def test_a_codex_server_env_cannot_redirect_the_corpus(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The five keys the launcher owns win over the same keys in `server_env`.
+
+    Red proof, 2026-11-19: with `server_env` applied after the five keys in
+    `recall_mcp.codex_server.main`, it failed on the DSN assertion."""
+    import json
+
+    config = tmp_path / "recall-hook.json"
+    config.write_text(json.dumps({
+        "dsn": "postgresql://installed/recall",
+        "tenant": "installed",
+        "server_env": {"RECALL_SERVING_DSN": "postgresql://elsewhere/recall", "RECALL_TENANT": "other"},
+    }), encoding="utf-8")
+
+    status, env = _codex_server_env(monkeypatch, config)
+
+    assert status == 0
+    assert env["RECALL_SERVING_DSN"] == "postgresql://installed/recall"
+    assert env["RECALL_TENANT"] == "installed"
+
+
+@pytest.mark.parametrize("server_env", [["RECALL_RERANK=1"], {"RECALL_RERANK": 1}])
+def test_a_malformed_codex_server_env_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, server_env: object
+) -> None:
+    """Refused rather than half applied. Red proof, 2026-11-19, on the test host against
+    `dac217681`: both cases failed on `assert 0 == 2`, the launcher starting the server."""
+    import json
+
+    config = tmp_path / "recall-hook.json"
+    config.write_text(
+        json.dumps({"dsn": "postgresql://installed/recall", "server_env": server_env}),
+        encoding="utf-8",
+    )
+
+    status, env = _codex_server_env(monkeypatch, config)
+
+    assert status == 2
+    assert env == {}, "the server must not start"
