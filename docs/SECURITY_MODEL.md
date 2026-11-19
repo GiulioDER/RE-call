@@ -253,8 +253,14 @@ cloud embedder over the local one, etc.).
 - **`recall setup --lite` and `recall wizard` also write each server's environment into the
   project**, when they wire Codex: a managed block of `<project>/.codex/config.toml` holds the
   DSN, with its password, and a hosted profile's API key. That file is inside the project tree,
-  not user level, so keep it out of version control; setup refuses to write it when git reports
-  it tracked.
+  not user level. Inside a git work tree setup adds `.codex/config.toml*` to the project's
+  `.gitignore`, and refuses to write the file when git reports it tracked or cannot say whether it
+  does (git missing, or the repository refused). The file is written owner-only on Linux and macOS
+  (on Windows it inherits the folder's permissions), and so is the
+  `.codex/config.toml.recall-backup` copy of its earlier content kept at the first rewrite. A
+  `.codex` or `config.toml` that leads outside the project through a link is refused. The same
+  settings, the hosted key included, go into the `server_env` block of each client's
+  `recall-hook.json`, which is written owner-only on POSIX.
 - **The Postgres DSNs (`RECALL_SERVING_DSN` and `RECALL_MIGRATION_DSN`)** carry passwords in their
   connection strings. The serving credential must not own schema objects or have DDL privileges;
   the migration credential must not be present in the MCP process. `RECALL_DSN` is a deprecated
