@@ -124,6 +124,8 @@ def _cmd_records(args: argparse.Namespace) -> None:
         raise SystemExit(f"recall records: {exc}") from exc
     if (refusal := lite_route_refusal(args.dsn, route)) is not None:
         raise SystemExit(refusal)
+    if (refusal := route.table_refusal(args.table, "recall records")) is not None:
+        raise SystemExit(refusal)
     # The source policy `recall search` applies (RECALL_SOURCE_POLICY_FILE), so the CLI answers
     # what the MCP tool answers under the same policy: a denied record is left out and a denied
     # successor reads `<withheld>`.

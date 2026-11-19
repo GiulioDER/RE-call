@@ -11,6 +11,7 @@ import os
 from dataclasses import dataclass
 from typing import Literal, Mapping
 
+from recall.db_constants import DEFAULT_TABLE
 from recall.errors import RecallError
 
 RouteMode = Literal["legacy", "generation"]
@@ -49,6 +50,25 @@ class RuntimeRoute:
             "explicit": self.explicit,
             "enterprise": self.enterprise,
         }
+
+    def table_refusal(self, table: str, command: str) -> str | None:
+        """Why `--table` cannot be honoured on this route, or None when it can.
+
+        Every generation lives in `recall_chunks_v1`, so a store opened on the generation route
+        reads and erases that table whatever `--table` names. Dropping the flag sent
+        `recall --table scratch forget --yes` to the real store, so a table other than the
+        default is refused before anything is opened, as the MCP server refuses `RECALL_TABLE`
+        (`recall_mcp.server_lifespan.table_override_refusal`). Compared case-folded, because
+        PostgreSQL folds an unquoted `Chunks` to the default table.
+        """
+        if not self.uses_generation or table.casefold() == DEFAULT_TABLE:
+            return None
+        return (
+            f"{command}: --table {table!r} cannot be honoured on the generation route "
+            f"({self.source}): every generation is kept in {self.generation_table!r}, so this "
+            "would act on that table instead. Nothing was read or changed. Drop --table, or use "
+            "that table on the legacy route (RECALL_INDEX_MODE=legacy, development only)."
+        )
 
     def describe(self) -> str:
         """Render the route in a stable, human readable form."""
