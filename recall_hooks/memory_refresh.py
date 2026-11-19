@@ -229,6 +229,14 @@ def _run(args: list[str], started: float) -> int:
             if isinstance(entry, dict) and isinstance(indexed_at, (int, float)) and indexed_at >= started
             else None
         )
+        # The settings the corpus was built under (an embedding profile, its key), which the
+        # client's own environment need not carry; without them another model would embed.
+        extra = config.get("server_env")
+        env = (
+            {**os.environ, **extra}
+            if isinstance(extra, dict) and all(isinstance(v, str) for v in extra.values())
+            else None
+        )
         for _ in range(MAX_PASSES):
             digest, _count, racy = walk(memory_dir)
             if digest == done:
@@ -239,6 +247,7 @@ def _run(args: list[str], started: float) -> int:
                 memory_dir=memory_dir,
                 tenant=str(config.get("tenant", "default")),
                 table=str(config.get("table", "chunks")),
+                env=env,
                 print_fn=lambda *args, **kwargs: None,
             )
             if not indexed:
