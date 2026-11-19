@@ -1110,6 +1110,29 @@ def test_restarting_the_stack_forgets_the_routing_it_derived(
     assert closed == ["closed"], "a dropped gateway must be closed, not leaked"
 
 
+def test_the_pinned_restart_does_not_pull_a_newer_build_of_a_moving_tag(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Invariant: "Restart stack (pinned images)" restarts on the images already on disk.
+
+    Failure mode: it ran `docker compose pull` first, so on the wizard's stack, whose database is
+    the moving tag `pgvector/pgvector:pg18`, it fetched a newer build and `up` recreated the
+    database on it (CCA run 20261119T212834Z, DEPLOY-003).
+
+    Red proof: against master f25e5ab1e (`DockerRuntime.restart_with_pinned_images` calling
+    `self._compose("pull")`) this failed on the equality below; recorded in the PR.
+    """
+    profile = RuntimeProfile(mode=RuntimeMode.DOCKER, compose_file="whatever.yml")
+    runtime = DockerRuntime(profile)
+    verbs: list[tuple[str, ...]] = []
+    monkeypatch.setattr(runtime, "_compose", lambda *args: verbs.append(args))
+    monkeypatch.setattr(runtime, "health", lambda: {"ok": True})
+
+    runtime.restart_with_pinned_images()
+
+    assert verbs == [("up", "-d", "--wait")]
+
+
 def test_docker_start_refuses_a_stack_with_no_tenant_service(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1971,8 +1994,8 @@ def test_the_restart_button_says_what_it_restarts_and_shows_only_for_the_stack(
 ) -> None:
     """#1431: "Apply update" said "Applying RE-call <version>" and applied no version.
 
-    Invariant: the control is named for what it does (pull the images the compose file pins and
-    restart), says on completion that no release was installed, is shown only where there is a
+    Invariant: the control is named for what it does (restart the stack on the images it already
+    has), says on completion that no release was installed, is shown only where there is a
     stack to restart, and a newer release points at its installer. Failure mode: a page claiming
     an update it never applied, and a button that could only fail outside Docker.
 

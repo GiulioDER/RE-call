@@ -777,8 +777,8 @@ class MainWindow(QMainWindow):
         update_actions = QHBoxLayout()
         self.check_update_button = QPushButton("Check for updates")
         self.check_update_button.clicked.connect(self._check_update_from_settings)
-        # ⚠️ **Not "Apply update", because it applies no release.** It pulls what the compose file
-        # pins and restarts the stack, which is all it ever did while the page said "Applying
+        # ⚠️ **Not "Apply update", because it applies no release.** It restarts the stack on the
+        # images already on disk; it never applied a release, though the page said "Applying
         # RE-call <version>". Only the managed stack has anything to restart, so only it shows this.
         self.restart_stack_button = QPushButton("Restart stack (pinned images)")
         self.restart_stack_button.setVisible(isinstance(self.runtime, DockerRuntime))
@@ -1271,7 +1271,7 @@ class MainWindow(QMainWindow):
             return
         self.restart_stack_button.setEnabled(False)
         self.update_result_label.setText(
-            "Pulling the images the compose file pins and restarting the stack…"
+            "Restarting the stack on the images already on disk…"
         )
         self._run(runtime.restart_with_pinned_images, self._stack_restarted, self._stack_restart_failed)
 

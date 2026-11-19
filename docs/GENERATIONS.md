@@ -45,8 +45,11 @@ recall --tenant acme manifest verify manifest.json
 `inventory.json` is an array of objects with `uri`, `version_id`, `media_type`, `size`, and
 `sha256`. A manifest stored in S3 must itself be supplied with its exact version ID, size, and
 SHA-256. A local manifest file may be pinned with `--sha256` and `--size` (for `generation build`,
-`--manifest-sha256` and `--manifest-size`), and each pin given is compared with the file. A local
-file has no object version, so `--version-id` and `--manifest-version-id` are refused for one.
+`--manifest-sha256` and `--manifest-size`), and each pin given is compared with the file. The
+pins are the values `manifest create` and `manifest verify` print as `file_sha256=` and `size=`;
+the `sha256=` they print first is the manifest's canonical digest, which is not the file's SHA-256.
+A local file has no object version, so `--version-id` and `--manifest-version-id` are refused for
+one.
 
 ## Lifecycle
 

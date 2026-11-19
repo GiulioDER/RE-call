@@ -752,15 +752,20 @@ class DockerRuntime(RuntimeManager):
         return self._gateway_for(tenant).call(name, arguments)
 
     def restart_with_pinned_images(self) -> dict[str, Any]:
-        """Pull the images the compose file pins, restart the managed stack, and recheck readiness.
+        """Restart the managed stack on the images already on disk, and recheck readiness.
 
         Named for what it does. It was `apply_update(release)`, called with the latest GitHub
         release and discarding it, while the Settings page said "Applying RE-call <version>": the
         stack came back on whatever the compose file already pinned. Installing a release means
         running its signed Windows installer, which replaces this app and rebuilds the image; that
         is not a step to take from inside the running app, so the page says where to get it instead.
+
+        ⚠️ No `docker compose pull` first. The wizard's stack names its database by the moving tag
+        `pgvector/pgvector:pg18` (`recall.wizard.stack.DB_IMAGE`), so a pull fetched a newer build
+        and `up` recreated the running database on it, while the button said "pinned images".
+        `up` still pulls an image that is missing, which is all `stack.bring_up` asks for too
+        (`--policy missing`).
         """
-        self._compose("pull")
         self._compose("up", "-d", "--wait")
         return self.health()
 
