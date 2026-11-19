@@ -241,6 +241,7 @@ class LiteAutoRefresher:
             return False
         with self._lock:
             self._refreshed, self._failed, self._failure, self._backoff_s = fingerprint, None, None, 0.0
+            self._retry_at = -math.inf  # see `_run`'s success
         return True
 
     def warning(self) -> str | None:
@@ -313,6 +314,10 @@ class LiteAutoRefresher:
         with self._lock:
             if report.outcome in (Outcome.REFRESHED, Outcome.UNCHANGED) and report.facts_stated >= 0:
                 self._refreshed, self._failed, self._backoff_s = report.fingerprint, None, 0.0
+                # The retry time goes with the failure it was set for: the rescue rebuild a later
+                # forget asks for gates on it alone, and waited out a cleared backoff (up to
+                # MAX_BACKOFF_S) while every unscoped search refused.
+                self._retry_at = -math.inf
                 self._rescue_revision = revision
                 self._failure = None
             elif report.outcome is Outcome.FAILED or report.facts_stated < 0:

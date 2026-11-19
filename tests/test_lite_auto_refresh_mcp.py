@@ -5,6 +5,8 @@
 - R9b a failing check never fails the retrieval that asked for it.
 - R10 the real lifespan runs a catch-up refresh at start, a search refreshes first, and
   `recall_stats` reports the last refresh.
+- R11 a successful refresh clears the retry time a failure set, so the rescue rebuild a later
+  forget asks for is not held back by it; R11b the same for a person's refresh the server adopts.
 - W1 to W3 a failing refresh is told: a warning on search answers (W2b) and refusals (W2), until a
   refresh succeeds (W1), and a `refresh` check in `recall doctor` (W3).
 
@@ -224,6 +226,74 @@ def test_a_failing_refresh_backs_off(setup: tuple[LiteStore, Path, Clock], monke
         refresher.before_retrieval()
         clock.now += 31
     assert len(calls) == 2, f"an unchanged failing folder was retried {len(calls)} times in 4 intervals"
+
+
+def test_a_success_clears_the_backoff_a_failure_left(
+    setup: tuple[LiteStore, Path, Clock], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R11. A failure sets a retry time at least `MIN_BACKOFF_S` away; a success on a changed folder
+    cleared the failure and the backoff but not that time, so the rescue rebuild a later forget
+    asks for waited it out while every unscoped search refused (CCA deferred pass, 2026-11-19).
+
+    Red proof, on the test host: against master 69aaa90bd it failed with "the rebuild after a
+    forget waited out the backoff of a failure a success had already cleared"."""
+    store, root, clock = setup
+    fingerprint = auto.snapshot([root]).fingerprint
+    outcomes = [(Outcome.FAILED, fingerprint + "-then"), (Outcome.REFRESHED, fingerprint), (Outcome.REFRESHED, fingerprint)]
+    calls: list[Outcome] = []
+
+    def scripted(*args: object, **kwargs: object) -> RefreshReport:
+        outcome, seen = outcomes.pop(0)
+        calls.append(outcome)
+        return RefreshReport(outcome, "scripted", fingerprint=seen)
+
+    monkeypatch.setattr(auto, "refresh", scripted)
+    monkeypatch.setattr(auto, "embedder_refusal", lambda *args: None)
+    refresher = _refresher(store, root, clock)
+    refresher._kick()[0].join(30)  # fails: the next retry is at least MIN_BACKOFF_S away
+    assert refresher._retry_at > clock.now + 31, "the backoff no longer spans the check below"
+    refresher._kick()[0].join(30)  # the folder as it is now refreshes
+    assert refresher.warning() is None
+    # A forget changes the memory without its folder, so no artifact is in force for it.
+    monkeypatch.setattr(refresher, "_rescue_stale", lambda: True)
+    clock.now += 31
+    refresher.before_retrieval()
+    assert len(calls) == 3, "the rebuild after a forget waited out the backoff of a failure a success had already cleared"
+
+
+def test_a_person_s_success_clears_the_backoff_too(
+    setup: tuple[LiteStore, Path, Clock], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R11b. The same for a failing snapshot a person's `recall lite refresh` brought current,
+    which the server adopts (`_refreshed_elsewhere`).
+
+    Red proof, on the test host: against master 69aaa90bd, and with `_retry_at` reset only in
+    `_run`, it failed with "the rebuild after a forget waited out the backoff a person's refresh had
+    already cleared"."""
+    store, root, clock = setup
+    fingerprint = auto.snapshot([root]).fingerprint
+    calls: list[Outcome] = []
+
+    def scripted(*args: object, **kwargs: object) -> RefreshReport:
+        calls.append(Outcome.FAILED if len(calls) < 2 else Outcome.REFRESHED)
+        return RefreshReport(calls[-1], "scripted", fingerprint=fingerprint)
+
+    monkeypatch.setattr(auto, "refresh", scripted)
+    monkeypatch.setattr(auto, "embedder_refusal", lambda *args: None)
+    refresher = _refresher(store, root, clock)
+    # Fails twice on the folder as it is: the backoff doubles, to two checks past this one.
+    refresher._kick()[0].join(30)
+    refresher._kick()[0].join(30)
+    assert refresher._retry_at > clock.now + 2 * 31, "the backoff no longer spans the two checks below"
+    # A person's refresh brings that snapshot current; the next check adopts it.
+    monkeypatch.setattr(auto, "read_state", lambda db: {"last_success": {"fingerprint": fingerprint, "stated": "s"}})
+    clock.now += 31
+    refresher.before_retrieval()
+    assert len(calls) == 2 and refresher.warning() is None, "the person's success was not adopted"
+    monkeypatch.setattr(refresher, "_rescue_stale", lambda: True)
+    clock.now += 31
+    refresher.before_retrieval()
+    assert len(calls) == 3, "the rebuild after a forget waited out the backoff a person's refresh had already cleared"
 
 
 def test_a_failing_refresh_warns_until_one_succeeds(
