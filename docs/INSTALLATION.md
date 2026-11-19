@@ -114,6 +114,10 @@ pip install "recall-rag[fastembed]"
 recall setup
 ```
 
+The interview chooses the embedder, so `recall setup` refuses the global `--embedder`. It sets up
+the `default` tenant and refuses `--tenant` with any other value; `--table` is applied. The Lite
+options `--memory`, `--store` and `--no-register` are refused without `--lite`.
+
 The wizard can:
 
 1. select the embedder, reranker, and retrieval profile

@@ -901,8 +901,7 @@ def test_an_invalid_profile_does_not_stop_the_app_opening(tmp_path: Path) -> Non
     `RuntimeProfile` OUTSIDE the guard — and `from_dict` raises `ValueError` too: an unknown
     `RuntimeMode`, a docker profile with no compose file, an empty `default_tenant`. So an invalid
     profile escaped through the unguarded call in `main.py` and the application would not open,
-    which is precisely what the sibling `load_pipelines` docstring promises a bad settings file
-    never causes.
+    which a bad settings file must never cause.
     """
     import json as _json
 
@@ -993,41 +992,6 @@ def test_the_corpus_suffixes_match_the_wizards_kinds() -> None:
     from recall.wizard.corpora import CorpusKind
 
     assert set(_CORPUS_SUFFIXES) == {f"-{kind}" for kind in get_args(CorpusKind)}
-
-
-def test_pipeline_configuration_round_trips_without_a_gui() -> None:
-    """The persistence contract, testable where CI can actually run it.
-
-    The MainWindow-driven test beside this one is skipped in CI: no job installs the `desktop`
-    extra, so `pytest.importorskip("PySide6")` skips it on every run and the regression test for
-    "Configuration saved" saved nothing would only ever have run on a maintainer's machine. This
-    covers the same contract with no Qt, including the layer-over-defaults merge the UI relies on.
-    """
-    import tempfile
-
-    with tempfile.TemporaryDirectory() as raw:
-        target = Path(raw) / "pipeline.json"
-
-        assert profiles.load_pipelines(target) == {}, "absent file must not raise"
-
-        profiles.save_pipelines({"Documents": {"embedder": "chosen", "splade": True}}, target)
-        assert profiles.load_pipelines(target) == {"Documents": {"embedder": "chosen", "splade": True}}
-
-        defaults = {"embedder": "hashing-64", "reranker": "none", "splade": False}
-        defaults.update(profiles.load_pipelines(target)["Documents"])
-        assert defaults == {"embedder": "chosen", "reranker": "none", "splade": True}, (
-            "a key absent from the saved file must keep its default rather than vanish"
-        )
-
-        target.write_bytes(b"\xff\xfe not utf-8 at all")
-        assert profiles.load_pipelines(target) == {}, (
-            "a file that is not valid UTF-8 must not raise; UnicodeDecodeError is a ValueError "
-            "and was not caught, so it propagated out of MainWindow.__init__ and the app would "
-            "not open, which is the outcome load_pipelines documents that it prevents"
-        )
-
-        target.write_text("[1, 2, 3]", encoding="utf-8")
-        assert profiles.load_pipelines(target) == {}, "a non-object document must not raise"
 
 
 def test_docker_runtime_reads_its_topology_from_the_compose_file(
@@ -1216,7 +1180,6 @@ def test_page_watermarks_scope_transparent_group_boxes(monkeypatch: pytest.Monke
     profile = RuntimeProfile(mode=RuntimeMode.DOCKER, compose_file="docker-compose.desktop.yml")
     window = MainWindow(profile, runtime=UiRuntime())
 
-    assert window.config_page.findChild(QGroupBox, "watermarkGroup") is not None
     assert window.settings_page.findChildren(QGroupBox, "watermarkGroup")
     assert window.github_page.findChildren(QGroupBox, "watermarkGroup") == []
     assert "QGroupBox#watermarkGroup" in window.styleSheet()
@@ -1241,78 +1204,6 @@ def test_page_watermarks_scope_transparent_group_boxes(monkeypatch: pytest.Monke
 
     window.close()
     app.processEvents()
-
-
-def test_saving_the_pipeline_configuration_actually_persists_it(
-    monkeypatch: pytest.MonkeyPatch, tmp_path
-) -> None:
-    """The button said "Configuration saved" and saved nothing.
-
-    Demonstrated before fixing, by driving the real window: set the embedder model, press Save,
-    close it, reopen, and the field read `hashing-64` again. The status line asserted a state
-    nothing had created, which is the defect class the wizard spent a day removing from its own
-    report, sitting in the UI the whole time.
-
-    `profile_path` is redirected so this writes a temp directory. An earlier test in this project
-    wrote the user's REAL desktop profile and every suite stayed green, because pollution looks
-    exactly like success, so this one also asserts the real location was left alone.
-    """
-    pytest.importorskip("PySide6")
-    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
-    from PySide6.QtWidgets import QApplication
-
-    import recall.desktop.profiles as profiles
-    from recall.desktop.ui import MainWindow
-
-    # Snapshot BOTH real paths and assert they are unchanged, rather than asserting they are
-    # absent. Two defects in the first version, found by four auditors independently:
-    #   * it checked `runtime.json`, which no path in this test can write. The file this test can
-    #     actually pollute is `pipeline.json`, so if the monkeypatch ever stopped taking effect the
-    #     user's real settings would be overwritten and the assertion would still have passed.
-    #   * `assert not real.exists()` is a claim about the developer's machine, not about this test.
-    #     Anyone who has run the wizard once has a real `runtime.json`, and the suite would fail
-    #     for them with a pollution message about a file it never touched.
-    real_profile = profiles.profile_path()
-    real_pipeline = profiles.pipeline_path()
-    before = {p: (p.exists(), p.stat().st_mtime_ns if p.exists() else 0)
-              for p in (real_profile, real_pipeline)}
-    monkeypatch.setattr(profiles, "profile_path", lambda: tmp_path / "runtime.json")
-
-    class UiRuntime:
-        def start(self) -> None: ...
-        def stop(self) -> None: ...
-        def health(self) -> dict[str, str]:
-            return {"status": "ready"}
-        def list_tenants(self) -> list[str]:
-            return ["default"]
-
-    profile = RuntimeProfile(mode=RuntimeMode.DOCKER, compose_file="docker-compose.desktop.yml")
-    app = QApplication.instance() or QApplication([])
-
-    first = MainWindow(profile, runtime=UiRuntime())
-    first.model_edit.setText("a-model-the-user-chose")
-    first._save_configuration()
-    assert "saved" in first.status.text().lower()
-    first.close()
-    app.processEvents()
-
-    second = MainWindow(profile, runtime=UiRuntime())
-    try:
-        assert second.model_edit.text() == "a-model-the-user-chose", (
-            "the choice must survive reopening; the status line already claimed it had"
-        )
-    finally:
-        second.close()
-        app.processEvents()
-
-    assert (tmp_path / "pipeline.json").exists()
-    for path, state in before.items():
-        now = (path.exists(), path.stat().st_mtime_ns if path.exists() else 0)
-        # The ABSOLUTE path, not just the filename: a guard on a real user location has to say
-        # WHICH file, or diagnosing it means searching for a path the message withheld. This
-        # compares existence and mtime before and after, so it fires on a change made by this
-        # test, never on a machine that merely has a profile.
-        assert now == state, f"a test must never write the user's real profile at {path}"
 
 
 def test_closing_the_window_never_waits_on_a_long_running_job(
@@ -1815,68 +1706,148 @@ def test_an_update_without_a_digest_is_refused_not_silently_unverified() -> None
         download_and_verify(release, Path("unused-dir"))
 
 
-class _NoSpladeUiRuntime:
+class _InertUiRuntime:
     def start(self) -> None: ...
     def stop(self) -> None: ...
     def health(self) -> dict[str, str]:
         return {"status": "ready"}
     def list_tenants(self) -> list[str]:
         return ["default"]
+    def check_update(self) -> None:
+        return None
 
 
-def test_the_configuration_page_neither_offers_nor_keeps_a_splade_choice(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+def _shown_texts(widget: Any) -> list[str]:
+    """Every label, button text and group title under `widget`, as a person would read them."""
+    from PySide6.QtWidgets import QWidget
+
+    texts: list[str] = []
+    for child in [widget, *widget.findChildren(QWidget)]:
+        for accessor in ("text", "title"):
+            value = getattr(child, accessor, None)
+            if callable(value):
+                texts.append(str(value()).strip())
+    return texts
+
+
+@pytest.mark.parametrize(
+    ("page", "text", "issue"),
+    [
+        (None, "CONFIG", "#1392"),
+        (None, "Save configuration", "#1392"),
+        ("settings_page", "Provider API keys", "#1399"),
+        ("settings_page", "Save API keys", "#1399"),
+        ("settings_page", "Language", "#1400"),
+        ("calibration_page", "Cancel", "#1401"),
+    ],
+)
+def test_the_window_offers_no_control_whose_choice_reaches_nothing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, page: str | None, text: str, issue: str
 ) -> None:
-    """The desktop configuration page does not offer a sparse backend that no search would use.
+    """A control the desktop shows must change something; these changed nothing and are gone.
 
-    Invariant: the page offers no SPLADE control and leaves no `splade` choice in `pipeline.json`.
-    Failure mode it catches: the page had an "Enable learned sparse SPLADE retrieval" checkbox
-    whose value was saved to `pipeline.json`, but the only reader of that file is the page
-    restoring its own widgets (`recall.desktop.profiles.load_pipelines`), and no call outside
-    `recall/eval/` passes `sparse_backend=` or `sparse_encoder=`, so ticking it changed nothing.
-    The owner chose, on 2026-11-19, to stop offering it, as `recall setup` did; SPLADE stays a
-    library option through `HybridRetriever(sparse_backend=...)`.
+    Invariant: none of these controls is offered. Failure mode it catches: a control that
+    looks active and does nothing. On master `63b7c3ea2` each one did exactly that:
 
-    Red proof receipt ``desktop-no-splade-offer-01``, 2026-11-19: run against `6099ded6b` (the
-    page with `MainWindow.splade_check`), this test failed on its first assertion, because the
-    page showed the SPLADE checkbox and its "SPLADE" form row. Green after the checkbox was
-    removed. Production symbols targeted: `MainWindow._build_configuration_page` (the checkbox)
-    and `MainWindow.__init__` (the saved choices layered over the defaults). It lives in this file
-    because the CI `Desktop UI` job, the only one with PySide6, runs only this file.
+    * #1392, the CONFIG page: embedder, reranker, judge, reasoning, models and arm were saved
+      to `pipeline.json`, whose only reader was the page restoring its own widgets; the server
+      the desktop launches gets the DSN and the tenant only (`runtime.py::_env_for`).
+    * #1399, "Provider API keys": `_save_api_keys` kept the keys in a dict nothing read.
+    * #1400, "Language": the choice set a status line; nothing is translated or saved.
+    * #1401, the calibration page's "Cancel": refused while a calibration ran, the only time
+      there was something to cancel, and otherwise only cleared the table selection.
+
+    Red proof receipt ``desktop-inert-controls-01``, 2026-11-19: every case run against
+    `63b7c3ea2` failed in its `assert text not in shown`, because the page showed that text.
+    Production symbols targeted: `MainWindow._build_ui` (the CONFIG nav button and page),
+    `MainWindow._build_settings_page` (keys and language groups) and
+    `MainWindow._build_calibration_page` (`cancel_calibration_button`). Green after removal.
+    Also carries the SPLADE assertion of the test it replaces (receipt
+    ``desktop-no-splade-offer-01``, PR 1391), which is not red proof for this change.
     """
-    import json
-
     pytest.importorskip("PySide6")
     monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
-    from PySide6.QtWidgets import QApplication, QWidget
+    from PySide6.QtWidgets import QApplication
 
     from recall.desktop.ui import MainWindow
 
     monkeypatch.setattr(profiles, "profile_path", lambda: tmp_path / "runtime.json")
-    # A file saved by an earlier version, when the checkbox existed and was ticked.
-    pipeline = tmp_path / "pipeline.json"
-    pipeline.write_text(
-        json.dumps({kind: {"splade": True} for kind in ("Documents", "Memory", "Code")}),
-        encoding="utf-8",
-    )
     app = QApplication.instance() or QApplication([])
     window = MainWindow(
         RuntimeProfile(mode=RuntimeMode.DOCKER, compose_file="docker-compose.desktop.yml"),
-        runtime=_NoSpladeUiRuntime(),
+        runtime=_InertUiRuntime(),
     )
     try:
-        shown = [
-            str(widget.text())
-            for widget in window.findChildren(QWidget)
-            if callable(getattr(widget, "text", None))
-        ]
-        assert not [text for text in shown if "splade" in text.lower()], shown
+        shown = _shown_texts(window if page is None else getattr(window, page))
+        assert text not in shown, f"{issue}: {text!r} is still offered"
+        assert not [t for t in _shown_texts(window) if "splade" in t.lower()]
+    finally:
+        window.close()
+        app.processEvents()
+    assert not (tmp_path / "pipeline.json").exists()
 
-        window._save_configuration()
-        assert "saved" in window.status.text().lower(), window.status.text()
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_update_enabled_decides_whether_the_window_checks_for_updates_by_itself(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, enabled: bool
+) -> None:
+    """`runtime.json`'s `update_enabled: false` stops the automatic release checks (#1407).
+
+    Invariant: with `update_enabled` false the window neither checks when the runtime becomes
+    ready nor runs the 6 hour timer; with it true it does both (the positive control, so the
+    false case cannot pass by never checking at all). "Check for updates" on the Settings page
+    still works either way, because pressing it is the user asking.
+    Failure mode it catches: the field was loaded and never read, so a user who turned update
+    checks off still had the app call GitHub on every start and every 6 hours.
+
+    Red proof receipt ``desktop-update-enabled-01``, 2026-11-19: the `enabled=False` case run
+    against `63b7c3ea2` failed in `assert scheduled == enabled`, because `_runtime_ready` queued
+    `_check_update_safely` unconditionally. Production symbols targeted:
+    `MainWindow._runtime_ready` and the `update_timer` start in `MainWindow._build_ui`.
+    """
+    pytest.importorskip("PySide6")
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtWidgets import QApplication
+
+    from recall.desktop.ui import MainWindow
+
+    monkeypatch.setattr(profiles, "profile_path", lambda: tmp_path / "runtime.json")
+    queued: list[Any] = []
+    monkeypatch.setattr(MainWindow, "_run", lambda self, fn, *_args: queued.append(fn))
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(
+        RuntimeProfile(
+            mode=RuntimeMode.DOCKER,
+            compose_file="docker-compose.desktop.yml",
+            update_enabled=enabled,
+        ),
+        runtime=_InertUiRuntime(),
+    )
+    try:
+        queued.clear()
+        window._runtime_ready(["default"])
+        scheduled = window._check_update_safely in queued
+        assert scheduled == enabled, queued
+        assert window.update_timer.isActive() == enabled
     finally:
         window.close()
         app.processEvents()
 
-    saved = json.loads(pipeline.read_text(encoding="utf-8"))
-    assert all("splade" not in choices for choices in saved.values()), saved
+
+def test_runtime_profile_carries_no_update_channel() -> None:
+    """`update_channel` is gone from `runtime.json`: nothing read it (#1408).
+
+    Invariant: a profile neither stores an update channel nor refuses a file that still has
+    one. Failure mode it catches: `latest_release` always asks GitHub for the latest release,
+    so a hand-edited `"update_channel": "beta"` was kept, written back, and ignored.
+
+    Red proof receipt ``desktop-update-channel-01``, 2026-11-19: run against `63b7c3ea2` this
+    failed in `assert "update_channel" not in written`, because `RuntimeProfile.to_dict`
+    wrote the field. Production symbol targeted: `RuntimeProfile.update_channel`.
+    """
+    profile = RuntimeProfile.from_dict(
+        {"mode": "docker", "compose_file": "docker-compose.desktop.yml", "update_channel": "beta"}
+    )
+    written = profile.to_dict()
+    assert "update_channel" not in written, written
+    assert not hasattr(profile, "update_channel")
