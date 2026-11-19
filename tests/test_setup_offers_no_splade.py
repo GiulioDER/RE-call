@@ -59,4 +59,3 @@ def test_setup_neither_offers_nor_writes_splade_on_a_machine_that_could_run_it(
     assert "splade" not in output.getvalue().lower()
     env = (tmp_path / ".env").read_text(encoding="utf-8")
     assert "RECALL_SPARSE=splade" not in env
-    assert "RECALL_SPARSE=fts" in env

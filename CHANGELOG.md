@@ -100,6 +100,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ### Changed
 
+- `recall setup` no longer writes settings that nothing reads, and no longer offers a calibration
+  that search never uses. It still asks "Is data security necessary for this installation?" and
+  still hides the cloud choices for that run, but it no longer saves `RECALL_SECURITY_REQUIRED`,
+  which nothing read afterwards, and its closing summary says the answer applied to that run only
+  (#1396). It no longer writes `RECALL_SPARSE=fts`, the built-in behaviour, which nothing read
+  (#1398). It no longer asks to "calibrate the threshold now": the `calibration.json` it fitted
+  was never loaded by search, which serves only a calibration published against a generation, so
+  setup now points at `recall wizard` instead (#1395). `recall calibrate` still writes that file
+  as a measurement. A rerun of setup drops both keys from the managed block in `.env`.
 - Two documented settings that nothing applied are no longer offered (#1406, #1409).
   `RECALL_REASONING_MODEL` is gone from `.env.example` and the environment reference; with
   `RECALL_REASONING_EXPANSION` on and no `RECALL_REASONING_EXPANSION_MODEL`, a config that still
