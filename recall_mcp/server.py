@@ -276,8 +276,9 @@ def _answer_backend_configured(env: Mapping[str, str] | None = None) -> bool:
 _ASSISTANT_VIEWS: frozenset[str] = frozenset(
     {"recall_search", "recall_evidence", "recall_current_facts", "recall_apply_fact"}
 )
-#: The views, and `recall_withdraw`, which the assistant surface serves with memo ids too.
-_ASSISTANT_HELD: frozenset[str] = _ASSISTANT_VIEWS | {"recall_withdraw"}
+#: The views, and `recall_withdraw` and `recall_forget`, which the assistant surface serves with
+#: memo ids too, erasing a memo's file with its rows.
+_ASSISTANT_HELD: frozenset[str] = _ASSISTANT_VIEWS | {"recall_withdraw", "recall_forget"}
 
 
 def build_server(settings: Settings | None = None) -> MCPServer:
