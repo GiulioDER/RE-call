@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 from pathlib import Path
 
 from recall.lint import DEFAULT_GLOB
@@ -89,11 +90,15 @@ def _cmd_manifest(args: argparse.Namespace) -> None:
             load_inventory(args.objects),
         )
         Path(args.output).write_text(manifest.to_json(), encoding="utf-8")
-        print(f"wrote {args.output} sha256={manifest.digest} objects={len(manifest.objects)}")
+        print(
+            f"wrote {args.output} sha256={manifest.digest} objects={len(manifest.objects)} "
+            f"{_file_pins(Path(args.output).read_bytes())}"
+        )
         return
     # Chosen from the manifest's own objects rather than assumed. `manifest verify` on a
     # file:// manifest previously failed with an S3 allowlist error before reading anything.
     reader: ObjectReader | None = None
+    pins = ""
     if args.manifest.startswith("s3://"):
         if args.version_id is None or args.sha256 is None or args.size is None:
             raise SystemExit("an S3 manifest requires --version-id, --sha256 and --size")
@@ -118,11 +123,11 @@ def _cmd_manifest(args: argparse.Namespace) -> None:
         # "development" because production's admission rule (both pins required) governs
         # builds; verify compares the pins it is given, and the reader still enforces
         # RECALL_LOCAL_ALLOWLIST on every object.
-        manifest = IndexManifestV1.from_json(
-            _verify_local_manifest(
-                args.manifest, sha256=args.sha256, size=args.size, environment="development"
-            )
+        data = _verify_local_manifest(
+            args.manifest, sha256=args.sha256, size=args.size, environment="development"
         )
+        manifest = IndexManifestV1.from_json(data)
+        pins = f" {_file_pins(data)}"
     if manifest.tenant_id != args.tenant:
         raise SystemExit(
             f"manifest tenant {manifest.tenant_id!r} does not match --tenant {args.tenant!r}"
@@ -130,4 +135,13 @@ def _cmd_manifest(args: argparse.Namespace) -> None:
     if reader is None:
         reader = reader_for_manifest(manifest)
     reader.verify(manifest)
-    print(f"verified sha256={manifest.digest} objects={len(manifest.objects)}")
+    print(f"verified sha256={manifest.digest} objects={len(manifest.objects)}{pins}")
+
+
+def _file_pins(data: bytes) -> str:
+    """The values `--sha256` and `--size` compare for a local manifest: its file's own bytes.
+
+    `sha256=` in the same line is the manifest's canonical digest, a different number (the file
+    adds a newline, and Windows writes it as CRLF), so a pin copied from it is always refused.
+    """
+    return f"file_sha256={hashlib.sha256(data).hexdigest()} size={len(data)}"

@@ -37,6 +37,30 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   in the environment the client starts it from. Benchmark runs of `benchmarks/enterprise_rag.py`'s
   `cheap` and `closed_loop` arms are bounded too: rows past the ceiling record the fallback reason
   `ExpansionRateLimited`, so set it to `off` for a measured run.
+* **Flags that were accepted and then ignored now refuse, so a script passing one exits non-zero.**
+  `recall generation build --chunker code --overlap N`; `recall provenance apply --source-root`
+  without `--sqlite-path`; the global `--table` other than `chunks` or `--tenant` other than
+  `default` on `recall calibrate` and `recall lint --semantic`; `--version-id` on `recall manifest
+  verify` and `--manifest-version-id` on `recall generation build` for a local manifest; `recall
+  backup create --receipt-key` without `--receipt-bucket`; and on `recall lite refresh`, `--table`
+  other than `chunks` and a `--tenant` that differs from the tenant the store records. `recall
+  manifest verify` now compares `--sha256` and `--size` with a local manifest file, so a pin that
+  does not describe the file fails where it used to print `verified`; the pins are the
+  `file_sha256=` and `size=` values the command prints, not its `sha256=` digest. Each is listed
+  under Fixed.
+* **`recall setup --lite` and `recall wizard` now write client configuration they did not write
+  before:** Claude Code hooks and skills (unless the RE-call plugin already supplies them) and,
+  when Codex is detected, the project's
+  `.codex/config.toml` (each server's environment, the DSN included), Codex's hooks file and
+  `recall-hook.json`, and skills under `~/.agents/skills`. `recall setup --lite --no-register`
+  writes none of them.
+* **The Codex server `recall setup` registers now runs `RECALL_TRUST_MODE=development`**, the trust
+  mode of its Claude Code registration, from the `server_env` block of `recall-hook.json`, which
+  the Codex launcher applies over the shell's value. Answers from the uncalibrated corpus setup
+  builds are therefore served `degraded` there instead of refused.
+* **The desktop app's `RuntimeManager.apply_update` and `RuntimeProfile.pinned_version` are gone**,
+  replaced by `DockerRuntime.restart_with_pinned_images()`; code that constructs a profile with
+  `pinned_version=` now fails with `TypeError`. A `runtime.json` that names it still loads.
 
 ### Added
 
@@ -206,7 +230,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   as `recall generation build` already did. `--version-id` there, and `--manifest-version-id` on
   `recall generation build`, are refused for a local manifest, which has no object version.
   `recall backup create --receipt-key` without `--receipt-bucket` took the snapshot and wrote no
-  receipt; it is now refused before the snapshot starts.
+  receipt; it is now refused before the snapshot starts. `recall manifest create` and `verify`
+  printed only the manifest's canonical digest as `sha256=`, which is not the file's SHA-256 the
+  local pin compares, so pinning the printed value was always refused with a message saying the
+  manifest had changed. They now also print `file_sha256=` and `size=`, the values to pin, and the
+  refusal says which value the pin is.
+- The write-time hook asked whether the tenant had an active generation before the tenant setting
+  that row-level security reads existed on its connection, so under a serving role that is
+  neither superuser nor `BYPASSRLS` it always saw none and searched the legacy table, rows the
+  generation route never serves. The tenant now rides on the hook's connection options, for the
+  relay and the cold path alike, at no extra round trip.
 - `recall setup` offered the OpenAI-compatible cloud embedder when only `OPENAI_API_KEY` was
   entered, and that embedder then refused to start for want of `OPENROUTER_API_KEY` (#1397). The
   `openai` and `openai:<model>` spellings now use `OPENAI_API_KEY` against `api.openai.com` when it
@@ -484,14 +517,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
     Settings page, saved as `embedder` in `runtime.json`; they got the DSN and the tenant only, so
     they used the server default (`fastembed`) whatever the database was built with. A completed
     install into an existing database now writes that profile (database, project, embedder), as a
-    managed install already did for Docker.
+    managed install already did for Docker. It changes those four settings only: an existing
+    profile keeps `update_enabled`, `token_key`, `shared_profile` and its endpoint or compose file.
   - "Test connection" now checks that an existing index matches the named embedder
     ([#1430](https://github.com/GiulioDER/RE-call/issues/1430)), and Save runs the same check. Its
     label no longer claims a check of permission to create tables, which the page never ran.
   - "Apply update" is now "Restart stack (pinned images)", shown only for the managed Docker
     stack ([#1431](https://github.com/GiulioDER/RE-call/issues/1431)). It said "Applying RE-call
     `<version>`" and restarted the stack on the images its compose file already pinned. A newer
-    release now names the GitHub releases page, where its installer is.
+    release now names the GitHub releases page, where its installer is. The restart no longer
+    runs `docker compose pull` first, which fetched a newer build of the wizard stack's moving
+    `pgvector/pgvector:pg18` tag and recreated the database on it; `up` still pulls a missing
+    image.
   - "Pinned RE-call version" is gone ([#1432](https://github.com/GiulioDER/RE-call/issues/1432)):
     nothing wrote `pinned_version` and nothing pinned to it. A file that still names it loads, and
     the key is dropped on the next save.

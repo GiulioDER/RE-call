@@ -946,3 +946,51 @@ def test_an_existing_database_install_hands_the_desktop_its_database_and_embedde
     assert (written.dsn, written.default_tenant) == ("postgresql://u:p@127.0.0.1:5432/r", "acme")
     assert create_runtime(written)._env_for("acme-docs")["RECALL_EMBEDDER"] == "voyage:voyage-4"  # type: ignore[attr-defined]
     assert "desktop:" in window.log.toPlainText()
+
+
+def test_the_install_handoff_keeps_the_settings_it_does_not_decide(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Invariant: the existing-database handoff changes the database, project, embedder and mode,
+    and keeps every other setting of an existing desktop profile.
+
+    Failure mode: it saved a freshly built profile, so `update_enabled: false` (the #1407 off
+    switch for the app's own release checks), `token_key`, `shared_profile` and a compose file
+    were reset on every completed install (CCA run 20261119T212834Z, DAT-004).
+
+    Red proof: against master f25e5ab1e (`InstallerWindow._hand_over_profile` building a new
+    `RuntimeProfile`) this failed on `assert written.update_enabled is False`; recorded in the PR.
+    """
+    from recall.desktop.models import RuntimeMode, RuntimeProfile
+    from recall.desktop.profiles import load_profile, profile_path, save_profile
+
+    class _Report:
+        corpora: tuple[object, ...] = ()
+
+    window = _installer(monkeypatch, tmp_path)
+    save_profile(
+        RuntimeProfile(
+            mode=RuntimeMode.DOCKER, compose_file="stack.yml", update_enabled=False,
+            token_key="desktop-token", shared_profile="team",
+        )
+    )
+    try:
+        window.config = {
+            "project": "acme",
+            "embedder": "voyage:voyage-4",
+            "dsn": "postgresql://u:p@127.0.0.1:5432/r",
+        }
+        window._finished(_Report())
+    finally:
+        window.close()
+
+    written = load_profile(profile_path())
+    assert written is not None
+    assert written.mode is RuntimeMode.LOCAL_DATABASE
+    assert (written.dsn, written.default_tenant, written.embedder) == (
+        "postgresql://u:p@127.0.0.1:5432/r", "acme", "voyage:voyage-4"
+    )
+    assert written.update_enabled is False
+    assert (written.token_key, written.shared_profile, written.compose_file) == (
+        "desktop-token", "team", "stack.yml"
+    )

@@ -19,8 +19,10 @@ from __future__ import annotations
 
 import uuid
 from pathlib import Path
+from typing import Any
 
 from tests.conftest import TEST_DSN, requires_db
+from tests.test_absent_memo_facts import manager as manager  # noqa: F401  # the fixture
 
 _OPTIONS = {"k": 3, "connect_timeout": 5}
 
@@ -83,6 +85,71 @@ def test_the_hook_finds_a_memo_plain_setup_indexed(tmp_path: Path) -> None:
     finally:
         with psycopg.connect(TEST_DSN, autocommit=True) as conn:
             conn.execute(f'DROP TABLE IF EXISTS "{table}"')
+
+
+@requires_db
+def test_a_role_without_bypassrls_searches_the_active_generation_not_the_legacy_table(
+    manager: Any, unprivileged_dsn: str, tmp_path: Path
+) -> None:
+    """Invariant: for a tenant with an active generation, the hook searches that generation, also
+    under a role row-level security binds (a serving role that is neither superuser nor BYPASSRLS).
+
+    Failure mode: the has-active-generation probe ran before the tenant setting existed on the
+    connection, and `recall_generations` is RLS forced, so under such a role it always read false
+    and the hook served the tenant's legacy rows instead, which the generation route never serves
+    (CCA run 20261119T212834Z, BUG-001). The superuser `TEST_DSN` bypasses RLS, so the test above
+    cannot see this.
+
+    Red proof: this test, with `recall_hooks/write_time.py` as on master f25e5ab1e (the probe
+    without the tenant on the connection), failed in its first assertion, the legacy memo returned
+    in place of the generation's; recorded in the PR. Production symbol targeted:
+    `recall_hooks.write_time.tenant_option` as used by `search`.
+    """
+    import psycopg
+
+    from recall.embeddings import resolve_embedder
+    from recall.memory_index import index_memory_directory
+    from recall.schema import apply_migrations
+    from recall_hooks.write_time import search
+    from tests.conftest import role_is_unprivileged
+    from tests.test_gc_retraction import _promote
+
+    assert role_is_unprivileged(unprivileged_dsn)
+    tenant = manager.tenant_id
+    _promote(manager, {"generation-memo.md": b"quokka lantern generation memo"}, "v1")
+    table = f"wt_rls_{uuid.uuid4().hex[:10]}"
+    memory = tmp_path / "memory"
+    memory.mkdir()
+    (memory / "legacy-memo.md").write_text("quokka lantern legacy memo\n", encoding="utf-8")
+    printed: list[str] = []
+    try:
+        apply_migrations(TEST_DSN, table=table, dim=resolve_embedder("hashing").dim)
+        index_memory_directory(
+            dsn=TEST_DSN, embedder_name="hashing", memory_dir=memory,
+            tenant=tenant, table=table, env={}, print_fn=lambda *a, **k: printed.append(str(a[0])),
+        )
+        assert printed and printed[-1].startswith("Indexed "), printed
+
+        hits = search(
+            "quokka lantern", {"dsn": unprivileged_dsn, "tenant": tenant, "table": table}, _OPTIONS
+        )
+
+        assert [name for name, _, _ in hits] == ["generation-memo.md"]
+    finally:
+        with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+            conn.execute(f'DROP TABLE IF EXISTS "{table}"')
+
+
+def test_the_tenant_on_the_connection_is_escaped_for_libpq() -> None:
+    """Invariant: whitespace or a backslash in the tenant cannot split or end the libpq options
+    string (libpq splits it on every whitespace character).
+
+    Red proof by mutation: with `tenant_option` returning the tenant unescaped, and with it
+    escaping only spaces and backslashes, this failed on the equality below; recorded in the PR.
+    """
+    from recall_hooks.write_time import tenant_option
+
+    assert tenant_option("a b\\c\td") == "-c recall.tenant_id=a\\ b\\\\c\\\td"
 
 
 @requires_db
