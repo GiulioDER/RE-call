@@ -167,9 +167,23 @@ def _cmd_refresh(args: argparse.Namespace) -> None:
 
     from recall.lite.inspect import inspect_lite_file
 
+    from recall.db_constants import DEFAULT_TABLE, DEFAULT_TENANT
     from recall.lite import is_lite_dsn, lite_dsn_path
     from recall.lite.setup import default_store_path
 
+    # Refused before any store is opened: refresh opens the store's one table under the default
+    # tenant, so a typed --table refreshed (and could prune) the real store, and --tenant changed
+    # nothing (#1428).
+    if args.table != DEFAULT_TABLE:
+        raise SystemExit(
+            f"recall lite refresh: a lite store has one table, '{DEFAULT_TABLE}'; --table "
+            f"{args.table!r} cannot be honoured. Use another --store file instead; nothing was refreshed"
+        )
+    if args.tenant != DEFAULT_TENANT:
+        raise SystemExit(
+            f"recall lite refresh: refreshes the '{DEFAULT_TENANT}' tenant only; --tenant "
+            f"{args.tenant!r} cannot be honoured. Use another --store file instead; nothing was refreshed"
+        )
     # The store `recall search` and `recall index` follow when no --store is typed: the lite DSN
     # `recall setup --lite` prints for the shell, else the default in the current directory
     # (CCA ENV-006).

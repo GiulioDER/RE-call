@@ -1323,3 +1323,49 @@ def test_a_forced_refresh_walks_the_folders_once(store: LiteStore, project: Path
     assert len(walks) == 1, f"a forced refresh walked the folders {len(walks)} time(s)"
     assert report.outcome is Outcome.REFRESHED and report.indexed_files == 1, report.to_dict()
     assert report.files_seen == 4 and report.fingerprint, report.to_dict()
+
+
+@pytest.mark.parametrize(
+    ("flag", "value"),
+    [("--table", "scratch"), ("--tenant", "other")],
+)
+@pytest.mark.parametrize("check_only", [False, True], ids=["refresh", "check"])
+def test_a_table_or_tenant_the_refresh_cannot_honour_is_refused(
+    project: Path, capsys: pytest.CaptureFixture[str], flag: str, value: str, check_only: bool
+) -> None:
+    """T1 (#1428): `recall lite refresh` never read `--table` or `--tenant`, so `--table scratch`
+    refreshed (and could prune) the real store, and `--tenant X` changed nothing. Both are refused
+    before the store is opened, and the store is left exactly as it was.
+
+    Red proof, 2026-11-19, on the test host against master 2e546bec1 (no refusal in
+    `recall.cli_commands.lite_cmd._cmd_refresh`): the two `refresh` cases failed in
+    "refreshed the store" (3 chunks indexed), and the two `check` cases in "was not refused
+    (exit 1)", since --check printed its report. Mutation `if False and args.tenant !=
+    DEFAULT_TENANT:` failed both `--tenant-other` cases the same way. With the fix: 5 passed,
+    `test_the_default_table_and_tenant_typed_out_still_refresh` as the control.
+    """
+    db = project / ".recall" / "memory.db"
+    LiteStore(db, dim=64).close()
+    argv = [flag, value, "lite", "refresh", "--store", str(db), "--memory", str(project / "memory"),
+            "--embedder", "hashing", *(["--check"] if check_only else [])]
+    message: object = None
+    try:
+        cli_main(argv)
+    except SystemExit as exc:
+        message = exc.code
+    # The store first: what an unrefused flag costs is a refresh of the real store.
+    assert not read_state(db), f"{flag} {value} refreshed the store: {capsys.readouterr()}"
+    with LiteStore(db, dim=64) as opened:
+        assert opened.count() == 0, f"{flag} {value} indexed into the store"
+    assert isinstance(message, str), f"{flag} {value} was not refused (exit {message!r})"
+    assert flag in message and repr(value) in message, message
+
+
+def test_the_default_table_and_tenant_typed_out_still_refresh(project: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """T1's control: the refusal is for a value the store cannot honour, not for the flag itself."""
+    db = project / ".recall" / "memory.db"
+    LiteStore(db, dim=64).close()
+    code = _cli("--table", "chunks", "--tenant", "default", "lite", "refresh", "--store", str(db),
+                "--memory", str(project / "memory"), "--embedder", "hashing")
+    assert code == 0, capsys.readouterr()
+    assert read_state(db).get("last_success")
