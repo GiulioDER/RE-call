@@ -109,6 +109,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   was never loaded by search, which serves only a calibration published against a generation, so
   setup now points at `recall wizard` instead (#1395). `recall calibrate` still writes that file
   as a measurement. A rerun of setup drops both keys from the managed block in `.env`.
+- Two documented settings that nothing applied are no longer offered (#1406, #1409).
+  `RECALL_REASONING_MODEL` is gone from `.env.example` and the environment reference; with
+  `RECALL_REASONING_EXPANSION` on and no `RECALL_REASONING_EXPANSION_MODEL`, a config that still
+  sets it now refuses with a message saying it is no longer read, rather than only saying a model
+  is missing. It is not used as a fallback, because older setup files wrote it for another
+  reasoning arm. `RECALL_MULTIMODAL_MAX_MEDIA_BYTES`, `RECALL_MULTIMODAL_MAX_RESPONSE_BYTES` and
+  `RECALL_MULTIMODAL_MAX_ITEMS` are no longer read or validated, so an out of range value no longer
+  refuses startup; the 30 MiB module bounds still apply, and `MultimodalTenantConfig` loses its
+  three `max_*` fields.
 - With the supersession arbiter on (`RECALL_SUPERSESSION_ARBITER=1`), `recall rewrite` and the
   dashboard review page find their candidate memo pairs 9 to 24 times faster, with identical
   results: on synthetic corpora of 500, 1,000 and 2,000 memos, 7 s, 31 s and 133 s became 0.8 s,
@@ -137,6 +146,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ### Fixed
 
+- `recall setup` offered the OpenAI-compatible cloud embedder when only `OPENAI_API_KEY` was
+  entered, and that embedder then refused to start for want of `OPENROUTER_API_KEY` (#1397). The
+  `openai` and `openai:<model>` spellings now use `OPENAI_API_KEY` against `api.openai.com` when it
+  is the only one of the two keys set; with `OPENROUTER_API_KEY` set they go to OpenRouter, as
+  before. Bare `openai` there means OpenAI's `text-embedding-3-small`.
 - `recall setup` saved its reranking and reasoning-arm answers, and the API keys a cloud embedder
   needs, only to `./.env`, which the MCP server it registers never reads (#1393, #1394). The
   server therefore never reranked, never had the reasoning arm, and started a Voyage or
@@ -150,6 +164,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   enforced again: one budget per process, shared by every answer and proof provider and by both
   backends, debited before the request is sent. `off` removes it; `0`, a negative or a non-number
   is refused naming the variable.
+- Under `RECALL_INDEX_MODE=generation` the global `--table` flag was silently dropped: every
+  generation is kept in `recall_chunks_v1`, so `recall --table scratch forget --yes` erased from
+  the real store, and `withdraw`, `search`, `scopes`, `reasoning` and `records` acted on it too.
+  Those six commands now refuse a table other than `chunks` on the generation route before
+  opening anything, as the MCP server already refused `RECALL_TABLE`. The legacy route honours
+  `--table` as before.
 - `recall setup` refuses the flags it accepted and then ignored, naming each one, instead of
   running without them. Without `--lite` it refuses the global `--embedder` (the interview chooses
   the embedder), `--tenant` other than `default`, and the Lite-only `--memory`, `--store` and

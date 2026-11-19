@@ -793,7 +793,7 @@ They are observations, not automatic failures.
 | `recall.retrieval_slo` | 0 | 0 |
 | `recall.retriever` | 8 | 43 |
 | `recall.rewrite` | 21 | 154 |
-| `recall.runtime_route` | 1 | 1 |
+| `recall.runtime_route` | 2 | 3 |
 | `recall.schema` | 2 | 3 |
 | `recall.schemas` | 0 | 0 |
 | `recall.scope` | 0 | 0 |

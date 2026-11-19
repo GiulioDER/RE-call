@@ -148,6 +148,8 @@ OPENROUTER_API_KEY=
 # RECALL_EMBEDDER=fastembed          # or "hashing" for the fully-offline embedder
 # RECALL_EMBEDDER=gemini-embedding-2 # OpenRouter google/gemini-embedding-2
 # RECALL_EMBEDDER=openrouter:<provider/model>  # any other OpenRouter embedding model
+# RECALL_EMBEDDER=openai:<model>     # OpenRouter with OPENROUTER_API_KEY; api.openai.com with
+#                                    # OPENAI_API_KEY when that is the only one of the two set
 # RECALL_EMBED_DIMENSIONS=1536       # optional for OpenAI-compatible embedders
 # RECALL_EMBEDDER=st-prompted:<hf-id>  # a local model with its published query/document prompts,
 #                                    # pinned in recall/embedding_prompts.py; its own name and
@@ -487,10 +489,6 @@ RECALL_MULTIMODAL_ENABLED=0
 RECALL_MULTIMODAL_TENANT=re-call-multimodal
 RECALL_MULTIMODAL_EMBED_PROFILE=voyage-multimodal-3.5-v1
 RECALL_MULTIMODAL_OBJECT_ROOT=
-# The three bounds below are validated but reserved: no serving path applies them yet.
-RECALL_MULTIMODAL_MAX_MEDIA_BYTES=31457280
-RECALL_MULTIMODAL_MAX_RESPONSE_BYTES=31457280
-RECALL_MULTIMODAL_MAX_ITEMS=20
 
 # `RECALL_EMBED_PROFILE` is consumed consistently by the CLI, MCP service, setup, calibration,
 # and generation builders. Selecting a section profile changes the passage sent to the embedder

@@ -540,6 +540,8 @@ def _cmd_remove(args: argparse.Namespace, *, withdraw: bool) -> None:
     generation_mode = route.uses_generation
     if (refusal := lite_route_refusal(args.dsn, route)) is not None:
         raise SystemExit(refusal)
+    if (refusal := route.table_refusal(args.table, f"recall {command}")) is not None:
+        raise SystemExit(refusal)
     if is_lite_dsn(args.dsn):
         _check_lite_forget_target(args.dsn, args.tenant, command)
     elif getattr(args, "vacuum", False):
@@ -773,6 +775,8 @@ def _cmd_scopes(args: argparse.Namespace) -> None:
         route = _runtime_route(args)
     except RouteConfigurationError as exc:
         raise SystemExit(f"recall scopes: {exc}") from exc
+    if (refusal := route.table_refusal(args.table, "recall scopes")) is not None:
+        raise SystemExit(refusal)
     if is_lite_dsn(args.dsn):
         from recall.cli_commands._lite import lite_read_meta
 
@@ -863,6 +867,8 @@ def _cmd_search(args: argparse.Namespace) -> None:
     # entailment judge is refused rather than served the wider, unjudged results.
     _refuse_removed_entailment()
     route = _runtime_route(args)
+    if (refusal := route.table_refusal(args.table, "recall search")) is not None:
+        raise SystemExit(refusal)
     # Before the embedder and the store: an empty `--folder "$DIR"` is a typing mistake, and it
     # must not cost a model load or a connection before it is reported (CCA BUG-010).
     try:

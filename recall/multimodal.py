@@ -741,9 +741,6 @@ class MultimodalTenantConfig:
     tenant_id: str = MULTIMODAL_TENANT
     embedding_profile: str = MULTIMODAL_EMBEDDING_PROFILE
     object_root: str | None = None
-    max_media_bytes: int = DEFAULT_MAX_MEDIA_BYTES
-    max_response_bytes: int = DEFAULT_MAX_RESPONSE_BYTES
-    max_items: int = DEFAULT_MAX_ITEMS
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> "MultimodalTenantConfig":
@@ -758,11 +755,6 @@ class MultimodalTenantConfig:
                 "RECALL_MULTIMODAL_EMBED_PROFILE", MULTIMODAL_EMBEDDING_PROFILE
             ).strip(),
             object_root=source.get("RECALL_MULTIMODAL_OBJECT_ROOT", "").strip() or None,
-            max_media_bytes=int(source.get("RECALL_MULTIMODAL_MAX_MEDIA_BYTES", DEFAULT_MAX_MEDIA_BYTES)),
-            max_response_bytes=int(
-                source.get("RECALL_MULTIMODAL_MAX_RESPONSE_BYTES", DEFAULT_MAX_RESPONSE_BYTES)
-            ),
-            max_items=int(source.get("RECALL_MULTIMODAL_MAX_ITEMS", DEFAULT_MAX_ITEMS)),
         )
 
     def __post_init__(self) -> None:
@@ -772,17 +764,6 @@ class MultimodalTenantConfig:
             )
         if self.embedding_profile != MULTIMODAL_EMBEDDING_PROFILE:
             raise MediaValidationError("multimodal embedding profile is fixed and registered")
-        for variable, value, ceiling in (
-            ("RECALL_MULTIMODAL_MAX_MEDIA_BYTES", self.max_media_bytes, DEFAULT_MAX_MEDIA_BYTES),
-            (
-                "RECALL_MULTIMODAL_MAX_RESPONSE_BYTES",
-                self.max_response_bytes,
-                DEFAULT_MAX_RESPONSE_BYTES,
-            ),
-            ("RECALL_MULTIMODAL_MAX_ITEMS", self.max_items, DEFAULT_MAX_ITEMS),
-        ):
-            if not 1 <= value <= ceiling:
-                raise MediaValidationError(f"{variable} is {value}; it must be between 1 and {ceiling}")
         if self.enabled and not self.object_root:
             raise MediaValidationError(
                 "RECALL_MULTIMODAL_OBJECT_ROOT is required when multimodal retrieval is enabled"
@@ -797,9 +778,6 @@ class MultimodalTenantConfig:
             "tenant_id": self.tenant_id,
             "embedding_profile": self.embedding_profile,
             "object_root": self.object_root,
-            "max_media_bytes": self.max_media_bytes,
-            "max_response_bytes": self.max_response_bytes,
-            "max_items": self.max_items,
         }
 
 
