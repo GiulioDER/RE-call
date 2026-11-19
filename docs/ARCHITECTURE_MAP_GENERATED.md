@@ -610,7 +610,7 @@ They are observations, not automatic failures.
 | `recall.cli_commands.schema_cmd` | 2 | 143 |
 | `recall.cli_commands.secret_cmd` | 1 | 4 |
 | `recall.cli_commands.setup_wizard` | 20 | 202 |
-| `recall.codex` | 2 | 178 |
+| `recall.codex` | 3 | 178 |
 | `recall.confinement` | 0 | 0 |
 | `recall.constants` | 0 | 0 |
 | `recall.context` | 2 | 14 |

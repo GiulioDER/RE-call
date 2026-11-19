@@ -89,8 +89,8 @@ network shares and simultaneous writers on different machines are unsupported.
 
 ## Connect another client
 
-Setup also gives each client it finds on this machine the rest of what `recall setup` gives it,
-and reports every step:
+Setup also installs the hooks and skills for each client it finds on this machine (for Codex,
+the server too, but not the plugin bundle `recall setup` installs), and reports every step:
 
 | Client | What Lite setup installs |
 |---|---|

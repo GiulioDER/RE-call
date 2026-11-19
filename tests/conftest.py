@@ -1124,3 +1124,11 @@ def _confine_claude_client_config(tmp_path_factory, monkeypatch) -> None:
     # developer's own values must not reach a test.
     monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
     monkeypatch.delenv("CODEX_HOME", raising=False)
+    # `recall_hooks.claude_config_home` reads these first, so either would still win.
+    monkeypatch.delenv("RECALL_HOOK_CONFIG_HOME", raising=False)
+    monkeypatch.delenv("RECALL_PROJECT_CONFIG_HOME", raising=False)
+    # Lite setup and the wizard wire every client they detect, and detection reads PATH, which a
+    # test cannot fake by home alone: without this, a host with `claude` or `codex` installed runs
+    # a different install than CI does. A test that wants a client sets it back on.
+    monkeypatch.setattr("recall.claude_code.claude_code_detected", lambda: False)
+    monkeypatch.setattr("recall.codex.codex_code_detected", lambda: False)
