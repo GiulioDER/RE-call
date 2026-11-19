@@ -500,59 +500,59 @@ def _index_and_refresh(payload: dict[str, Any]) -> int:
     if str(dsn).startswith(LITE_DSN_PREFIX):
         refresh_stats(config)
         return 0
+    memory_dir = _project_memory_dir(config, cwd)
+    if memory_dir is None:
+        # Outside the project, nothing. Inside it with no usable memo folder (a relative
+        # `memory_root`), the count is still refreshed, as for a missing `<cwd>/memory`.
+        from .write_time import _event_is_in_configured_project
+
+        if _event_is_in_configured_project(config, payload):
+            refresh_stats(config)
+        return 0
+    if memory_dir.is_dir():
+        try:
+            from .memory_refresh import needs_index, start_background_index
+
+            if needs_index(config, memory_dir):
+                # Detached, because indexing can outlast Codex's synchronous 15 s SessionEnd
+                # (#1454). The child refreshes the cached count itself when it finishes.
+                start_background_index(str(cwd))
+                return 0
+        except Exception:  # BROAD-CATCH: fail-open
+            return 0
+    refresh_stats(config)
+    return 0
+
+
+def _project_memory_dir(config: dict[str, Any], cwd: object) -> Path | None:
+    """The memo folder to index when `cwd` lies inside the configured `project_root`, else None.
+
+    The configured `memory_root` when one is set (absolute), otherwise `<cwd>/memory`, resolved.
+    """
     configured = config.get("project_root")
     if not isinstance(configured, str) or not isinstance(cwd, str):
-        return 0
+        return None
     from recall.confinement import within
 
     try:
         root_path = Path(configured).expanduser()
         event_path = Path(cwd).expanduser()
         if not root_path.is_absolute() or not event_path.is_absolute():
-            return 0
+            return None
         root = root_path.resolve(strict=True)
         event_root = event_path.resolve(strict=True)
         if not root.is_dir() or not event_root.is_dir() or within(root, event_root) is None:
-            return 0
+            return None
         override = config.get("memory_root")
         if isinstance(override, str) and override.strip():
             # The folder the installer pointed the agent and prompt-time search at, which need not
-            # sit inside the project (the wizard's default is under its data root). A relative or
-            # missing one indexes nothing below, as a missing `<cwd>/memory` does.
+            # sit inside the project (the wizard's default is under its data root). A relative one
+            # indexes nothing, as a missing `<cwd>/memory` does.
             candidate = Path(override).expanduser()
-            memory_dir: Path | None = candidate.resolve() if candidate.is_absolute() else None
-        else:
-            confined_memory_dir = within(root, event_root / "memory")
-            if confined_memory_dir is None:
-                return 0
-            memory_dir = confined_memory_dir
+            return candidate.resolve() if candidate.is_absolute() else None
+        return within(root, event_root / "memory")
     except (OSError, RuntimeError, ValueError):
-        return 0
-    if memory_dir is not None and memory_dir.is_dir():
-        try:
-            from recall.memory_index import index_memory_directory
-
-            # The settings the corpus was built under (an embedding profile, its key), which the
-            # client's own environment need not carry; without them another model would embed.
-            extra = config.get("server_env")
-            env = (
-                {**os.environ, **extra}
-                if isinstance(extra, dict) and all(isinstance(v, str) for v in extra.values())
-                else None
-            )
-            index_memory_directory(
-                dsn=str(dsn),
-                embedder_name=str(config.get("embedder", "fastembed")),
-                memory_dir=memory_dir,
-                tenant=str(config.get("tenant", "default")),
-                table=str(config.get("table", "chunks")),
-                env=env,
-                print_fn=lambda *args, **kwargs: None,
-            )
-        except Exception:  # BROAD-CATCH: fail-open
-            return 0
-    refresh_stats(config)
-    return 0
+        return None
 
 
 def session_end(payload: dict[str, Any]) -> int:
@@ -730,6 +730,11 @@ def _dispatch(argv: list[str] | None = None) -> int:
         from .auditor_brief import warm
 
         return warm()
+    if args[0] == "index-memory":
+        # The detached child `_index_and_refresh` starts; it reads no payload.
+        from .memory_refresh import run
+
+        return run(args[1:])
     try:
         # Bytes, decoded as UTF-8, which is what the client writes. `json.load(sys.stdin)` decoded
         # with the console code page (cp1252 on Windows), and `pre-agent` writes the prompt back,

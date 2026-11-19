@@ -77,7 +77,8 @@ def _verify_local_manifest(
         if digest.lower() != sha256.lower():
             raise SystemExit(
                 f"manifest checksum mismatch for {path}: expected {sha256}, read {digest}. "
-                "The manifest changed after its digest was taken."
+                "The pin is the SHA-256 of the file's bytes, printed as file_sha256= by "
+                "`recall manifest create` and `verify`, not the manifest's sha256= digest."
             )
     return data
 

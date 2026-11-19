@@ -477,22 +477,28 @@ if QApplication is not None:
             hand its server resolved the server default embedder rather than the one chosen here.
             Written to the default `runtime.json`, which is the file the engine's Docker handoff
             replaces too. The DSN is already on disk in this install's `wizard.json`.
+
+            Only the four fields this install decides change: an existing profile keeps the rest
+            (`update_enabled: false`, `token_key`, `shared_profile`, an endpoint or compose file),
+            which a freshly built profile reset to their defaults.
             """
             config = self.config or {}
             dsn = str(config.get("dsn") or "")
             if not dsn:
                 return ""
-            from recall.desktop.models import RuntimeMode, RuntimeProfile
-            from recall.desktop.profiles import save_profile
+            from dataclasses import replace
 
+            from recall.desktop.models import RuntimeMode, RuntimeProfile
+            from recall.desktop.profiles import load_profile, save_profile
+
+            mode = RuntimeMode.LOCAL_DATABASE
+            tenant, embedder = str(config["project"]), str(config["embedder"])
             try:
+                existing = load_profile()
                 written = save_profile(
-                    RuntimeProfile(
-                        mode=RuntimeMode.LOCAL_DATABASE,
-                        dsn=dsn,
-                        default_tenant=str(config["project"]),
-                        embedder=str(config["embedder"]),
-                    )
+                    replace(existing, mode=mode, dsn=dsn, default_tenant=tenant, embedder=embedder)
+                    if existing is not None
+                    else RuntimeProfile(mode=mode, dsn=dsn, default_tenant=tenant, embedder=embedder)
                 )
             except (OSError, ValueError) as exc:
                 return _scrubbed(f"desktop: could not write the desktop app's profile: {exc}", dsn)
