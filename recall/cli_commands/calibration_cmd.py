@@ -330,7 +330,7 @@ def _cmd_calibration(args: argparse.Namespace) -> None:
     if is_lite_dsn(args.dsn):
         _cmd_calibration_lite(args)
         return
-    if (refusal := generations_table_refusal(args.table, "recall calibration")) is not None:
+    if (refusal := generations_table_refusal(getattr(args, "table", None), "recall calibration")) is not None:
         raise SystemExit(refusal)
     repository = CalibrationRepository(args.dsn, args.tenant)
     try:

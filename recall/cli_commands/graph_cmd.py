@@ -40,7 +40,7 @@ def _cmd_graph(args: argparse.Namespace) -> None:
 
     # A lite store refuses another table itself (`lite_read_meta`).
     if not is_lite_dsn(args.dsn) and (
-        refusal := generations_table_refusal(args.table, "recall graph")
+        refusal := generations_table_refusal(getattr(args, "table", None), "recall graph")
     ) is not None:
         raise SystemExit(refusal)
     if is_lite_dsn(args.dsn):

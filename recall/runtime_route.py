@@ -135,15 +135,16 @@ def resolve_runtime_route(
     )
 
 
-def generations_table_refusal(table: str, command: str) -> str | None:
+def generations_table_refusal(table: str | None, command: str) -> str | None:
     """Why `--table` cannot be honoured by a command that only works on generations, or None.
 
     `recall generation`, `recall graph` and `recall calibration` on PostgreSQL act on the tenant's
     generations and calibrations on either route, and those name no chunk table, so a scratch
     `--table` would leave them acting on the real store (#1421). Compared case-folded, as in
-    `RuntimeRoute.table_refusal`.
+    `RuntimeRoute.table_refusal`. None is a caller that named no table, as when a handler is
+    called with a namespace the CLI parser did not build.
     """
-    if table.casefold() == DEFAULT_TABLE:
+    if table is None or table.casefold() == DEFAULT_TABLE:
         return None
     return (
         f"{command}: --table {table!r} cannot be honoured: this command works on the tenant's "
