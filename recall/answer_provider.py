@@ -14,6 +14,7 @@ from types import SimpleNamespace
 from urllib import request
 from urllib.parse import urlparse
 
+from recall.errors import RecallError
 from recall.evidence import AnswerProfile
 from recall.provider_metadata import ProviderMetadata
 
@@ -21,6 +22,103 @@ from recall.provider_metadata import ProviderMetadata
 #: `recall.evidence.SYSTEM_PROMPT` changes. v2 (2026-09-29): the prompt now says "JSON",
 #: which OpenAI requires for ``response_format: json_object``.
 ANSWER_PROMPT_DIGEST = hashlib.sha256(b"recall-answer-provider-v2").hexdigest()
+
+#: Ceiling on answer calls per minute, PER PROCESS, read from
+#: `RECALL_REASONING_ANSWER_MAX_CALLS_PER_MIN`. Not per tenant: it guards one API key's spend,
+#: which belongs to the deployment, and `recall_mcp.limits.RateLimiter` is tenant keyed and absent
+#: on stdio. Restored 2026-11-19 (issue 1405): its reader was deleted by 410cfd81b (#585) while
+#: `.env.example` went on calling it the only bound on paid calls.
+DEFAULT_ANSWER_CALLS_PER_MIN = 30.0
+
+#: Disables the ceiling. A word, not a number: `0` reads as both "no limit" and "nothing
+#: allowed", and in a spend control that ambiguity is how a cap gets removed by mistake.
+ANSWER_RATE_OFF = "off"
+
+
+class AnswerRateLimited(RuntimeError, RecallError):
+    """The process-wide ceiling on answer calls was reached.
+
+    `recall.reasoning.reason` catches it like any provider failure and abstains with a sanitized
+    `ProviderFailure` naming this class, so the name has to read as a diagnosis on its own.
+    """
+
+
+class _AnswerRateGate:
+    """A token bucket shared by every provider this process resolves.
+
+    Module level on purpose: a bucket on the provider instance would be refilled by every new
+    provider, and the MCP server and the proof provider each resolve their own.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._rate: float | None = None
+        self._capacity = 0.0
+        self._tokens = 0.0
+        self._updated = 0.0
+
+    def configure(self, calls_per_min: float | None) -> None:
+        """Set the ceiling (`None` for none), refilling the bucket only on a real change.
+
+        The compare and set is under the lock because tool bodies run on threads: two concurrent
+        resolves that both saw the old value would each refill the bucket.
+        """
+        rate = None if calls_per_min is None else calls_per_min / 60.0
+        with self._lock:
+            if rate == self._rate:
+                return
+            self._rate = rate
+            # At least one whole token, or a ceiling under 1/min (0.5 is one call every two
+            # minutes) could never fill to a call and would refuse everything.
+            self._capacity = 0.0 if calls_per_min is None else max(1.0, calls_per_min)
+            self._tokens = self._capacity
+            self._updated = time.monotonic()
+
+    def take(self) -> None:
+        """Debit one call, or raise `AnswerRateLimited` naming the wait."""
+        with self._lock:
+            if self._rate is None:
+                return
+            now = time.monotonic()
+            # Clamp the stored timestamp as well as the delta, so a clock that steps back cannot
+            # rewind the reference point and mint the rewound interval on the next call.
+            elapsed = max(0.0, now - self._updated)
+            self._updated = max(self._updated, now)
+            self._tokens = min(self._capacity, self._tokens + elapsed * self._rate)
+            if self._tokens >= 1.0:
+                self._tokens -= 1.0
+                return
+            wait = (1.0 - self._tokens) / self._rate
+        raise AnswerRateLimited(
+            f"answer provider ceiling of {self._capacity:g} calls/min reached; retry in "
+            f"{wait:.1f}s, or raise RECALL_REASONING_ANSWER_MAX_CALLS_PER_MIN "
+            f"(or set it to '{ANSWER_RATE_OFF}' to remove the ceiling)"
+        )
+
+
+_ANSWER_RATE_GATE = _AnswerRateGate()
+
+
+def _configure_answer_rate(raw: str) -> None:
+    value = raw.strip().lower()
+    if value == ANSWER_RATE_OFF:
+        _ANSWER_RATE_GATE.configure(None)
+        return
+    if not value:
+        _ANSWER_RATE_GATE.configure(DEFAULT_ANSWER_CALLS_PER_MIN)
+        return
+    try:
+        limit = float(value)
+    except ValueError:
+        raise ValueError(
+            f"RECALL_REASONING_ANSWER_MAX_CALLS_PER_MIN must be a number or '{ANSWER_RATE_OFF}'"
+        ) from None
+    if not math.isfinite(limit) or limit <= 0:
+        raise ValueError(
+            "RECALL_REASONING_ANSWER_MAX_CALLS_PER_MIN must be finite and positive, or "
+            f"'{ANSWER_RATE_OFF}' to remove the ceiling"
+        )
+    _ANSWER_RATE_GATE.configure(limit)
 
 
 class OllamaAnswerProvider:
@@ -70,6 +168,8 @@ class OllamaAnswerProvider:
         self._metadata_local.value = initial_metadata
 
     def __call__(self, system: str, user: str) -> str:
+        # Debited before the call, so a refusal costs nothing and is not recorded as latency.
+        _ANSWER_RATE_GATE.take()
         started = time.perf_counter()
         response: object | None = None
         try:
@@ -247,6 +347,7 @@ def resolve_answer_provider(
             raise ValueError(
                 "RECALL_REASONING_ANSWER_REASONING_EFFORT must be none, minimal, low, medium, or high"
             )
+    _configure_answer_rate(source.get("RECALL_REASONING_ANSWER_MAX_CALLS_PER_MIN", ""))
     client: Any
     if provider == "ollama":
         client = _NativeOllamaClient(base_url, timeout=timeout)
@@ -415,6 +516,7 @@ class _OpenRouterClient:
 
 
 __all__ = [
+    "AnswerRateLimited",
     "OllamaAnswerProvider",
     "OpenRouterAnswerProvider",
     "resolve_answer_profile",
