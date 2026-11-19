@@ -285,3 +285,29 @@ def test_local_verify_refuses_a_version_id_before_reading(tmp_path, monkeypatch)
             ["--tenant", "tenant-a", "manifest", "verify", str(tmp_path / "absent.json"),
              "--version-id", "v1"]
         )
+
+
+def test_the_pins_the_cli_prints_are_the_pins_it_accepts(tmp_path, monkeypatch, capsys) -> None:
+    """Invariant: the pin values `manifest create` and `manifest verify` print for a local
+    manifest are the ones `--sha256` and `--size` then accept.
+
+    Failure mode: both commands printed only `sha256=<canonical digest>`, while the local pin
+    compares the SHA-256 of the file's bytes (the file adds a newline, CRLF on Windows), so an
+    operator who pinned the printed value was always refused with a message saying the manifest
+    had changed (CCA run 20261119T212834Z, NUM-001).
+
+    Red proof: this test against master f25e5ab1e (`recall/cli_commands/manifest_cmd.py`,
+    `_cmd_manifest`, which printed no file pins) failed on the first `file_sha256=` assertion;
+    recorded in the PR.
+    """
+    import re
+
+    path, digest, size = _local_manifest(tmp_path, monkeypatch)
+    created = re.search(r"file_sha256=([0-9a-f]{64}) size=(\d+)", capsys.readouterr().out)
+    assert created, "manifest create printed no file pins"
+    main(
+        ["--tenant", "tenant-a", "manifest", "verify", str(path),
+         "--sha256", created.group(1), "--size", created.group(2)]
+    )
+    verified = re.search(r"file_sha256=([0-9a-f]{64}) size=(\d+)", capsys.readouterr().out)
+    assert verified and verified.groups() == created.groups() == (digest, str(size))

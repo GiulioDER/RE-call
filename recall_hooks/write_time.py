@@ -103,6 +103,20 @@ MAX_K = 20
 #: start-up budget; `tests/test_write_time_legacy_store.py` pins the two together.
 LEGACY_TENANT_GUC = "recall.tenant_id"
 
+
+def tenant_option(tenant: str) -> str:
+    """The libpq `options` entry every hook connection opens with, setting the tenant.
+
+    The tenant rides on the connection because `recall_generations` and `recall_chunks_v1` are
+    row-level-security forced too, and the first query asks whether the tenant has an active
+    generation. Without the setting, a role that does not bypass RLS saw no generation and was sent
+    to the legacy table, rows the generation route never serves. It costs no round trip.
+    """
+    # libpq splits `options` on every whitespace character and reads a backslash as an escape.
+    escaped = "".join(f"\\{c}" if c.isspace() or c == "\\" else c for c in tenant)
+    return f"-c {LEGACY_TENANT_GUC}={escaped}"
+
+
 WRITE_TOOLS = ("Write", "Edit", "MultiEdit", "NotebookEdit")
 COMMAND_TOOLS = ("Bash", "BashOutput")
 TOKEN_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]{2,}")
@@ -356,21 +370,22 @@ def search(query: str, config: dict[str, Any], options: dict[str, Any]) -> list[
 
     import psycopg
 
-    # ⚠️ ONE round trip, deliberately. Measured against a corpus on another host: three round
-    # trips cost a median of 2.54s per tool call, against ~1.0s for a corpus on the same machine,
-    # and the difference is almost entirely latency rather than work. The statement timeout rides
-    # on the connection's options instead of a `SET LOCAL`, and the generation lookup is a scalar
-    # subquery instead of a separate SELECT.
+    # ⚠️ ONE round trip for a tenant with an active generation, deliberately. Measured against a
+    # corpus on another host: three round trips cost a median of 2.54s per tool call, against
+    # ~1.0s for a corpus on the same machine, and the difference is almost entirely latency rather
+    # than work. The statement timeout and the tenant ride on the connection's options instead of
+    # a `SET LOCAL`, and the generation lookup is a scalar subquery instead of a separate SELECT.
+    # A tenant with no active generation pays a second transaction: `_search_connection` then
+    # searches the legacy table (issue 1425).
     #
     # ⛔ Binding to the ACTIVE generation is NOT relaxed by folding it in. `recall_chunks_v1`
     # holds every generation ever built, retired ones included, and `GenerationStore` is what
     # normally applies this filter; raw SQL does not inherit it. A subquery that matches no row
-    # yields NULL, `generation_id = NULL` matches nothing, and the caller gets no hits, which is
-    # what the explicit `if not active: return []` did.
+    # yields NULL, `generation_id = NULL` matches nothing, so the generation leg finds nothing.
     with psycopg.connect(
         str(config["dsn"]),
         connect_timeout=options["connect_timeout"],
-        options="-c statement_timeout=5s",
+        options=f"-c statement_timeout=5s {tenant_option(str(config.get('tenant', 'default')))}",
     ) as conn:
         return _search_connection(conn, query, config, options)
 

@@ -250,6 +250,11 @@ cloud embedder over the local one, etc.).
   configuration beside it, written like the configuration itself, so a rotated key also stays in those backups until they are
   deleted. `recall setup
   --lite` copies the one key a hosted profile names. Anyone who can read that file can read them.
+- **`recall setup --lite` and `recall wizard` also write each server's environment into the
+  project**, when they wire Codex: a managed block of `<project>/.codex/config.toml` holds the
+  DSN, with its password, and a hosted profile's API key. That file is inside the project tree,
+  not user level, so keep it out of version control; setup refuses to write it when git reports
+  it tracked.
 - **The Postgres DSNs (`RECALL_SERVING_DSN` and `RECALL_MIGRATION_DSN`)** carry passwords in their
   connection strings. The serving credential must not own schema objects or have DDL privileges;
   the migration credential must not be present in the MCP process. `RECALL_DSN` is a deprecated

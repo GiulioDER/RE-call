@@ -788,13 +788,16 @@ def _serve(state_path_value: Path, expected_token_digest: str | None = None) -> 
     def connect() -> ConnectionLike:
         import psycopg
 
+        from .write_time import tenant_option
+
         return psycopg.connect(
             str(config["dsn"]),
             autocommit=True,
             connect_timeout=options["connect_timeout"],
             # Below the client's REQUEST_TIMEOUT_SECONDS, so a slow query ends here as an error
             # the helper answers, instead of timing the client out and retiring a healthy helper.
-            options=f"-c statement_timeout={int(RELAY_STATEMENT_TIMEOUT_SECONDS * 1000)}ms",
+            options=f"-c statement_timeout={int(RELAY_STATEMENT_TIMEOUT_SECONDS * 1000)}ms "
+            f"{tenant_option(str(config.get('tenant', 'default')))}",
         )
 
     listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)

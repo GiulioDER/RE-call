@@ -128,7 +128,8 @@ def test_local_hook_passes_configured_tenant_and_table_to_indexer(
 
     Red proof: on the baseline implementation, the captured call omits both values and the
     indexer falls back to its default tenant and table. The production line under test is the
-    `index_memory_directory` call in `recall_hooks._index_and_refresh`.
+    `index_memory_directory` call, in `recall_hooks._index_and_refresh` then and in
+    `recall_hooks.memory_refresh._run` since #1454.
     """
     _configure(
         tmp_path,
