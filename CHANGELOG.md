@@ -219,6 +219,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   could not see that memory. `recall setup --lite` refuses `--tenant` and `--table` other than their
   defaults, since a Lite store has one tenant and one table; use `--store` for another file.
   `--embedder` with `--lite` and `--table` without it are applied as before.
+- `recall lite refresh` never read the global `--table` or `--tenant` (#1428), so
+  `recall --table scratch lite refresh` refreshed, and could prune, the real store, and `--tenant`
+  changed nothing. It now refuses a table other than `chunks` and a tenant other than `default`
+  before opening the store, with `--check` as well, as `recall setup --lite` does; use `--store`
+  for another file.
 - A memo whose `recall_graph` held a `NaN` or `Infinity` failed the whole Lite refresh with
   "malformed JSON" on SQLite before 3.42 (Debian 12 ships 3.40, Ubuntu 22.04 3.37), and the same
   memo failed indexing on PostgreSQL, whose `jsonb` refuses those values too. Such a value is now
