@@ -6,10 +6,12 @@ found. Failure mode it catches: the hook searched only the active generation in
 `recall_chunks_v1`, while plain `recall setup` indexes into the legacy `chunks` table
 (`recall.memory_index.index_memory_directory`), so on a setup-only install it found nothing.
 
-Red proof receipt ``write-time-legacy-01``, 2026-11-19: the database test ran in CI against this
-branch's parent commit (the hook unchanged) and failed on its `== ["crlf-churn.md"]` assertion
-with `[]`; it passes with the fix. The database cannot be run on the maintainer's hosts during the
-AML validation window, which is why the red run is CI's. Production symbol targeted:
+Red proof receipt ``write-time-legacy-01``, 2026-11-19, in CI (the database cannot run on the
+maintainer's hosts during the AML validation window): with the hook as on master `2e546bec1`,
+`test_the_hook_finds_a_memo_plain_setup_indexed` passed its indexing check and failed on
+`assert [] == ['crlf-churn.md']` (run 44598039479, commit 9e5dfbdbf); it passes with the fix.
+An earlier red run of it (44591719683) was invalid and is not counted: the test then never
+created its table, so it would have failed with a correct hook too. Production symbol targeted:
 `recall_hooks.write_time._search_connection`.
 """
 
@@ -89,8 +91,8 @@ def test_a_missing_legacy_table_is_no_hits_not_an_error() -> None:
     nothing found, not as a failure that starts the hook's cooldown.
 
     Passes on the unfixed hook by construction (it never read the legacy table). Red proof is by
-    mutation, in CI: with the fix but without its missing-table handling, this test failed with
-    `psycopg.errors.UndefinedTable`."""
+    mutation, in CI: with the fix but without its missing-table handling (commit fa8472dcb, run
+    44594904129), this test failed with `psycopg.errors.UndefinedTable`."""
     from recall_hooks.write_time import search
 
     hits = search(
