@@ -14,10 +14,10 @@ Invariants and the failure each one catches:
 - H6 (DEPLOY-001) `recall setup --lite` refuses to register the server when the MCP SDK is not
   installed, instead of registering one that cannot start.
 - H7 (ENV-003) for a store outside `.recall/`, setup names the refresh state file to ignore.
-- H8 to H11 (PERF-001, residue) a store whose fit did not certify is refitted only once it has
-  grown by a quarter of the chunks that fit measured (inline, and in a background job's re-check),
-  a refit it does get runs off the write path when the write asks for the background, and a fit
-  for another model is refitted at once whatever the growth.
+- H8 to H12 (PERF-001, residue; H12 NUM-001) a store whose fit did not certify is refitted only
+  once it has grown or shrunk by a quarter of the chunks that fit measured (inline, and in a
+  background job's re-check), a refit it does get runs off the write path when the write asks
+  for the background, and a fit for another model is refitted at once whatever the growth.
 
 Red proof: each test's docstring names the mutation (the pre-fix line of the production code) it
 was run against and the assertion that failed.

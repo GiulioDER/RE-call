@@ -13,6 +13,8 @@ Invariants and the failure each one catches:
 - P7 `provenance current` cites every memo that states a fact, as `recall_current_facts` does.
 - P8 after a memo is withdrawn, `provenance current` and `recall_current_facts` list the same
   facts: the value the withdrawn memo had superseded, and not the withdrawn one.
+- P9 `provenance erase` on a lite store says when its closing checkpoint was blocked, as
+  `recall forget` does, so erased bytes left in the write-ahead log are not reported as gone.
 
 Red proof: recorded in each test's docstring.
 """
@@ -301,3 +303,38 @@ def test_p8_both_listings_show_what_a_withdrawn_memo_had_superseded(tmp_path: Pa
     cli = sorted(str(fact["fact"]["object"]) for fact in listed["facts"])
     assert cli == ["tea"], f"provenance current did not list what the withdrawn memo had superseded: {listed}"
     assert mcp == cli, f"the two listings disagree after a withdrawal: mcp {mcp}, cli {cli}"
+
+
+def test_p9_erase_reports_a_blocked_checkpoint(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """P9. Red against master 04baa1cb2, whose `_erase` printed its counts and never read
+    `erase_checkpoint_blocked`: "provenance erase did not say the erased bytes may stay in the
+    write-ahead log". The blocking itself is `tests/test_lite_cca_hunt2_fixes.py::test_k4_a_blocked_erase_checkpoint_is_reported`;
+    here `checkpoint` reports it blocked."""
+    store = _calibrated_store(tmp_path)
+    embedder = ContentWordEmbedder()
+    retrieval = _retrieve_trusted(
+        store, embedder, "user drink tea", source=None, k=5, calibration=None, policy=None
+    )
+    cards = cards_from_trusted_result(retrieval.result)
+    register_evidence_cards(cards, store=store)
+    (tmp_path / "cards.json").write_text(json.dumps([c.to_payload() for c in cards]), encoding="utf-8")
+    (tmp_path / "claim.json").write_text(json.dumps(TEA_CLAIM), encoding="utf-8")
+    monkeypatch.setattr("recall.cli_commands._shared._make_embedder", lambda *_a, **_k: ContentWordEmbedder())
+    base = ["--dsn", _dsn(tmp_path / "memory.db")]
+    applied = json.loads(_run([*base, "provenance", "apply", "--claim", str(tmp_path / "claim.json"),
+                               "--cards", str(tmp_path / "cards.json"), "--request-id", "r1",
+                               "--generation", store.generation_id]))
+    assert applied["allowed"] is True, applied
+    store.close()
+
+    monkeypatch.setattr(LiteStore, "checkpoint", lambda self: False)
+    erased = json.loads(_run([*base, "provenance", "erase", "--yes"]))
+    assert erased["facts_redacted"] >= 1, erased
+    warning = erased.get("warning", "")
+    assert "write-ahead log" in warning, (
+        f"provenance erase did not say the erased bytes may stay in the write-ahead log: {erased}"
+    )
+    assert "recall provenance erase --yes --vacuum" in warning, warning
+    # Control: an erase whose checkpoint completed says nothing more.
+    monkeypatch.setattr(LiteStore, "checkpoint", lambda self: True)
+    assert "warning" not in json.loads(_run([*base, "provenance", "erase", "--yes"]))

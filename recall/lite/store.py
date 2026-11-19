@@ -221,6 +221,28 @@ def lite_dsn_path(dsn: str) -> Path:
     return path
 
 
+def erase_note(store: object, vacuum_command: str) -> str:
+    """What a lite erase (`LiteStore.erasing`) left on disk, worded for its caller's answer: a
+    one-time VACUUM that could not run, a closing checkpoint a reader blocked; "" for neither, and
+    for any other store. `vacuum_command` is the command the note tells the reader to run.
+
+    Here, beside the flags, so both `recall_forget` (`recall_mcp.lifecycle`) and
+    `recall provenance erase` word it the same."""
+    notes: list[str] = []
+    if getattr(store, "erase_vacuum_failed", False):
+        notes.append(
+            "Its one-time VACUUM could not run (it needs free disk about the size of the store, and "
+            "an unlocked file), so free pages from before this version may still hold text deleted "
+            "earlier; the next forget or withdraw tries it again."
+        )
+    if getattr(store, "erase_checkpoint_blocked", False):
+        notes.append(
+            "Another reader kept the write-ahead log from being truncated, so erased bytes may stay in "
+            f"it until the next checkpoint; run `{vacuum_command}` once other readers close."
+        )
+    return " ".join(notes)
+
+
 def _now() -> str:
     # The evaluation clock (`recall.eval_clock`), when a lite server runs under one; else the wall.
     return (eval_clock.now() or datetime.now(UTC)).strftime(_TIME_FORMAT)

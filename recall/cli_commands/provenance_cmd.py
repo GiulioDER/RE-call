@@ -398,7 +398,7 @@ def _erase(args: argparse.Namespace, *, lite: bool) -> None:
     )
     from recall.fact_retraction import FACT_WRITE_DSN_ENV
 
-    def emit(report: RedactionReport, *, dry_run: bool) -> None:
+    def emit(report: RedactionReport, *, dry_run: bool, warning: str = "") -> None:
         print(json.dumps({
             "tenant_id": args.tenant,
             "dry_run": dry_run,
@@ -407,6 +407,7 @@ def _erase(args: argparse.Namespace, *, lite: bool) -> None:
             "cards_redacted": report.cards_redacted,
             "receipts_deleted": report.receipts_deleted,
             "redaction_id": report.redaction_id,
+            **({"warning": warning} if warning else {}),
         }, ensure_ascii=False, indent=2, sort_keys=True))
 
     if lite:
@@ -423,9 +424,14 @@ def _erase(args: argparse.Namespace, *, lite: bool) -> None:
                 return
             with store.erasing():
                 report = redactor.redact(everything=True, reason="tenant_erase", writer=TENANT_ERASE_WRITER)
+            from recall.lite.store import erase_note
+
+            # A blocked closing checkpoint or a failed one-time VACUUM leaves erased bytes on disk,
+            # which `recall forget` reports and this did not.
+            warning = erase_note(store, "recall provenance erase --yes --vacuum")
             if args.vacuum:
                 store.vacuum()
-        emit(report, dry_run=False)
+        emit(report, dry_run=False, warning=warning)
         return
     if args.vacuum:
         raise SystemExit(

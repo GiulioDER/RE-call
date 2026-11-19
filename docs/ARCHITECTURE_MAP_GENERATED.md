@@ -9,7 +9,7 @@ design violation.
 
 Packages: `recall`, `recall_mcp`, `recall_agent`, `recall_hooks`, `recall_interop`, `recall_consistency`
 Modules: 376
-Cross package edges: 449
+Cross package edges: 450
 
 ## Highest fan in modules
 
@@ -64,8 +64,8 @@ Cross package edges: 449
 | 31 | `recall_mcp.server_lifespan` |
 | 30 | `recall.cli_commands.index_search` |
 | 27 | `recall.generations` |
+| 26 | `recall_mcp.lifecycle` |
 | 26 | `recall_mcp.server` |
-| 25 | `recall_mcp.lifecycle` |
 | 24 | `recall_mcp.server_reasoning` |
 | 23 | `recall.index` |
 | 23 | `recall_mcp.indexing` |
@@ -83,9 +83,9 @@ Cross package edges: 449
 | 17 | `recall.dashboard.server` |
 | 17 | `recall.generation_store` |
 | 17 | `recall_mcp.semantic_graph_cache` |
+| 16 | `recall.cli_commands.provenance_cmd` |
 | 16 | `recall_mcp.server_search` |
 | 15 | `recall.cli_commands.generation_cmd` |
-| 15 | `recall.cli_commands.provenance_cmd` |
 | 15 | `recall.doctor` |
 | 15 | `recall_mcp.desktop_ingest` |
 | 15 | `recall_mcp.graph_first_api` |
@@ -270,6 +270,7 @@ They are observations, not automatic failures.
 | `recall_mcp.lifecycle` | `recall.lite` |
 | `recall_mcp.lifecycle` | `recall.lite.assistant_memos` |
 | `recall_mcp.lifecycle` | `recall.lite.atomic` |
+| `recall_mcp.lifecycle` | `recall.lite.store` |
 | `recall_mcp.lifecycle` | `recall.observability` |
 | `recall_mcp.lifecycle` | `recall.provenance_controller` |
 | `recall_mcp.lifecycle` | `recall.security_policy` |
@@ -600,7 +601,7 @@ They are observations, not automatic failures.
 | `recall.cli_commands.lint_check` | 7 | 146 |
 | `recall.cli_commands.lite_cmd` | 9 | 169 |
 | `recall.cli_commands.manifest_cmd` | 4 | 142 |
-| `recall.cli_commands.provenance_cmd` | 15 | 158 |
+| `recall.cli_commands.provenance_cmd` | 16 | 158 |
 | `recall.cli_commands.reasoning_cmd` | 11 | 177 |
 | `recall.cli_commands.records_cmd` | 9 | 142 |
 | `recall.cli_commands.schema_cmd` | 2 | 143 |
@@ -902,7 +903,7 @@ They are observations, not automatic failures.
 | `recall_mcp.graph_first_api` | 15 | 157 |
 | `recall_mcp.graph_projection` | 6 | 48 |
 | `recall_mcp.indexing` | 23 | 152 |
-| `recall_mcp.lifecycle` | 25 | 150 |
+| `recall_mcp.lifecycle` | 26 | 150 |
 | `recall_mcp.limits` | 5 | 15 |
 | `recall_mcp.lite_refresh` | 7 | 141 |
 | `recall_mcp.models` | 2 | 5 |
