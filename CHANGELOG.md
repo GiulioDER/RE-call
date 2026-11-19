@@ -125,6 +125,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ### Fixed
 
+- A memo whose `recall_graph` held a `NaN` or `Infinity` failed the whole Lite refresh with
+  "malformed JSON" on SQLite before 3.42 (Debian 12 ships 3.40, Ubuntu 22.04 3.37), and the same
+  memo failed indexing on PostgreSQL, whose `jsonb` refuses those values too. Such a value is now
+  stored as a marker: the fact holding it is counted malformed, as before, and the memo's other
+  facts are kept. A `recall_record` holding one is refused as not JSON.
+- Run as root, as in a container without a `USER`, the dashboard decoded a Lite store's whole
+  corpus again on every request, because SQLite changes the WAL file's owner each time it opens
+  it and the cache read that as a write. Warm views are reused again.
 - The graphical Windows installer registered its MCP server as `recall-install.exe -m
   recall_mcp.server`. A frozen executable cannot run `-m`, so the installer's argument parser
   refused it and the client listed a server that never started. The installer now registers
