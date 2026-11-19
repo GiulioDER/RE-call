@@ -52,7 +52,7 @@ import os
 import re
 import sys
 import tempfile
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from contextlib import ExitStack
 from dataclasses import dataclass
 from pathlib import Path
@@ -67,6 +67,7 @@ __all__ = [
     "LocalScopeRegistration",
     "SERVER_OS_ENV",
     "claude_config_path",
+    "install_client_extras",
     "mcp_config",
     "register_local_scope",
     "server_blocks",
@@ -820,6 +821,184 @@ def _register_local_scope_locked(
         registered=tuple(registered),
         conflicts=tuple(conflicts),
     )
+
+
+def _hooks_bound_elsewhere(path: Path, project_root: Path) -> str | None:
+    """The project an existing hook config serves, when it is not this one; None when free.
+
+    There is one hook config per client per machine. An install that rewrote another project's
+    would switch that project's hooks off with no message there, so it is left alone and reported.
+    """
+    try:
+        document = json.loads(path.read_text(encoding="utf-8-sig"))
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError):
+        return f"an unreadable {path}"
+    if not isinstance(document, dict) or not (document.get("dsn") or document.get("endpoint")):
+        return None
+    configured = document.get("project_root")
+    try:
+        if isinstance(configured, str) and Path(configured).resolve() == project_root.resolve():
+            return None
+    except (OSError, ValueError):
+        pass
+    return str(configured) if isinstance(configured, str) and configured else "no named project"
+
+
+def install_client_extras(
+    blocks: tuple[ServerBlock, ...],
+    *,
+    project_root: Path,
+    hook_block: ServerBlock | None,
+    write_time: bool,
+    memory_root: Path | None = None,
+    interpreter: str | None = None,
+) -> tuple[tuple[str, str], ...]:
+    """Give each client on this machine what `recall setup` gives it, beside the MCP servers.
+
+    Claude Code already has the servers (`register_local_scope`); it gets the hooks and the skills.
+    Codex gets all three: the same servers in this project's `.codex/config.toml`, the same hooks,
+    and the skills its plugin bundle carries. Returns `(client, line)` pairs for the report.
+
+    `hook_block` is the server whose store the hooks read (None: no hooks). `write_time` is False
+    for a Lite store, because the write-time search reads PostgreSQL only. Every step is reported
+    rather than raised: the corpora are built by now, and losing that to a skill copy would be the
+    expensive half of the trade.
+    """
+    from recall.claude_code import (
+        _write_hook_config,
+        claude_code_detected,
+        claude_plugin_installed,
+        hook_config_path,
+        install_hooks,
+        install_user_skills,
+        plugin_skill_sources,
+        settings_path,
+        user_skill_dir,
+    )
+    from recall.codex import (
+        codex_code_detected,
+        codex_hook_config_path,
+        codex_plugin_installed,
+        codex_skill_sources,
+        codex_user_skill_dir,
+        install_codex_hooks,
+        register_project_servers,
+    )
+
+    lines: list[tuple[str, str]] = []
+    env = hook_block.env if hook_block is not None else {}
+    dsn = env.get("RECALL_DSN", "")
+    tenant = hook_block.tenant if hook_block is not None else "default"
+    embedder = env.get("RECALL_EMBEDDER", "fastembed")
+    table = env.get("RECALL_TABLE", "chunks")
+    # A frozen installer cannot run `-m recall_hooks`, so it has no command to register.
+    hookless = "" if dsn else "no store for them to read"
+    if not hookless and not interpreter and getattr(sys, "frozen", False):
+        hookless = "this installer is a frozen executable, which cannot run the hook module"
+    scope = "write-time search off: it reads PostgreSQL only; " if not write_time else ""
+
+    def step(client: str, action: Callable[[], str]) -> None:
+        try:
+            lines.append((client, action()))
+        except Exception as exc:  # noqa: BLE001  # BROAD-CATCH: reported, see the docstring
+            lines.append((client, f"failed: {exc}"))
+
+    def claude_hooks() -> str:
+        if hookless:
+            return f"hooks not installed: {hookless}"
+        elsewhere = _hooks_bound_elsewhere(hook_config_path(), project_root)
+        if elsewhere:
+            return f"hooks left bound to {elsewhere}; {hook_config_path()} serves that project"
+        if claude_plugin_installed():
+            # The plugin registers the same hooks; they need only the config to read.
+            _write_hook_config(
+                dsn=dsn,
+                tenant=tenant,
+                embedder=embedder,
+                table=table,
+                write_time=write_time,
+                project_root=project_root,
+                memory_root=memory_root,
+            )
+            return (
+                f"hooks: the RE-call plugin's, configured in {hook_config_path()} "
+                f"({scope}bound to {project_root})"
+            )
+        install_hooks(
+            dsn=dsn,
+            tenant=tenant,
+            embedder=embedder,
+            table=table,
+            write_time=write_time,
+            project_root=project_root,
+            memory_root=memory_root,
+            python_executable=interpreter,
+            print_fn=lambda *_a, **_k: None,
+        )
+        return f"hooks installed in {settings_path()} ({scope}bound to {project_root})"
+
+    def claude_skills() -> str:
+        if claude_plugin_installed():
+            return "skills: the RE-call plugin's"
+        installed = install_user_skills(plugin_skill_sources(), print_fn=lambda *_a, **_k: None)
+        return f"skills {', '.join(installed) or 'none'} in {user_skill_dir()}"
+
+    def codex_servers() -> str:
+        servers = mcp_config(blocks, project_root=project_root, interpreter=interpreter)["mcpServers"]
+        assert isinstance(servers, dict)
+        reg = register_project_servers(servers, project_root=project_root)
+        if not reg.registered:
+            taken = f" ({', '.join(reg.conflicts)} already defined)" if reg.conflicts else ""
+            return f"servers NOT registered: {reg.skipped_reason}{taken}"
+        text = f"registered {', '.join(reg.registered)} for this project in {reg.config_path}"
+        if reg.conflicts:
+            text += f"; left {', '.join(reg.conflicts)} alone, already defined there"
+        if not reg.trusted:
+            text += "; Codex loads them once you trust this project (open it in Codex and accept)"
+        if reg.unignored:
+            text += "; add `.codex/config.toml` to .gitignore: it holds this machine's store settings"
+        return text
+
+    def codex_hooks() -> str:
+        if hookless:
+            return f"hooks not installed: {hookless}"
+        elsewhere = _hooks_bound_elsewhere(codex_hook_config_path(), project_root)
+        if elsewhere:
+            return f"hooks left bound to {elsewhere}; {codex_hook_config_path()} serves that project"
+        target = install_codex_hooks(
+            dsn=dsn,
+            tenant=tenant,
+            embedder=embedder,
+            table=table,
+            write_time=write_time,
+            project_root=project_root,
+            memory_root=memory_root,
+            python_executable=interpreter,
+        )
+        return (
+            f"hooks installed in {target} ({scope}bound to {project_root}); "
+            "Codex asks you to review and trust them before they run"
+        )
+
+    def codex_skills() -> str:
+        if codex_plugin_installed():
+            return "skills: the RE-call plugin's"
+        root = codex_user_skill_dir()
+        installed = install_user_skills(
+            codex_skill_sources(), root=root, print_fn=lambda *_a, **_k: None
+        )
+        return f"skills {', '.join(installed) or 'none'} in {root}"
+
+    if claude_code_detected():
+        step("claude code", claude_hooks)
+        step("claude code", claude_skills)
+    if codex_code_detected():
+        step("codex", codex_servers)
+        step("codex", codex_hooks)
+        step("codex", codex_skills)
+    return tuple(lines)
 
 
 def _write_private_configuration(path: Path, content: str) -> None:

@@ -859,7 +859,7 @@ They are observations, not automatic failures.
 | `recall.wizard.stack` | 4 | 141 |
 | `recall.wizard.state` | 4 | 170 |
 | `recall.wizard.uninstall` | 6 | 164 |
-| `recall.wizard.wiring` | 8 | 164 |
+| `recall.wizard.wiring` | 10 | 164 |
 | `recall_agent` | 1 | 163 |
 | `recall_agent._descriptions` | 0 | 0 |
 | `recall_agent._sdk` | 2 | 162 |
@@ -880,7 +880,7 @@ They are observations, not automatic failures.
 | `recall_hooks.general_knowledge` | 2 | 151 |
 | `recall_hooks.hosted` | 4 | 151 |
 | `recall_hooks.mcp_cleanup` | 0 | 0 |
-| `recall_hooks.prompt_time` | 1 | 151 |
+| `recall_hooks.prompt_time` | 2 | 151 |
 | `recall_hooks.relay` | 2 | 151 |
 | `recall_hooks.screening` | 0 | 0 |
 | `recall_hooks.write_time` | 2 | 151 |

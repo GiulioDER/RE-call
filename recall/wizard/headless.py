@@ -82,6 +82,7 @@ from recall.wizard.wiring import (
     LocalScopeRegistration,
     _managed_env_values,
     claude_config_path as _default_claude_config_path,
+    install_client_extras,
     register_local_scope,
     server_blocks,
     write_project_files,
@@ -256,6 +257,8 @@ class HeadlessReport:
     #: all. Carried on the report because "the servers are configured" and "the servers will load"
     #: are different claims, and only the second one is what the user wanted.
     registration: LocalScopeRegistration | None = None
+    #: `(client, line)` for the hooks, skills and Codex servers installed beside the registration.
+    clients: tuple[tuple[str, str], ...] = ()
     #: MCP servers the wizard registered, and the tenants deliberately left without one.
     servers: tuple[ServerBlock, ...] = ()
     unservable: tuple[UnservableTenant, ...] = ()
@@ -473,6 +476,8 @@ class HeadlessReport:
                         f"different `project` in the config to give this install its own."
                     )
                 )
+        for client, text in self.clients:
+            lines.append(f"{' ' * _GUTTER}{client}: {text}")
         if self.registration is None and (self.outcomes or self.indexed):
             lines.append(
                 detail(
@@ -1838,6 +1843,7 @@ def run_headless(
     # path both reach the report, and an unbound name there would turn a written install into a
     # NameError at the moment it reports success.
     registration: LocalScopeRegistration | None = None
+    clients: tuple[tuple[str, str], ...] = ()
     if config.project_root is not None:
         if progress:
             progress("wiring: MCP servers (local scope)")
@@ -1902,6 +1908,17 @@ def run_headless(
                     config_path=claude_config_path or _default_claude_config_path(),
                     skipped_reason=error,
                 )
+        if progress:
+            progress("wiring: hooks, skills and Codex")
+        # The hooks read the writable memory tenant, the one `recall setup` points them at.
+        writable = {spec.tenant for spec in plan.corpora if spec.writable}
+        clients = install_client_extras(
+            blocks,
+            project_root=config.project_root,
+            hook_block=next((block for block in blocks if block.tenant in writable), None),
+            write_time=True,
+            memory_root=config.memory_root,
+        )
     else:
         blocks = ()
 
@@ -1931,6 +1948,7 @@ def run_headless(
         reused=tuple(reused),
         servers=blocks,
         registration=registration,
+        clients=clients,
         unservable=unservable,
         files_written=files,
         smoke=smoke,

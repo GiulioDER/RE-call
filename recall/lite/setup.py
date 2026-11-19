@@ -8,7 +8,10 @@ Five steps, each reported, none hidden:
 4. turn the atomic rescue on, with its artifacts beside the store (`<store>.atomic`), and build its
    first artifact during the index, unless the shell sets the mode or its packages are missing
    (`recall.lite.atomic.rescue_settings`);
-5. register the MCP server for THIS project only (Claude Code's local scope), unless asked not to.
+5. register the MCP server for THIS project only (Claude Code's local scope), unless asked not to,
+   and give each client found on this machine the rest of what `recall setup` gives it: hooks and
+   skills for Claude Code, and the same server, hooks and skills for Codex
+   (`recall.wizard.wiring.install_client_extras`). Write-time search stays off: it reads PostgreSQL.
 
 Local scope, for the reasons `recall.wizard.wiring.register_local_scope` gives: no approval
 prompt, and no server answering about this memory inside some other repository. The entry
@@ -116,6 +119,8 @@ class LiteSetupReport:
     #: The atomic rescue: on (and what the setup refresh built) or off, and why.
     atomic: str = ""
     registration: LocalScopeRegistration | None = None
+    #: `(client, line)` for the hooks, skills and Codex servers installed beside the registration.
+    clients: tuple[tuple[str, str], ...] = ()
     notes: list[str] = field(default_factory=list)
     #: Only non-secret settings needed by the printed CLI followups.
     followup_env: dict[str, str] = field(default_factory=dict)
@@ -139,6 +144,7 @@ class LiteSetupReport:
             lines.append(f"claude code  NOT registered: {names} already exists and was left alone")
         else:
             lines.append(f"claude code  NOT registered: {reg.skipped_reason}")
+        lines.extend(f"{client:<12} {text}" for client, text in self.clients)
         lines.extend(f"note         {note}" for note in self.notes)
         if self.followup_env:
             lines.append(
@@ -244,7 +250,7 @@ def run_lite_setup(
         report.calibration, report.calibration_reason = refreshed.calibration, refreshed.calibration_reason
         report.atomic = atomic_note or refreshed.atomic or "off: RECALL_ATOMIC_RESCUE_MODE is not active"
     if register:
-        from recall.wizard.wiring import ServerBlock, register_local_scope
+        from recall.wizard.wiring import ServerBlock, install_client_extras, register_local_scope
 
         block = ServerBlock(
             name=SERVER_NAME,
@@ -254,6 +260,14 @@ def run_lite_setup(
         )
         report.registration = register_local_scope(
             (block,), project_root=project_root, config_path=config_path, interpreter=interpreter
+        )
+        report.clients = install_client_extras(
+            (block,),
+            project_root=project_root,
+            hook_block=block,
+            write_time=False,
+            memory_root=memory,
+            interpreter=interpreter,
         )
     # Classifies where a configured store lives; no file is read.
     # ast-grep-ignore: containment-via-confined

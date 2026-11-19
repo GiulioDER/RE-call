@@ -1084,3 +1084,7 @@ def _confine_claude_client_config(tmp_path_factory, monkeypatch) -> None:
     monkeypatch.setattr(_Path, "home", classmethod(lambda cls: home))
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("USERPROFILE", str(home))
+    # Lite setup and the wizard also write hooks and skills under these, when they are set, so a
+    # developer's own values must not reach a test.
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    monkeypatch.delenv("CODEX_HOME", raising=False)
