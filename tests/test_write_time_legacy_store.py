@@ -39,7 +39,9 @@ def test_the_hook_names_the_tenant_setting_the_store_isolates_by() -> None:
 def test_the_hook_finds_a_memo_plain_setup_indexed(tmp_path: Path) -> None:
     import psycopg
 
+    from recall.embeddings import resolve_embedder
     from recall.memory_index import index_memory_directory
+    from recall.schema import apply_migrations
     from recall_hooks.write_time import search
 
     table = f"wt_legacy_{uuid.uuid4().hex[:10]}"
@@ -51,11 +53,17 @@ def test_the_hook_finds_a_memo_plain_setup_indexed(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     (memory / "unrelated.md").write_text("The dashboard caches warm views per store.\n", encoding="utf-8")
+    printed: list[str] = []
     try:
+        # As `recall setup` does (`_prepare_schema_for_embedder`) before it indexes the memo folder.
+        apply_migrations(TEST_DSN, table=table, dim=resolve_embedder("hashing").dim)
         index_memory_directory(
             dsn=TEST_DSN, embedder_name="hashing", memory_dir=memory,
-            tenant=tenant, table=table, env={}, print_fn=lambda *a, **k: None,
+            tenant=tenant, table=table, env={}, print_fn=lambda *a, **k: printed.append(str(a[0])),
         )
+        # Indexing is best effort and only prints on failure, so an empty search could otherwise
+        # be a failed index rather than a hook that looks in the wrong place.
+        assert printed and printed[-1].startswith("Indexed ") and "from 2 files" in printed[-1], printed
 
         hits = search(
             "write_text newline CRLF churn",
