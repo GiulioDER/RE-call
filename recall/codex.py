@@ -9,6 +9,7 @@ and fail-open behaviour remain in :mod:`recall_hooks`.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import importlib
 import os
@@ -391,7 +392,9 @@ def codex_plugin_installed() -> bool:
     """Whether Codex has the RE-call plugin, which carries the skills, enabled.
 
     The personal marketplace only offers it; Codex records an enabled plugin in `config.toml` as
-    `[plugins."recall@re-call"] enabled = true`, and until then none of its skills load.
+    `[plugins."<plugin>@<marketplace>"] enabled = true`, and until then none of its skills load.
+    The marketplace part is that file's own name, which `_update_marketplace` keeps when the user's
+    marketplace already had one.
     """
     try:
         document = _marketplace_document(personal_marketplace_path())
@@ -402,8 +405,9 @@ def codex_plugin_installed() -> bool:
         isinstance(item, dict) and item.get("name") == CODEX_PLUGIN_NAME
         for item in document.get("plugins", [])
     )
+    marketplace = document.get("name") or CODEX_MARKETPLACE_NAME
     plugins = config.get("plugins")
-    entry = plugins.get(f"{CODEX_PLUGIN_NAME}@{CODEX_MARKETPLACE_NAME}") if isinstance(plugins, dict) else None
+    entry = plugins.get(f"{CODEX_PLUGIN_NAME}@{marketplace}") if isinstance(plugins, dict) else None
     return offered and isinstance(entry, dict) and entry.get("enabled") is True
 
 
@@ -430,10 +434,12 @@ class ProjectServerRegistration:
     trusted: bool = False
     #: The `.gitignore` this call added `.codex/config.toml` to, when it had to.
     gitignore: Path | None = None
-    #: The copy of the user's original file this call made before its first rewrite.
+    #: The copy of the file as it stood before this call rewrote it, made once and never replaced.
     backup: Path | None = None
-    #: RE-call servers an earlier run registered here, kept beside this run's.
+    #: RE-call servers an earlier run on this machine registered here, kept beside this run's.
     kept: tuple[str, ...] = ()
+    #: Servers found in RE-call's block that this machine has no record of writing as they stand, removed.
+    dropped: tuple[str, ...] = ()
     #: Servers the file already defined that RE-call did not write: trusting the project enables them.
     others: tuple[str, ...] = ()
 
@@ -477,23 +483,44 @@ def _split_managed_block(text: str) -> tuple[str, str, str]:
     return "".join(lines[:begin]), "".join(lines[begin:end + 1]), "".join(lines[end + 1:])
 
 
-def _earlier_servers(block: str) -> dict[str, dict[str, Any]]:
-    """The servers an earlier run wrote in RE-call's block, in the shape `_render_servers` takes."""
+def _server_digest(entry: object) -> str:
+    return hashlib.sha256(json.dumps(entry, sort_keys=True, default=str).encode("utf-8")).hexdigest()
+
+
+def _written_servers_path() -> Path:
+    """Where this machine records the servers RE-call wrote into each project's block."""
+    return codex_home() / "re-call" / "project-servers.json"
+
+
+def _project_key(root: Path) -> str:
+    return os.path.normcase(str(root))
+
+
+def _written_servers() -> dict[str, Any]:
+    try:
+        document = json.loads(_written_servers_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return document if isinstance(document, dict) else {}
+
+
+def _earlier_servers(block: str, root: Path) -> tuple[dict[str, dict[str, Any]], tuple[str, ...]]:
+    """`(kept, dropped)`: the servers of RE-call's block that a run on this machine wrote, unchanged.
+
+    The block is in the project, so anything can stand between its markers: a server planted in a
+    downloaded project, or one the user disabled or changed by hand. Only an entry whose content
+    matches what this machine recorded writing is RE-call's, and is rendered again as it was.
+    """
     try:
         servers = tomllib.loads(block).get("mcp_servers", {})
     except ValueError:
-        return {}
-    keep = {}
-    for name, entry in (servers.items() if isinstance(servers, dict) else ()):
-        if (
-            isinstance(entry, dict)
-            and isinstance(entry.get("command"), str)
-            and isinstance(entry.get("args"), list)
-            and isinstance(entry.get("cwd"), str)
-            and isinstance(entry.get("env"), dict)
-        ):
-            keep[name] = entry
-    return keep
+        return {}, ()
+    if not isinstance(servers, dict):
+        return {}, ()
+    recorded = _written_servers().get(_project_key(root))
+    recorded = recorded if isinstance(recorded, dict) else {}
+    keep = {name: entry for name, entry in servers.items() if recorded.get(name) == _server_digest(entry)}
+    return keep, tuple(name for name in servers if name not in keep)
 
 
 def _git(project_root: Path, *args: str) -> int | None:
@@ -548,6 +575,9 @@ def register_project_servers(
     env holds a DSN and may hold a provider key). Inside a git work tree it is also refused when
     git cannot say whether it tracks the file, and otherwise added to the project's `.gitignore`.
     The file is written 0600, and a `.codex` that leads outside the project is refused.
+
+    A later run keeps only the servers in RE-call's block that `CODEX_HOME/re-call/project-servers.json`
+    records this machine writing, unchanged; anything else there is removed and reported.
     """
     from recall.wizard.wiring import _write_private_configuration
 
@@ -600,18 +630,18 @@ def register_project_servers(
         )
     # As Claude Code's local scope keeps the servers an earlier install registered, so does this:
     # Lite and the wizard in one project each keep the other's.
-    kept = {
-        name: entry
-        for name, entry in _earlier_servers(block).items()
-        if name not in mine and name not in taken
-    }
+    earlier, unrecorded = _earlier_servers(block, root)
+    # A name the user also defines outside the block stays theirs: rendering it again would
+    # declare it twice, and Codex, like tomllib, refuses the whole file.
+    kept = {name: entry for name, entry in earlier.items() if name not in mine and name not in taken}
+    dropped = tuple(name for name in unrecorded if name not in mine and name not in taken)
     head, tail = before.rstrip("\n"), after.lstrip("\n")
     text = (
         (head + "\n\n" if head else "")
         + _render_servers({**kept, **mine})
         + ("\n" + tail if tail else "")
     )
-    tomllib.loads(text)  # never write a file Codex would refuse to parse
+    written = tomllib.loads(text)["mcp_servers"]  # never write a file Codex would refuse to parse
     gitignore = None
     # Each path asked on its own: with several, check-ignore succeeds when any one is ignored, and
     # the backup can hold the credentials of an earlier RE-call block.
@@ -630,6 +660,11 @@ def register_project_servers(
     if raw and not backup_path.exists():
         _write_private_configuration(backup_path, original)
         backup = backup_path
+    # Recorded before the file is written: a record naming a server the file lacks keeps nothing.
+    record = _written_servers()
+    record[_project_key(root)] = {name: _server_digest(written[name]) for name in (*kept, *mine)}
+    _written_servers_path().parent.mkdir(parents=True, exist_ok=True)
+    _write_private_configuration(_written_servers_path(), json.dumps(record, indent=2, sort_keys=True) + "\n")
     _write_private_configuration(target, text.replace("\n", "\r\n") if b"\r\n" in raw else text)
     return ProjectServerRegistration(
         target,
@@ -639,7 +674,8 @@ def register_project_servers(
         gitignore=gitignore,
         backup=backup,
         kept=tuple(kept),
-        others=tuple(name for name in taken if name not in servers),
+        dropped=dropped,
+        others=tuple(taken),
     )
 
 

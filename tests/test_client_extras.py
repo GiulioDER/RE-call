@@ -569,7 +569,8 @@ def test_a_windows_edited_config_keeps_its_shape(tmp_path: Path, clients: Path) 
 def test_a_hook_config_left_alone_says_why(tmp_path: Path, clients: Path) -> None:
     """CODE-005, and BUG-005 by the owner's decision (2026-11-19): an unreadable config and a
     hosted one that names no project are described as such; a local config that names no project
-    serves none, so it is free to bind here."""
+    is bound here. CODE-001 (run 20261119T220947Z): hosted and local are decided as the hooks
+    decide them (`recall_hooks.hosted_mode`), so a dsn beside an endpoint is local."""
     from recall.wizard.wiring import _hooks_left_alone
 
     project = tmp_path / "project"
@@ -581,6 +582,8 @@ def test_a_hook_config_left_alone_says_why(tmp_path: Path, clients: Path) -> Non
     assert _hooks_left_alone(path, project) == f"hooks left alone: {path} is a hosted config that names no project"
     path.write_text(json.dumps({"dsn": "x"}), encoding="utf-8")
     assert _hooks_left_alone(path, project) is None, "a local config that serves no project was not taken over"
+    path.write_text(json.dumps({"dsn": "x", "endpoint": "https://example.invalid"}), encoding="utf-8")
+    assert _hooks_left_alone(path, project) is None, "a config the hooks run as local was left alone as hosted"
 
 
 def test_the_backup_is_ignored_when_the_config_already_was(tmp_path: Path, clients: Path) -> None:
@@ -645,7 +648,7 @@ def test_the_report_names_the_backup_and_what_trust_enables(tmp_path: Path, clie
     (project / ".codex" / "config.toml").write_text('[mcp_servers.other]\ncommand = "other"\n', encoding="utf-8")
     _project, _claude, report = _lite(tmp_path, project)
     line = next(text for client, text in report.clients if client == "codex" and text.startswith("registered"))
-    assert "backed up the original to" in line, line
+    assert "backed up the file as it was to" in line, line
     assert "which also enables other" in line, "trusting the project would enable a server the report hides"
 
 
@@ -654,5 +657,129 @@ def test_a_local_hook_config_naming_no_project_is_taken_over(tmp_path: Path, cli
     stale = clients / ".claude" / "recall-hook.json"
     stale.parent.mkdir(parents=True, exist_ok=True)
     stale.write_text(json.dumps({"dsn": "postgresql://x@127.0.0.1:1/x"}), encoding="utf-8")
-    project, _claude, _report = _lite(tmp_path)
+    project, _claude, report = _lite(tmp_path)
     assert _hook_config(clients, "claude").get("project_root") == str(project.resolve()), "the config was not bound here"
+    # DOC-001 (run 20261119T220947Z): it served every project until now, so the takeover is reported.
+    line = next(text for client, text in report.clients if client == "claude code" and "hooks" in text)
+    assert "named no project" in line, line
+
+
+def test_a_codex_takeover_names_the_plugin_server_that_reads_it(tmp_path: Path, clients: Path) -> None:
+    """DOC-001, architect's REVISE (run 20261119T220947Z): the Codex plugin's server reads Codex's hook
+    config in every project, bound or not, so taking one over is reported with that consequence."""
+    stale = clients / ".codex" / "re-call" / "recall-hook.json"
+    stale.parent.mkdir(parents=True, exist_ok=True)
+    stale.write_text(json.dumps({"dsn": "postgresql://x@127.0.0.1:1/x"}), encoding="utf-8")
+    _project, _claude, report = _lite(tmp_path)
+    line = next(text for client, text in report.clients if client == "codex" and text.startswith("hooks"))
+    assert "named no project" in line and "reads its store in every Codex project" in line, line
+
+
+# ----------------------------------------------------------------------------------------------
+# CCA run 20261119T220947Z, on the owner decisions above.
+# ----------------------------------------------------------------------------------------------
+
+
+def _with_block(project: Path, entries: str) -> None:
+    """Write `entries` between RE-call's markers in the project's `.codex/config.toml`."""
+    from recall.codex import MANAGED_BEGIN, MANAGED_END
+
+    (project / ".codex").mkdir(parents=True, exist_ok=True)
+    (project / ".codex" / "config.toml").write_text(f"{MANAGED_BEGIN}\n{entries}{MANAGED_END}\n", encoding="utf-8")
+
+
+def test_a_server_planted_in_the_block_is_removed(tmp_path: Path, clients: Path) -> None:
+    """SEC-001: a project can arrive with a server between RE-call's markers. No run on this machine
+    wrote it, so it is removed and reported, never kept as RE-call's and hidden from the trust advice."""
+    from recall.codex import register_project_servers
+
+    project = tmp_path / "project"
+    _with_block(project, '[mcp_servers.evil]\ncommand = "evil"\nargs = []\ncwd = "."\n\n[mcp_servers.evil.env]\n')
+    reg = register_project_servers(_server(project), project_root=project)
+    assert "evil" not in _codex_servers(project), "a server RE-call never wrote was kept in its block"
+    assert reg.kept == () and reg.dropped == ("evil",)
+
+
+def test_a_server_disabled_by_hand_in_the_block_is_not_revived(tmp_path: Path, clients: Path) -> None:
+    """STAKES-001: a server RE-call wrote and the user then disabled no longer matches what RE-call
+    wrote, so a later run removes it rather than writing it back enabled with its DSN."""
+    from recall.codex import register_project_servers
+
+    project = tmp_path / "project"
+    project.mkdir()
+    first = {"a": {"command": "python", "args": ["-m", "x"], "cwd": str(project), "env": {"K": "1"}}}
+    register_project_servers(first, project_root=project)
+    target = project / ".codex" / "config.toml"
+    text = target.read_text(encoding="utf-8")
+    target.write_text(text.replace("[mcp_servers.\"a\"]\n", "[mcp_servers.\"a\"]\nenabled = false\n"), encoding="utf-8")
+    assert _codex_servers(project)["a"]["enabled"] is False
+    reg = register_project_servers(_server(project), project_root=project)
+    after = _codex_servers(project)
+    # An absent `enabled` is Codex's default, on, so only a missing entry or an explicit false will do.
+    assert "a" not in after or after["a"].get("enabled") is False, "a disabled server came back enabled"
+    assert reg.dropped == ("a",)
+
+
+def test_a_block_entry_with_values_rendering_cannot_carry_is_removed(tmp_path: Path, clients: Path) -> None:
+    """DAT-001: an entry whose env holds a table, or whose args hold a date, cannot be rendered
+    again; it is removed, and the run registers its own servers instead of failing every time."""
+    from recall.codex import register_project_servers
+
+    project = tmp_path / "project"
+    _with_block(
+        project,
+        '[mcp_servers.n]\ncommand = "c"\nargs = [1979-05-27]\ncwd = "."\n\n[mcp_servers.n.env]\nZ = {z = "q"}\n',
+    )
+    try:
+        reg = register_project_servers(_server(project), project_root=project)
+    except (TypeError, ValueError) as exc:
+        pytest.fail(f"an entry rendering cannot carry broke the run: {exc}")
+    assert reg.registered == ("recall-memory",), reg
+    assert "n" not in _codex_servers(project)
+
+
+def test_the_plugin_key_uses_the_marketplace_name(clients: Path) -> None:
+    """ENV-001: the installer keeps the name an existing personal marketplace had, and Codex keys an
+    enabled plugin as `<plugin>@<that name>`."""
+    from recall.codex import codex_plugin_installed
+
+    market = clients / ".agents" / "plugins" / "marketplace.json"
+    market.parent.mkdir(parents=True)
+    market.write_text(json.dumps({"name": "personal", "plugins": [{"name": "recall"}]}), encoding="utf-8")
+    config = clients / ".codex" / "config.toml"
+    config.parent.mkdir(parents=True, exist_ok=True)
+    config.write_text('[plugins."recall@personal"]\nenabled = true\n', encoding="utf-8")
+    assert codex_plugin_installed() is True, "an enabled plugin in a marketplace of another name was missed"
+
+
+def test_the_trust_advice_names_a_server_under_a_name_recall_also_uses(tmp_path: Path, clients: Path) -> None:
+    """CODE-003: a server the user defined under RE-call's name is left alone, and trusting the
+    project enables it too, so the trust advice names it."""
+    from recall.codex import register_project_servers
+
+    project = tmp_path / "project"
+    (project / ".codex").mkdir(parents=True)
+    (project / ".codex" / "config.toml").write_text(
+        '[mcp_servers.recall-memory]\ncommand = "mine"\n\n[mcp_servers.other]\ncommand = "other"\n', encoding="utf-8"
+    )
+    servers = {**_server(project), "second": {"command": "python", "args": [], "cwd": str(project), "env": {}}}
+    reg = register_project_servers(servers, project_root=project)
+    assert set(reg.others) == {SERVER_NAME, "other"}, "trusting enables a server the advice leaves out"
+
+
+def test_a_recorded_server_the_user_then_defined_is_left_to_the_user(tmp_path: Path, clients: Path) -> None:
+    """L5.5 of run 20261119T220947Z: a server RE-call recorded writing, whose name the user then also
+    defines outside the block, is not rendered again, which would declare it twice and fail every run."""
+    from recall.codex import register_project_servers
+
+    project = tmp_path / "project"
+    project.mkdir()
+    register_project_servers({"lite": _server(project)["recall-memory"]}, project_root=project)
+    target = project / ".codex" / "config.toml"
+    target.write_text('[mcp_servers.lite]\ncommand = "mine"\n\n' + target.read_text(encoding="utf-8"), encoding="utf-8")
+    try:
+        reg = register_project_servers({"wiz": _server(project)["recall-memory"]}, project_root=project)
+    except ValueError as exc:
+        pytest.fail(f"a name defined twice broke the run: {exc}")
+    assert _codex_servers(project)["lite"]["command"] == "mine"
+    assert reg.registered == ("wiz",) and reg.kept == () and reg.dropped == ()

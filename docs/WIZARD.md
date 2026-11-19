@@ -213,7 +213,8 @@ With `project_root` set:
     the hooks in `CODEX_HOME/hooks.json`, and the skills in `~/.agents/skills/`.
 
   The hook config is bound to `project_root` and to the memory tenant, with prompt-time search
-  reading `memory_root`. One that already serves another project is left alone, a switch you
+  reading `memory_root`. One that already serves another project is left alone, one that names no
+  project is taken over and the report says so, a switch you
   turned off in it stays off, and a skill of the same name RE-call did not install is left alone.
 - **`.env`** — the serving DSN and embedder, for the CLI. **Not** for the MCP servers: a stdio server
   launched with an explicit `env` block inherits nothing, so each server carries its own variables.

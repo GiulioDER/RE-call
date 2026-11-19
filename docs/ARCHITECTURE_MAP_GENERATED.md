@@ -9,7 +9,7 @@ design violation.
 
 Packages: `recall`, `recall_mcp`, `recall_agent`, `recall_hooks`, `recall_interop`, `recall_consistency`
 Modules: 375
-Cross package edges: 453
+Cross package edges: 454
 
 ## Highest fan in modules
 
@@ -120,6 +120,7 @@ They are observations, not automatic failures.
 | `recall.enterprise_cli` | `recall_mcp.factories` |
 | `recall.eval.promotion.__main__` | `recall_mcp.factories` |
 | `recall.setup` | `recall_mcp.retrieval` |
+| `recall.wizard.wiring` | `recall_hooks` |
 | `recall_agent.memory` | `recall.calibration` |
 | `recall_agent.memory` | `recall.embeddings` |
 | `recall_agent.memory` | `recall.generation_store` |
@@ -862,7 +863,7 @@ They are observations, not automatic failures.
 | `recall.wizard.stack` | 4 | 141 |
 | `recall.wizard.state` | 4 | 184 |
 | `recall.wizard.uninstall` | 6 | 178 |
-| `recall.wizard.wiring` | 10 | 178 |
+| `recall.wizard.wiring` | 11 | 178 |
 | `recall_agent` | 1 | 163 |
 | `recall_agent._descriptions` | 0 | 0 |
 | `recall_agent._sdk` | 2 | 162 |
