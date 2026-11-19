@@ -133,6 +133,13 @@ def test_secret_pin_names_exactly_match_configured_secrets(offline_plan, pins) -
 
 
 def test_encrypted_alarm_policies_authorize_only_stack_publishers(offline_plan) -> None:
+    """The names are `<name>-<environment>` from `infra/aws/ci.tfvars` (recall-ci, development).
+
+    #1085 moved that file's environment from "ci" to "development" and this test kept
+    "recall-ci-ci", unseen because no CI job sets RECALL_TERRAFORM. Red proof (2026-11-19, Linux,
+    terraform 1.6.6): with `alert_alarm_arn_pattern` in infra/aws/cloudwatch.tf ending
+    `alarm:${var.name}-*` it fails on the ArnLike pattern; restored it passes.
+    """
     resources = _successful(offline_plan)
     key_policy = json.loads(resources["aws_kms_key.this"].get("policy") or "{}")
     grants = [statement for statement in key_policy.get("Statement", [])
@@ -140,7 +147,7 @@ def test_encrypted_alarm_policies_authorize_only_stack_publishers(offline_plan) 
     assert len(grants) == 1, "CloudWatch cannot use the encrypted alarm topic without a key grant"
     assert set(grants[0]["Action"]) == {"kms:GenerateDataKey*", "kms:Decrypt"}
     condition = {"StringEquals": {"aws:SourceAccount": "123456789012"},
-                 "ArnLike": {"aws:SourceArn": "arn:aws:cloudwatch:eu-west-1:123456789012:alarm:recall-ci-ci-*"}}
+                 "ArnLike": {"aws:SourceArn": "arn:aws:cloudwatch:eu-west-1:123456789012:alarm:recall-ci-development-*"}}
     assert grants[0]["Condition"] == condition
     assert any(statement.get("Principal") == {"AWS": "arn:aws:iam::123456789012:root"}
                and statement.get("Action") == "kms:*" for statement in key_policy["Statement"])
@@ -148,5 +155,5 @@ def test_encrypted_alarm_policies_authorize_only_stack_publishers(offline_plan) 
     publish = next(statement for statement in topic_policy["Statement"]
                    if statement.get("Principal") == {"Service": "cloudwatch.amazonaws.com"})
     assert publish["Action"] == "sns:Publish"
-    assert publish["Resource"] == "arn:aws:sns:eu-west-1:123456789012:recall-ci-ci-alerts"
+    assert publish["Resource"] == "arn:aws:sns:eu-west-1:123456789012:recall-ci-development-alerts"
     assert publish["Condition"] == condition
