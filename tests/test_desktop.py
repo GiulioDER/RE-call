@@ -2134,3 +2134,41 @@ def test_runtime_profile_carries_no_pinned_version() -> None:
     written = profile.to_dict()
     assert "pinned_version" not in written, written
     assert not hasattr(profile, "pinned_version")
+
+
+def test_building_a_window_over_a_real_docker_runtime_runs_no_docker(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A window test must never start a real stack, which `tests/conftest.py::_no_real_docker` enforces.
+
+    Invariant: the runtime start that `MainWindow._build_ui` schedules reaches the refusal, not
+    docker, and the window reports it as an unavailable runtime. Failure mode: building any window
+    over a real `DockerRuntime` ran `docker compose up -d --wait`; measured 2026-11-19, one local
+    run left a five-container stack and two volumes up for an hour.
+
+    The compose file is a path that does not exist, so even without the guard nothing could start.
+
+    Red proof (2026-11-19, local offscreen Qt): with `@pytest.fixture(autouse=True)` removed from
+    `_no_real_docker`, this failed in the `REAL_DOCKER_REFUSED in status` assertion; real docker
+    ran and the status read "`docker compose up` failed: compose file ... is invalid" (the file is
+    absent).
+    """
+    pytest.importorskip("PySide6")
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtWidgets import QApplication
+
+    from recall.desktop.ui import MainWindow
+    from tests.conftest import REAL_DOCKER_REFUSED
+
+    profile = RuntimeProfile(mode=RuntimeMode.DOCKER, compose_file=str(tmp_path / "absent.yml"))
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(profile, runtime=DockerRuntime(profile))
+    try:
+        assert window.pool.waitForDone(30000), "the start the window scheduled never finished"
+        app.processEvents()
+        status = window.status.text()
+        assert "Runtime unavailable" in status, status
+        assert REAL_DOCKER_REFUSED in status, status
+    finally:
+        window.close()
+        app.processEvents()
