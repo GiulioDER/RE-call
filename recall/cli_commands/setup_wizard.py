@@ -36,16 +36,16 @@ def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
         # mentioned that it writes `.env`, touches the schema, or edits the Claude Code config.
         description=(
             "The guided install. Asks which embedder and reranker you need, "
-            "prepares the database schema at that embedder's width, offers to fit an abstention "
-            "threshold against your own corpus, and offers to register the MCP server and session "
-            "hooks with Claude Code. Writes a local .env with the answers; every step that touches "
-            "something outside this directory is asked for first. Run `recall doctor` afterwards "
+            "prepares the database schema at that embedder's width, and offers to register the MCP "
+            "server and session hooks with Claude Code. It does not calibrate. Writes a local .env "
+            "with the answers; every step that touches something outside this directory is asked "
+            "for first. Run `recall doctor` afterwards "
             "to check the result. To build and promote a calibrated generation, use the separate "
             "`recall wizard` pipeline, interactively or from a saved JSON config."
         ),
     )
     p_setup.set_defaults(
-        _opens_db=True,  # the wizard connects when the operator accepts the calibrate prompt
+        _opens_db=True,  # setup connects to prepare the schema and to seed or index memory
         func=_cmd_setup,
     )
     p_setup.add_argument(
@@ -233,6 +233,14 @@ def _refuse_ignored_setup_flags(args: argparse.Namespace) -> None:
             refuse("--tenant", f"a Lite store has one tenant, {DEFAULT_TENANT!r}")
         if args.table != DEFAULT_TABLE:
             refuse("--table", "a Lite store has one table; use --store <file> instead")
+        # A typed sqlite:/// DSN names a Lite store, and Lite builds the one --store names, so it
+        # would be ignored (CCA BUG-003). Typed only, since the flag defaults from the
+        # environment; a PostgreSQL DSN is credentials Lite does not use, and is ignored on
+        # purpose (tests/test_lite_setup_boundaries.py).
+        from recall.backends import is_lite_dsn
+
+        if getattr(args, "dsn_given", False) and is_lite_dsn(args.dsn):
+            refuse("--serving-dsn", "Lite builds the store named by --store <file>; use that")
         return
     if getattr(args, "embedder_given", False):
         refuse("--embedder", "the interview asks which embedder to use")

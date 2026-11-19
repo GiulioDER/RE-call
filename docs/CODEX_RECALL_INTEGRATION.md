@@ -12,8 +12,9 @@ PostgreSQL servers. Neither installs the plugin bundle described below.
 The PostgreSQL `recall setup` path detects Codex and, with the default answer, installs the RE-call
 Codex integration
 automatically. It writes a personal marketplace entry at `~/.agents/plugins/marketplace.json`,
-copies the validated plugin bundle below that marketplace, stores the DSN in the user-owned Codex
-integration directory, and merges the seven user-level hooks into `CODEX_HOME/hooks.json`.
+copies the validated plugin bundle below that marketplace, stores the DSN in `recall-hook.json` in
+the user-owned Codex integration directory (with, in its `server_env` block, the reranker and
+reasoning-arm settings and any provider API keys you entered, which the Codex launcher applies), and merges the seven user-level hooks into `CODEX_HOME/hooks.json`.
 The operation is idempotent and preserves unrelated marketplace entries and hooks. Restart Codex
 after setup so it refreshes the personal marketplace and enables the plugin. The same flow works
 from a wheel because the Codex plugin bundle is force-included in the package.

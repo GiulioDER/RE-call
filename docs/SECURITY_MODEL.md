@@ -241,9 +241,14 @@ cloud embedder over the local one, etc.).
   other OpenAI-compatible embedding endpoints. They carry the same process-environment exposure as
   `VOYAGE_API_KEY`.
 - **`recall setup` copies the provider keys you enter into the MCP server it registers**
-  (`VOYAGE_API_KEY`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY`), because the server does not read
-  `.env`. They are written to the server's `env` block in the Claude Code configuration file (user
-  level, outside the repository), never to the command line or the printed report. `recall setup
+  (`VOYAGE_API_KEY`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY`, and the reasoning arm's
+  `RECALL_REASONING_EXPANSION_API_KEY`), because the server does not read `.env`. They are written
+  to the server's `env` block in the Claude Code configuration file and, when setup wires Codex, to
+  the `server_env` block of `recall-hook.json` in the Codex integration directory (both user level,
+  outside the repository; `recall-hook.json` is written owner-only on POSIX), never to the command
+  line or the printed report. Each rerun of setup first keeps a backup of the previous Claude Code
+  configuration beside it, written like the configuration itself, so a rotated key also stays in those backups until they are
+  deleted. `recall setup
   --lite` copies the one key a hosted profile names. Anyone who can read that file can read them.
 - **The Postgres DSNs (`RECALL_SERVING_DSN` and `RECALL_MIGRATION_DSN`)** carry passwords in their
   connection strings. The serving credential must not own schema objects or have DDL privileges;

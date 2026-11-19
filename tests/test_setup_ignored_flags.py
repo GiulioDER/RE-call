@@ -110,6 +110,54 @@ def test_lite_setup_refuses_tenant_and_table(
     assert setup_calls == []
 
 
+@pytest.mark.parametrize("flag", ["--serving-dsn", "--dsn"])
+def test_lite_setup_refuses_a_typed_sqlite_dsn(
+    flag: str, setup_calls: list[dict[str, object]], tmp_path: Path
+) -> None:
+    """Invariant: `recall --dsn sqlite:///X setup --lite` stops, naming the flag, before Lite runs.
+
+    Failure caught (CCA BUG-003, run 20261119T182325Z): Lite builds and registers the store named
+    by --store (default `.recall/memory.db`) and never reads a typed DSN, so
+    `recall --dsn sqlite:///other.db setup --lite` set up a different store than the one named.
+    A typed PostgreSQL DSN stays accepted and unused, as
+    tests/test_lite_setup_boundaries.py::test_lite_dispatch_ignores_unused_postgres_credentials
+    requires.
+
+    Red proof, 2026-11-19, against `_refuse_ignored_setup_flags` at 2e546bec1 (the Lite branch
+    checked only --tenant and --table): both cases failed at `assert refusal is not None`, with
+    the Lite stub recorded as called.
+    """
+    store = tmp_path / "other.db"
+    refusal = _run(_lite_argv(tmp_path, flag, f"sqlite:///{store.as_posix()}"))
+    assert refusal is not None, f"setup --lite ran and ignored {flag}: {setup_calls!r}"
+    assert "does not accept --serving-dsn" in refusal, refusal
+    assert setup_calls == []
+
+
+@pytest.mark.parametrize("flag", ["--serving-dsn", "--migration-dsn"])
+def test_lite_setup_accepts_a_typed_postgres_dsn_it_does_not_use(
+    flag: str, setup_calls: list[dict[str, object]], tmp_path: Path
+) -> None:
+    """Control: PostgreSQL credentials a Lite setup does not use are not refused.
+
+    Red proof by the CI failure of 2026-11-19 (run 44608489215 on e7e54c66b): the refusal that
+    fired on every typed DSN stopped this command with `does not accept --serving-dsn`, and the
+    `--migration-dsn` case with `does not accept --migration-dsn`.
+    """
+    assert _run(_lite_argv(tmp_path, flag, _LOCAL_DSN)) is None
+    assert [c["path"] for c in setup_calls] == ["lite"]
+
+
+def test_lite_setup_accepts_a_dsn_from_the_environment(
+    setup_calls: list[dict[str, object]], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Control: the DSN flags default from the environment, so only a typed one is refused."""
+    monkeypatch.setenv("RECALL_SERVING_DSN", _LOCAL_DSN)
+    monkeypatch.setenv("RECALL_MIGRATION_DSN", _LOCAL_DSN)
+    assert _run(_lite_argv(tmp_path)) is None
+    assert [c["path"] for c in setup_calls] == ["lite"]
+
+
 @pytest.mark.parametrize(("flag", "value"), [("--tenant", "default"), ("--table", "chunks")])
 def test_lite_setup_accepts_the_default_tenant_and_table_typed_out(
     flag: str, value: str, setup_calls: list[dict[str, object]], tmp_path: Path

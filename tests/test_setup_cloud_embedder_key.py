@@ -95,6 +95,32 @@ def test_an_openrouter_key_still_wins_when_both_are_present(fake_openai_sdk):
     assert fake_openai_sdk["api_key"] == "router-key"
 
 
+def test_setup_indexing_and_the_server_pick_one_endpoint_when_the_shell_has_an_openrouter_key(
+    fake_openai_sdk, monkeypatch
+):
+    """Invariant: one RECALL_EMBEDDER resolves to one endpoint whether or not `env` is explicit.
+
+    Failure mode (CCA BUG-001, run 20261119T182325Z): setup indexes with `env=` holding only the
+    keys typed into it, while the registered server inherits OPENROUTER_API_KEY from the shell.
+    The direct-OpenAI branch looked for that key in `env` only, so setup embedded the corpus at
+    api.openai.com and the server embedded queries at OpenRouter.
+
+    Red proof, 2026-11-19, against `recall/embeddings.py` at 2e546bec1 (the condition read
+    `not source.get("OPENROUTER_API_KEY")`): failed at the first assertion,
+    `'https://api.openai.com/v1' == 'https://openrouter.ai/api/v1'`.
+    """
+    monkeypatch.setenv("OPENROUTER_API_KEY", "router-key")
+
+    resolve_embedder("openai:text-embedding-3-small", env={"OPENAI_API_KEY": "sk-test"})
+    setup_route = fake_openai_sdk["base_url"]
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    resolve_embedder("openai:text-embedding-3-small")
+    server_route = fake_openai_sdk["base_url"]
+
+    assert setup_route == server_route
+    assert server_route == OPENROUTER
+
+
 def _probe() -> HardwareProbe:
     return HardwareProbe(
         cpu_count=8,

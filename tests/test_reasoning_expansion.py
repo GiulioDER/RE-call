@@ -334,3 +334,97 @@ def test_a_malformed_legacy_timeout_names_both_spellings() -> None:
     message = str(excinfo.value)
     assert "RECALL_REASONING_EXPANSION_TIMEOUT" in message
     assert "legacy RECALL_REASONING_TIMEOUT" in message
+
+
+# ------------------------------------------------------------------------------------------------
+# RECALL_REASONING_EXPANSION_MAX_CALLS_PER_MIN bounds paid expansion calls, per process.
+#
+# Invariant: a resolved expansion provider makes at most the configured number of calls in any
+# 60 second span (30 when the variable is unset), a refused call never reaches the client and
+# reports no usage, and a value that is not `off` or a finite positive number is refused naming
+# the variable. Failure mode it catches (CCA STAKES-001, run 20261119T182325Z, owner decision
+# 2026-11-19): since #1411 `recall setup` hands the reasoning arm to the server it registers,
+# and nothing bounded how many paid expansion calls a process made.
+#
+# Red proof, 2026-11-19, by mutation (e7e54c66b has no `ExpansionRateLimited`, so a run against it
+# fails on the import, which is not proof). Each mutation was applied alone to the fixed code:
+# - the `_EXPANSION_RATE_GATE.take()` debit removed from `OpenAIExpansionProvider.__call__`: the
+#   refusal and default tests failed with `DID NOT RAISE ExpansionRateLimited`;
+# - the `configure_call_rate` call removed from `resolve_expansion_provider`: the refusal and
+#   default tests and every malformed-value case failed with `DID NOT RAISE`;
+# - the refusal's `_record_metadata(None, ...)` removed: the refusal test failed at
+#   `assert 14 is None`;
+# - `off` parsed as the default ceiling in `configure_call_rate`: the `off` test failed on the
+#   31st call.
+# ------------------------------------------------------------------------------------------------
+
+_PAID_EXPANSION = {
+    "RECALL_REASONING_EXPANSION": "1",
+    "RECALL_REASONING_EXPANSION_MODEL": "cheap/test-model",
+    "RECALL_REASONING_EXPANSION_API_KEY": "test-key-not-real",
+}
+
+
+@pytest.fixture
+def expansion_client(monkeypatch: pytest.MonkeyPatch):
+    """A stand-in `openai` SDK whose client records each call, with the process-wide gate reset
+    before and after, since it keeps its state while its value is unchanged."""
+    import sys
+
+    import recall.reasoning_expansion as rx
+
+    client = _Client('{"proposals":[]}')
+    monkeypatch.setitem(sys.modules, "openai", SimpleNamespace(OpenAI=lambda **kwargs: client))
+    rx._EXPANSION_RATE_GATE.configure(None)
+    yield client
+    rx._EXPANSION_RATE_GATE.configure(None)
+
+
+def _resolve(ceiling: str | None):
+    env = dict(_PAID_EXPANSION)
+    if ceiling is not None:
+        env["RECALL_REASONING_EXPANSION_MAX_CALLS_PER_MIN"] = ceiling
+    provider = resolve_expansion_provider(env)
+    assert provider is not None
+    return provider
+
+
+def test_an_expansion_call_past_the_ceiling_is_refused_before_it_is_sent(expansion_client) -> None:
+    from recall.reasoning_expansion import ExpansionRateLimited
+
+    provider = _resolve("2")
+    provider(_request())
+    provider(_request())
+    with pytest.raises(ExpansionRateLimited, match="RECALL_REASONING_EXPANSION_MAX_CALLS_PER_MIN"):
+        provider(_request())
+    assert len(expansion_client.calls) == 2, "a refused call must not reach the endpoint"
+    refused = provider.provider_metadata()
+    assert refused.total_tokens is None
+    assert refused.monetary_cost_usd is None
+
+
+def test_the_default_expansion_ceiling_applies_when_the_variable_is_unset(expansion_client) -> None:
+    from recall.reasoning_expansion import DEFAULT_EXPANSION_CALLS_PER_MIN, ExpansionRateLimited
+
+    provider = _resolve(None)
+    for _ in range(int(DEFAULT_EXPANSION_CALLS_PER_MIN)):
+        provider(_request())
+    with pytest.raises(ExpansionRateLimited):
+        provider(_request())
+    assert len(expansion_client.calls) == int(DEFAULT_EXPANSION_CALLS_PER_MIN)
+
+
+def test_the_word_off_removes_the_expansion_ceiling(expansion_client) -> None:
+    provider = _resolve("off")
+    for _ in range(40):
+        provider(_request())
+    assert len(expansion_client.calls) == 40
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "nan", "inf", "lots"])
+def test_an_expansion_ceiling_that_is_not_a_finite_positive_number_is_refused(
+    expansion_client, value: str
+) -> None:
+    with pytest.raises(ValueError, match="RECALL_REASONING_EXPANSION_MAX_CALLS_PER_MIN"):
+        _resolve(value)
+    assert expansion_client.calls == []

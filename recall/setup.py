@@ -88,13 +88,17 @@ SERVER_SETTING_KEYS = (
 def _server_settings(values: Mapping[str, str]) -> dict[str, str]:
     """The `SERVER_SETTING_KEYS` values to hand a registered server, Claude Code's or Codex's.
 
-    "0" is left out with the empty values: unset already means off, and an explicit
-    RECALL_RERANK=0 conflicts with a RECALL_RETRIEVAL_PROFILE the client exports.
+    Empty values are left out. RECALL_RERANK=0 is left out too, because an explicit
+    RECALL_RERANK=0 conflicts with a RECALL_RETRIEVAL_PROFILE the client exports. A declined
+    reasoning arm is passed as RECALL_REASONING_EXPANSION=0: nothing conflicts with it, and the
+    client lays the registration over its own environment, so left out, an inherited
+    RECALL_REASONING_EXPANSION=1 would turn on the paid arm the user declined (CCA ENV-001).
     """
     return {
         key: values[key]
         for key in SERVER_SETTING_KEYS
-        if values.get(key) not in (None, "", "0")
+        if values.get(key) not in (None, "")
+        and not (key == "RECALL_RERANK" and values[key] == "0")
     }
 
 

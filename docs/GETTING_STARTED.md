@@ -91,9 +91,10 @@ installing `recall-rag[fastembed]`:
 recall setup
 ```
 
-It applies the schema, asks for the embedder and retrieval options, indexes the corpus, offers
-calibration, and registers the selected agent integration. When the wizard asks whether to calibrate,
-use a labeled query file that refers to the corpus you are installing. Calibration fitted
+It applies the schema, asks for the embedder and retrieval options, indexes the corpus, and
+registers the selected agent integration. It does not calibrate: run `recall wizard`, which builds,
+calibrates and publishes a generation for the corpus you are installing (see
+[WIZARD.md](WIZARD.md)). Calibration fitted
 to the bundled demo is only an example, not a certification for your data. The schema uses an
 ordered SQL migration path and pre-tenancy tables are migrated in place.
 

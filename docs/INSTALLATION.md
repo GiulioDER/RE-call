@@ -123,13 +123,14 @@ The wizard can:
 1. select the embedder, reranker, and retrieval profile
 2. apply pending PostgreSQL migrations
 3. build an indexed corpus and its immutable generation
-4. fit and publish calibration when you provide labeled queries
+4. point you at `recall wizard` for calibration: setup itself does not calibrate
 5. register MCP servers and offer memory scaffolding for the selected agent
 
 The provider API keys you enter are also written into the Claude Code registration's environment
-block, because the server does not read `.env`.
+block and, when Codex is wired, into the `server_env` block of Codex's `recall-hook.json`, because
+the server does not read `.env`.
 
-When asked whether to calibrate, use queries labeled against the same corpus being installed. A
+To calibrate, run `recall wizard`, which calibrates against the same corpus being installed. A
 calibration made from the bundled sample corpus demonstrates the mechanism but is not valid for
 your own corpus.
 

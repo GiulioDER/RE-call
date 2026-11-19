@@ -720,7 +720,7 @@ def _calibration_check(embedder_name: str, *, strict: bool, dsn: str) -> Check:
                 if strict
                 else ", and this server is in development mode, so queries answer as DEGRADED"
             ),
-            "recall setup   (fits one against your corpus)",
+            "recall wizard   (builds, calibrates and publishes a generation)",
         )
     return Check(
         "calibration", "ok", f"threshold {calibration.threshold:.3f} for {embedder_name} at {where}"

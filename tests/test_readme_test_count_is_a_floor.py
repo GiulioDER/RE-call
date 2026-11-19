@@ -33,7 +33,9 @@ def test_the_readme_has_a_clear_quickstart_and_surface_split() -> None:
     assert "recall setup" in text
     assert "## Product surface" in HOW_IT_WORKS.read_text(encoding="utf-8")
     text = GETTING_STARTED.read_text(encoding="utf-8")
-    assert "When the wizard asks whether to calibrate" in text
+    # `recall setup` stopped asking whether to calibrate (#1395, #1417); the page now says so and
+    # names the command that does calibrate.
+    assert "It does not calibrate: run `recall wizard`" in text
     # Matched case-insensitively on the instruction rather than on one sentence's opening words.
     # The quickstart now leads with the database, because its first command needed a compose file
     # a pip-only reader did not have, so the wizard sentence moved rather than went away.
