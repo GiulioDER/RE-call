@@ -11,7 +11,7 @@ import os
 from dataclasses import dataclass
 from typing import Literal, Mapping
 
-from recall.db_constants import DEFAULT_TABLE
+from recall.db_constants import DEFAULT_TABLE, DEFAULT_TENANT
 from recall.errors import RecallError
 
 RouteMode = Literal["legacy", "generation"]
@@ -154,10 +154,32 @@ def generations_table_refusal(table: str | None, command: str) -> str | None:
     )
 
 
+def throwaway_table_refusal(table: str | None, tenant: str | None, command: str) -> str | None:
+    """Why `--table` or `--tenant` would be ignored by a command that embeds into its own table, or None.
+
+    `recall calibrate` and `recall lint --semantic` create, use and drop a throwaway table
+    (`cal_<uuid>`, `semlint_<uuid>`) and read neither flag (#1441). The table is compared
+    case-folded, as in `generations_table_refusal`. None is a caller that named no value, as when a
+    handler is called with a namespace the CLI parser did not build.
+    """
+    for flag, value, ignored in (
+        ("--table", table, table is not None and table.casefold() != DEFAULT_TABLE),
+        ("--tenant", tenant, tenant is not None and tenant != DEFAULT_TENANT),
+    ):
+        if ignored:
+            return (
+                f"{command}: {flag} {value!r} would be ignored: "
+                "this command embeds into a throwaway table of its own and reads neither --table "
+                f"nor --tenant. Nothing was read or changed. Drop {flag}."
+            )
+    return None
+
+
 __all__ = [
     "RouteConfigurationError",
     "RouteMode",
     "RuntimeRoute",
     "generations_table_refusal",
     "resolve_runtime_route",
+    "throwaway_table_refusal",
 ]

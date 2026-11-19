@@ -37,7 +37,8 @@ set-valued or event predicate never conflict.
 
 For an offline local corpus, `recall provenance apply --sqlite-path PATH --source-root ROOT`
 uses the SQLite card and fact stores. `--source-root` is mandatory in this mode; each card source
-is resolved beneath that root and hashed again before authorization. PostgreSQL remains the default
+is resolved beneath that root and hashed again before authorization; without `--sqlite-path`,
+`--source-root` is refused, since no other path reads it. PostgreSQL remains the default
 CLI backend. The MCP service uses PostgreSQL, or, on a lite `sqlite:///` store, the ledger and cards
 kept in that file (`recall.lite.facts`), with the same event ids and projection.
 

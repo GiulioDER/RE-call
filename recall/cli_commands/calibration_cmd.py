@@ -653,8 +653,13 @@ def _cmd_near_miss(args: argparse.Namespace, repository: CalibrationRepository) 
 
 def _cmd_calibrate(args: argparse.Namespace) -> None:
     from recall.calibration import ENV_VAR
+    from recall.runtime_route import throwaway_table_refusal
     from recall.setup import calibrate_from_files
 
+    if (refusal := throwaway_table_refusal(
+        getattr(args, "table", None), getattr(args, "tenant", None), "recall calibrate"
+    )) is not None:
+        raise SystemExit(refusal)
     try:
         calibration_result: CalibrationResult = calibrate_from_files(
             dsn=args.dsn,

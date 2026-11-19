@@ -134,7 +134,9 @@ def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     # generation row, and only then failed inside `build` on the text path — while on the code path
     # it did not fail at all and recorded `{"max_chars": 0}` for one unsplit chunk.
     p_build.add_argument("--max-chars", type=_positive_int, default=DEFAULT_MAX_CHARS)
-    p_build.add_argument("--overlap", type=_non_negative_int, default=DEFAULT_OVERLAP_CHARS)
+    # Default None, so an overlap the operator typed can be told from the default: the code
+    # chunker takes none, and refusing the default would refuse every code build (#1438).
+    p_build.add_argument("--overlap", type=_non_negative_int, default=None)
     p_validate = generation_sub.add_parser("validate", help="validate a built generation")
     p_validate.add_argument("generation_id")
     p_promote = generation_sub.add_parser("promote", help="promote a ready generation")
@@ -308,6 +310,12 @@ def _cmd_generation(args: argparse.Namespace) -> None:
 
     if (refusal := generations_table_refusal(getattr(args, "table", None), "recall generation")) is not None:
         raise SystemExit(refusal)
+    if args.generation_cmd == "build" and args.chunker == "code" and args.overlap is not None:
+        raise SystemExit(
+            "recall generation build: --overlap would be ignored: the code chunker splits on "
+            "max_chars alone and takes no overlap. Nothing was built. Drop --overlap, or use "
+            "--chunker text."
+        )
     manager = GenerationManager(args.dsn, args.tenant)
     if args.generation_cmd == "list":
         for generation in manager.list_generations():
@@ -451,7 +459,7 @@ def _cmd_generation(args: argparse.Namespace) -> None:
     build_request = BuildRequest(
             chunker=args.chunker,
             max_chars=args.max_chars,
-            overlap=args.overlap,
+            overlap=DEFAULT_OVERLAP_CHARS if args.overlap is None else args.overlap,
             provider=args.embedder_provider,
             revision=args.embedder_revision,
             artifact_digest=args.embedder_artifact_digest,
