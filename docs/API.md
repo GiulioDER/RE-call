@@ -211,7 +211,7 @@ removes their citation advice.
 
 `recall_search` and `recall_evidence` carry `atomic_rescue_skipped`, an empty string unless
 `RECALL_ATOMIC_RESCUE_WHEN_MISSING=skip` let an active rescue answer without its artifact; it then
-says why (missing, for another calibration, or damaged). See [ENVIRONMENT.md](ENVIRONMENT.md#atomic-rescue).
+says why (missing, for another calibration, damaged, or uncalibrated: no calibration in force). See [ENVIRONMENT.md](ENVIRONMENT.md#atomic-rescue).
 
 `recall_search` and `recall_evidence` also accept an optional `locale` argument for presentation
 localization. When supplied, the response gains an additive `localized` object containing display

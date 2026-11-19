@@ -8,7 +8,7 @@ Moved out of `recall_mcp.server` (server split). `recall_mcp.server` re-imports 
 from __future__ import annotations
 
 import threading
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass
 from typing import cast
@@ -155,6 +155,18 @@ class _StartupConfig:
     retrieval_plan_resolver: RetrievalPlanResolver
     federation_config: FederationConfig
     translation_provider: object
+
+
+def _rescue_skip_warning(store: object | None, env: Mapping[str, str]) -> str:
+    """What a server of several tenants (no single `store`) says at startup under
+    RECALL_ATOMIC_RESCUE_WHEN_MISSING=skip, else "": it has no one store to build for, so `skip`
+    would answer without the rescue indefinitely and say so only per search (CCA ENV-002)."""
+    if store is not None or str(env.get("RECALL_ATOMIC_RESCUE_WHEN_MISSING", "")).strip().lower() != "skip":
+        return ""
+    return (
+        "RECALL_ATOMIC_RESCUE_WHEN_MISSING=skip: this server serves several tenants and builds no missing "
+        "atomic rescue artifact; searches answer without the rescue until `recall generation rescue` builds it"
+    )
 
 
 @dataclass
@@ -688,6 +700,8 @@ def _make_lifespan(
             # A PostgreSQL store whose rescue answers without a missing artifact (`skip`, a desktop
             # install) builds that artifact in the background after a search (`recall_mcp.rescue_builder`).
             rescue_builder = RescueBuilder.from_env(store, backend.embedder, config.runtime_env)
+            if warning := _rescue_skip_warning(store, config.runtime_env):
+                _log.warning("%s", warning)
             runtime_state["rescue_builder"] = rescue_builder
             settings_token = activate_runtime_settings(config.runtime_settings)
             if health is not None:

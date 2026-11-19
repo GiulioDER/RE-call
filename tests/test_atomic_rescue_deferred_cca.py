@@ -37,6 +37,8 @@ def test_a_cli_publish_whose_rebuild_cannot_build_the_embedder_warns(tmp_path: P
         raise SystemExit("the embedding provider is unreachable")
 
     monkeypatch.setattr(calibration_cmd, "_make_embedder", unbuildable)
+    # The rescue's factory, shared with promote and rollback since CCA CODE-012, reads it here.
+    monkeypatch.setattr("recall.cli_commands._shared._make_embedder", unbuildable)
     monkeypatch.setenv(MODE_ENV, "active")
     monkeypatch.delenv(MODE_BY_TENANT_ENV, raising=False)
     monkeypatch.setenv(ROOT_ENV, str(tmp_path))

@@ -90,6 +90,8 @@ from recall.types import Chunk, EvidenceCard
 Chunker = Callable[[str], list[str]]
 
 _log = get_logger("generations")
+#: The audit event a rescue build records its root under, read back by `rescue_roots` (CCA CODE-016).
+RESCUE_BUILT_EVENT = "atomic_rescue_built"
 
 DEFAULT_RETENTION_DAYS = 7
 DEFAULT_RETAIN_PREVIOUS = 2
@@ -1721,7 +1723,13 @@ class GenerationManager:
             try:
                 # A failed source transaction leaves no committed rows for forget to discover.
                 if cache is not None and pending_cache_digests:
-                    cache.erase_digests(pending_cache_digests)
+                    try:
+                        cache.erase_digests(pending_cache_digests)
+                    except Exception:  # BROAD-CATCH: fail-open  # the build's own failure is what is raised
+                        # A cache that cannot erase (read only, no digest column, a reader blocking
+                        # its checkpoint) would otherwise replace the failure that stopped the build
+                        # (CCA DAT-001).
+                        _log.exception("erasing the failed build's cached embeddings failed for tenant %r", self.tenant_id)
             finally:
                 try:
                     self.fail(generation_id, _failure(exc))
@@ -2556,7 +2564,7 @@ class GenerationManager:
         rescue keeps (`recall.generation_rescue.forget_roots`).
         """
         with self._connect() as conn:
-            self._audit(conn, "atomic_rescue_built", generation_id=generation_id, payload={"root": root})
+            self._audit(conn, RESCUE_BUILT_EVENT, generation_id=generation_id, payload={"root": root})
 
     def rescue_roots(self) -> set[str]:
         """Every root an atomic rescue of this tenant was built under, read from the audit trail."""
@@ -2565,8 +2573,8 @@ class GenerationManager:
                 str(root)
                 for (root,) in conn.execute(
                     "SELECT DISTINCT payload->>'root' FROM recall_audit_events "
-                    "WHERE tenant_id = %s AND event_type = 'atomic_rescue_built'",
-                    (self.tenant_id,),
+                    "WHERE tenant_id = %s AND event_type = %s",
+                    (self.tenant_id, RESCUE_BUILT_EVENT),
                 ).fetchall()
                 if root
             }

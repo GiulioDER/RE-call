@@ -542,7 +542,7 @@ def build_server(settings: Settings | None = None) -> MCPServer:
     if assistant is None:
         surface = surface - ASSISTANT_TOOLS
     registrar = cast(MCPServer, FilteredToolRegistrar(mcp, surface))
-    # With the assistant surface on, four tools are registered in their compact form by
+    # With the assistant surface on, five tools are registered in another form by
     # `_register_assistant_tools`, which reuses the held declarations' annotations and descriptions.
     held = _HeldTools(registrar, _ASSISTANT_HELD if assistant is not None else frozenset())
     tools = cast(MCPServer, held)

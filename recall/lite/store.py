@@ -102,6 +102,14 @@ def corpus_fingerprint_of(rows: Iterable[tuple[str, str, bytes]]) -> str:
     return corpus_digest(list(rows))
 
 
+def corpus_fingerprint_of_hashed(rows: Iterable[tuple[str, bytes, bytes]]) -> str:
+    """`corpus_fingerprint_of` from `(id, sha256 of the text, sha256 of the vector)`: the same
+    value, for a reader that streamed the rows once and kept only their hashes (CCA PERF-002)."""
+    from recall.lite.calibration import corpus_digest_hashed
+
+    return corpus_digest_hashed(rows)
+
+
 _log = get_logger("lite.store")
 
 #: PostgreSQL's English stop word list (`english.stop`), so both stores drop the same words from a

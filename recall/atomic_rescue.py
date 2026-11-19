@@ -211,10 +211,16 @@ def resolve_atomic_rescue_manifest(
 
 
 _ARTIFACT_CACHE_MAX_ENTRIES = 2
-# Keyed by path and stamped with the SHA256 of the manifest's bytes, because a PostgreSQL artifact
-# is rebuilt in place for a new calibration (`recall.generation_rescue`): a path-only key served
-# every other process the replaced artifact until it restarted (CCA BUG-001).
+# Keyed by path and stamped with the SHA256 of the manifest's bytes, because a damaged artifact, or
+# one at the old `<generation_id>` key, is removed and written again at the same path
+# (`recall.generation_rescue`): a path-only key served every other process the replaced artifact
+# until it restarted (CCA BUG-001, DOC-005).
 _ARTIFACT_CACHE: OrderedDict[Path, tuple[str, AtomicRescueArtifact]] = OrderedDict()
+#: How long a failed verification is answered from memory for the same manifest and matrix file.
+#: Under RECALL_ATOMIC_RESCUE_WHEN_MISSING=skip a damaged artifact was hashed in full on every search
+#: until it was rebuilt (CCA PERF-006); bounded, so a failure that was transient clears by itself.
+_FAILED_LOAD_TTL_S = 60.0
+_FAILED_LOADS: dict[Path, tuple[tuple[str, tuple[int, int] | None], float, str]] = {}
 _ARTIFACT_CACHE_LOCK = threading.Lock()
 _ARTIFACT_LOAD_LOCKS: dict[Path, threading.Lock] = {}
 # Upper bound on the matrix bytes one load-time validation step reads at once, and so on the
@@ -261,6 +267,7 @@ def clear_atomic_rescue_artifact_cache() -> None:
 
     with _ARTIFACT_CACHE_LOCK:
         _ARTIFACT_CACHE.clear()
+        _FAILED_LOADS.clear()
     with _EXPECTATION_CACHE_LOCK:
         _EXPECTATION_CACHE.clear()
 
@@ -488,13 +495,25 @@ def load_atomic_rescue_artifact(path: str | Path) -> AtomicRescueArtifact:
             cached = _cached_artifact(resolved, stamp)
             if cached is not None:
                 return cached
+        files = (stamp, _matrix_stamp(resolved)) if stamp is not None else None
+        with _ARTIFACT_CACHE_LOCK:
+            failed = _FAILED_LOADS.get(resolved)
+        if files is not None and failed is not None and failed[0] == files and time.monotonic() < failed[1]:
+            with _ARTIFACT_CACHE_LOCK:
+                _release_load_lock(resolved, load_lock)
+            raise AtomicRescueArtifactError(failed[2])
         try:
             loaded = _load_atomic_rescue_artifact(resolved)
-        except BaseException:
+        except BaseException as exc:
             with _ARTIFACT_CACHE_LOCK:
+                # Only a failure of the content: one that a read raised (a scanner or another
+                # process holding the file) may clear on the next search, and is not remembered.
+                if files is not None and isinstance(exc, AtomicRescueArtifactError) and not isinstance(exc.__cause__, OSError):
+                    _FAILED_LOADS[resolved] = (files, time.monotonic() + _FAILED_LOAD_TTL_S, str(exc))
                 _release_load_lock(resolved, load_lock)
             raise
         with _ARTIFACT_CACHE_LOCK:
+            _FAILED_LOADS.pop(resolved, None)
             # Stamped with the bytes read before the load: a manifest replaced in between only
             # costs the next call a reload.
             _ARTIFACT_CACHE[resolved] = (stamp or "", loaded)
@@ -511,6 +530,17 @@ def _release_load_lock(resolved: Path, load_lock: threading.Lock) -> None:
 
     if _ARTIFACT_LOAD_LOCKS.get(resolved) is load_lock:
         del _ARTIFACT_LOAD_LOCKS[resolved]
+
+
+def _matrix_stamp(resolved: Path) -> tuple[int, int] | None:
+    """The size and modification time of the manifest's matrix, so a repaired matrix under an
+    unchanged manifest is verified again rather than refused from memory."""
+
+    try:
+        stat = (resolved.parent / "matrix.npy").stat()
+    except OSError:
+        return None
+    return stat.st_size, stat.st_mtime_ns
 
 
 def _manifest_stamp(resolved: Path) -> str | None:
@@ -533,13 +563,18 @@ def _cached_artifact(resolved: Path, stamp: str | None) -> AtomicRescueArtifact 
     return entry[1]
 
 
+#: How many distinct dense parents a rescue may never displace: it places its parent at the rank
+#: after them, so a corpus of this many chunks or fewer has nothing to rescue (CCA CODE-015).
+RESCUE_PROTECTED_TOP = 5
+
+
 def _protected_parent_ids(dense: Sequence[ScoredChunk]) -> list[str]:
     """The five distinct dense parents a rescue may never displace."""
 
-    if len(dense) < 5:
+    if len(dense) < RESCUE_PROTECTED_TOP:
         raise AtomicRescueSelectionError("atomic rescue requires five dense candidates")
-    ids = [hit.chunk.id for hit in dense[:5]]
-    if len(set(ids)) != 5:
+    ids = [hit.chunk.id for hit in dense[:RESCUE_PROTECTED_TOP]]
+    if len(set(ids)) != RESCUE_PROTECTED_TOP:
         raise AtomicRescueSelectionError("atomic rescue dense prefix repeats a parent")
     return ids
 
@@ -1145,8 +1180,9 @@ def rescue_parents(chunks: Iterable[Any]) -> list[tuple[str, str, int, str]]:
     return parents
 
 
-#: The files `write_atomic_rescue_artifact` publishes in an artifact's directory.
-_ARTIFACT_FILES = frozenset({"manifest.json", "views.json", "matrix.npy"})
+#: The files `write_atomic_rescue_artifact` publishes in an artifact's directory, for every reader
+#: that checks an artifact is complete (`recall.lite.atomic` too, CCA CODE-003).
+ARTIFACT_FILES = frozenset({"manifest.json", "views.json", "matrix.npy"})
 
 
 def artifact_names_any(directory: Path, sources: set[str]) -> bool:
@@ -1168,7 +1204,7 @@ def artifact_names_any(directory: Path, sources: set[str]) -> bool:
             names = {entry.name for entry in directory.iterdir()}
         except OSError:
             return False
-        return bool(names) and names <= _ARTIFACT_FILES
+        return bool(names) and names <= ARTIFACT_FILES
 
 
 def evict_atomic_rescue_artifacts(directories: Sequence[Path]) -> None:
@@ -1187,6 +1223,8 @@ def evict_atomic_rescue_artifacts(directories: Sequence[Path]) -> None:
         # ast-grep-ignore: containment-via-confined
         for path in [path for path in _ARTIFACT_CACHE if any(path.is_relative_to(d) for d in resolved)]:
             del _ARTIFACT_CACHE[path]
+        for path in [path for path in _FAILED_LOADS if any(path.is_relative_to(d) for d in resolved)]:
+            del _FAILED_LOADS[path]
 
 
 def remove_artifact_directories(directories: Sequence[Path], root: Path) -> int:

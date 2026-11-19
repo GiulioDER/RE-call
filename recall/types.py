@@ -406,7 +406,7 @@ class RetrievalDiagnostics:
     unknown_term_check: str = "not_run"
     unknown_terms: tuple[str, ...] = ()
     #: Why an active atomic rescue was not applied under RECALL_ATOMIC_RESCUE_WHEN_MISSING=skip:
-    #: `missing`, `lineage` or `damaged`; empty when it was applied or not asked for.
+    #: `missing`, `lineage`, `damaged` or `uncalibrated`; empty when it was applied or not asked for.
     atomic_rescue_skipped: str = ""
 
 

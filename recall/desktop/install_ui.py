@@ -459,6 +459,8 @@ if QApplication is not None:
             self.progress_bar.setValue(1 if complete else 0)
             self.progress_heading.setText("Installed" if complete else "Install incomplete")
             self._append("\n" + _summarise(report))
+            if complete and (note := _frozen_folder_note()):
+                self._append(note)
             self.close_button.setEnabled(True)
 
         def _failed(self, message: str) -> None:
@@ -542,6 +544,22 @@ def _dimension_for(embedder: str) -> int | None:
         # by name later with a better message, and the dimension check degrades to "not compared",
         # which the report states explicitly.
         return None
+
+
+def _frozen_folder_note() -> str:
+    """What a frozen installer must say after an install, else nothing.
+
+    The MCP servers it registers run `recall-install.exe --mcp-stdio` from the folder it was
+    unpacked to (`recall.wizard.wiring`), so moving or deleting that folder, as people do with an
+    installer, stops every one of them (CCA DEPLOY-001).
+    """
+    if not getattr(sys, "frozen", False):
+        return ""
+    folder = Path(sys.executable).resolve().parent
+    return (
+        f"\nThe memory servers registered here run from {folder}. Keep this folder where it is: "
+        "moving or deleting it stops them until you install again."
+    )
 
 
 def _summarise(report: Any) -> str:

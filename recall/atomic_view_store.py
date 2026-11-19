@@ -17,8 +17,9 @@ re-embed rather than a wrong vector. `assemble` is the only writer. The PostgreS
 under the host's embedding lock. A lite store (`recall.lite.atomic`) may run two at once, one
 under its write lane and one under its refit lane; that is safe because a row is keyed by its
 content, and each batch is written in one short transaction after its embeddings return, under
-SQLite's busy timeout. Readers never write. `erase_digests` is the only delete,
-which a lite forget runs (`recall.lite.atomic.erase_forgotten`).
+SQLite's busy timeout. Readers never write. `erase_digests` is the only delete: a forget on either
+backend runs it (`recall.lite.atomic.erase_forgotten`, `recall.generation_rescue.erase_forgotten`),
+so do a Lite edit (`recall.lite.atomic.erase_replaced`) and a build a concurrent forget overtook.
 """
 
 from __future__ import annotations

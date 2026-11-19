@@ -47,6 +47,7 @@ if TYPE_CHECKING:
 from recall.calibration import Calibration
 from recall.atomic_rescue import (
     ATOMIC_RESCUE_PLACEMENTS,
+    RESCUE_PROTECTED_TOP,
     AtomicRescueArtifactError,
     AtomicRescueLineageError,
     insert_atomic_rescue_dense,
@@ -631,9 +632,11 @@ def _trusted_search(
         bounded = getattr(store, "count_up_to", None)
         corpus_size = None
         if callable(counter):
-            corpus_size = bounded(6) if callable(bounded) else counter()
+            corpus_size = bounded(RESCUE_PROTECTED_TOP + 1) if callable(bounded) else counter()
         atomic_applies = not (
-            isinstance(corpus_size, int) and not isinstance(corpus_size, bool) and 0 <= corpus_size <= 5
+            isinstance(corpus_size, int)
+            and not isinstance(corpus_size, bool)
+            and 0 <= corpus_size <= RESCUE_PROTECTED_TOP
         )
     if atomic_applies:
         artifact_root = environment_source.get(

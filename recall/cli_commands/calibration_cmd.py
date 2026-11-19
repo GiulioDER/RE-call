@@ -19,11 +19,10 @@ from recall.calibration_v2 import (
 from recall.drift import DRIFT_SCREEN_DELTA
 from recall.setup import CalibrationResult
 
-from recall.cli_commands._shared import CALIBRATION_DOC_URL, _make_embedder
+from recall.cli_commands._shared import CALIBRATION_DOC_URL, _make_embedder, _rescue_embedder
 
 if TYPE_CHECKING:
     from recall.calibration_v2 import CalibrationRepository
-    from recall.embeddings import Embedder
     from recall.lite import LiteStore
 
 
@@ -35,17 +34,12 @@ def _rescue_after_publish(args: argparse.Namespace, generation_id: str) -> None:
     """
     from recall.generation_rescue import after_publish
 
-    def make_embedder() -> Embedder:
-        try:
-            return _make_embedder(args.embedder)
-        except SystemExit as exc:
-            # `_make_embedder` exits on a failed construction; the publication has committed, so it
-            # is reported with the retry command rather than exiting without it (CCA BUG-005).
-            raise RuntimeError(f"the embedder could not be built: {exc}") from exc
-
-    line = after_publish(args.dsn, args.tenant, generation_id, make_embedder)
+    # The publication has committed, so a failed construction is reported with the retry command.
+    line = after_publish(args.dsn, args.tenant, generation_id, _rescue_embedder(args.embedder))
     if line:
-        print(line, file=sys.stderr if line.startswith("WARNING") else sys.stdout)
+        # Under --json stdout is one JSON document, which this line would break (CCA BUG-003).
+        quiet = line.startswith("WARNING") or getattr(args, "json", False)
+        print(line, file=sys.stderr if quiet else sys.stdout)
 
 
 def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
