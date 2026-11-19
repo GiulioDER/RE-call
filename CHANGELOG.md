@@ -417,6 +417,33 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 - `update_enabled: false` in the desktop app's `runtime.json` now stops the app's own release checks,
   at start and every 6 hours ([#1407](https://github.com/GiulioDER/RE-call/issues/1407)); it was
   read and never used. "Check for updates" on the Settings page still checks when pressed.
+- Desktop settings that did not reach what they named:
+  - Save under `recall-desktop --profile X` now writes X
+    ([#1433](https://github.com/GiulioDER/RE-call/issues/1433)); it wrote the default
+    `runtime.json`, which that launch never reads.
+  - In local database mode the desktop's servers now get the embedder
+    ([#1429](https://github.com/GiulioDER/RE-call/issues/1429)), from a new Embedder field on the
+    Settings page, saved as `embedder` in `runtime.json`; they got the DSN and the tenant only, so
+    they used the server default (`fastembed`) whatever the database was built with. A completed
+    install into an existing database now writes that profile (database, project, embedder), as a
+    managed install already did for Docker.
+  - "Test connection" now checks that an existing index matches the named embedder
+    ([#1430](https://github.com/GiulioDER/RE-call/issues/1430)), and Save runs the same check. Its
+    label no longer claims a check of permission to create tables, which the page never ran.
+  - "Apply update" is now "Restart stack (pinned images)", shown only for the managed Docker
+    stack ([#1431](https://github.com/GiulioDER/RE-call/issues/1431)). It said "Applying RE-call
+    `<version>`" and restarted the stack on the images its compose file already pinned. A newer
+    release now names the GitHub releases page, where its installer is.
+  - "Pinned RE-call version" is gone ([#1432](https://github.com/GiulioDER/RE-call/issues/1432)):
+    nothing wrote `pinned_version` and nothing pinned to it. A file that still names it loads, and
+    the key is dropped on the next save.
+  - The Runtime list offers a remote server only when the profile has an endpoint, and managed
+    Docker only when it has a compose file
+    ([#1434](https://github.com/GiulioDER/RE-call/issues/1434)); the page has neither field, so
+    choosing one without it could not be saved.
+  - "+ Add project" in local database mode now says that indexing writes the project to this
+    database ([#1435](https://github.com/GiulioDER/RE-call/issues/1435)); it said the scope had to
+    exist on a remote server.
 - Documentation that disagreed with the code: the plugin README said there is no embedded mode
   (Lite is one); the tool routing map counted 26 tools while routing 29, now pinned by test;
   `docs/PRODUCTION.md` said four auth scopes and six failure codes (six and seven), and it and

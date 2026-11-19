@@ -77,6 +77,8 @@ def _completion_window() -> SimpleNamespace:
         progress_bar=SimpleNamespace(setRange=lambda *_args: None, setValue=progress.append),
         close_button=SimpleNamespace(setEnabled=close.append),
         _append=log.append,
+        # A managed install: the engine writes the desktop profile, so the handoff has nothing to say.
+        _hand_over_profile=lambda: "",
         heading=heading,
         progress=progress,
         log=log,

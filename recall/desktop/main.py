@@ -371,15 +371,18 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--profile", help="path to a runtime profile JSON")
     args = parser.parse_args(argv)
     profile = load_profile()
+    profile_path = None
     if args.profile:
         from pathlib import Path
 
         from recall.desktop.profiles import load_profile as load_from_path
 
-        profile = load_from_path(Path(args.profile))
+        profile_path = Path(args.profile)
+        profile = load_from_path(profile_path)
     if profile is None:
         profile = RuntimeProfile(mode=RuntimeMode.DOCKER, compose_file="docker-compose.desktop.yml")
-    return run_app(profile)
+    # The path goes with the profile, so Settings saves to the file the next launch reads.
+    return run_app(profile, profile_path)
 
 
 if __name__ == "__main__":

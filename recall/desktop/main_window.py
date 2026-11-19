@@ -9,6 +9,7 @@ module's globals, so a patch on `recall.desktop.ui.<name>` succeeds and changes 
 
 from __future__ import annotations
 
+import os
 from dataclasses import replace
 from pathlib import Path
 from importlib.metadata import PackageNotFoundError, version
@@ -45,11 +46,13 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from recall.desktop.install_ui import _dimension_for
 from recall.desktop.models import RuntimeMode, RuntimeProfile, SourceCategory, SourceSelection
 from recall.desktop.profiles import save_profile
 from recall.desktop.runtime import (
     _CORPUS_SUFFIXES,
     DockerRuntime,
+    LocalDatabaseRuntime,
     RuntimeManager,
     RuntimeErrorBase,
     create_runtime,
@@ -70,6 +73,11 @@ from recall.desktop.jobs import CLOSE_WAIT_MS
 from recall.desktop.jobs import Job as _Worker
 from recall.store import scrub_dsn_secrets
 from recall.wizard.database import probe_database
+from recall.wizard.questions import DEFAULT_EMBEDDER
+
+
+#: Where a release's installer is, named because no control in this app installs one.
+_RELEASES_PAGE = "github.com/GiulioDER/RE-call/releases"
 
 
 def _project_name(value: str) -> str:
@@ -276,9 +284,18 @@ _CLOSE_WAIT_MS = CLOSE_WAIT_MS
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, profile: RuntimeProfile, runtime: RuntimeManager | None = None) -> None:
+    def __init__(
+        self,
+        profile: RuntimeProfile,
+        runtime: RuntimeManager | None = None,
+        *,
+        profile_path: Path | None = None,
+    ) -> None:
         super().__init__()
         self.profile = profile
+        #: The file this profile was read from, and so the one Save writes. None is the default
+        #: `runtime.json`. Saving there under `--profile X` was a save the next launch never read.
+        self._profile_path = profile_path
         self.runtime = runtime or create_runtime(profile)
         self.pool = QThreadPool(self)
         #: Live workers. Holding them is what makes `_run`'s callbacks arrive at all; see the
@@ -291,7 +308,6 @@ class MainWindow(QMainWindow):
         self._last_scope_index = 0
         self._calibration_targets_by_row: list[tuple[str, str, str]] = []
         self._calibration_results: dict[str, Any] = {}
-        self._latest_release: Any = None
         self._calibration_running = False
         self.github_pending: list[tuple[Path, SourceCategory]] = []
         self.github_root: Path | None = None
@@ -761,11 +777,14 @@ class MainWindow(QMainWindow):
         update_actions = QHBoxLayout()
         self.check_update_button = QPushButton("Check for updates")
         self.check_update_button.clicked.connect(self._check_update_from_settings)
-        self.apply_update_button = QPushButton("Apply update")
-        self.apply_update_button.setEnabled(False)
-        self.apply_update_button.clicked.connect(self._apply_update_from_settings)
+        # ⚠️ **Not "Apply update", because it applies no release.** It pulls what the compose file
+        # pins and restarts the stack, which is all it ever did while the page said "Applying
+        # RE-call <version>". Only the managed stack has anything to restart, so only it shows this.
+        self.restart_stack_button = QPushButton("Restart stack (pinned images)")
+        self.restart_stack_button.setVisible(isinstance(self.runtime, DockerRuntime))
+        self.restart_stack_button.clicked.connect(self._restart_stack_from_settings)
         update_actions.addWidget(self.check_update_button)
-        update_actions.addWidget(self.apply_update_button)
+        update_actions.addWidget(self.restart_stack_button)
         update_actions.addStretch()
         update_main.addLayout(update_actions)
         update_layout.addLayout(update_main, 2)
@@ -785,7 +804,6 @@ class MainWindow(QMainWindow):
         info_layout = QHBoxLayout(info)
         info_form = QFormLayout()
         info_form.addRow("Endpoint / compose", QLabel(self.profile.endpoint or self.profile.compose_file or "Not configured"))
-        info_form.addRow("Pinned RE-call version", QLabel(self.profile.pinned_version or "Not pinned"))
         info_layout.addLayout(info_form, 2)
         runtime_info = QVBoxLayout()
         runtime_caption = QLabel("Runtime")
@@ -823,7 +841,8 @@ class MainWindow(QMainWindow):
 
         self.mode_combo = QComboBox()
         for mode, label in self._MODE_LABELS.items():
-            self.mode_combo.addItem(label, mode)
+            if self._can_configure(mode):
+                self.mode_combo.addItem(label, mode)
         current = self.mode_combo.findData(self.profile.mode)
         if current >= 0:
             self.mode_combo.setCurrentIndex(current)
@@ -833,6 +852,14 @@ class MainWindow(QMainWindow):
         self.dsn_edit = QLineEdit(self.profile.dsn or "")
         self.dsn_edit.setPlaceholderText("postgresql://user:password@127.0.0.1:5432/recall")
         form.addRow("Connection", self.dsn_edit)
+
+        # Prefilled with what the server would use today, so a profile from before this field
+        # existed shows its real embedder rather than an empty box.
+        self.embedder_edit = QLineEdit(
+            self.profile.embedder or os.environ.get("RECALL_EMBEDDER") or DEFAULT_EMBEDDER
+        )
+        self.embedder_edit.setPlaceholderText("the embedder this database was built with")
+        form.addRow("Embedder", self.embedder_edit)
         outer.addLayout(form)
 
         actions = QHBoxLayout()
@@ -845,9 +872,11 @@ class MainWindow(QMainWindow):
         actions.addStretch()
         outer.addLayout(actions)
 
+        # Names exactly what `_probe` checks. It promised permission to create tables too, which
+        # is never checked: this page points the app at an install, it does not migrate one.
         self.database_status = QLabel(
-            "Not tested. `Test connection` checks the server, the pgvector extension, "
-            "permission to create tables, and whether an existing index matches this embedder."
+            "Not tested. `Test connection` checks the server, the pgvector extension, and "
+            "whether an existing index matches the embedder above."
         )
         self.database_status.setObjectName("mutedLabel")
         self.database_status.setWordWrap(True)
@@ -855,6 +884,21 @@ class MainWindow(QMainWindow):
 
         self._database_mode_changed()
         return box
+
+    def _can_configure(self, mode: RuntimeMode) -> bool:
+        """Whether Save could write a profile in `mode` from what this page holds.
+
+        A Docker profile needs a compose file and a remote one an endpoint, and this page has a
+        field for neither, so offering them without one ended in "Could not save: a VPS MCP
+        profile needs an endpoint". They are offered when the profile already carries the value,
+        which Save keeps; the installer writes the compose file, and an endpoint is set in
+        `runtime.json`.
+        """
+        if mode is RuntimeMode.DOCKER:
+            return bool(self.profile.compose_file)
+        if mode is RuntimeMode.VPS_MCP:
+            return bool(self.profile.endpoint)
+        return True
 
     def _selected_mode(self) -> RuntimeMode:
         """The chosen runtime, as the ENUM rather than whatever Qt handed back.
@@ -877,33 +921,54 @@ class MainWindow(QMainWindow):
         mode = self._selected_mode()
         needs_dsn = mode is RuntimeMode.LOCAL_DATABASE
         self.dsn_edit.setEnabled(needs_dsn)
+        self.embedder_edit.setEnabled(needs_dsn)
         self.test_database_button.setEnabled(needs_dsn)
         if not needs_dsn:
             self.database_status.setText(
                 f"{self._MODE_LABELS[mode]} does not use a connection string."
             )
 
-    def _database_settings(self) -> tuple[RuntimeMode, str] | None:
-        """The chosen mode and a non-empty DSN, or None after reporting why not."""
+    def _database_settings(self) -> tuple[RuntimeMode, str, str] | None:
+        """The chosen mode, DSN and embedder, or None after reporting why not."""
         mode = self._selected_mode()
         dsn = self.dsn_edit.text().strip()
+        embedder = self.embedder_edit.text().strip()
         if mode is RuntimeMode.LOCAL_DATABASE and not dsn:
             self.database_status.setText("Enter a connection string first.")
             return None
-        return mode, dsn
+        if mode is RuntimeMode.LOCAL_DATABASE and not embedder:
+            self.database_status.setText("Name the embedder this database was built with first.")
+            return None
+        return mode, dsn, embedder
+
+    @staticmethod
+    def _probe(dsn: str, embedder: str) -> Any:
+        """The checks the status label names, including the embedder one.
+
+        The dimension was never passed, so "whether an existing index matches this embedder" was
+        promised and skipped. Resolving the embedder can load a model, which is why this runs on
+        the pool and never on the GUI thread.
+        """
+        dimension = _dimension_for(embedder)
+        if dimension is None:
+            raise RuntimeErrorBase(
+                f"the embedder {embedder!r} could not be resolved, so the index cannot be compared "
+                f"with it"
+            )
+        return probe_database(dsn, expected_dimension=dimension, require_create=False)
 
     def _test_database(self) -> None:
         settings = self._database_settings()
         if settings is None:
             return
-        _mode, dsn = settings
+        _mode, dsn, embedder = settings
         self.test_database_button.setEnabled(False)
         self.database_status.setText("Testing...")
         # ⚠️ On the pool, never inline. `probe_database` opens a network connection, and a
         # database that is merely unreachable takes its whole timeout to say so — on the GUI
         # thread that is the window freezing with no way to tell it apart from a crash.
         self._run(
-            lambda: probe_database(dsn, require_create=False),
+            lambda: self._probe(dsn, embedder),
             self._database_tested,
             self._database_test_failed,
         )
@@ -920,34 +985,34 @@ class MainWindow(QMainWindow):
         settings = self._database_settings()
         if settings is None:
             return
-        mode, dsn = settings
+        mode, dsn, embedder = settings
         self.save_database_button.setEnabled(False)
         if mode is not RuntimeMode.LOCAL_DATABASE:
-            self._persist_profile(mode, None)
+            self._persist_profile(mode, None, None)
             return
         self.database_status.setText("Checking the database before saving...")
         # Tested before it is written, deliberately. A profile that names a database nothing can
         # serve from is the silent-nothing failure with an extra step: the app restarts, the
         # runtime fails, and the setting that caused it looks like the one the user chose.
         self._run(
-            lambda: probe_database(dsn, require_create=False),
-            lambda report: self._save_checked(report, mode, dsn),
+            lambda: self._probe(dsn, embedder),
+            lambda report: self._save_checked(report, mode, dsn, embedder),
             self._database_save_failed,
         )
 
-    def _save_checked(self, report: Any, mode: RuntimeMode, dsn: str) -> None:
+    def _save_checked(self, report: Any, mode: RuntimeMode, dsn: str, embedder: str) -> None:
         if not report.usable:
             self.save_database_button.setEnabled(True)
             self.database_status.setText(
                 "Not saved, because this database cannot serve RE-call yet.\n" + report.render()
             )
             return
-        self._persist_profile(mode, dsn)
+        self._persist_profile(mode, dsn, embedder)
 
-    def _persist_profile(self, mode: RuntimeMode, dsn: str | None) -> None:
+    def _persist_profile(self, mode: RuntimeMode, dsn: str | None, embedder: str | None) -> None:
         try:
-            updated = replace(self.profile, mode=mode, dsn=dsn)
-            save_profile(updated)
+            updated = replace(self.profile, mode=mode, dsn=dsn, embedder=embedder)
+            save_profile(updated, self._profile_path)
         except (OSError, ValueError) as exc:
             self.save_database_button.setEnabled(True)
             self.database_status.setText(f"Could not save: {self._safe(str(exc))}")
@@ -1178,7 +1243,7 @@ class MainWindow(QMainWindow):
         try:
             return version("recall-rag")
         except PackageNotFoundError:
-            return self.profile.pinned_version or "0.0.0"
+            return "0.0.0"
 
     def _check_update_from_settings(self) -> None:
         self.check_update_button.setEnabled(False)
@@ -1192,32 +1257,35 @@ class MainWindow(QMainWindow):
             self.update_result_label.setText("No update information is available.")
             return
         self.update_result_label.setText(
-            f"Latest release: {release.version} ({release.asset_name or 'installer asset'})."
+            f"Latest release: {release.version} ({release.asset_name or 'installer asset'}). "
+            f"This app does not install releases: run the installer from {_RELEASES_PAGE}."
         )
 
     def _settings_update_failed(self, message: str) -> None:
         self.check_update_button.setEnabled(True)
         self.update_result_label.setText(f"Update check failed: {message}")
 
-    def _apply_update_from_settings(self) -> None:
-        release = self._latest_release
-        if release is None:
+    def _restart_stack_from_settings(self) -> None:
+        runtime = self.runtime
+        if not isinstance(runtime, DockerRuntime):
             return
-        self.apply_update_button.setEnabled(False)
-        self.update_result_label.setText(f"Applying RE-call {release.version}…")
-        self._run(
-            lambda: self.runtime.apply_update(release),
-            self._update_applied,
-            self._update_apply_failed,
+        self.restart_stack_button.setEnabled(False)
+        self.update_result_label.setText(
+            "Pulling the images the compose file pins and restarting the stack…"
         )
+        self._run(runtime.restart_with_pinned_images, self._stack_restarted, self._stack_restart_failed)
 
-    def _update_applied(self, result: Any) -> None:
-        self.update_result_label.setText("Update applied and runtime health checked successfully.")
-        self.status.setText("RE-call update applied successfully.")
+    def _stack_restarted(self, result: Any) -> None:
+        self.restart_stack_button.setEnabled(True)
+        self.update_result_label.setText(
+            "Stack restarted on the images its compose file pins, and its health checked. "
+            "This installs no new RE-call release."
+        )
+        self.status.setText("RE-call stack restarted.")
 
-    def _update_apply_failed(self, message: str) -> None:
-        self.apply_update_button.setEnabled(True)
-        self.update_result_label.setText(f"Update was not applied: {message}")
+    def _stack_restart_failed(self, message: str) -> None:
+        self.restart_stack_button.setEnabled(True)
+        self.update_result_label.setText(f"The stack was not restarted: {message}")
 
     def _scope_data(self) -> dict[str, Any]:
         data = self.scope.currentData()
@@ -1292,14 +1360,26 @@ class MainWindow(QMainWindow):
         queue page fills it and the calibration page certifies it. So the project arrives real
         but empty and uncalibrated, and this says so instead of implying it is ready.
 
-        Docker only. `RuntimeManager._call_for` discards the tenant argument, so in VPS mode the
-        scope is a field sent to a remote server and provisioning it is that server's business,
-        not something this process can do or should claim to have done.
+        Docker only, and the message names the runtime in use, because it said "on a remote
+        server" in local database mode too. `RuntimeManager._call_for` discards the tenant
+        argument, so in VPS mode the scope is a field sent to a remote server and provisioning it
+        is that server's business. In local database mode there is no step to run: each tenant
+        gets its own server process (`LocalDatabaseRuntime._gateway_for`) and indexing writes its
+        rows, but `recall_tenants` reports only the default project, so the name is not offered
+        again after a restart.
         """
+        if isinstance(self.runtime, LocalDatabaseRuntime):
+            self.status.setText(
+                f"Project {name!r} is selected for this session. Indexing writes it to this "
+                f"database as {name}-docs, {name}-code and {name}-memory; nothing is created "
+                f"before then. Calibrate it on the CALIBRATION page before trusting search. "
+                f"After a restart, add it again to select it."
+            )
+            return
         if not isinstance(self.runtime, DockerRuntime):
             self.status.setText(
-                f"Project {name!r} is selected. This app provisions projects only for the "
-                f"managed local stack; on a remote server the scope has to exist there."
+                f"Project {name!r} is selected for this session. This app cannot create a "
+                f"project on a remote server; the scope has to exist there."
             )
             return
 
@@ -1928,20 +2008,17 @@ class MainWindow(QMainWindow):
             return None
 
     def _update_checked(self, release: Any) -> None:
-        self._latest_release = release
-        if hasattr(self, "apply_update_button"):
-            self.apply_update_button.setEnabled(False)
         if release is None:
             return
         from recall.desktop.updates import is_newer
 
         current = self._current_version()
         newer = is_newer(current, release.version)
-        if hasattr(self, "apply_update_button"):
-            self.apply_update_button.setEnabled(newer)
         if newer:
+            # Says where the release is, because nothing in this app installs it.
             self.status.setText(
-                f"RE-call update available: {release.version}. Apply it from Settings."
+                f"RE-call {release.version} is available. Run its installer from "
+                f"{_RELEASES_PAGE} to update."
             )
         elif hasattr(self, "update_result_label"):
             self.update_result_label.setText(f"RE-call {current} is up to date.")

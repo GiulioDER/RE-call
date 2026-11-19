@@ -141,6 +141,8 @@ if QApplication is not None:
             self.pool = QThreadPool(self)
             self.report: Any = None
             self.config_path: Path | None = None
+            #: The document the running install was built from, kept for `_hand_over_profile`.
+            self.config: dict[str, object] | None = None
 
             self.stack = QStackedWidget(self)
             self.stack.addWidget(self._build_form())
@@ -385,6 +387,7 @@ if QApplication is not None:
                 self.form_status.setText(f"Could not save the configuration to {target}: {exc}")
                 return
 
+            self.config = config
             self.install_button.setEnabled(False)
             self.stack.setCurrentIndex(1)
             self.progress_subtitle.setText(
@@ -459,9 +462,41 @@ if QApplication is not None:
             self.progress_bar.setValue(1 if complete else 0)
             self.progress_heading.setText("Installed" if complete else "Install incomplete")
             self._append("\n" + _summarise(report))
+            if complete and (handed := self._hand_over_profile()):
+                self._append(handed)
             if complete and (note := _frozen_folder_note()):
                 self._append(note)
             self.close_button.setEnabled(True)
+
+        def _hand_over_profile(self) -> str:
+            """Give the desktop app this install's database and embedder, for an existing database.
+
+            ⚠️ **The engine hands the app a profile only for a managed install** (`run_headless`
+            writes the Docker one when `data_root` is set), so after an install into an existing
+            database the app still opened on its old profile, and once pointed at the database by
+            hand its server resolved the server default embedder rather than the one chosen here.
+            Written to the default `runtime.json`, which is the file the engine's Docker handoff
+            replaces too. The DSN is already on disk in this install's `wizard.json`.
+            """
+            config = self.config or {}
+            dsn = str(config.get("dsn") or "")
+            if not dsn:
+                return ""
+            from recall.desktop.models import RuntimeMode, RuntimeProfile
+            from recall.desktop.profiles import save_profile
+
+            try:
+                written = save_profile(
+                    RuntimeProfile(
+                        mode=RuntimeMode.LOCAL_DATABASE,
+                        dsn=dsn,
+                        default_tenant=str(config["project"]),
+                        embedder=str(config["embedder"]),
+                    )
+                )
+            except (OSError, ValueError) as exc:
+                return _scrubbed(f"desktop: could not write the desktop app's profile: {exc}", dsn)
+            return f"desktop: {written} (database and embedder {config['embedder']})"
 
         def _failed(self, message: str) -> None:
             self.progress_bar.setRange(0, 1)

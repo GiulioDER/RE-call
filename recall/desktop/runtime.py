@@ -306,16 +306,6 @@ class RuntimeManager(ABC):
         """
         return latest_release()
 
-    def apply_update(self, release: ReleaseInfo) -> dict[str, Any]:
-        """Apply a managed local update, or fail closed for an unconfigured VPS coordinator."""
-        del release
-        if isinstance(self, VpsMcpRuntime):
-            raise RuntimeErrorBase(
-                "VPS updates require an explicitly configured deployment coordinator; MCP read/write "
-                "credentials cannot deploy a server release."
-            )
-        raise RuntimeErrorBase("Docker update must be applied by the Docker runtime adapter")
-
     def _call(self, name: str, arguments: dict[str, Any]) -> Any:
         if self.gateway is None:
             raise RuntimeErrorBase("runtime is not started")
@@ -454,12 +444,20 @@ class LocalDatabaseRuntime(RuntimeManager):
         served from a generation under strict trust is a property of what was calibrated and
         promoted, decided at install time by `wiring.server_blocks`, and a runtime that asserted it
         from a profile would either relax a gate the corpus has not earned or refuse one it has.
+
+        `RECALL_EMBEDDER` IS set when the profile names one, because it is a property of how the
+        database was built and the server cannot learn it: left unset, the server used its own
+        default whatever the index had been embedded with. Unnamed, it is left to the environment
+        the app was started from, as before.
         """
-        return {
+        env = {
             "RECALL_SERVING_DSN": self.profile.dsn or "",
             "RECALL_DSN": self.profile.dsn or "",
             "RECALL_TENANT": tenant,
         }
+        if self.profile.embedder:
+            env["RECALL_EMBEDDER"] = self.profile.embedder
+        return env
 
     def _call_for(self, tenant: str, name: str, arguments: dict[str, Any]) -> Any:
         return self._gateway_for(tenant).call(name, arguments)
@@ -664,9 +662,9 @@ class DockerRuntime(RuntimeManager):
         tenant kept shelling out to a service that no longer exists, producing an opaque stdio
         failure instead of the deliberate refusal above.
 
-        It lives in `_compose` rather than in `start()` because `apply_update()` restarts the stack
-        too and was missed for exactly that reason. A third restart path should not be able to
-        repeat it.
+        It lives in `_compose` rather than in `start()` because `restart_with_pinned_images()`
+        restarts the stack too and was missed for exactly that reason. A third restart path should
+        not be able to repeat it.
         """
         self._services = None
         for gateway in self._gateways.values():
@@ -753,9 +751,15 @@ class DockerRuntime(RuntimeManager):
     def _call_for(self, tenant: str, name: str, arguments: dict[str, Any]) -> Any:
         return self._gateway_for(tenant).call(name, arguments)
 
-    def apply_update(self, release: ReleaseInfo) -> dict[str, Any]:
-        """Pull the pinned compose images, restart the managed stack, and recheck readiness."""
-        del release
+    def restart_with_pinned_images(self) -> dict[str, Any]:
+        """Pull the images the compose file pins, restart the managed stack, and recheck readiness.
+
+        Named for what it does. It was `apply_update(release)`, called with the latest GitHub
+        release and discarding it, while the Settings page said "Applying RE-call <version>": the
+        stack came back on whatever the compose file already pinned. Installing a release means
+        running its signed Windows installer, which replaces this app and rebuilds the image; that
+        is not a step to take from inside the running app, so the page says where to get it instead.
+        """
         self._compose("pull")
         self._compose("up", "-d", "--wait")
         return self.health()

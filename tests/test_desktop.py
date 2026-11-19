@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import base64
+import json
 import os
 import threading
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -1477,25 +1479,45 @@ def _settings_window(monkeypatch: pytest.MonkeyPatch, profile: RuntimeProfile) -
     return MainWindow(profile, runtime=DockerRuntime(profile))
 
 
-def test_the_settings_page_offers_every_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A mode the engine supports and the window does not offer is a mode nobody can choose.
+def _offered_modes(window: Any) -> set[RuntimeMode]:
+    # ⚠️ Converted back through `RuntimeMode`, because Qt stores a StrEnum as a plain `str`
+    # and a set of strings never equals a set of enum members.
+    return {RuntimeMode(window.mode_combo.itemData(i)) for i in range(window.mode_combo.count())}
 
-    This is the whole point of the page: `HeadlessConfig` has always taken a `dsn` as the
-    alternative to `data_root`, and until now no surface could say so.
+
+def test_the_settings_page_offers_only_the_runtimes_it_can_save(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#1434: a runtime offered with no field for what it needs could never be saved.
+
+    Saving "A remote RE-call server" from a profile with no endpoint ended in "Could not save: a
+    VPS MCP profile needs an endpoint", because the page has no endpoint field. Every runtime the
+    page CAN save is still offered: the local database always, and the others once the profile
+    carries their value.
+
+    Red proof (2026-11-19, local offscreen Qt): with the `if self._can_configure(mode):` guard in
+    `MainWindow._build_database_group` removed, the first assertion failed with VPS_MCP offered.
     """
-    window = _settings_window(
-        monkeypatch, RuntimeProfile(mode=RuntimeMode.DOCKER, compose_file="docker-compose.desktop.yml")
-    )
+    docker_only = RuntimeProfile(mode=RuntimeMode.DOCKER, compose_file="docker-compose.desktop.yml")
+    window = _settings_window(monkeypatch, docker_only)
     try:
-        # ⚠️ Converted back through `RuntimeMode`, because Qt stores a StrEnum as a plain `str`
-        # and a set of strings never equals a set of enum members.
-        offered = {
-            RuntimeMode(window.mode_combo.itemData(i)) for i in range(window.mode_combo.count())
-        }
-        assert offered == set(RuntimeMode), (
-            f"the settings page offers {offered}, the engine supports {set(RuntimeMode)}"
-        )
+        assert _offered_modes(window) == {RuntimeMode.DOCKER, RuntimeMode.LOCAL_DATABASE}
         assert window._selected_mode() is RuntimeMode.DOCKER, "it must open on the real mode"
+    finally:
+        window.close()
+
+    with_endpoint = replace(docker_only, endpoint="https://recall.example/mcp")
+    window = _settings_window(monkeypatch, with_endpoint)
+    try:
+        assert _offered_modes(window) == set(RuntimeMode), "an endpoint on file makes remote saveable"
+        window.mode_combo.setCurrentIndex(window.mode_combo.findData(RuntimeMode.VPS_MCP))
+        saved: list[Any] = []
+        monkeypatch.setattr(
+            "recall.desktop.main_window.save_profile", lambda profile, path=None: saved.append(profile)
+        )
+        window._save_database()
+        assert [profile.mode for profile in saved] == [RuntimeMode.VPS_MCP]
+        assert saved[0].endpoint == "https://recall.example/mcp", "Save keeps the endpoint on file"
     finally:
         window.close()
 
@@ -1505,17 +1527,25 @@ def test_the_connection_field_is_offered_only_where_it_means_something(
 ) -> None:
     """A DSN box beside "managed Docker stack" invites a value that would be silently ignored."""
     window = _settings_window(
-        monkeypatch, RuntimeProfile(mode=RuntimeMode.DOCKER, compose_file="docker-compose.desktop.yml")
+        monkeypatch,
+        RuntimeProfile(
+            mode=RuntimeMode.DOCKER,
+            compose_file="docker-compose.desktop.yml",
+            endpoint="https://recall.example/mcp",
+        ),
     )
     try:
         assert window.dsn_edit.isEnabled() is False
+        assert window.embedder_edit.isEnabled() is False
 
         window.mode_combo.setCurrentIndex(window.mode_combo.findData(RuntimeMode.LOCAL_DATABASE))
         assert window.dsn_edit.isEnabled() is True
+        assert window.embedder_edit.isEnabled() is True
         assert window.test_database_button.isEnabled() is True
 
         window.mode_combo.setCurrentIndex(window.mode_combo.findData(RuntimeMode.VPS_MCP))
         assert window.dsn_edit.isEnabled() is False
+        assert window.embedder_edit.isEnabled() is False
     finally:
         window.close()
 
@@ -1585,7 +1615,7 @@ def test_a_database_that_cannot_serve_is_not_saved(
     )
     try:
         saved: list[object] = []
-        monkeypatch.setattr("recall.desktop.main_window.save_profile", lambda profile: saved.append(profile))
+        monkeypatch.setattr("recall.desktop.main_window.save_profile", lambda profile, path=None: saved.append(profile))
         report = DatabaseReport(
             dsn="postgresql://u:p@h/r",
             findings=(
@@ -1599,7 +1629,7 @@ def test_a_database_that_cannot_serve_is_not_saved(
             ),
         )
 
-        window._save_checked(report, RuntimeMode.LOCAL_DATABASE, "postgresql://u:p@h/r")
+        window._save_checked(report, RuntimeMode.LOCAL_DATABASE, "postgresql://u:p@h/r", "fastembed")
 
         assert saved == [], "an unusable database must not be written to the profile"
         assert "Not saved" in window.database_status.text()
@@ -1623,9 +1653,9 @@ def test_a_saved_profile_says_a_restart_is_needed(
     )
     try:
         saved: list[Any] = []
-        monkeypatch.setattr("recall.desktop.main_window.save_profile", lambda profile: saved.append(profile))
+        monkeypatch.setattr("recall.desktop.main_window.save_profile", lambda profile, path=None: saved.append(profile))
 
-        window._persist_profile(RuntimeMode.LOCAL_DATABASE, "postgresql://u:p@newhost/r")
+        window._persist_profile(RuntimeMode.LOCAL_DATABASE, "postgresql://u:p@newhost/r", "fastembed")
 
         assert len(saved) == 1
         assert saved[0].dsn == "postgresql://u:p@newhost/r"
@@ -1644,12 +1674,12 @@ def test_a_profile_that_cannot_be_written_is_reported_not_swallowed(
         monkeypatch, RuntimeProfile(mode=RuntimeMode.LOCAL_DATABASE, dsn="postgresql://u:p@h/r")
     )
     try:
-        def _boom(profile: object) -> None:
+        def _boom(profile: object, path: object = None) -> None:
             raise OSError(13, "Permission denied")
 
         monkeypatch.setattr("recall.desktop.main_window.save_profile", _boom)
 
-        window._persist_profile(RuntimeMode.LOCAL_DATABASE, "postgresql://u:p@newhost/r")
+        window._persist_profile(RuntimeMode.LOCAL_DATABASE, "postgresql://u:p@newhost/r", "fastembed")
 
         assert "Could not save" in window.database_status.text()
         assert window.profile.dsn == "postgresql://u:p@h/r", "the window must keep the old profile"
@@ -1685,11 +1715,11 @@ def test_no_settings_failure_puts_the_password_on_the_label(
         window._database_save_failed(f'could not parse "{dsn}"')
         assert marker not in window.database_status.text(), window.database_status.text()
 
-        def _boom(profile: object) -> None:
+        def _boom(profile: object, path: object = None) -> None:
             raise OSError(13, f'refusing to write "{dsn}"')
 
         monkeypatch.setattr("recall.desktop.main_window.save_profile", _boom)
-        window._persist_profile(RuntimeMode.LOCAL_DATABASE, dsn)
+        window._persist_profile(RuntimeMode.LOCAL_DATABASE, dsn, "fastembed")
         assert marker not in window.database_status.text(), window.database_status.text()
     finally:
         window.close()
@@ -1739,6 +1769,8 @@ def _shown_texts(widget: Any) -> list[str]:
         ("settings_page", "Save API keys", "#1399"),
         ("settings_page", "Language", "#1400"),
         ("calibration_page", "Cancel", "#1401"),
+        ("settings_page", "Pinned RE-call version", "#1432"),
+        ("settings_page", "Apply update", "#1431"),
     ],
 )
 def test_the_window_offers_no_control_whose_choice_reaches_nothing(
@@ -1756,6 +1788,15 @@ def test_the_window_offers_no_control_whose_choice_reaches_nothing(
     * #1400, "Language": the choice set a status line; nothing is translated or saved.
     * #1401, the calibration page's "Cancel": refused while a calibration ran, the only time
       there was something to cancel, and otherwise only cleared the table selection.
+    * #1432, "Pinned RE-call version": nothing wrote `pinned_version`, and neither the update
+      check nor the update apply read it.
+    * #1431, "Apply update": it restarted the stack on the images the compose file already
+      pinned while saying "Applying RE-call <version>". Now "Restart stack (pinned images)",
+      shown for the managed stack only (see the restart test below).
+
+    Red proof for the #1432 and #1431 cases, 2026-11-19, local offscreen Qt against `2e546bec1`:
+    both failed in `assert text not in shown`, because the settings page showed the row and the
+    button. Production symbol targeted: `MainWindow._build_settings_page`.
 
     Red proof receipt ``desktop-inert-controls-01``, 2026-11-19: every case run against
     `63b7c3ea2` failed in its `assert text not in shown`, because the page showed that text.
@@ -1851,3 +1892,245 @@ def test_runtime_profile_carries_no_update_channel() -> None:
     written = profile.to_dict()
     assert "update_channel" not in written, written
     assert not hasattr(profile, "update_channel")
+
+
+# ----------------------------------------------------------------------------------------------
+# Settings that did not reach what they claimed (#1429 to #1435)
+# ----------------------------------------------------------------------------------------------
+
+
+def _window(
+    monkeypatch: pytest.MonkeyPatch, profile: RuntimeProfile, runtime: Any, **kwargs: Any
+) -> Any:
+    """A real window over `runtime`, whose `_run` calls straight through on this thread."""
+    pytest.importorskip("PySide6")
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtWidgets import QApplication
+
+    from recall.desktop.ui import MainWindow
+
+    QApplication.instance() or QApplication([])
+    window = MainWindow(profile, runtime=runtime, **kwargs)
+
+    def _run(fn: Any, done: Any, failed: Any = None) -> None:
+        try:
+            result = fn()
+        except Exception as exc:  # noqa: BLE001 - the window's own worker hands on str(exc) too
+            (failed or window._job_failed)(str(exc))
+            return
+        done(result)
+
+    window._run = _run
+    return window
+
+
+_LOCAL = RuntimeProfile(
+    mode=RuntimeMode.LOCAL_DATABASE, dsn="postgresql://u:p@127.0.0.1:5432/r", default_tenant="acme"
+)
+
+
+def test_save_writes_the_profile_the_app_was_opened_with(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """#1433: Save under `recall-desktop --profile X` wrote the default `runtime.json`.
+
+    Invariant: the file `--profile` names is the file Save writes, and `main` hands that path to
+    the window. Failure mode: the next launch with `--profile X` read X again, so the saved mode
+    and DSN never took effect after the page said to restart.
+
+    Red proof (2026-11-19, local offscreen Qt): with `save_profile(updated, self._profile_path)`
+    in `MainWindow._persist_profile` mutated back to `save_profile(updated)`, this failed in
+    `assert chosen.exists()`; the save had gone to the default file.
+    """
+    from recall.desktop import main as desktop_main
+
+    default = tmp_path / "default" / "runtime.json"
+    chosen = tmp_path / "chosen.json"
+    monkeypatch.setattr(profiles, "profile_path", lambda: default)
+    profiles.save_profile(_LOCAL, chosen)
+
+    launched: list[tuple[RuntimeProfile, Any]] = []
+    monkeypatch.setattr(desktop_main, "run_app", lambda profile, path=None: launched.append((profile, path)) or 0)
+    assert desktop_main.main(["--profile", str(chosen)]) == 0
+    (opened, opened_path), = launched
+    assert opened_path == chosen, "main must hand the window the file it read the profile from"
+
+    chosen.unlink()
+    window = _window(monkeypatch, opened, _InertUiRuntime(), profile_path=opened_path)
+    try:
+        window._persist_profile(RuntimeMode.LOCAL_DATABASE, "postgresql://u:p@newhost/r", "fastembed")
+        assert chosen.exists(), "Save wrote somewhere other than the profile the app opened"
+        assert json.loads(chosen.read_text(encoding="utf-8"))["dsn"] == "postgresql://u:p@newhost/r"
+        assert not default.exists(), "and must leave the default profile alone"
+    finally:
+        window.close()
+
+
+def test_the_restart_button_says_what_it_restarts_and_shows_only_for_the_stack(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#1431: "Apply update" said "Applying RE-call <version>" and applied no version.
+
+    Invariant: the control is named for what it does (pull the images the compose file pins and
+    restart), says on completion that no release was installed, is shown only where there is a
+    stack to restart, and a newer release points at its installer. Failure mode: a page claiming
+    an update it never applied, and a button that could only fail outside Docker.
+
+    Red proof (2026-11-19, local offscreen Qt): with the `setVisible(isinstance(self.runtime,
+    DockerRuntime))` line in `MainWindow._build_settings_page` deleted, this failed in
+    `assert window.restart_stack_button.isHidden()` for the local database window.
+    """
+    from recall.desktop.models import ReleaseInfo
+
+    restarts: list[str] = []
+
+    class _Stack(DockerRuntime):
+        def restart_with_pinned_images(self) -> dict[str, Any]:
+            restarts.append("restart")
+            return {"status": "ready"}
+
+    docker = RuntimeProfile(mode=RuntimeMode.DOCKER, compose_file="docker-compose.desktop.yml")
+    window = _window(monkeypatch, docker, _Stack(docker))
+    try:
+        assert not window.restart_stack_button.isHidden()
+        assert window.restart_stack_button.text() == "Restart stack (pinned images)"
+        window.restart_stack_button.click()
+        assert restarts == ["restart"]
+        assert "installs no new RE-call release" in window.update_result_label.text()
+
+        window._update_checked(
+            ReleaseInfo(version="999.0.0", url="https://example.invalid/x.zip", asset_name="x.zip")
+        )
+        assert "github.com/GiulioDER/RE-call/releases" in window.status.text()
+        assert "Apply" not in window.status.text()
+    finally:
+        window.close()
+
+    local = _window(monkeypatch, _LOCAL, create_runtime(_LOCAL))
+    try:
+        assert local.restart_stack_button.isHidden(), "nothing to restart outside the managed stack"
+    finally:
+        local.close()
+
+
+def test_the_embedder_saved_in_settings_reaches_the_local_server(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """#1429: the desktop's local database server got the DSN and the tenant only.
+
+    Invariant: the embedder named on the Settings page is saved in the profile and reaches the
+    environment `LocalDatabaseRuntime` starts each server with. Failure mode: the server fell
+    back to its own default (`fastembed`) whatever the database was built with.
+
+    Red proof (2026-11-19, local offscreen Qt): with the `env["RECALL_EMBEDDER"] = ...` line in
+    `LocalDatabaseRuntime._env_for` deleted, this failed in the `RECALL_EMBEDDER` assertion.
+    """
+    target = tmp_path / "runtime.json"
+    window = _window(monkeypatch, _LOCAL, _InertUiRuntime(), profile_path=target)
+    try:
+        window._persist_profile(RuntimeMode.LOCAL_DATABASE, _LOCAL.dsn, "voyage:voyage-4")
+    finally:
+        window.close()
+
+    saved = profiles.load_profile(target)
+    assert saved is not None and saved.embedder == "voyage:voyage-4"
+    env = create_runtime(saved)._env_for("acme-docs")  # type: ignore[attr-defined]
+    assert env.get("RECALL_EMBEDDER") == "voyage:voyage-4", env
+    assert "RECALL_EMBEDDER" not in create_runtime(_LOCAL)._env_for("acme-docs"), (  # type: ignore[attr-defined]
+        "an unnamed embedder stays with the environment the app was started from"
+    )
+
+
+def test_test_connection_runs_the_embedder_check_its_label_names(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#1430: "Test connection" promised an embedder check and passed no dimension.
+
+    Invariant: Test and Save probe with the named embedder's dimension, and the label claims only
+    what the probe checks. Failure mode: `probe_database(dsn, require_create=False)` with no
+    `expected_dimension` could not compare the index with anything, while the label said it did,
+    and named a create check that `require_create=False` skips.
+
+    Red proof (2026-11-19, local offscreen Qt): with `expected_dimension=dimension` removed from
+    `MainWindow._probe`, this failed in `assert probed == [1024]` (it was `[None]`).
+    """
+    # Before the patches below, which import `recall.desktop.main_window` and so need PySide6;
+    # the jobs without the desktop extra must skip here rather than fail on that import.
+    pytest.importorskip("PySide6")
+    probed: list[Any] = []
+
+    class _Report:
+        usable = True
+
+        def render(self) -> str:
+            return "rendered report"
+
+    def _probe(dsn: str, *, expected_dimension: int | None = None, require_create: bool = True) -> Any:
+        probed.append(expected_dimension)
+        return _Report()
+
+    monkeypatch.setattr("recall.desktop.main_window.probe_database", _probe)
+    monkeypatch.setattr(
+        "recall.desktop.main_window._dimension_for",
+        lambda embedder: 1024 if embedder == "voyage:voyage-4" else None,
+    )
+    window = _window(monkeypatch, _LOCAL, _InertUiRuntime())
+    try:
+        window.mode_combo.setCurrentIndex(window.mode_combo.findData(RuntimeMode.LOCAL_DATABASE))
+        assert "create tables" not in window.database_status.text()
+        assert "embedder" in window.database_status.text()
+
+        window.embedder_edit.setText("voyage:voyage-4")
+        window._test_database()
+        assert probed == [1024]
+        assert window.database_status.text() == "rendered report"
+
+        window.embedder_edit.setText("no-such-embedder")
+        window._test_database()
+        assert probed == [1024], "an unresolvable embedder must not be probed as if it matched"
+        assert "could not be resolved" in window.database_status.text()
+    finally:
+        window.close()
+
+
+def test_add_project_names_the_runtime_in_use(monkeypatch: pytest.MonkeyPatch) -> None:
+    """#1435: "+ Add project" said a remote server had to hold the scope, in local mode too.
+
+    Invariant: in local database mode the message names this database and the corpora indexing
+    writes there; on a remote server it says the scope has to exist on that server. Failure
+    mode: a local user told to create a scope on a remote server they do not have.
+
+    Red proof (2026-11-19, local offscreen Qt): with the `isinstance(self.runtime,
+    LocalDatabaseRuntime)` branch of `MainWindow._provision_project` deleted, this failed in
+    `assert "remote" not in text`.
+    """
+    window = _window(monkeypatch, _LOCAL, create_runtime(_LOCAL))
+    try:
+        window._provision_project("alpha")
+        text = window.status.text()
+        assert "remote" not in text, text
+        assert "this database" in text and "alpha-docs" in text
+    finally:
+        window.close()
+
+    remote = RuntimeProfile(mode=RuntimeMode.VPS_MCP, endpoint="https://recall.example/mcp")
+    window = _window(monkeypatch, remote, create_runtime(remote))
+    try:
+        window._provision_project("alpha")
+        assert "remote server" in window.status.text()
+    finally:
+        window.close()
+
+
+def test_runtime_profile_carries_no_pinned_version() -> None:
+    """#1432: `pinned_version` pinned nothing, so it is gone, and an old file still loads.
+
+    Red proof (2026-11-19): against `2e546bec1` this failed in `assert "pinned_version" not in
+    written`, because `RuntimeProfile.to_dict` wrote the field.
+    """
+    profile = RuntimeProfile.from_dict(
+        {"mode": "docker", "compose_file": "docker-compose.desktop.yml", "pinned_version": "0.9.0"}
+    )
+    written = profile.to_dict()
+    assert "pinned_version" not in written, written
+    assert not hasattr(profile, "pinned_version")
