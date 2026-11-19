@@ -1223,6 +1223,8 @@ def evict_atomic_rescue_artifacts(directories: Sequence[Path]) -> None:
         # ast-grep-ignore: containment-via-confined
         for path in [path for path in _ARTIFACT_CACHE if any(path.is_relative_to(d) for d in resolved)]:
             del _ARTIFACT_CACHE[path]
+        # The same cache-key selection, for the remembered failures (CCA PERF-006).
+        # ast-grep-ignore: containment-via-confined
         for path in [path for path in _FAILED_LOADS if any(path.is_relative_to(d) for d in resolved)]:
             del _FAILED_LOADS[path]
 
