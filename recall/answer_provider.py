@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import deque
 from collections.abc import Mapping
 from typing import Any
 import hashlib
@@ -44,51 +45,67 @@ class AnswerRateLimited(RuntimeError, RecallError):
 
 
 class _AnswerRateGate:
-    """A token bucket shared by every provider this process resolves.
+    """A sliding window shared by every provider this process resolves.
 
-    Module level on purpose: a bucket on the provider instance would be refilled by every new
+    Module level on purpose: a window on the provider instance would be emptied by every new
     provider, and the MCP server and the proof provider each resolve their own.
+
+    A window, not a token bucket: a bucket that starts full and also refills admits close to
+    twice the ceiling in the first minute, or in any minute after an idle one, and the documented
+    bound is "N calls per minute" (CCA NUM-001, run 20261119T182325Z).
     """
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._rate: float | None = None
         self._capacity = 0.0
-        self._tokens = 0.0
-        self._updated = 0.0
+        self._calls = 0
+        self._window = 0.0
+        self._admitted: deque[float] = deque()
+        self._latest = 0.0
 
     def configure(self, calls_per_min: float | None) -> None:
-        """Set the ceiling (`None` for none), refilling the bucket only on a real change.
+        """Set the ceiling (`None` for none), emptying the window only on a real change.
 
         The compare and set is under the lock because tool bodies run on threads: two concurrent
-        resolves that both saw the old value would each refill the bucket.
+        resolves that both saw the old value would each empty the window.
         """
         rate = None if calls_per_min is None else calls_per_min / 60.0
         with self._lock:
             if rate == self._rate:
                 return
             self._rate = rate
-            # At least one whole token, or a ceiling under 1/min (0.5 is one call every two
-            # minutes) could never fill to a call and would refuse everything.
-            self._capacity = 0.0 if calls_per_min is None else max(1.0, calls_per_min)
-            self._tokens = self._capacity
-            self._updated = time.monotonic()
+            self._admitted.clear()
+            self._latest = time.monotonic()
+            if calls_per_min is None:
+                self._capacity = 0.0
+                return
+            # At least one whole call, or a ceiling under 1/min (0.5 is one call every two
+            # minutes) would refuse everything: under 1/min the window widens instead.
+            self._capacity = max(1.0, calls_per_min)
+            if calls_per_min >= 1.0:
+                # A fractional ceiling rounds down, so no 60 s span ever holds more than it.
+                self._calls = math.floor(calls_per_min)
+                self._window = 60.0
+            else:
+                self._calls = 1
+                self._window = 60.0 / calls_per_min
 
     def take(self) -> None:
         """Debit one call, or raise `AnswerRateLimited` naming the wait."""
         with self._lock:
             if self._rate is None:
                 return
-            now = time.monotonic()
-            # Clamp the stored timestamp as well as the delta, so a clock that steps back cannot
-            # rewind the reference point and mint the rewound interval on the next call.
-            elapsed = max(0.0, now - self._updated)
-            self._updated = max(self._updated, now)
-            self._tokens = min(self._capacity, self._tokens + elapsed * self._rate)
-            if self._tokens >= 1.0:
-                self._tokens -= 1.0
+            # Never behind the latest reading, so a clock that steps back cannot make an
+            # admitted call look older than it is and free its slot early.
+            now = max(time.monotonic(), self._latest)
+            self._latest = now
+            while self._admitted and self._admitted[0] <= now - self._window:
+                self._admitted.popleft()
+            if len(self._admitted) < self._calls:
+                self._admitted.append(now)
                 return
-            wait = (1.0 - self._tokens) / self._rate
+            wait = self._admitted[0] + self._window - now
         raise AnswerRateLimited(
             f"answer provider ceiling of {self._capacity:g} calls/min reached; retry in "
             f"{wait:.1f}s, or raise RECALL_REASONING_ANSWER_MAX_CALLS_PER_MIN "
@@ -169,7 +186,13 @@ class OllamaAnswerProvider:
 
     def __call__(self, system: str, user: str) -> str:
         # Debited before the call, so a refusal costs nothing and is not recorded as latency.
-        _ANSWER_RATE_GATE.take()
+        try:
+            _ANSWER_RATE_GATE.take()
+        except AnswerRateLimited:
+            # Recorded as a call with no usage, so the abstention it becomes does not report the
+            # previous call's tokens and cost as its own (CCA NUM-002).
+            self._record_metadata(None, time.perf_counter())
+            raise
         started = time.perf_counter()
         response: object | None = None
         try:

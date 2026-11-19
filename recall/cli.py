@@ -163,8 +163,10 @@ def build_parser(command: str | None = None) -> argparse.ArgumentParser:
         "--table",
         default="chunks",
         help=(
-            "table to read/write (default: chunks). Use a throwaway name to keep an experiment out of "
-            "your real memory index. A sqlite:/// store has one table: use another sqlite:/// file instead."
+            "table to read/write (default: chunks). On the legacy route, use a throwaway name to keep an "
+            "experiment out of your real memory index. The generation route and the generation, graph "
+            "and calibration commands refuse any other table: use another --tenant there. A "
+            "sqlite:/// store has one table: use another sqlite:/// file instead."
         ),
     )
     parser.add_argument(
@@ -338,10 +340,9 @@ def _main(argv: list[str] | None = None) -> None:
         if args.cmd == "setup":
             # The wizard is the command you run to REPAIR a bad configuration, so a bare
             # refusal is a dead end: it takes `dsn=args.dsn` verbatim and never prompts for
-            # one. Still guarded, because it does connect when the operator accepts the
-            # calibrate prompt, and also when the operator accepts the CLAUDE.md/memory
-            # scaffold prompt (which defaults to yes and auto-indexes memory/) — but the
-            # refusal has to name the way out.
+            # one. Still guarded, because it does connect: to prepare the schema, and when the
+            # operator accepts the CLAUDE.md/memory scaffold prompt (which defaults to yes and
+            # auto-indexes memory/) — but the refusal has to name the way out.
             try:
                 _require_secure(args.dsn)
             except PermissionError as exc:

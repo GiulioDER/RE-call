@@ -446,8 +446,9 @@ def write_project_files(
 
     env_path = project_root / ".env"
     # `_update_env_block` rebuilds the whole managed block from the keys it is given, and
-    # `recall setup` keeps provider API keys, RECALL_CALIBRATION, RECALL_RERANK and more in that
-    # same block. Passing only the two keys the wizard owns deleted all of them without a backup.
+    # `recall setup` keeps provider API keys, RECALL_RERANK and more in that same block (setups
+    # before 0.16.0 also wrote RECALL_CALIBRATION there). Passing only the two keys the wizard
+    # owns deleted all of them without a backup.
     managed = _managed_env_values(env_path)
     for key in CLI_RESCUE_KEYS:
         managed.pop(key, None)

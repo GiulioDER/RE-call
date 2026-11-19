@@ -177,6 +177,82 @@ def test_declined_choices_reach_the_registered_server_as_off(
     assert resolve_retrieval_profile({**env, "RECALL_RETRIEVAL_PROFILE": "quality"}).name == "quality"
 
 
+def test_a_declined_reasoning_arm_overrides_one_the_client_inherited(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Invariant: a reasoning arm the user declined stays off in the server, whatever the client
+    inherited.
+
+    Failure mode (CCA ENV-001, run 20261119T182325Z): `_server_settings` dropped every "0", so a
+    declined arm wrote nothing into the registration. The client lays the registration over its
+    own environment, so an inherited RECALL_REASONING_EXPANSION=1 (with its model and key) made
+    paid expansion calls the user had declined.
+
+    Red proof, 2026-11-19, against `recall.setup._server_settings` at 2e546bec1: failed at
+    `assert <OpenAIExpansionProvider ...> is None`.
+    """
+    from recall.reasoning_expansion import resolve_expansion_provider
+
+    env, _ = _registered_env(
+        tmp_path, monkeypatch,
+        security="y", embedder="fastembed", reranker="none", reasoning=False,
+    )
+    inherited = {
+        "RECALL_REASONING_EXPANSION": "1",
+        "RECALL_REASONING_EXPANSION_MODEL": "inherited/model",
+        "RECALL_REASONING_EXPANSION_API_KEY": "inherited-key-not-real",
+    }
+    monkeypatch.setitem(sys.modules, "openai", SimpleNamespace(OpenAI=lambda **kwargs: object()))
+
+    # What a merging client starts the server with: its own environment, then the block.
+    assert resolve_expansion_provider({**inherited, **env}) is None
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        {"security": "y", "embedder": "fastembed", "reranker": "ms marco reranker", "reasoning": True},
+        {
+            "security": "n", "embedder": "voyage cloud", "reranker": "none", "reasoning": False,
+            "keys": {
+                "VOYAGE_API_KEY": "test-voyage-key-not-real",
+                "OPENAI_API_KEY": "test-openai-key-not-real",
+                "OPENROUTER_API_KEY": "test-openrouter-key-not-real",
+            },
+        },
+    ],
+    ids=["local-options-on", "every-provider-key"],
+)
+def test_every_answer_setup_writes_also_reaches_the_server(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, case: dict
+) -> None:
+    """Invariant: each non-empty key setup writes to `.env`, apart from the CLI's own DSN and
+    embedder (handed to the server under its own names), is in the server's registration.
+
+    Failure mode (CCA CODE-001, run 20261119T182325Z): `SERVER_SETTING_KEYS` is a hand list kept
+    apart from the prompts that write `.env`, so a key added to the interview reaches `.env`, which
+    the server never reads, and not the server: issues 1393 and 1394 again.
+
+    Red proof, 2026-11-19, by mutation of `recall.setup.SERVER_SETTING_KEYS` with
+    "OPENROUTER_API_KEY" removed: `every-provider-key` failed at the assertion below, naming
+    {'OPENROUTER_API_KEY'}.
+    Against `_server_settings` at 2e546bec1 the same case also failed, naming
+    {'RECALL_REASONING_EXPANSION'}: the declined arm's "0" was dropped (CCA ENV-001).
+    """
+    env, _ = _registered_env(tmp_path, monkeypatch, **case)
+    written = {}
+    for raw in (tmp_path / ".env").read_text(encoding="utf-8").splitlines():
+        key, sep, value = raw.strip().partition("=")
+        if sep and not key.startswith("#") and value.strip():
+            written[key.strip()] = value.strip()
+    cli_only = {"RECALL_DSN", "RECALL_EMBEDDER"}
+    # RECALL_RERANK=0 is left out on purpose (see the negative control above).
+    expected = {k for k, v in written.items() if k not in cli_only and not (k == "RECALL_RERANK" and v == "0")}
+
+    missing = expected - set(env)
+    assert not missing, f"written to .env but not handed to the server: {missing}"
+
+
 def test_a_cloud_embedder_key_reaches_the_registered_server(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

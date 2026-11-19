@@ -222,10 +222,14 @@ def resolve_embedder(name: str, env: dict[str, str] | None = None) -> Embedder:
     if (
         (name == "openai" or name.startswith("openai:"))
         and source.get("OPENAI_API_KEY")
-        and not source.get("OPENROUTER_API_KEY")
+        and not (source.get("OPENROUTER_API_KEY") or os.environ.get("OPENROUTER_API_KEY"))
     ):
         # With OPENROUTER_API_KEY set these spellings keep going to OpenRouter, as they always
         # did; an OpenAI key alone goes to OpenAI (#1397). Its model ids carry no `openai/` prefix.
+        # The OpenRouter key is looked for in os.environ too, because the OpenRouter branch below
+        # finds it there when `env` lacks it (OpenAICompatEmbedder): setup indexes with only the
+        # keys typed into it, the server it registers inherits the shell's, and both must pick
+        # the same endpoint for one corpus.
         return OpenAICompatEmbedder(
             model=name[len("openai:"):] or "text-embedding-3-small",
             api_key=source.get("OPENAI_API_KEY"),

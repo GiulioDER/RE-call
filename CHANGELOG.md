@@ -18,6 +18,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 * **Answer calls are capped at 30 per minute per process again, by default.** A process that makes
   more answer or proof calls than that (a benchmark or batch run, say) now gets abstentions naming
   `AnswerRateLimited`. Raise `RECALL_REASONING_ANSWER_MAX_CALLS_PER_MIN`, or set it to `off`.
+  The ceiling is a sliding window: no 60 second span admits more than the number set (rounded
+  down; under 1 per minute, one call per 60/N seconds), with no burst on top.
 
 ### Added
 
@@ -108,7 +110,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   (#1398). It no longer asks to "calibrate the threshold now": the `calibration.json` it fitted
   was never loaded by search, which serves only a calibration published against a generation, so
   setup now points at `recall wizard` instead (#1395). `recall calibrate` still writes that file
-  as a measurement. A rerun of setup drops both keys from the managed block in `.env`.
+  as a measurement. A rerun of setup drops `RECALL_SECURITY_REQUIRED`, `RECALL_SPARSE` and
+  `RECALL_CALIBRATION` from the managed block in `.env`; a calibration file kept at a custom path
+  needs `RECALL_CALIBRATION` set again by hand, outside that block.
 - Two documented settings that nothing applied are no longer offered (#1406, #1409).
   `RECALL_REASONING_MODEL` is gone from `.env.example` and the environment reference; with
   `RECALL_REASONING_EXPANSION` on and no `RECALL_REASONING_EXPANSION_MODEL`, a config that still
@@ -149,8 +153,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 - `recall setup` offered the OpenAI-compatible cloud embedder when only `OPENAI_API_KEY` was
   entered, and that embedder then refused to start for want of `OPENROUTER_API_KEY` (#1397). The
   `openai` and `openai:<model>` spellings now use `OPENAI_API_KEY` against `api.openai.com` when it
-  is the only one of the two keys set; with `OPENROUTER_API_KEY` set they go to OpenRouter, as
-  before. Bare `openai` there means OpenAI's `text-embedding-3-small`.
+  is the only one of the two keys set; with `OPENROUTER_API_KEY` set, in the explicit
+  environment or the process's own, they go to OpenRouter, as before, so setup's indexing and the
+  server it registers pick the same endpoint. Bare `openai` there means OpenAI's `text-embedding-3-small`.
 - `recall setup` saved its reranking and reasoning-arm answers, and the API keys a cloud embedder
   needs, only to `./.env`, which the MCP server it registers never reads (#1393, #1394). The
   server therefore never reranked, never had the reasoning arm, and started a Voyage or
@@ -159,12 +164,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   when it wires Codex, into a `server_env` block of Codex's `recall-hook.json`, which the Codex
   launcher applies. The keys you enter are therefore stored in those files too, beside the DSN.
   The "bge reranker" choice now writes its pinned revision, without which the server refuses it.
-  Re-run `recall setup` to update an existing registration.
+  Re-run `recall setup` to update an existing registration. A declined reasoning arm is written
+  there as `RECALL_REASONING_EXPANSION=0`, so a value the client inherits from its shell cannot
+  turn it on.
 - `RECALL_REASONING_ANSWER_MAX_CALLS_PER_MIN`, documented as the only bound on paid answer calls,
   was read by nothing from 0.13.0 on, so answer and proof calls had no ceiling at all (#1405). It is
   enforced again: one budget per process, shared by every answer and proof provider and by both
   backends, debited before the request is sent. `off` removes it; `0`, a negative or a non-number
-  is refused naming the variable.
+  is refused naming the variable. A refused call reports no tokens and no cost, rather than the
+  previous call's.
 - Under `RECALL_INDEX_MODE=generation` the global `--table` flag was silently dropped: every
   generation is kept in `recall_chunks_v1`, so `recall --table scratch forget --yes` erased from
   the real store, and `withdraw`, `search`, `scopes`, `reasoning` and `records` acted on it too.
@@ -182,7 +190,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   `--no-register`. A tenant was only half applied: the scaffolded memory and the Codex wiring used
   it, while the seed, the Claude Code server and its hooks used `default`, so the registered server
   could not see that memory. `recall setup --lite` refuses `--tenant` and `--table` other than their
-  defaults, since a Lite store has one tenant and one table; use `--store` for another file.
+  defaults, since a Lite store has one tenant and one table, and a typed `--serving-dsn` (`--dsn`)
+  or `--migration-dsn`, since it builds the store `--store` names; use `--store` for another file.
   `--embedder` with `--lite` and `--table` without it are applied as before.
 - A memo whose `recall_graph` held a `NaN` or `Infinity` failed the whole Lite refresh with
   "malformed JSON" on SQLite before 3.42 (Debian 12 ships 3.40, Ubuntu 22.04 3.37), and the same
@@ -353,8 +362,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   `warning` naming what is left and the command that finishes it, as `recall forget` already did.
 - `recall setup` no longer asks for a sparse retrieval backend. Its SPLADE option wrote
   `RECALL_SPARSE=splade`, which no indexing or search path reads, so every search still ran
-  PostgreSQL full text. Setup now writes `RECALL_SPARSE=fts` without asking; SPLADE remains a
-  library option through `HybridRetriever(sparse_backend=...)`. A scripted run of setup has one
+  PostgreSQL full text. Setup no longer writes a sparse setting at all (#1398, above); SPLADE
+  remains a library option through `HybridRetriever(sparse_backend=...)`. A scripted run of setup has one
   answer fewer.
 - The desktop app's configuration page no longer shows a SPLADE checkbox, for the same reason:
   ticking it saved `"splade": true` to `pipeline.json`, which only the page itself reads back. A

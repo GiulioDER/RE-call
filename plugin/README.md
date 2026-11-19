@@ -82,8 +82,7 @@ questions and prints the four values to paste back, verbatim. Trust mode is `dev
 because a sample corpus has no calibration fitted to it and a strict server correctly refuses to
 answer from one.
 
-For your own notes, run `recall setup` instead. It indexes what you point it at, fits a threshold
-to it, and writes to table `chunks` and tenant `default`, which is the trust mode `strict` case.
+For your own notes, run `recall setup` instead. It indexes what you point it at and writes to table `chunks` and tenant `default`, which is the trust mode `strict` case.
 
 | | `recall quickstart` | `recall setup` |
 |---|---|---|
@@ -91,7 +90,7 @@ to it, and writes to table `chunks` and tenant `default`, which is the trust mod
 | Tenant | `quickstart` | `default` |
 | Trust mode | `development` | `strict` |
 | Corpus | 22 sample documents | yours |
-| Calibrated | no | yes, if you accept the prompt |
+| Calibrated | no | no; run `recall wizard` |
 
 The quickstart uses a table of its own so that 22 documents of fiction about a fictional service
 can never be retrieved beside your real memory from the same database.
@@ -177,7 +176,7 @@ That is the reason to install it. The limits:
   machines.
 - **`recall quickstart`'s corpus is uncalibrated**, so every result carries
   `DEGRADED:INDEX_NOT_READY`. That is the store saying its threshold was never fitted to this
-  corpus, not an error. `recall setup` fits a real one.
+  corpus, not an error. `recall wizard` fits a real one, against a generation it builds.
 
 Those results are not in tension, and together they are the honest pitch: **this layer reliably
 stops a known hazard being repeated, and does not reliably make ordinary work come out
