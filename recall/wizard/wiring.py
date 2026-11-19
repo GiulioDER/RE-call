@@ -831,6 +831,8 @@ def _hooks_left_alone(path: Path, project_root: Path) -> str | None:
     There is one hook config per client per machine. An install that rewrote another project's
     would switch that project's hooks off with no message there, so it is left alone and reported.
     """
+    from recall_hooks import hosted_mode
+
     try:
         document = json.loads(path.read_text(encoding="utf-8-sig"))
     except FileNotFoundError:
@@ -841,13 +843,31 @@ def _hooks_left_alone(path: Path, project_root: Path) -> str | None:
         return None
     configured = document.get("project_root")
     if not isinstance(configured, str) or not configured:
-        return f"hooks left alone: {path} names no project"
+        # The owner's rule (2026-11-19): a local one is bound here, and the report says so
+        # (`_unbound_hook_config`), since prompt-time search read it in every project until then.
+        # The Codex plugin's server reads Codex's in every project whether bound or not, so from now
+        # on it serves this project's store everywhere. A hosted one is left alone: rebinding it
+        # would turn its sync into a local install.
+        if hosted_mode(document):
+            return f"hooks left alone: {path} is a hosted config that names no project"
+        return None
     try:
         if Path(configured).resolve() == project_root.resolve():
             return None
     except (OSError, ValueError):
         pass
     return f"hooks left bound to {configured}; {path} serves that project"
+
+
+def _unbound_hook_config(path: Path) -> bool:
+    """Whether `path` is a hook config with a store and no project, which an install takes over."""
+    try:
+        document = json.loads(path.read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        return False
+    configured = document.get("project_root") if isinstance(document, dict) else None
+    stored = isinstance(document, dict) and bool(document.get("dsn") or document.get("endpoint"))
+    return stored and not (isinstance(configured, str) and configured)
 
 
 def _quiet(*_args: object, **_kwargs: object) -> None:
@@ -985,17 +1005,23 @@ def install_client_extras(
             return f"write-time search off: it reads PostgreSQL only; bound to {project_root}"
         return f"{'' if args['write_time'] else 'write-time search left off, as set; '}bound to {project_root}"
 
+    def taken_over(config: Path) -> str:
+        if not _unbound_hook_config(config):
+            return ""
+        return f"; {config} named no project, so it served every project until now; it is bound to this one now"
+
     def claude_hooks() -> str:
         left = refused(hook_config_path())
         if left:
             return left
         args = hook_args(hook_config_path())
+        note = taken_over(hook_config_path())
         if claude_plugin_installed(project_root):
             # The plugin registers the same hooks; they need only the config to read.
             _write_hook_config(**args)
-            return f"hooks: the RE-call plugin's, configured in {hook_config_path()} ({scope(args)})"
+            return f"hooks: the RE-call plugin's, configured in {hook_config_path()} ({scope(args)}){note}"
         install_hooks(**args, python_executable=interpreter, print_fn=_quiet)
-        return f"hooks installed in {settings_path()} ({scope(args)})"
+        return f"hooks installed in {settings_path()} ({scope(args)}){note}"
 
     def skills(sources: Mapping[str, Path], root: Path) -> str:
         foreign = _foreign_skills(sources, root)
@@ -1027,10 +1053,21 @@ def install_client_extras(
         text = f"registered {', '.join(reg.registered)} for this project in {reg.config_path}"
         if reg.conflicts:
             text += f"; left {', '.join(reg.conflicts)} alone, already defined there"
+        if reg.kept:
+            text += f"; kept {', '.join(reg.kept)}, registered there by an earlier run"
+        if reg.dropped:
+            text += (
+                f"; removed {', '.join(reg.dropped)} from RE-call's block: this machine has no record "
+                "of writing them as they stand"
+            )
+        if reg.backup is not None:
+            text += f"; backed up the file as it was to {reg.backup}"
         if reg.gitignore is not None:
-            text += f"; added `.codex/config.toml` to {reg.gitignore}: it holds this machine's store settings"
+            text += f"; added `.codex/config.toml*` to {reg.gitignore}: it holds this machine's store settings"
         if not reg.trusted:
             text += "; Codex loads them once you trust this project (open it in Codex and accept)"
+            if reg.others:
+                text += f", which also enables {', '.join(reg.others)}, already defined there"
         return text
 
     def codex_hooks() -> str:
@@ -1038,10 +1075,13 @@ def install_client_extras(
         if left:
             return left
         args = hook_args(codex_hook_config_path())
+        note = taken_over(codex_hook_config_path())
+        if note:
+            note += "; the RE-call Codex plugin's server, when enabled, reads its store in every Codex project"
         target = install_codex_hooks(**args, python_executable=interpreter)
         return (
             f"hooks installed in {target} ({scope(args)}); "
-            "Codex asks you to review and trust them before they run"
+            f"Codex asks you to review and trust them before they run{note}"
         )
 
     def codex_skills() -> str:
