@@ -125,6 +125,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ### Fixed
 
+- `recall setup` saved its reranking and reasoning-arm answers, and the API keys a cloud embedder
+  needs, only to `./.env`, which the MCP server it registers never reads (#1393, #1394). The
+  server therefore never reranked, never had the reasoning arm, and started a Voyage or
+  OpenAI-compatible embedder without its key unless the shell happened to export it. Setup now
+  also writes those values into the server's registration in the Claude Code configuration, so
+  the keys you enter are stored there too, beside the DSN. The "bge reranker" choice now writes
+  its pinned revision, without which the server refuses it. Re-run `recall setup` to update an
+  existing registration.
 - A memo whose `recall_graph` held a `NaN` or `Infinity` failed the whole Lite refresh with
   "malformed JSON" on SQLite before 3.42 (Debian 12 ships 3.40, Ubuntu 22.04 3.37), and the same
   memo failed indexing on PostgreSQL, whose `jsonb` refuses those values too. Such a value is now
