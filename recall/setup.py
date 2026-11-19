@@ -92,13 +92,21 @@ def _server_settings(values: Mapping[str, str]) -> dict[str, str]:
     reasoning arm is passed as RECALL_REASONING_EXPANSION=0: nothing conflicts with it, and the
     client lays the registration over its own environment, so left out, an inherited
     RECALL_REASONING_EXPANSION=1 would turn on the paid arm the user declined (CCA ENV-001).
+
+    A local reranker also gets RECALL_SEARCH_CONCURRENCY=1. RECALL_RERANK=1 runs the legacy
+    profile, which has no latency budget and admits four searches at once, each a cross-encoder
+    predict on every core, in every stdio server a client opens (CCA PERF-002, owner decision
+    2026-11-19). One at a time bounds that; the queue still holds the others.
     """
-    return {
+    settings = {
         key: values[key]
         for key in SERVER_SETTING_KEYS
         if values.get(key) not in (None, "")
         and not (key == "RECALL_RERANK" and values[key] == "0")
     }
+    if settings.get("RECALL_RERANK") == "1":
+        settings["RECALL_SEARCH_CONCURRENCY"] = "1"
+    return settings
 
 
 DEFAULT_CALIBRATION_PATH = Path("calibration.json")

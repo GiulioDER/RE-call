@@ -134,9 +134,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   no longer has `cuda_vram_bytes`, and the wizard preflight no longer probes VRAM: their only
   readers were the SPLADE choices, whose removal is under Fixed. `run_setup_wizard` no longer
   takes `tenant`, which the CLI already refused and the function applied to only part of the
-  install. Setup's bge
-  reranker choice now says it costs about 6.3 times the ms marco reranker per search, measured no
-  better.
+  install. Setup's bge reranker choice now says it costs about 6.3 times the ms marco reranker
+  per search, measured no better.
+- A server `recall setup` registers with a local reranker (Claude Code or Codex) now runs one
+  search at a time: setup also writes `RECALL_SEARCH_CONCURRENCY=1` there. The reranker runs
+  on the legacy profile, which has no latency budget and admitted four searches at once, each a
+  cross-encoder predict on every core, in every server a client opens. Re-run `recall setup` to
+  update an existing registration; set the variable in the registration to choose otherwise.
 - The desktop's `update_enabled` in `runtime.json` is read as a boolean: the string `"false"`
   (or `0`, `no`, `off`) now turns the release checks off, where `bool("false")` left them on, and
   any other value that is not a boolean turns them off too; the rest of the profile is kept.

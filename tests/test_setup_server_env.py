@@ -155,6 +155,31 @@ def test_the_reranker_and_reasoning_arm_reach_the_registered_server(
     assert resolve_expansion_provider(env) is not None, env
 
 
+@pytest.mark.parametrize("reranker", ["ms marco reranker", "bge reranker"])
+def test_a_setup_reranker_runs_one_search_at_a_time_in_the_server(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, reranker: str
+) -> None:
+    """Invariant: a server setup registers with a local reranker admits one search at a time.
+
+    Failure mode (CCA PERF-002, owner decision 2026-11-19): RECALL_RERANK=1 resolves the legacy
+    profile, which admits four concurrent searches, each a cross-encoder predict on every core,
+    in every stdio server a client opens, with no latency budget.
+
+    Red proof, 2026-11-19, against `recall.setup._server_settings` at 9d7b61420 (no concurrency
+    written): both cases failed at `assert 4 == 1`.
+    """
+    from recall.profiles import resolve_retrieval_profile
+    from recall_mcp.factories import resolve_reranker
+
+    env, _ = _registered_env(
+        tmp_path, monkeypatch,
+        security="n", embedder="fastembed", reranker=reranker, reasoning=False,
+        total_ram_bytes=16 * 2**30,  # bge is offered only where it fits
+    )
+    assert resolve_reranker(env) is not None, env
+    assert resolve_retrieval_profile(env).max_concurrency == 1
+
+
 def test_declined_choices_reach_the_registered_server_as_off(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -169,6 +194,8 @@ def test_declined_choices_reach_the_registered_server_as_off(
 
     assert resolve_reranker(env) is None
     assert resolve_expansion_provider(env) is None
+    # No reranker, no cap: the default concurrency is left alone.
+    assert "RECALL_SEARCH_CONCURRENCY" not in env
     # Off is left unset rather than written as "0": an explicit RECALL_RERANK=0 makes the server
     # refuse to start beside a RECALL_RETRIEVAL_PROFILE=quality the client exports.
     from recall.profiles import resolve_retrieval_profile
@@ -314,14 +341,16 @@ def test_the_reranker_and_reasoning_arm_reach_the_codex_server(
 
     Red proof, 2026-11-19, on the test host against `dac217681`: failed on the `spec` assertion,
     `resolve_reranker` returning None, because the Codex launcher set only DSN, tenant, embedder,
-    table and transport."""
+    table and transport. The one-search-at-a-time cap (CCA PERF-002) is asserted here too: red
+    against 9d7b61420 at `assert 4 == 1`."""
     import os
 
+    from recall.profiles import resolve_retrieval_profile
     from recall.rerank import DEFAULT_RERANKER_MODEL
     from recall.reasoning_expansion import resolve_expansion_provider
     from recall_mcp.factories import resolve_reranker
 
-    for key in ("RECALL_RERANK", "RECALL_REASONING_EXPANSION"):
+    for key in ("RECALL_RERANK", "RECALL_REASONING_EXPANSION", "RECALL_SEARCH_CONCURRENCY"):
         monkeypatch.delenv(key, raising=False)
     codex_home = tmp_path / "codex"
     _registered_env(
@@ -335,6 +364,7 @@ def test_the_reranker_and_reasoning_arm_reach_the_codex_server(
     assert status == 0
     spec = resolve_reranker(env)
     assert spec is not None and spec[0] == DEFAULT_RERANKER_MODEL
+    assert resolve_retrieval_profile(env).max_concurrency == 1
     monkeypatch.setitem(sys.modules, "openai", SimpleNamespace(OpenAI=lambda **kwargs: object()))
     assert resolve_expansion_provider(env) is not None
     assert "RECALL_RERANK" not in os.environ, "the launcher must restore the environment it changed"
