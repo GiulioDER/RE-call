@@ -25,7 +25,7 @@ from recall.claude_code import (
     user_skill_dir,
 )
 from recall.codex import codex_code_detected, install_codex_integration
-from recall.embeddings import resolve_embedder
+from recall.embeddings import OPENAI_DIRECT_BASE_URL as OPENAI_BASE_URL, resolve_embedder
 from recall.eval.calibrate import CalibrationReport
 from recall.seed import plan_seed, seed_corpus
 from recall.store import DEFAULT_TABLE
@@ -44,7 +44,6 @@ DEFAULT_ENV_PATH = Path(".env")
 #: it into an audit identity, so a separate provider name would be a second source of truth for
 #: the same fact.
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
-OPENAI_BASE_URL = "https://api.openai.com/v1"
 
 #: Sentinel for "ask me for a base URL", distinct from any real URL.
 LOCAL_PROVIDER = "local"
@@ -113,7 +112,6 @@ DEFAULT_CLAUDE_MD_PATH = Path("CLAUDE.md")
 class HardwareProbe:
     cpu_count: int | None
     gpu: str | None
-    cuda_available: bool
     free_bytes: int
     internet: bool
     fastembed_available: bool
@@ -176,17 +174,6 @@ def _probe_gpu() -> str | None:
     return None
 
 
-def _probe_cuda() -> bool:
-    try:
-        import torch
-    except Exception:  # BROAD-CATCH: fail-open
-        return False
-    try:
-        return bool(torch.cuda.is_available())
-    except Exception:  # BROAD-CATCH: fail-open
-        return False
-
-
 def _probe_internet(url: str = "https://pypi.org", timeout: float = 2.0) -> bool:
     try:
         with urllib.request.urlopen(url, timeout=timeout):  # noqa: S310 - install-time probe
@@ -198,11 +185,9 @@ def _probe_internet(url: str = "https://pypi.org", timeout: float = 2.0) -> bool
 def probe_hardware(path: Path | None = None) -> HardwareProbe:
     root = path or Path.cwd()
     free_bytes = shutil.disk_usage(root).free
-    cuda_available = _probe_cuda()
     return HardwareProbe(
         cpu_count=os.cpu_count(),
         gpu=_probe_gpu(),
-        cuda_available=cuda_available,
         free_bytes=free_bytes,
         internet=_probe_internet(),
         fastembed_available=_module_available("fastembed"),
@@ -524,7 +509,10 @@ def reranker_choices(
                     "RECALL_RERANK=1;RECALL_RERANK_MODEL=BAAI/bge-reranker-base;"
                     "RECALL_RERANK_REVISION=2cfc18c9415c912f9d8155881c133215df768a70"
                 ),
-                description="Heavier local reranker, available if you want to try it",
+                description=(
+                    "Heavier local reranker: about 6.3 times the ms marco cost per search, "
+                    "measured no better (docs/USING_WITH_CLAUDE.md)"
+                ),
                 available=runnable and shortfall is None,
                 unavailable_note=bge_note,
                 unavailable_tag=bge_tag,
@@ -1199,7 +1187,6 @@ def run_setup_wizard(
     *,
     dsn: str,
     migration_dsn: str | None = None,
-    tenant: str | None = None,
     table: str | None = None,
     env_path: Path = DEFAULT_ENV_PATH,
     claude_md_path: Path = DEFAULT_CLAUDE_MD_PATH,
@@ -1348,7 +1335,6 @@ def run_setup_wizard(
                 dsn=dsn,
                 embedder_name=embedder.value,
                 memory_dir=memory_dir,
-                tenant=tenant,
                 table=table,
                 env=cloud_keys,
                 print_fn=print_fn,
@@ -1413,7 +1399,7 @@ def run_setup_wizard(
         try:
             install_codex_integration(
                 dsn=dsn,
-                tenant=tenant or "default",
+                tenant="default",
                 embedder=embedder.value,
                 table=table or DEFAULT_TABLE,
                 write_time=write_time_requested,

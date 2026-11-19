@@ -9,7 +9,7 @@ design violation.
 
 Packages: `recall`, `recall_mcp`, `recall_agent`, `recall_hooks`, `recall_interop`, `recall_consistency`
 Modules: 375
-Cross package edges: 450
+Cross package edges: 452
 
 ## Highest fan in modules
 
@@ -525,12 +525,14 @@ They are observations, not automatic failures.
 | `recall_mcp.service` | `recall.trust_policy` |
 | `recall_mcp.service` | `recall.types` |
 | `recall_mcp.settings` | `recall._env` |
+| `recall_mcp.settings` | `recall.answer_provider` |
 | `recall_mcp.settings` | `recall.constants` |
 | `recall_mcp.settings` | `recall.federation` |
 | `recall_mcp.settings` | `recall.multimodal` |
 | `recall_mcp.settings` | `recall.ops.secret_mapping` |
 | `recall_mcp.settings` | `recall.ops.secrets` |
 | `recall_mcp.settings` | `recall.paged_evidence` |
+| `recall_mcp.settings` | `recall.reasoning_expansion` |
 | `recall_mcp.settings` | `recall.retrieval_plan` |
 | `recall_mcp.settings` | `recall.trust_policy` |
 | `recall_mcp.stale_reports_api` | `recall.rewrite` |
@@ -630,18 +632,18 @@ They are observations, not automatic failures.
 | `recall.declared_keys` | 2 | 28 |
 | `recall.dependency_invalidation` | 5 | 23 |
 | `recall.derived_block` | 3 | 14 |
-| `recall.desktop` | 1 | 1 |
-| `recall.desktop.github` | 3 | 6 |
+| `recall.desktop` | 1 | 2 |
+| `recall.desktop.github` | 3 | 7 |
 | `recall.desktop.install_ui` | 10 | 175 |
 | `recall.desktop.jobs` | 0 | 0 |
 | `recall.desktop.main` | 13 | 184 |
 | `recall.desktop.main_window` | 13 | 182 |
-| `recall.desktop.models` | 0 | 0 |
-| `recall.desktop.profiles` | 2 | 2 |
+| `recall.desktop.models` | 1 | 1 |
+| `recall.desktop.profiles` | 2 | 3 |
 | `recall.desktop.runtime` | 5 | 45 |
-| `recall.desktop.sources` | 3 | 5 |
+| `recall.desktop.sources` | 3 | 6 |
 | `recall.desktop.ui` | 3 | 183 |
-| `recall.desktop.updates` | 2 | 2 |
+| `recall.desktop.updates` | 2 | 3 |
 | `recall.desktop.uploads` | 4 | 18 |
 | `recall.doctor` | 15 | 168 |
 | `recall.document` | 2 | 15 |
@@ -930,7 +932,7 @@ They are observations, not automatic failures.
 | `recall_mcp.server_reasoning` | 24 | 199 |
 | `recall_mcp.server_search` | 16 | 166 |
 | `recall_mcp.service` | 59 | 191 |
-| `recall_mcp.settings` | 10 | 149 |
+| `recall_mcp.settings` | 12 | 149 |
 | `recall_mcp.stale_reports_api` | 5 | 157 |
 | `recall_mcp.status` | 8 | 141 |
 | `recall_mcp.stores` | 7 | 141 |

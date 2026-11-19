@@ -125,7 +125,6 @@ def _probe() -> HardwareProbe:
     return HardwareProbe(
         cpu_count=8,
         gpu=None,
-        cuda_available=False,
         free_bytes=100 * 1024**3,
         internet=True,
         fastembed_available=True,
@@ -182,7 +181,6 @@ def _register_through_setup(
             "y",  # register with Claude Code
             "n",  # write-time hook
             "n",  # prompt-time hook
-            "n",  # calibrate declined
         ]
     )
     printed: list[str] = []
@@ -194,6 +192,10 @@ def _register_through_setup(
         input_fn=lambda _p="": next(answers),
         print_fn=lambda *a, **k: printed.append(" ".join(str(x) for x in a)),
     )
+    # Every scripted answer consumed: one left over would be answering a prompt that is gone, and
+    # would answer the next prompt added at the end (CCA CODE-012). Red proof, 2026-11-19: with
+    # the removed calibrate answer put back, this failed at `assert 'n' is None`.
+    assert next(answers, None) is None, "the setup script has answers for prompts setup no longer asks"
     document = json.loads((config_dir / ".claude.json").read_text(encoding="utf-8"))
     servers = [
         server

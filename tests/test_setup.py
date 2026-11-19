@@ -57,7 +57,6 @@ def test_embedder_choices_hide_cloud_when_security_is_required():
     probe = HardwareProbe(
         cpu_count=8,
         gpu=None,
-        cuda_available=False,
         free_bytes=10_000_000_000,
         internet=True,
         fastembed_available=True,
@@ -75,7 +74,6 @@ def test_setup_wizard_writes_env_and_accepts_api_keys(tmp_path, monkeypatch):
     probe = HardwareProbe(
         cpu_count=8,
         gpu="nvidia",
-        cuda_available=False,
         free_bytes=10_000_000_000,
         internet=True,
         fastembed_available=True,
@@ -546,7 +544,6 @@ def test_setup_wizard_scaffolds_claude_md_and_memory_and_indexes(tmp_path, monke
     probe = HardwareProbe(
         cpu_count=8,
         gpu=None,
-        cuda_available=False,
         free_bytes=10_000_000_000,
         internet=True,
         fastembed_available=True,
@@ -601,7 +598,6 @@ def test_setup_wizard_survives_scaffold_failure_and_still_writes_env(tmp_path, m
     probe = HardwareProbe(
         cpu_count=8,
         gpu=None,
-        cuda_available=False,
         free_bytes=10_000_000_000,
         internet=True,
         fastembed_available=True,
@@ -655,7 +651,6 @@ def test_setup_wizard_skips_scaffold_when_declined(tmp_path, monkeypatch):
     probe = HardwareProbe(
         cpu_count=8,
         gpu=None,
-        cuda_available=False,
         free_bytes=10_000_000_000,
         internet=True,
         fastembed_available=True,
@@ -707,7 +702,6 @@ def test_setup_wizard_scaffold_prompt_defaults_to_yes_on_blank_answer(tmp_path, 
     probe = HardwareProbe(
         cpu_count=8,
         gpu=None,
-        cuda_available=False,
         free_bytes=10_000_000_000,
         internet=True,
         fastembed_available=True,
@@ -767,7 +761,6 @@ def test_a_real_choice_is_still_offered_as_a_menu(tmp_path, monkeypatch):
     probe = HardwareProbe(
         cpu_count=8,
         gpu="nvidia",
-        cuda_available=True,
         free_bytes=10_000_000_000,
         internet=True,
         fastembed_available=True,
@@ -807,7 +800,6 @@ def test_a_sole_embedder_says_what_it_costs_rather_than_offering_a_menu(tmp_path
     probe = HardwareProbe(
         cpu_count=8,
         gpu=None,
-        cuda_available=False,
         free_bytes=10_000_000_000,
         internet=True,
         fastembed_available=False,
@@ -844,7 +836,6 @@ def _no_extras_probe() -> HardwareProbe:
     return HardwareProbe(
         cpu_count=8,
         gpu=None,
-        cuda_available=False,
         free_bytes=10_000_000_000,
         internet=True,
         fastembed_available=True,
@@ -914,12 +905,12 @@ def test_the_note_names_the_condition_that_actually_failed() -> None:
     from recall.setup import reranker_choices
 
     no_package = HardwareProbe(
-        cpu_count=8, gpu=None, cuda_available=False, free_bytes=10_000_000_000,
+        cpu_count=8, gpu=None, free_bytes=10_000_000_000,
         internet=True, fastembed_available=True, sentence_transformers_available=False,
     )
     # Has the package, but no room to download the weights.
     no_disk = HardwareProbe(
-        cpu_count=8, gpu=None, cuda_available=False, free_bytes=1_000_000,
+        cpu_count=8, gpu=None, free_bytes=1_000_000,
         internet=True, fastembed_available=True, sentence_transformers_available=True,
     )
 
@@ -956,7 +947,6 @@ def _roomy_probe(free_bytes: int, total_ram_bytes: int | None = 16 * 1024**3) ->
     return HardwareProbe(
         cpu_count=8,
         gpu=None,
-        cuda_available=False,
         free_bytes=free_bytes,
         internet=True,
         fastembed_available=True,
@@ -998,7 +988,6 @@ def _reranker_probe(total_ram_bytes: int | None, *, sentence_transformers: bool 
     return HardwareProbe(
         cpu_count=8,
         gpu=None,
-        cuda_available=False,
         free_bytes=10 * 1024**3,
         internet=True,
         fastembed_available=True,
@@ -1273,7 +1262,6 @@ def test_reasoning_providers_hide_cloud_when_security_is_required(monkeypatch):
     probe = HardwareProbe(
         cpu_count=8,
         gpu=None,
-        cuda_available=False,
         free_bytes=100 * 1024**3,
         internet=True,
         fastembed_available=True,
@@ -1288,7 +1276,6 @@ def test_reasoning_providers_offer_cloud_when_security_is_not_required(monkeypat
     probe = HardwareProbe(
         cpu_count=8,
         gpu=None,
-        cuda_available=False,
         free_bytes=100 * 1024**3,
         internet=True,
         fastembed_available=True,
@@ -1312,7 +1299,6 @@ def test_reasoning_providers_mark_cloud_unavailable_without_the_openai_package(m
     probe = HardwareProbe(
         cpu_count=8,
         gpu=None,
-        cuda_available=False,
         free_bytes=100 * 1024**3,
         internet=True,
         fastembed_available=True,
@@ -1331,7 +1317,6 @@ def test_the_first_reasoning_provider_is_always_runnable(monkeypatch):
     probe = HardwareProbe(
         cpu_count=1,
         gpu=None,
-        cuda_available=False,
         free_bytes=0,
         internet=False,
         fastembed_available=False,
@@ -1472,7 +1457,6 @@ def _run_wizard(tmp_path, monkeypatch, answers, probe=None):
     probe = probe or HardwareProbe(
         cpu_count=8,
         gpu=None,
-        cuda_available=False,
         free_bytes=100 * 1024**3,
         internet=True,
         fastembed_available=True,

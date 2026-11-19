@@ -1,8 +1,8 @@
 """What the installer needs to know about the machine, beyond what `recall.setup` already probes.
 
-`recall.setup.probe_hardware` reports CPU count, GPU name, CUDA availability, free disk and
-internet, and it stays the authority on those. `SystemProbe` carries one rather than replacing it,
-and adds the four facts an installer cannot proceed without:
+`recall.setup.probe_hardware` reports CPU count, GPU name, free disk and internet, and it stays
+the authority on those. `SystemProbe` carries one rather than replacing it, and adds the three
+facts an installer cannot proceed without:
 
 * **RAM.** Nothing in the tree measured it, so every choice was gated on disk alone. A machine can
   clear a 4 GB disk floor and still be unable to hold a reranker and a database at once.
@@ -11,8 +11,6 @@ and adds the four facts an installer cannot proceed without:
 * **Which Python this is.** The Microsoft Store build sandboxes and rewrites file paths, so
   `recall index` on a real folder finds nothing and exits 0. That is the worst class of failure
   this project has, because it is silent.
-* **How much VRAM.** `cuda_available` alone says a GPU exists, not that it can run what is being
-  offered.
 
 **Every probe returns rather than raises.** This follows `_probe_gpu`, which wraps every branch: a
 half-installed `torch`, a hung `docker`, a `/proc` that is not there. Unknown is a useful answer and
@@ -81,7 +79,6 @@ class SystemProbe:
     docker_running: bool
     wsl2_available: bool | None
     virtualization_enabled: bool | None
-    cuda_vram_bytes: int | None
     python_executable: str
     python_is_store_build: bool
     #: The Docker Compose v2 plugin's version, or None when it could not be read. Only probed
@@ -90,15 +87,6 @@ class SystemProbe:
     #: True only when `docker compose` positively failed (the plugin is absent). An unreadable
     #: answer (a timeout, unexpected output) stays False, because unknown is never a blocker.
     docker_compose_missing: bool = False
-
-
-def _torch() -> Any | None:
-    """`torch` if it imports, else None. Its own import can fail in more ways than ImportError."""
-    try:
-        import torch
-    except Exception:  # BROAD-CATCH: fail-open
-        return None
-    return torch
 
 
 def _run(command: list[str], timeout: float) -> subprocess.CompletedProcess[str] | None:
@@ -298,35 +286,6 @@ def probe_virtualization(*, docker_running: bool = False) -> bool | None:
     return None
 
 
-def probe_cuda_vram() -> int | None:
-    """Total VRAM of device 0 in bytes, `None` when there is no CUDA device or no way to ask."""
-    try:
-        torch = _torch()
-        if torch is not None:
-            try:
-                if torch.cuda.is_available():
-                    return int(torch.cuda.get_device_properties(0).total_memory)
-            except Exception:  # BROAD-CATCH: fail-open
-                pass
-        _no_current_directory_search()
-        if not shutil.which("nvidia-smi"):
-            return None
-    except Exception:  # BROAD-CATCH: fail-open
-        return None
-    result = _run(
-        ["nvidia-smi", "--query-gpu=memory.total", "--format=csv,noheader,nounits"],
-        timeout=10.0,
-    )
-    if not result or result.returncode != 0 or not isinstance(result.stdout, str):
-        return None
-    try:
-        first = result.stdout.strip().splitlines()[0] if result.stdout.strip() else ""
-        # nvidia-smi reports MiB under `nounits`.
-        return int(first.strip()) * 1024**2
-    except (ValueError, IndexError):
-        return None
-
-
 def probe_store_python() -> bool:
     """Whether this interpreter is the Microsoft Store build.
 
@@ -365,7 +324,6 @@ def probe_system(path: Path | None = None) -> SystemProbe:
         hardware = HardwareProbe(
             cpu_count=os.cpu_count(),
             gpu=None,
-            cuda_available=False,
             free_bytes=0,
             internet=False,
             fastembed_available=False,
@@ -385,7 +343,6 @@ def probe_system(path: Path | None = None) -> SystemProbe:
         docker_running=docker_running,
         wsl2_available=probe_wsl2(),
         virtualization_enabled=probe_virtualization(docker_running=docker_running),
-        cuda_vram_bytes=probe_cuda_vram(),
         python_executable=executable,
         python_is_store_build=probe_store_python(),
         **_compose_fields(docker_running),
@@ -482,7 +439,6 @@ def install_blockers(*, needs_docker: bool) -> list[str]:
         hardware=HardwareProbe(
             cpu_count=os.cpu_count(),
             gpu=None,
-            cuda_available=False,
             free_bytes=0,
             internet=False,
             fastembed_available=False,
@@ -499,7 +455,6 @@ def install_blockers(*, needs_docker: bool) -> list[str]:
             if needs_docker and docker_installed
             else None
         ),
-        cuda_vram_bytes=None,
         python_executable=executable,
         python_is_store_build=probe_store_python(),
         **_compose_fields(docker_running),

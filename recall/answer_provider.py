@@ -64,7 +64,7 @@ class CallRateGate:
         self._error = error
         self._lock = threading.Lock()
         self._rate: float | None = None
-        self._capacity = 0.0
+        self._ceiling = 0.0
         self._calls = 0
         self._window = 0.0
         self._admitted: deque[float] = deque()
@@ -84,11 +84,10 @@ class CallRateGate:
             self._admitted.clear()
             self._latest = time.monotonic()
             if calls_per_min is None:
-                self._capacity = 0.0
                 return
+            self._ceiling = calls_per_min
             # At least one whole call, or a ceiling under 1/min (0.5 is one call every two
             # minutes) would refuse everything: under 1/min the window widens instead.
-            self._capacity = max(1.0, calls_per_min)
             if calls_per_min >= 1.0:
                 # A fractional ceiling rounds down, so no 60 s span ever holds more than it.
                 self._calls = math.floor(calls_per_min)
@@ -112,8 +111,11 @@ class CallRateGate:
                 self._admitted.append(now)
                 return
             wait = self._admitted[0] + self._window - now
+            # The configured value, read under the lock: the window's capacity rounds a ceiling
+            # under 1/min up to one call, and a concurrent configure could change it (CCA NUM-003).
+            ceiling = self._ceiling
         raise self._error(
-            f"{self._label} ceiling of {self._capacity:g} calls/min reached; retry in "
+            f"{self._label} ceiling of {ceiling:g} calls/min reached; retry in "
             f"{wait:.1f}s, or raise {self.variable} "
             f"(or set it to '{ANSWER_RATE_OFF}' to remove the ceiling)"
         )

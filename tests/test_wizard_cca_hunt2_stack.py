@@ -427,7 +427,6 @@ def _system(total_ram_bytes: int) -> Any:
         docker_running=True,
         wsl2_available=None,
         virtualization_enabled=None,
-        cuda_vram_bytes=None,
         python_executable="python",
         python_is_store_build=False,
     )

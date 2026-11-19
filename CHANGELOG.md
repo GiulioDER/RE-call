@@ -130,6 +130,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   as a measurement. A rerun of setup drops `RECALL_SECURITY_REQUIRED`, `RECALL_SPARSE` and
   `RECALL_CALIBRATION` from the managed block in `.env`; a calibration file kept at a custom path
   needs `RECALL_CALIBRATION` set again by hand, outside that block.
+- `recall.setup.HardwareProbe` no longer has `cuda_available`, `recall.wizard.probe.SystemProbe`
+  no longer has `cuda_vram_bytes`, and the wizard preflight no longer probes VRAM: their only
+  readers were the SPLADE choices, whose removal is under Fixed. `run_setup_wizard` no longer
+  takes `tenant`, which the CLI already refused and the function applied to only part of the
+  install. Setup's bge
+  reranker choice now says it costs about 6.3 times the ms marco reranker per search, measured no
+  better.
+- The desktop's `update_enabled` in `runtime.json` is read as a boolean: the string `"false"`
+  (or `0`, `no`, `off`) now turns the release checks off, where `bool("false")` left them on, and
+  any other value that is not a boolean turns them off too; the rest of the profile is kept.
 - Two documented settings that nothing applied are no longer offered (#1406, #1409).
   `RECALL_REASONING_MODEL` is gone from `.env.example` and the environment reference; with
   `RECALL_REASONING_EXPANSION` on and no `RECALL_REASONING_EXPANSION_MODEL`, a config that still
@@ -208,7 +218,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   enforced again: one budget per process, shared by every answer and proof provider and by both
   backends, debited before the request is sent. `off` removes it; `0`, a negative or a non-number
   is refused naming the variable. A refused call reports no tokens and no cost, rather than the
-  previous call's.
+  previous call's. Its refusal names the ceiling as set (0.5, not the 1 it
+  rounds to), and a proof provider reports a bad value under this variable's name rather than a
+  `RECALL_REASONING_PROOF_` one that does not exist.
 - Paid reasoning expansion calls had no per minute ceiling, and since the registration change
   above they run in the server `recall setup` registers. `RECALL_REASONING_EXPANSION_MAX_CALLS_PER_MIN`
   (default 30, `off` to remove it) now bounds them the same way, with its own budget: no 60

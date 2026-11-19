@@ -52,7 +52,6 @@ def _registered_env(
     probe = HardwareProbe(
         cpu_count=8,
         gpu=None,
-        cuda_available=False,
         free_bytes=100 * 2**30,
         internet=True,
         fastembed_available=True,

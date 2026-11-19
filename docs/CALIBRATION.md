@@ -45,7 +45,7 @@ has been measured it separates far worse (LongMemEval per-question haystacks: AU
 ## PostgreSQL near-miss coverage
 
 Every PostgreSQL fit (`recall calibration calibrate`, the refit inside `recall calibration auto`,
-`recall setup` and desktop ingest) measures the same synthetic near-miss coverage as a Lite fit, right after the artifact is
+and desktop ingest) measures the same synthetic near-miss coverage as a Lite fit, right after the artifact is
 saved: unknown-entity and in-vocabulary probes built from the generation's own chunks and the
 fit's answerable questions, scored at the threshold just fitted with the unknown-term check. The
 report has the Lite shape and rules (`MIN_PROBES`, `PROVISIONAL_BAR`), is stored as one

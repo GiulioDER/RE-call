@@ -7,6 +7,8 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
+from recall._env import strict_bool
+
 
 class RuntimeMode(StrEnum):
     VPS_MCP = "vps_mcp"
@@ -66,6 +68,18 @@ class RuntimeProfile:
     @classmethod
     def from_dict(cls, value: dict[str, Any]) -> "RuntimeProfile":
         raw_mode = value.get("mode", RuntimeMode.DOCKER)
+        # It gates the app's own network calls: a hand-written "false" read through bool() was
+        # True, and the release checks kept running (CCA ENV-004). A value that is not a boolean
+        # turns them off rather than raising, because `load_profile` answers a ValueError by
+        # replacing the whole profile with a default that has the checks on.
+        raw_update = value.get("update_enabled", True)
+        if isinstance(raw_update, bool):
+            update_enabled = raw_update
+        else:
+            try:
+                update_enabled = strict_bool(str(raw_update), name="update_enabled")
+            except ValueError:
+                update_enabled = False
         return cls(
             mode=RuntimeMode(raw_mode),
             endpoint=value.get("endpoint"),
@@ -75,7 +89,7 @@ class RuntimeProfile:
             default_tenant=str(value.get("default_tenant", "default")),
             shared_profile=str(value.get("shared_profile", "user")),
             embedder=value.get("embedder"),
-            update_enabled=bool(value.get("update_enabled", True)),
+            update_enabled=update_enabled,
             token_key=value.get("token_key"),
         )
 

@@ -43,3 +43,19 @@ def test_proof_provider_has_a_separate_receipt_identity() -> None:
     assert metadata.model_id == "configured/gpt-4o-mini"
     assert metadata.model_revision == "private-deployment-2026-09-22"
     assert metadata.prompt_digest == PROOF_PROMPT_DIGEST
+
+
+def test_a_bad_answer_ceiling_is_reported_under_the_name_the_operator_set() -> None:
+    """Invariant: a malformed RECALL_REASONING_ANSWER_MAX_CALLS_PER_MIN on a proof provider is
+    reported under that name, the one the proof provider reads.
+
+    Failure mode (CCA ENV-002, run 20261119T182325Z): the proof resolver rewrote every
+    RECALL_REASONING_ANSWER_ in an error to RECALL_REASONING_PROOF_, so the operator was told to
+    fix RECALL_REASONING_PROOF_MAX_CALLS_PER_MIN, which nothing reads.
+
+    Red proof, 2026-11-19, against `resolve_proof_provider` at cb289667c (`str.replace` on the
+    whole message): failed at the `match`, the message naming RECALL_REASONING_PROOF_MAX_CALLS_PER_MIN.
+    """
+    env = {**_env(), "RECALL_REASONING_ANSWER_MAX_CALLS_PER_MIN": "0"}
+    with pytest.raises(ValueError, match="^RECALL_REASONING_ANSWER_MAX_CALLS_PER_MIN must be"):
+        resolve_proof_provider(env)
