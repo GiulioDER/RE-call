@@ -171,6 +171,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   Those six commands now refuse a table other than `chunks` on the generation route before
   opening anything, as the MCP server already refused `RECALL_TABLE`. The legacy route honours
   `--table` as before.
+- On PostgreSQL, `recall generation`, `recall graph` and `recall calibration` never read `--table`
+  on either route, so `recall --table scratch generation rollback` (or `gc`, `graph rebuild`,
+  `calibration import`) changed the tenant's real generations and calibrations (#1421). They now
+  refuse a table other than `chunks` before opening anything; use another `--tenant` to keep an
+  experiment apart. A Lite store already refused another table.
 - `recall setup` refuses the flags it accepted and then ignored, naming each one, instead of
   running without them. Without `--lite` it refuses the global `--embedder` (the interview chooses
   the embedder), `--tenant` other than `default`, and the Lite-only `--memory`, `--store` and

@@ -325,10 +325,13 @@ def _cmd_calibration(args: argparse.Namespace) -> None:
         CalibrationRepository,
         load_query_set,
     )
+    from recall.runtime_route import generations_table_refusal
 
     if is_lite_dsn(args.dsn):
         _cmd_calibration_lite(args)
         return
+    if (refusal := generations_table_refusal(getattr(args, "table", None), "recall calibration")) is not None:
+        raise SystemExit(refusal)
     repository = CalibrationRepository(args.dsn, args.tenant)
     try:
         if args.calibration_cmd == "list":
