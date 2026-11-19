@@ -15,6 +15,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   installer) turns each generation that recorded a FastEmbed profile into `LINEAGE_MISMATCH` until
   it is rebuilt. Pin `onnxruntime==1.31.0` or rebuild before switching traffic. Hosted (Voyage,
   OpenAI) and sentence-transformers profiles are unaffected.
+* **Answer calls are capped at 30 per minute per process again, by default.** A process that makes
+  more answer or proof calls than that (a benchmark or batch run, say) now gets abstentions naming
+  `AnswerRateLimited`. Raise `RECALL_REASONING_ANSWER_MAX_CALLS_PER_MIN`, or set it to `off`.
 
 ### Added
 
@@ -133,6 +136,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   the keys you enter are stored there too, beside the DSN. The "bge reranker" choice now writes
   its pinned revision, without which the server refuses it. Re-run `recall setup` to update an
   existing registration.
+- `RECALL_REASONING_ANSWER_MAX_CALLS_PER_MIN`, documented as the only bound on paid answer calls,
+  was read by nothing from 0.13.0 on, so answer and proof calls had no ceiling at all (#1405). It is
+  enforced again: one budget per process, shared by every answer and proof provider and by both
+  backends, debited before the request is sent. `off` removes it; `0`, a negative or a non-number
+  is refused naming the variable.
 - A memo whose `recall_graph` held a `NaN` or `Infinity` failed the whole Lite refresh with
   "malformed JSON" on SQLite before 3.42 (Debian 12 ships 3.40, Ubuntu 22.04 3.37), and the same
   memo failed indexing on PostgreSQL, whose `jsonb` refuses those values too. Such a value is now
