@@ -36,6 +36,13 @@ def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
 
 
 def _cmd_graph(args: argparse.Namespace) -> None:
+    from recall.runtime_route import generations_table_refusal
+
+    # A lite store refuses another table itself (`lite_read_meta`).
+    if not is_lite_dsn(args.dsn) and (
+        refusal := generations_table_refusal(args.table, "recall graph")
+    ) is not None:
+        raise SystemExit(refusal)
     if is_lite_dsn(args.dsn):
         readiness = _lite_graph(args)
     elif args.graph_cmd == "rebuild":

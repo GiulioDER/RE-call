@@ -304,7 +304,10 @@ def _cmd_rescue(args: argparse.Namespace, manager: GenerationManager) -> None:
 
 def _cmd_generation(args: argparse.Namespace) -> None:
     from recall.generations import GenerationManager
+    from recall.runtime_route import generations_table_refusal
 
+    if (refusal := generations_table_refusal(args.table, "recall generation")) is not None:
+        raise SystemExit(refusal)
     manager = GenerationManager(args.dsn, args.tenant)
     if args.generation_cmd == "list":
         for generation in manager.list_generations():
