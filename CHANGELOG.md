@@ -255,7 +255,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   rows but kept the file, so the next refresh indexed the memo again. It now takes a memo of that
   folder by its id (with or without `.md`) or its file, and withdraws it as `recall_forget_memo`
   forgets one: the memo's journal entries, then its rows, then its file, then a refresh. Every
-  other name is withdrawn as before.
+  other name is withdrawn as before. `recall_forget` does the same: it erased a memo's rows and
+  kept its file, so the next refresh indexed the memo again (within one check while the atomic
+  rescue is on), and by id it matched nothing. A memo of that folder is now forgotten with its
+  file; every other name is forgotten as before, and keeps its file.
 - `recall provenance current` now applies `RECALL_SOURCE_POLICY_FILE` as `recall_current_facts`
   does: a memo the caller may not read whole is not named, and a fact left with no readable memo
   is not listed.

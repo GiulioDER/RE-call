@@ -359,6 +359,27 @@ class AssistantMemos(MemoFolder):
             answer["warning"] = result.message
         return answer
 
+    def forget_result(
+        self,
+        store: LiteStore,
+        embedder: Embedder,
+        memo_id: str,
+        *,
+        security_policy: Any = None,
+        security_context: Any = None,
+        refresh_context: Any = None,
+        **refresh_kwargs: Any,
+    ) -> ForgetResult | None:
+        """Forget one memo of the folder as `forget` does, its file included, answering in
+        `recall_forget`'s form. None for an id that names no memo file here, which the caller
+        forgets by the name it had."""
+        result = self._erase_memo(
+            store, embedder, memo_id, withdraw=False, security_policy=security_policy,
+            security_context=security_context, refresh_context=refresh_context, **refresh_kwargs,
+        )
+        assert result is None or isinstance(result, ForgetResult)
+        return result
+
     def withdraw(
         self,
         store: LiteStore,

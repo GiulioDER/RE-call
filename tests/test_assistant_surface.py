@@ -29,6 +29,9 @@ Invariants and the failure each one catches:
 - A8 `recall_withdraw` takes a memo of the folder by its id or its file, removes its rows and its
   file, and the next refresh does not index it again; a source outside the folder is withdrawn by
   the plain tool and keeps its file.
+- A12 `recall_forget` does the same for a forget: a memo of the folder named by its id or its file
+  loses its rows and its file, and the next refresh does not index it again; a source outside the
+  folder is forgotten by the plain tool and keeps its file (CCA STAKES-003).
 
 Red proof, 2026-10-16, on a Linux test host: each mutation applied alone to the commit's tree, its
 test run alone, failing in the intended assertion, then restored byte for byte (sha256 checked) and
@@ -325,6 +328,42 @@ def test_withdraw_takes_a_memo_by_id_or_file_and_it_stays_withdrawn(
         outside = str(tmp_path / "mem" / "memo-003.md")
         plain = json.loads(await a("recall_withdraw", sources=[outside]))
         assert plain["sources_withdrawn"] == [outside], plain
+        assert (tmp_path / "mem" / "memo-003.md").exists(), "a source outside the memo folder lost its file"
+
+    _serve_both(envs, body)
+
+
+def test_forget_takes_a_memo_by_id_or_file_and_it_stays_forgotten(
+    envs: tuple[dict[str, str], dict[str, str]], tmp_path: Path
+) -> None:
+    """A12 (CCA STAKES-003, owner decision 2026-11-19). The plain `recall_forget` erased a memo's
+    rows and left its file, so the next refresh indexed the memo again, within one check while the
+    atomic rescue is on; by id it matched nothing.
+
+    Red proof, on the test host: against master 69aaa90bd (`recall_forget` not held) it failed with
+    "a memo forgotten by id matched nothing"; with only the by-file half kept (`folder_memo`
+    answering None for a path), with "a memo forgotten by file is still on disk"."""
+
+    async def body(a: Call, p: Call, state: dict[str, Any]) -> None:
+        await a("recall_remember", text="My bike lock combination is 8153.", kind="note")
+        await a("recall_remember", text="My locker code at the gym is 4729.", kind="note")
+        store = state["store"]
+        rows = store.count()
+        by_id = json.loads(await a("recall_forget", sources=["note-0001"]))
+        assert (by_id["sources_removed"], by_id["sources_not_found"]) == (["note-0001"], []), (
+            f"a memo forgotten by id matched nothing: {by_id}"
+        )
+        second = tmp_path / "memos" / "note-0002.md"
+        by_file = json.loads(await a("recall_forget", sources=[str(second)]))
+        assert (by_file["sources_removed"], by_file["sources_not_found"]) == ([str(second)], []), by_file
+        assert not (tmp_path / "memos" / "note-0001.md").exists(), "a memo forgotten by id is still on disk"
+        assert not second.exists(), "a memo forgotten by file is still on disk"
+        assert store.count() == rows - 2, "a forgotten memo's rows are still in the store"
+        await a("recall_remember", text="The user parks in spot fourteen.", kind="note")
+        assert store.count() == rows - 1, "the refresh after a forget indexed a forgotten memo again"
+        outside = str(tmp_path / "mem" / "memo-003.md")
+        plain = json.loads(await a("recall_forget", sources=[outside]))
+        assert plain["sources_removed"] == [outside], plain
         assert (tmp_path / "mem" / "memo-003.md").exists(), "a source outside the memo folder lost its file"
 
     _serve_both(envs, body)
