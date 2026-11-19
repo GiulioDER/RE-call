@@ -902,7 +902,7 @@ def install_client_extras(
     def step(client: str, action: Callable[[], str]) -> None:
         try:
             lines.append((client, action()))
-        except Exception as exc:  # noqa: BLE001  # BROAD-CATCH: reported, see the docstring
+        except Exception as exc:  # noqa: BLE001 - reported per step, see the docstring  # BROAD-CATCH: fail-open
             lines.append((client, f"failed: {exc}"))
 
     def claude_hooks() -> str:
