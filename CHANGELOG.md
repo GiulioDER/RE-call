@@ -164,6 +164,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   the uncalibrated corpus setup had just built, which the Claude Code server serves under
   `development` (#1427). Both registrations now take the same trust mode. Re-run `recall setup`
   to update an existing Codex install.
+- Three integrity and receipt flags were accepted and then checked against nothing (#1436, #1437,
+  #1439). `recall manifest verify` read `--sha256` and `--size` only for an `s3://` manifest, so a
+  local manifest printed `verified` whatever pins it was given; it now compares both with the file,
+  as `recall generation build` already did. `--version-id` there, and `--manifest-version-id` on
+  `recall generation build`, are refused for a local manifest, which has no object version.
+  `recall backup create --receipt-key` without `--receipt-bucket` took the snapshot and wrote no
+  receipt; it is now refused before the snapshot starts.
 - `recall setup` offered the OpenAI-compatible cloud embedder when only `OPENAI_API_KEY` was
   entered, and that embedder then refused to start for want of `OPENROUTER_API_KEY` (#1397). The
   `openai` and `openai:<model>` spellings now use `OPENAI_API_KEY` against `api.openai.com` when it

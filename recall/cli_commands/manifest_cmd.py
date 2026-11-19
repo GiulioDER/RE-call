@@ -33,9 +33,15 @@ def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     p_manifest_inventory.add_argument("--output", required=True)
     p_manifest_verify = manifest_sub.add_parser("verify", help="verify every immutable S3 object")
     p_manifest_verify.add_argument("manifest")
-    p_manifest_verify.add_argument("--version-id")
-    p_manifest_verify.add_argument("--sha256")
-    p_manifest_verify.add_argument("--size", type=int)
+    p_manifest_verify.add_argument(
+        "--version-id", help="the S3 manifest's object version; refused for a local manifest"
+    )
+    p_manifest_verify.add_argument(
+        "--sha256", help="the manifest file's SHA-256, compared for a local manifest too"
+    )
+    p_manifest_verify.add_argument(
+        "--size", type=int, help="the manifest file's size in bytes, compared for a local one too"
+    )
 
 
 def _cmd_manifest(args: argparse.Namespace) -> None:
@@ -45,7 +51,6 @@ def _cmd_manifest(args: argparse.Namespace) -> None:
         ObjectReader,
         S3ObjectReader,
         load_inventory,
-        load_manifest,
         reader_for_manifest,
     )
 
@@ -103,7 +108,21 @@ def _cmd_manifest(args: argparse.Namespace) -> None:
         manifest = IndexManifestV1.from_json(base_reader.fetch(reference).data)
         reader = ExtractingS3ObjectReader(base_reader)
     else:
-        manifest = load_manifest(args.manifest)
+        if args.version_id is not None:
+            raise SystemExit(
+                "--version-id pins an S3 object version, and a local manifest has none. "
+                "Pin a local manifest with --sha256 and --size instead."
+            )
+        from recall.cli_commands.generation_cmd import _verify_local_manifest
+
+        # "development" because production's admission rule (both pins required) governs
+        # builds; verify compares the pins it is given, and the reader still enforces
+        # RECALL_LOCAL_ALLOWLIST on every object.
+        manifest = IndexManifestV1.from_json(
+            _verify_local_manifest(
+                args.manifest, sha256=args.sha256, size=args.size, environment="development"
+            )
+        )
     if manifest.tenant_id != args.tenant:
         raise SystemExit(
             f"manifest tenant {manifest.tenant_id!r} does not match --tenant {args.tenant!r}"

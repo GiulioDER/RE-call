@@ -4,6 +4,8 @@ import hashlib
 import json
 from io import BytesIO
 
+import pytest
+
 from recall.cli import main
 from recall.lineage import IndexManifestV1
 from recall.manifest import S3Allowlist, S3ObjectReader
@@ -189,3 +191,97 @@ def test_manifest_inventory_needs_no_database(tmp_path, monkeypatch, capsys) -> 
     main(["manifest", "inventory", str(root), "--output", str(tmp_path / "inv.json")])
     assert "objects=2" in capsys.readouterr().out
 
+
+
+# ---------------------------------------------------------------------------------------
+# `manifest verify` on a local manifest: the pins it is given are compared (#1436)
+# ---------------------------------------------------------------------------------------
+
+
+def _local_manifest(tmp_path, monkeypatch):
+    """A verifiable local manifest, with the sha256 and size that honestly describe its file."""
+    root = _corpus(tmp_path)
+    inventory = tmp_path / "inventory.json"
+    manifest_path = tmp_path / "manifest.json"
+    main(["manifest", "inventory", str(root), "--output", str(inventory)])
+    main(
+        [
+            "--tenant", "tenant-a",
+            "manifest", "create",
+            "--corpus-version", "corpus-v1",
+            "--objects", str(inventory),
+            "--output", str(manifest_path),
+        ]
+    )
+    monkeypatch.setenv("RECALL_LOCAL_ALLOWLIST", str(root))
+    raw = manifest_path.read_bytes()
+    return manifest_path, hashlib.sha256(raw).hexdigest(), len(raw)
+
+
+def test_local_verify_compares_the_sha256_it_is_given(tmp_path, monkeypatch, capsys) -> None:
+    """Invariant: a `--sha256` that does not describe the local manifest fails the verify.
+
+    Failure mode: the pin was read only on the `s3://` branch, so a wrong digest printed
+    `verified` and the caller believed the manifest had been checked against it.
+
+    Red proof: `tests/test_manifest_cli.py::test_local_verify_compares_the_sha256_it_is_given`
+    against master 2e546bec1 (`recall/cli_commands/manifest_cmd.py::_cmd_manifest`, local branch
+    `load_manifest(args.manifest)`): `Failed: DID NOT RAISE <class 'SystemExit'>`.
+    """
+    path, _digest, size = _local_manifest(tmp_path, monkeypatch)
+    with pytest.raises(SystemExit, match="checksum mismatch"):
+        main(
+            ["--tenant", "tenant-a", "manifest", "verify", str(path),
+             "--sha256", "b" * 64, "--size", str(size)]
+        )
+
+
+def test_local_verify_compares_the_size_it_is_given(tmp_path, monkeypatch, capsys) -> None:
+    """Invariant: a `--size` that does not describe the local manifest fails the verify.
+
+    Red proof: `tests/test_manifest_cli.py::test_local_verify_compares_the_size_it_is_given`
+    against master 2e546bec1, same line as above: `Failed: DID NOT RAISE <class 'SystemExit'>`.
+    """
+    path, digest, _size = _local_manifest(tmp_path, monkeypatch)
+    with pytest.raises(SystemExit, match="size mismatch"):
+        main(["--tenant", "tenant-a", "manifest", "verify", str(path), "--size", "999999"])
+    with pytest.raises(SystemExit, match="size mismatch"):
+        main(
+            ["--tenant", "tenant-a", "manifest", "verify", str(path),
+             "--sha256", digest, "--size", "999999"]
+        )
+
+
+def test_local_verify_passes_with_honest_pins(tmp_path, monkeypatch, capsys) -> None:
+    """Control for the two tests above: the right pins still verify, so they refuse only a lie."""
+    path, digest, size = _local_manifest(tmp_path, monkeypatch)
+    capsys.readouterr()
+    main(
+        ["--tenant", "tenant-a", "manifest", "verify", str(path),
+         "--sha256", digest, "--size", str(size)]
+    )
+    assert "verified sha256=" in capsys.readouterr().out
+
+
+def test_local_verify_refuses_a_version_id_before_reading(tmp_path, monkeypatch) -> None:
+    """Invariant: `--version-id` on a local manifest is refused, before the file is even read.
+
+    A local file has no object version, so the pin cannot be checked; accepting it and printing
+    `verified` claims a check that never happened. The second call names no file, so a refusal
+    that came after reading would say "cannot read manifest" instead.
+
+    Red proof: `tests/test_manifest_cli.py::test_local_verify_refuses_a_version_id_before_reading`
+    against master 2e546bec1 (local branch `load_manifest(args.manifest)`, no refusal): the first
+    call printed `verified`, `Failed: DID NOT RAISE <class 'SystemExit'>`.
+    """
+    path, digest, size = _local_manifest(tmp_path, monkeypatch)
+    with pytest.raises(SystemExit, match="--version-id"):
+        main(
+            ["--tenant", "tenant-a", "manifest", "verify", str(path),
+             "--version-id", "v1", "--sha256", digest, "--size", str(size)]
+        )
+    with pytest.raises(SystemExit, match="--version-id"):
+        main(
+            ["--tenant", "tenant-a", "manifest", "verify", str(tmp_path / "absent.json"),
+             "--version-id", "v1"]
+        )

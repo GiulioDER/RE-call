@@ -105,7 +105,10 @@ def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     generation_sub = p_generation.add_subparsers(dest="generation_cmd", required=True)
     p_build = generation_sub.add_parser("build", help="create and build a generation")
     p_build.add_argument("manifest")
-    p_build.add_argument("--manifest-version-id")
+    p_build.add_argument(
+        "--manifest-version-id",
+        help="the S3 manifest's object version; refused for a local manifest",
+    )
     p_build.add_argument("--manifest-sha256")
     p_build.add_argument("--manifest-size", type=int)
     p_build.add_argument("--embedder-provider", default=None)
@@ -315,6 +318,17 @@ def _cmd_generation(args: argparse.Namespace) -> None:
             "recall generation build: --overlap would be ignored: the code chunker splits on "
             "max_chars alone and takes no overlap. Nothing was built. Drop --overlap, or use "
             "--chunker text."
+        )
+    # Refused before anything opens: `_verify_local_manifest` cannot pin a local file to a
+    # version, so the flag would otherwise be accepted and checked against nothing.
+    if (
+        args.generation_cmd == "build"
+        and args.manifest_version_id is not None
+        and not args.manifest.startswith("s3://")
+    ):
+        raise SystemExit(
+            "--manifest-version-id pins an S3 object version, and a local manifest has none. "
+            "Pin a local manifest with --manifest-sha256 and --manifest-size instead."
         )
     manager = GenerationManager(args.dsn, args.tenant)
     if args.generation_cmd == "list":

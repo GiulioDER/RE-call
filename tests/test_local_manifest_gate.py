@@ -207,3 +207,34 @@ def test_the_cli_refuses_a_local_manifest_in_production_without_an_allowlist(
             "generation", "build", str(path),
             "--manifest-sha256", digest, "--manifest-size", str(size),
         ])
+
+
+def test_the_cli_refuses_a_version_id_for_a_local_manifest_before_opening_anything(
+    manifest, monkeypatch
+) -> None:
+    """Invariant: `--manifest-version-id` on a local manifest is refused before any work (#1437).
+
+    Failure mode: the flag was read only on the `s3://` branch, so a local build accepted it,
+    checked nothing, and the operator believed the manifest was pinned to a version. The manager
+    is replaced by one that fails the test if it is ever built, which is where work starts.
+
+    Red proof: this test against master 2e546bec1
+    (`recall/cli_commands/generation_cmd.py::_cmd_generation`, no refusal before
+    `GenerationManager(args.dsn, args.tenant)`): `AssertionError: GenerationManager was built
+    before --manifest-version-id was refused`.
+    """
+    import recall.generations
+
+    def opened(*_args, **_kwargs):
+        raise AssertionError("GenerationManager was built before --manifest-version-id was refused")
+
+    monkeypatch.setattr(recall.generations, "GenerationManager", opened)
+    path, digest, size = manifest
+    with pytest.raises(SystemExit, match="--manifest-version-id"):
+        cli_main([
+            "--serving-dsn", "postgresql://recall:not-default@127.0.0.1:1/recall",
+            "--tenant", "memory",
+            "generation", "build", str(path),
+            "--manifest-version-id", "v1",
+            "--manifest-sha256", digest, "--manifest-size", str(size),
+        ])

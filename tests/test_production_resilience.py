@@ -1021,3 +1021,53 @@ def test_the_tool_path_binds_the_principal_on_both_sides(make_store, monkeypatch
     assert call_as("alice") == first
     with pytest.raises(ToolError, match="idempotency_conflict"):
         call_as("bob")
+
+
+def test_backup_create_refuses_a_receipt_key_without_a_bucket(monkeypatch) -> None:
+    """Invariant: `--receipt-key` without `--receipt-bucket` is refused before a snapshot (#1439).
+
+    Failure mode: the key was read only inside `if args.receipt_bucket:`, so the snapshot was
+    taken, no receipt was written, and nothing said so. The manager is replaced by one that fails
+    the test if it is ever built, which is where the snapshot would start.
+
+    Red proof: this test against master 2e546bec1
+    (`recall/cli_commands/backup_cmd.py::_cmd_backup`, `create` built `_manager(args.region)`
+    first): `AssertionError: a snapshot was started before --receipt-key was refused`.
+    """
+    from recall.cli import main
+    from recall.cli_commands import backup_cmd
+
+    def started(_region):
+        raise AssertionError("a snapshot was started before --receipt-key was refused")
+
+    monkeypatch.setattr(backup_cmd, "_manager", started)
+    with pytest.raises(SystemExit, match="--receipt-bucket"):
+        main([
+            "backup", "create", "--cluster", "prod", "--snapshot", "snap-1",
+            "--receipt-key", "receipts/snap-1.json",
+        ])
+
+
+def test_backup_create_writes_the_receipt_under_the_key_it_is_given(monkeypatch, capsys) -> None:
+    """Control for the refusal above: with a bucket, the key is still the one the receipt uses."""
+    from recall.cli import main
+    from recall.cli_commands import backup_cmd
+
+    written: list[tuple[str, str]] = []
+
+    class _Manager:
+        region = "eu-west-1"
+
+        def create_snapshot(self, cluster, snapshot):
+            return {"cluster": cluster, "snapshot": snapshot}
+
+        def put_receipt(self, bucket, key, receipt):
+            written.append((bucket, key))
+
+    monkeypatch.setattr(backup_cmd, "_manager", lambda _region: _Manager())
+    main([
+        "backup", "create", "--cluster", "prod", "--snapshot", "snap-1",
+        "--receipt-bucket", "receipts-bucket", "--receipt-key", "custom/snap-1.json",
+    ])
+    assert written == [("receipts-bucket", "custom/snap-1.json")]
+    assert '"receipt"' in capsys.readouterr().out
