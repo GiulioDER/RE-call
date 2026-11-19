@@ -53,6 +53,9 @@ Setup embeds with `RECALL_EMBEDDER` when that variable is set, in the shell or i
 memo to that provider. To keep embedding local whatever the environment says, name the embedder
 before the command: `recall --embedder fastembed setup --lite --memory ./notes`.
 
+A Lite store has one tenant, `default`, and one table, so setup refuses `--tenant` and `--table`
+with any other value. To keep a second memory apart, give it its own file with `--store`.
+
 Setup indexes the chosen folder into `.recall/memory.db`, attempts calibration, and registers
 `recall-memory` with Claude Code for this project. It prints the store path, calibration result,
 registration result, and configured doctor and dashboard commands. Check those results and restart
