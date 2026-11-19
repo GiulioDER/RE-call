@@ -12,7 +12,7 @@ an existing setup.
 | See the PostgreSQL demo | `pip install "recall-rag[fastembed]"` then `recall quickstart` |
 | Install your own PostgreSQL corpus | `pip install "recall-rag[fastembed]"` then `recall setup` |
 | Provision from a reviewed JSON file | `recall wizard --headless --config wizard.json` |
-| Configure Lite MCP clients | [Lite client wiring](LITE.md#connect-another-client); setup registers Claude Code only |
+| Configure Lite MCP clients | Setup wires Claude Code and Codex; see [Lite client wiring](LITE.md#connect-another-client) |
 | Configure PostgreSQL clients | Run `recall setup`, then see [the Claude guide](USING_WITH_CLAUDE.md) or [the Codex guide](CODEX_RECALL_INTEGRATION.md) |
 | Configure Claude Desktop or another MCP client | See [USING_WITH_CLAUDE.md](USING_WITH_CLAUDE.md) |
 | Diagnose without changing anything | `recall doctor` |

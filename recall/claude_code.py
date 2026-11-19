@@ -180,6 +180,18 @@ def claude_code_detected() -> bool:
     return _claude_cli() is not None or claude_config_home().is_dir()
 
 
+def claude_plugin_installed() -> bool:
+    """Whether Claude Code has the RE-call plugin (`recall@re-call`), which carries hooks and skills."""
+    try:
+        document = json.loads(
+            (claude_config_home() / "plugins" / "installed_plugins.json").read_text(encoding="utf-8")
+        )
+    except (OSError, ValueError):
+        return False
+    plugins = document.get("plugins") if isinstance(document, dict) else None
+    return isinstance(plugins, dict) and "recall@re-call" in plugins
+
+
 def server_env(
     *,
     dsn: str,
@@ -349,9 +361,12 @@ def install_user_skill(
     source: Path,
     *,
     name: str | None = None,
+    root: Path | None = None,
     print_fn: Callable[..., None] = print,
 ) -> None:
     """Copy one skill into the user's skills directory, saying what actually happened.
+
+    `root` is the skills directory to copy into: Claude Code's by default, Codex's for its own.
 
     The source argument identifies `SKILL.md`, but the installed artifact is the whole skill
     directory so relative references such as `references/tool-routing.md` remain loadable.
@@ -369,7 +384,7 @@ def install_user_skill(
     # install rather than looking like an empty skill directory was installed successfully.
     source.read_bytes()
     source_dir = source.parent
-    dest_dir = user_skill_dir() / skill_name
+    dest_dir = (root or user_skill_dir()) / skill_name
     dest = dest_dir / "SKILL.md"
     source_files = sorted(
         path
@@ -399,6 +414,7 @@ def install_user_skill(
 def install_user_skills(
     sources: dict[str, Path] | None = None,
     *,
+    root: Path | None = None,
     print_fn: Callable[..., None] = print,
 ) -> list[str]:
     """Install every discovered skill, and return the names that landed.
@@ -411,7 +427,7 @@ def install_user_skills(
     installed: list[str] = []
     for skill_name, source in sorted(resolved.items()):
         try:
-            install_user_skill(source, name=skill_name, print_fn=print_fn)
+            install_user_skill(source, name=skill_name, root=root, print_fn=print_fn)
         except Exception as exc:  # noqa: BLE001 - reported per skill, never fatal to the rest  # BROAD-CATCH: fail-open
             print_fn(f"Could not install the {skill_name} skill from {source}: {exc}")
             continue
@@ -640,6 +656,7 @@ def install_hooks(
     prompt_time: bool = True,
     python_executable: str | None = None,
     path: Path | None = None,
+    memory_root: Path | None = None,
     print_fn: Callable[..., None] = print,
 ) -> None:
     """Write the hook config, then merge the hook entries into the client's settings.
@@ -679,6 +696,7 @@ def install_hooks(
         write_time_connection_mode=write_time_connection_mode,
         project_root=root,
         prompt_time=prompt_time,
+        memory_root=memory_root,
     )
 
     settings: dict[str, Any] = {}
@@ -788,8 +806,12 @@ def hook_config_document(
     write_time_connection_mode: str = "relay",
     project_root: Path | None = None,
     prompt_time: bool = True,
+    memory_root: Path | None = None,
 ) -> dict[str, Any]:
     """The hook config an installer writes to `path`, with the operator's switch carried forward.
+
+    `memory_root` is the memo folder prompt-time search reads in this project, for an install whose
+    memos are not in the client's own project memory directory (`recall setup --lite --memory`).
 
     Shared by the Claude Code and Codex installers, which feed the same `recall_hooks` readers:
     a key one of them leaves out (the Codex writer once omitted `project_root`) silently switches
@@ -820,6 +842,8 @@ def hook_config_document(
         # over the network with the draft; `prompt_time` reads local memo files with the prompt.
         "prompt_time": {"enabled": bool(prompt_time)},
     }
+    if memory_root is not None:
+        config["memory_root"] = str(memory_root.resolve())
     # The `general_knowledge` block is the operator's, not the installer's: no install option sets
     # it, and an absent block means ENABLED, so rewriting the file without it would turn an explicit
     # `enabled: false` back on at the next install or upgrade. Carry it forward exactly as found
@@ -853,6 +877,7 @@ def _write_hook_config(
     write_time_connection_mode: str = "relay",
     project_root: Path | None = None,
     prompt_time: bool = True,
+    memory_root: Path | None = None,
 ) -> None:
     path = hook_config_path()
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -866,6 +891,7 @@ def _write_hook_config(
         write_time_connection_mode=write_time_connection_mode,
         project_root=project_root,
         prompt_time=prompt_time,
+        memory_root=memory_root,
     )
     _write_json(path, config)
     try:

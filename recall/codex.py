@@ -10,8 +10,11 @@ import json
 import importlib
 import os
 import shutil
+import subprocess
 import sys
+import tomllib
 from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from collections.abc import Iterator, Mapping
 from typing import Any, Callable, cast
@@ -173,6 +176,7 @@ def _write_hook_config(
     prompt_time: bool,
     write_time_connection_mode: str = "relay",
     project_root: Path | None = None,
+    memory_root: Path | None = None,
     server_env: Mapping[str, str] | None = None,
 ) -> None:
     """The same document the Claude Code installer writes, at the Codex integration path.
@@ -193,6 +197,7 @@ def _write_hook_config(
         write_time_connection_mode=write_time_connection_mode,
         project_root=project_root,
         prompt_time=prompt_time,
+        memory_root=memory_root,
     )
     if server_env:
         document["server_env"] = dict(server_env)
@@ -278,6 +283,54 @@ def _merge_hooks(settings: dict[str, Any], entries: dict[str, list[dict[str, Any
     return cast(dict[str, Any], merged)
 
 
+def install_codex_hooks(
+    *,
+    dsn: str,
+    tenant: str = "default",
+    embedder: str = "fastembed",
+    table: str = "chunks",
+    write_time: bool = True,
+    prompt_time: bool = True,
+    write_time_connection_mode: str = "relay",
+    project_root: Path | None = None,
+    memory_root: Path | None = None,
+    python_executable: str | None = None,
+    hooks_path: Path | None = None,
+    server_env: Mapping[str, str] | None = None,
+) -> Path:
+    """Write the shared hook config and merge RE-call's user-level hooks into Codex's hooks file.
+
+    Returns the hooks file. Unrelated hooks are kept; RE-call's own handlers are replaced.
+    """
+    root = (project_root or Path.cwd()).resolve()
+    target = hooks_path or codex_home() / "hooks.json"
+    with _installation_lock(target):
+        _write_hook_config(
+            dsn=dsn,
+            tenant=tenant,
+            embedder=embedder,
+            table=table,
+            write_time=write_time,
+            prompt_time=prompt_time,
+            write_time_connection_mode=write_time_connection_mode,
+            project_root=root,
+            memory_root=memory_root,
+            server_env=server_env,
+        )
+        target.parent.mkdir(parents=True, exist_ok=True)
+        settings: dict[str, Any] = {}
+        if target.exists():
+            raw = target.read_text(encoding="utf-8")
+            settings = json.loads(raw) if raw.strip() else {}
+        atomic_write_bytes(
+            target,
+            (
+                json.dumps(_merge_hooks(settings, _hook_entries(python_executable)), indent=2) + "\n"
+            ).encode("utf-8"),
+        )
+    return target
+
+
 def install_codex_integration(
     *,
     dsn: str,
@@ -308,33 +361,23 @@ def install_codex_integration(
 
     marketplace = marketplace_path or personal_marketplace_path()
     destination = plugin_destination or marketplace.parent / ".codex" / "plugins" / CODEX_PLUGIN_NAME
-    target = hooks_path or codex_home() / "hooks.json"
     with _installation_lock(marketplace):
         _copy_plugin(source, destination)
         marketplace.parent.mkdir(parents=True, exist_ok=True)
         _update_marketplace(marketplace, destination)
-        _write_hook_config(
-            dsn=dsn,
-            tenant=tenant,
-            embedder=embedder,
-            table=table,
-            write_time=write_time,
-            prompt_time=prompt_time,
-            write_time_connection_mode=write_time_connection_mode,
-            project_root=root,
-            server_env=server_env,
-        )
-        target.parent.mkdir(parents=True, exist_ok=True)
-        settings: dict[str, Any] = {}
-        if target.exists():
-            raw = target.read_text(encoding="utf-8")
-            settings = json.loads(raw) if raw.strip() else {}
-        atomic_write_bytes(
-            target,
-            (
-                json.dumps(_merge_hooks(settings, _hook_entries(python_executable)), indent=2) + "\n"
-            ).encode("utf-8"),
-        )
+    target = install_codex_hooks(
+        dsn=dsn,
+        tenant=tenant,
+        embedder=embedder,
+        table=table,
+        write_time=write_time,
+        prompt_time=prompt_time,
+        write_time_connection_mode=write_time_connection_mode,
+        project_root=root,
+        python_executable=python_executable,
+        hooks_path=hooks_path,
+        server_env=server_env,
+    )
     print_fn(
         f"Installed RE-call for Codex: plugin={destination}, marketplace={marketplace}, hooks={target}"
     )
@@ -347,6 +390,185 @@ def install_codex_integration(
         )
 
 
+def codex_user_skill_dir() -> Path:
+    """Where Codex loads a user's own skills from (`$HOME/.agents/skills`)."""
+    return Path.home() / ".agents" / "skills"
+
+
+def codex_skill_sources() -> dict[str, Path]:
+    """``{skill name: its SKILL.md}`` from the Codex plugin bundle, or empty when it is absent."""
+    source = codex_plugin_source()
+    if source is None:
+        return {}
+    return {
+        path.parent.name: path
+        for path in sorted((source / "skills").glob("*/SKILL.md"))
+        if path.is_file()
+    }
+
+
+def codex_plugin_installed() -> bool:
+    """Whether the personal marketplace already offers the RE-call plugin, which carries the skills."""
+    try:
+        document = _marketplace_document(personal_marketplace_path())
+    except ValueError:
+        return False
+    return any(
+        isinstance(item, dict) and item.get("name") == CODEX_PLUGIN_NAME
+        for item in document.get("plugins", [])
+    )
+
+
+#: The lines that delimit the servers this installer owns inside a project's `.codex/config.toml`.
+#: Everything outside them is the user's and is never rewritten.
+MANAGED_BEGIN = "# BEGIN RE-call MCP servers (written by recall setup --lite and recall wizard)"
+MANAGED_END = "# END RE-call MCP servers"
+#: Codex waits 10 s for a server by default. A Lite server refreshes its store before it answers
+#: and a local embedder loads its model first, so the documented remedy for a missing server is
+#: written in from the start.
+STARTUP_TIMEOUT_SEC = 60
+
+
+@dataclass(frozen=True)
+class ProjectServerRegistration:
+    """What was written into a project's `.codex/config.toml`, and what was refused."""
+
+    config_path: Path
+    registered: tuple[str, ...] = ()
+    conflicts: tuple[str, ...] = ()
+    skipped_reason: str = ""
+    #: Whether the user config marks this project trusted. Codex ignores project config otherwise.
+    trusted: bool = False
+    #: Set when git does not ignore the file, which holds this machine's store settings.
+    unignored: bool = False
+
+
+def _toml_string(value: str) -> str:
+    # Every escape JSON emits (\", \\, \n, \uXXXX and the rest) is valid in a TOML basic string.
+    return json.dumps(value)
+
+
+def _render_servers(servers: dict[str, dict[str, Any]]) -> str:
+    lines = [MANAGED_BEGIN]
+    for name, entry in servers.items():
+        key = f"mcp_servers.{_toml_string(name)}"
+        lines += [
+            f"[{key}]",
+            f"command = {_toml_string(entry['command'])}",
+            f"args = [{', '.join(_toml_string(arg) for arg in entry['args'])}]",
+            f"cwd = {_toml_string(entry['cwd'])}",
+            f"startup_timeout_sec = {STARTUP_TIMEOUT_SEC}",
+            "",
+            f"[{key}.env]",
+            *(f"{_toml_string(k)} = {_toml_string(v)}" for k, v in entry["env"].items()),
+            "",
+        ]
+    lines.append(MANAGED_END)
+    return "\n".join(lines) + "\n"
+
+
+def _without_managed_block(text: str) -> str:
+    start = text.find(MANAGED_BEGIN)
+    if start < 0:
+        return text
+    end = text.find(MANAGED_END, start)
+    if end < 0:
+        raise ValueError("it has an unterminated RE-call block")
+    return text[:start] + text[end + len(MANAGED_END):].lstrip("\r\n")
+
+
+def _git(project_root: Path, *args: str) -> int | None:
+    """The exit status of a read-only git query, or None where git cannot answer."""
+    try:
+        return subprocess.run(
+            ["git", "-C", str(project_root), *args],
+            capture_output=True,
+            timeout=10,
+            check=False,
+        ).returncode
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def _project_trusted(project_root: Path) -> bool:
+    """Whether `CODEX_HOME/config.toml` marks this project, or a folder above it, `trusted`."""
+    try:
+        document = tomllib.loads((codex_home() / "config.toml").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    projects = document.get("projects")
+    if not isinstance(projects, dict):
+        return False
+    root = project_root.resolve()
+    for key, entry in projects.items():
+        if not isinstance(entry, dict) or entry.get("trust_level") != "trusted":
+            continue
+        try:
+            # Codex records some Windows paths in their extended form, `\\?\C:\...`.
+            trusted = Path(str(key).removeprefix("\\\\?\\")).resolve()
+        except (OSError, ValueError):
+            continue
+        if trusted == root or trusted in root.parents:
+            return True
+    return False
+
+
+def register_project_servers(
+    servers: dict[str, dict[str, Any]], *, project_root: Path
+) -> ProjectServerRegistration:
+    """Register MCP servers for this project only, in its `.codex/config.toml`.
+
+    The Codex counterpart of Claude Code's local scope (`recall.wizard.wiring.register_local_scope`):
+    a server carries one store and one tenant, so at user level it would answer about this project
+    in every other one. `servers` is the `mcpServers` mapping `recall.wizard.wiring.mcp_config`
+    renders for Claude Code, so both clients launch the same command with the same environment.
+
+    Codex reads project config only for a trusted project, and the result says whether this one
+    is. A server name the user already defines outside RE-call's block is reported and left alone,
+    and a file git tracks is refused, since it would commit this machine's store settings.
+    """
+    root = project_root.resolve()
+    target = root / ".codex" / "config.toml"
+    if not servers:
+        return ProjectServerRegistration(target, skipped_reason="no servers to register")
+    if _git(root, "ls-files", "--error-unmatch", "--", ".codex/config.toml") == 0:
+        return ProjectServerRegistration(
+            target,
+            skipped_reason=(
+                f"{target} is tracked by git, and RE-call will not write this machine's store "
+                "settings into a committed file"
+            ),
+        )
+    if target.is_symlink():
+        return ProjectServerRegistration(target, skipped_reason=f"{target} is a symlink; left untouched")
+    try:
+        user_text = _without_managed_block(target.read_text(encoding="utf-8") if target.exists() else "")
+        user_servers = tomllib.loads(user_text).get("mcp_servers", {})
+    except (OSError, ValueError) as exc:
+        return ProjectServerRegistration(
+            target, skipped_reason=f"{target} cannot be read ({exc}); left untouched"
+        )
+    taken = user_servers if isinstance(user_servers, dict) else {}
+    conflicts = tuple(name for name in servers if name in taken)
+    mine = {name: entry for name, entry in servers.items() if name not in taken}
+    if not mine:
+        return ProjectServerRegistration(
+            target, conflicts=conflicts, skipped_reason="every server name is already defined in it"
+        )
+    kept = user_text.rstrip("\r\n")
+    text = (kept + "\n\n" if kept else "") + _render_servers(mine)
+    tomllib.loads(text)  # never write a file Codex would refuse to parse
+    target.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write_bytes(target, text.encode("utf-8"))
+    return ProjectServerRegistration(
+        target,
+        registered=tuple(mine),
+        conflicts=conflicts,
+        trusted=_project_trusted(root),
+        unignored=_git(root, "check-ignore", "-q", "--", ".codex/config.toml") == 1,
+    )
+
+
 __all__ = [
     "CODEX_MARKETPLACE_NAME",
     "CODEX_PLUGIN_NAME",
@@ -354,6 +576,12 @@ __all__ = [
     "codex_home",
     "codex_hook_config_path",
     "codex_plugin_source",
+    "ProjectServerRegistration",
+    "codex_plugin_installed",
+    "codex_skill_sources",
+    "codex_user_skill_dir",
+    "install_codex_hooks",
     "install_codex_integration",
+    "register_project_servers",
     "personal_marketplace_path",
 ]

@@ -8,6 +8,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ## [Unreleased]
 
+### Added
+
+* **`recall setup --lite` and `recall wizard` now wire Codex, and give Claude Code its hooks and
+  skills.** Codex gets the same MCP servers in the project's `.codex/config.toml` (loaded for a
+  trusted project), RE-call's hooks and the five skills; Claude Code gets the hooks and skills
+  beside the servers it already got. On Lite, write-time search stays off and prompt-time search
+  reads the `--memory` folder. A hook config that already serves another project is left alone
+  and reported.
+
 ### Upgrade notes
 
 * **The lock moves `onnxruntime` from 1.31.0 to 1.31.1.** Every FastEmbed profile records the

@@ -724,12 +724,21 @@ def user_prompt_submit(payload: dict[str, Any]) -> int:
     # discarded, so the guard has to cover the boring lines too.
     try:
         prompt = str(payload.get("prompt") or "").strip()
-        options = settings()
+        config = load_config()
+        options = settings(config)
         if not options["enabled"] or len(prompt) < options["min_chars"]:
             return 0
         if len(set(tokenize(prompt[:MAX_QUERY_CHARS]))) < MIN_QUERY_TOKENS:
             return 0
-        store = find_store(str(payload.get("cwd") or ""), options["store"])
+        override = options["store"]
+        if override and config.get("project_root"):
+            from .write_time import _event_is_in_configured_project
+
+            # The override names ONE project's memo folder (a Lite `--memory` folder, say), and
+            # this hook runs in every project: elsewhere it falls back to that project's own store.
+            if not _event_is_in_configured_project(config, payload):
+                override = ""
+        store = find_store(str(payload.get("cwd") or ""), override)
         if store is None:
             # Unconfigured is silent BY DESIGN: a project with no memory store must behave
             # exactly as it would without this hook.

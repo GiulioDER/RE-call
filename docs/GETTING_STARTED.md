@@ -130,8 +130,8 @@ Details are in [plugin/README.md](../plugin/README.md).
 
 #### Codex
 
-For Lite, use [manual MCP wiring](LITE.md#connect-another-client): `recall setup --lite` only
-registers Claude Code. For PostgreSQL, run `recall setup` from the project. When Codex is detected,
+For Lite, `recall setup --lite` installs the server, hooks and skills for Codex as well; see
+[Lite client wiring](LITE.md#connect-another-client). For PostgreSQL, run `recall setup` from the project. When Codex is detected,
 setup installs the Codex MCP server,
 plugin bundle, memory and session skills, and hooks into the user configuration. Restart Codex afterward. The
 Codex and Claude Code integrations share the same memo format and trust layer. See

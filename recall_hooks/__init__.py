@@ -468,7 +468,9 @@ def _index_and_refresh(payload: dict[str, Any]) -> int:
                 pass
         return 0
     dsn = config.get("dsn")
-    if not dsn:
+    # A Lite store (`sqlite:///`) refreshes itself from its memory folder when its server starts
+    # and before searches, and the indexer below writes PostgreSQL only.
+    if not dsn or str(dsn).startswith("sqlite:///"):
         return 0
     configured = config.get("project_root")
     if not isinstance(configured, str) or not isinstance(cwd, str):

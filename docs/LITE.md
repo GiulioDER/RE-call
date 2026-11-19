@@ -89,10 +89,25 @@ network shares and simultaneous writers on different machines are unsupported.
 
 ## Connect another client
 
-`recall setup --lite` registers Claude Code only. It does not install Codex hooks or the Claude
-plugin. For CLI use or manual client wiring, run it with `--no-register`.
+Setup also gives each client it finds on this machine the rest of what `recall setup` gives it,
+and reports every step:
 
-For Codex, Claude Desktop, or another stdio MCP client, configure the interpreter from the Lite
+| Client | What Lite setup installs |
+|---|---|
+| Claude Code | the hooks (`~/.claude/settings.json`) and the five skills (`~/.claude/skills/`); with the RE-call plugin installed, only the hook config its hooks read |
+| Codex | the same `recall-memory` server in this project's `.codex/config.toml`, the hooks (`CODEX_HOME/hooks.json`) and the five skills (`~/.agents/skills/`) |
+
+The hook config is bound to this project, and prompt-time search reads the memory folder you
+passed. Write-time search stays off, because it reads PostgreSQL only. A hook config that already
+serves another project is left alone and reported, since there is one per client per machine.
+Codex loads `.codex/config.toml` only for a trusted project, and asks you to review and trust new
+hooks before they run; setup says when the project is not trusted yet. It refuses to write a
+`.codex/config.toml` that git tracks, and tells you to ignore an untracked one, because it holds
+this machine's store settings.
+
+`--no-register` skips all of it, for CLI use or manual client wiring.
+
+For Claude Desktop or another stdio MCP client, configure the interpreter from the Lite
 environment to launch `-m recall_mcp.server`. Setup prints the DSN and the memo folder but not the
 interpreter; with the Lite environment active, `python -c "import sys; print(sys.executable)"`
 prints its absolute path. The essential settings are:
