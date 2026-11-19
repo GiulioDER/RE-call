@@ -312,7 +312,8 @@ class RefreshReport:
     """One refresh: its outcome and reason, what it indexed, and the calibration it left.
 
     `fingerprint` is the snapshot the outcome is about; `to_dict` is what the state file's `last`
-    and `recall_stats.refresh` carry.
+    carries. `recall_stats.refresh` carries it with `reason` replaced by `client_reason`, so a new
+    field holding an exception's text must be withheld there too (CCA DOC-010).
     """
 
     outcome: Outcome
@@ -362,6 +363,18 @@ class RefreshReport:
         return "\n".join(lines)
 
 
+def _fail(report: RefreshReport, exc: BaseException, stage: str = "") -> None:
+    """Mark `report` FAILED by `exc`: its whole text in `reason`, its type in `error_type`.
+
+    Every handler that builds `reason` from an exception goes through here, because
+    `client_reason` passes `reason` through whole when `error_type` is empty, so a handler that set
+    one without the other would hand the exception's text to MCP clients (CCA CODE-001).
+    """
+    report.outcome = Outcome.FAILED
+    report.reason = f"{stage}{type(exc).__name__}: {exc}"
+    report.error_type = f"{stage}{type(exc).__name__}"
+
+
 def _stated_marker(store: LiteStore, roots: Sequence[Path]) -> str | None:
     """`recall.stated_facts.stated_marker` for these roots; None when it cannot be computed, so a
     marker problem forces a refresh rather than hiding one."""
@@ -400,12 +413,10 @@ def _finish(
     policy: str | None = None,
     key_root: Path | None = None,
     stated: str | None = None,
-    rescued: bool = False,
 ) -> RefreshReport:
     """Write the state file for this run. `success_generation` marks it the new last success.
 
     `stated` is the stating rule the run's reconcile used (`recall.stated_facts.stated_marker`).
-    `rescued` records whether the run built or found its rescue artifact.
     """
     report.finished_utc = _utc()
     document: dict[str, Any] = {
@@ -424,7 +435,6 @@ def _finish(
             "corpus_version": corpus_version,
             "policy": policy,
             "stated": stated,
-            "rescued": rescued,
             "finished_utc": report.finished_utc,
         }
     _write_state(db, document)
@@ -647,8 +657,7 @@ def _refresh_locked(
         calibration = _calibrate(store, embedder, background_calibration, refusal_env)
     except Exception as exc:  # BROAD-CATCH: fail-open  # recorded in the state file and returned
         _log.warning("lite refresh of %s failed: %s", db, exc)
-        report.outcome, report.reason = Outcome.FAILED, f"{type(exc).__name__}: {exc}"
-        report.error_type = type(exc).__name__
+        _fail(report, exc)
         if isinstance(exc, PruneGuardTripped):
             # The guard's own advice names `recall index`; a lite user runs this command.
             report.reason += " To accept the deletions, run `recall lite refresh --allow-prune`."
@@ -679,8 +688,7 @@ def _refresh_locked(
         atomic = ensure_rescue_artifact(store, embedder, env=refusal_env if rescue_env is None else rescue_env)
     except Exception as exc:  # BROAD-CATCH: fail-closed  # FAILED is not a success, so the next refresh builds again
         _log.warning("atomic rescue build for %s failed: %s", db, exc)
-        report.outcome, report.reason = Outcome.FAILED, f"atomic rescue: {type(exc).__name__}: {exc}"
-        report.error_type = f"atomic rescue: {type(exc).__name__}"
+        _fail(report, exc, "atomic rescue: ")
         # The failure may be the store's own, as above (CCA BUG-002).
         with suppress(Exception):
             report.chunks_total = store.count()
@@ -701,8 +709,7 @@ def _refresh_locked(
             corpus_version = store.corpus_revision()
     except Exception as exc:  # BROAD-CATCH: fail-closed  # FAILED is not a success, so the next refresh builds again
         _log.warning("semantic graph build for %s failed: %s", db, exc)
-        report.outcome, report.reason = Outcome.FAILED, f"semantic graph: {type(exc).__name__}: {exc}"
-        report.error_type = f"semantic graph: {type(exc).__name__}"
+        _fail(report, exc, "semantic graph: ")
         with suppress(Exception):
             report.chunks_total = store.count()
         return _finish(db, roots, report, key_root=key_root)
@@ -725,7 +732,6 @@ def _refresh_locked(
         policy=policy_key(security_policy, security_context),
         key_root=key_root,
         stated=_stated_marker(store, roots) if report.facts_stated >= 0 else None,
-        rescued=atomic is not None and atomic.manifest is not None,
     )
 
 

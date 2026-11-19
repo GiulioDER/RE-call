@@ -10,9 +10,12 @@ Two triggers:
 
 1. **start**: one catch-up refresh in a daemon thread, for whatever was written while no client ran;
 2. **before each retrieval**, at most once per `RECALL_LITE_REFRESH_INTERVAL` seconds (30): a stat
-   walk of the folder. When it differs from the last snapshot this server saw refreshed, a refresh
-   starts (one thread per server) and the retrieval waits for it up to `RECALL_LITE_REFRESH_WAIT`
-   seconds (3), then answers from the corpus as it is.
+   walk of the folder. When it differs from the last snapshot this server saw refreshed, or, with
+   the atomic rescue on, no artifact is in force for the memory as it is now (a forget, or a
+   person's `recall index`, changed it without its folder; a store that is not certified asks only
+   once its memory has changed since this server's last refresh), a refresh starts (one thread per
+   server) and the retrieval waits for it up to `RECALL_LITE_REFRESH_WAIT` seconds (3), then
+   answers from the corpus as it is.
 
 Several servers on one file take turns through the store's write lane, which coalesces: N servers
 seeing one change cause one refresh. `RECALL_LITE_AUTO_REFRESH=0` turns both triggers off.
@@ -169,7 +172,8 @@ class LiteAutoRefresher:
         self._kick()
 
     def before_retrieval(self) -> None:
-        """Refresh first if the folder changed, waiting a bounded time. Never raises; call off the event loop."""
+        """Refresh first if the folder changed, or the rescue has no artifact in force for the
+        memory as it is now, waiting a bounded time. Never raises; call off the event loop."""
         try:
             with self._lock:
                 now = self._clock()
@@ -245,9 +249,13 @@ class LiteAutoRefresher:
             failure = self._failure
         if failure is None:
             return None
+        # A failure `client_reason` withheld already names the command (CCA CODE-004).
+        pointer = "recall lite refresh --check"
+        tail = "" if pointer in failure else f" Run `{pointer}` for details."
+        stop = "" if failure.endswith((".", "!", "?")) else "."
         return (
             "Memory refresh is failing, so memos changed since the last successful refresh are not "
-            f"searchable yet: {failure} Run `recall lite refresh --check` for details."
+            f"searchable yet: {failure}{stop}{tail}"
         )
 
     def stop(self, timeout_s: float = 10.0) -> None:

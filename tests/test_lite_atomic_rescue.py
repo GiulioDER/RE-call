@@ -77,7 +77,8 @@ which fails against `6c866ade7` in its own assertion.
 A25 to A27, run on Linux on 2026-11-15, each red in its own assertion and green restored. A25
 (`test_an_unchanged_refresh_with_the_rescue_on_builds_what_one_without_it_did_not`) with the
 `last.get("rescued")` clause removed from `refresh`'s unchanged check: "an unchanged refresh with
-the rescue on skipped a store with no artifact". A26
+the rescue on skipped a store with no artifact". (That clause was later replaced by
+`artifact_in_force`, and the `rescued` field it read was removed on 2026-11-18, CCA CODE-003.) A26
 (`test_the_server_rebuilds_when_the_memory_changes_without_its_folder`) with
 `LiteAutoRefresher._rescue_stale` returning False: "the server did not rebuild the artifact after
 the memory changed without its folder". A27 (`test_a_failing_rebuild_keeps_its_warning_until_the_retry`)

@@ -49,6 +49,9 @@ class LiteFileReport:
     #: The model the newest fit was made for, when it is STALE because the store is now bound to
     #: another one (an embedder switch whose refit saved nothing); None for any other status.
     stale_for_model: str | None = None
+    #: STALE because the newest fit did not certify and the corpus has not yet grown or shrunk
+    #: enough for indexing to refit it (`recall.lite.calibration._uncertified_refit_waits`).
+    uncertified_waiting: bool = False
 
     @property
     def generation_id(self) -> str:
@@ -59,9 +62,26 @@ class LiteFileReport:
 class _ReadOnlyCorpus:
     """The few `LiteStore` reads `carry_forward` makes, answered from a read-only connection."""
 
-    def __init__(self, conn: sqlite3.Connection, tenant: str, dim: int, rows: list[Any], fingerprint: str, latest: str) -> None:
+    def __init__(
+        self, conn: sqlite3.Connection, tenant: str, dim: int, rows: list[Any], fingerprint: str, latest: str, meta: dict[str, Any]
+    ) -> None:
         self._conn, self.tenant, self._dim = conn, tenant, dim
-        self._rows, self._fingerprint, self._latest = rows, fingerprint, latest
+        self._rows, self._fingerprint, self._latest, self._meta = rows, fingerprint, latest, meta
+
+    # The three reads `_uncertified_refit_waits` makes, so doctor judges the wait as indexing does.
+    def count(self) -> int:
+        return len(self._rows)
+
+    def uncertified_fit_chunks(self) -> int | None:
+        from recall.lite.store import _UNCERTIFIED_FIT_CHUNKS
+
+        value = self._meta.get(_UNCERTIFIED_FIT_CHUNKS)
+        return None if value is None else int(value)
+
+    def bound_embedder(self) -> Any:
+        from recall.lite.calibration import bound_from_meta
+
+        return bound_from_meta(self._meta)
 
     def latest_calibration_json(self) -> str:
         return self._latest
@@ -131,6 +151,7 @@ def lite_file_meta(path: str | Path) -> dict[str, str] | None:
 def inspect_lite_file(path: str | Path) -> LiteFileReport:
     """Read `path` as a lite store, read-only; an unreadable file is reported, never raised."""
     from recall.lite.calibration import (
+        _uncertified_refit_waits,
         artifact_from_json,
         bound_from_meta,
         carry_forward,
@@ -165,6 +186,7 @@ def inspect_lite_file(path: str | Path) -> LiteFileReport:
         return LiteFileReport(target, exists=True, error=f"invalid embedding width metadata: {exc}")
     status, threshold, separability, calibrated_at, carried_delta = CalibrationStatus.MISSING, None, None, None, None
     stale_for_model: str | None = None
+    uncertified_waiting = False
     # The store's identity since PR 896's audit: ids, texts AND stored vectors (restack fix; a
     # pair digest here would never equal `LiteStore.corpus_fingerprint` and read as stale). The
     # store's own definition, so the two cannot drift apart (CCA CODE-002).
@@ -185,12 +207,14 @@ def inspect_lite_file(path: str | Path) -> LiteFileReport:
             elif artifact.corpus_fingerprint != fingerprint:
                 status = CalibrationStatus.STALE
                 corpus = _ReadOnlyCorpus(
-                    conn, str(meta.get("tenant", "")), dim, rows, fingerprint, str(latest[0])
+                    conn, str(meta.get("tenant", "")), dim, rows, fingerprint, str(latest[0]), meta
                 )
                 carried = carry_forward(corpus, artifact)
                 if carried.artifact is not None:
                     status, separability = CalibrationStatus.CERTIFIED, carried.artifact.separability
                     carried_delta = float(carried.provenance["corpus_delta"])
+                else:
+                    uncertified_waiting = _uncertified_refit_waits(corpus, artifact)  # type: ignore[arg-type]  # the reads it makes
             elif not artifact.certified:
                 status = CalibrationStatus.UNCERTIFIED
             else:
@@ -216,4 +240,5 @@ def inspect_lite_file(path: str | Path) -> LiteFileReport:
         calibrated_at=calibrated_at,
         carried_delta=carried_delta,
         stale_for_model=stale_for_model,
+        uncertified_waiting=uncertified_waiting,
     )

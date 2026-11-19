@@ -306,9 +306,10 @@ class _Matrix:
     vectors: Any  # numpy float32 array, rows normalised
     fingerprint: str  # `recall.lite.calibration.corpus_digest` of these rows
     newest: str | None  # max `indexed_at`; the fixed-width UTC format sorts as text, as SQL's max does
-    #: Row positions each scope allows, filled by `LiteStore._allowed`. A write replaces the whole
-    #: matrix, so an entry can never outlive the rows it was computed on (CCA PERF-004).
-    allowed: dict[Scope, list[int]] = field(default_factory=dict, compare=False, repr=False)
+    #: Row positions each scope allows, as int64 arrays, filled by `LiteStore._allowed`. A write
+    #: replaces the whole matrix, so an entry can never outlive the rows it was computed on (CCA
+    #: PERF-004). An array, so a search indexes with it directly (CCA PERF-002).
+    allowed: dict[Scope, Any] = field(default_factory=dict, compare=False, repr=False)
 
 
 #: Distinct scopes `_Matrix.allowed` keeps per corpus version. A source policy gives every search
@@ -332,7 +333,8 @@ def _normalize(vectors: Any) -> Any:
 class CorpusSnapshot:
     """The corpus as one read saw it: a calibration fit measures and binds to exactly this.
 
-    Holds the store's cached matrix, which is never mutated (a write replaces it), so a fit running
+    Holds the store's cached matrix, whose rows and vectors are never mutated (a write replaces it;
+    only its per-scope `allowed` cache fills in place, from those rows), so a fit running
     in a background thread beside a server that keeps indexing reads one corpus from its first
     question to its last, and binds to that corpus's fingerprint. Writes that land meanwhile are a
     corpus change like any other, which the stored fit then carries forward or refits.
@@ -510,6 +512,9 @@ class LiteStore:
             self._ensure_query_tables()
         self._supersession_cache: tuple[int, SupersessionGraph] | None = None
         self._manifest_cache: tuple[int, dict[str, str]] | None = None
+        # The last `query_dense` product: (corpus version, query bytes, scores). The atomic rescue
+        # reads its parent's score from it rather than multiplying the corpus again (CCA PERF-003).
+        self._last_scores: tuple[int, bytes, Any] | None = None
 
     @classmethod
     def from_dsn(cls, dsn: str, *, dim: int, tenant: str = "default", table: str = "chunks") -> LiteStore:
@@ -1472,13 +1477,17 @@ class LiteStore:
             first_indexed_at=_parse_time(row.first_indexed_at),
         )
 
-    def _allowed(self, matrix: _Matrix, scope: Scope) -> list[int] | None:
-        """Row positions the scope allows, or None for every row; kept on `matrix` per scope."""
+    def _allowed(self, matrix: _Matrix, scope: Scope) -> Any:
+        """Row positions the scope allows, an int64 array, or None for every row; kept on `matrix` per scope."""
+        import numpy as np
+
         if scope.is_empty:
             return None
         allowed = matrix.allowed.get(scope)
         if allowed is None:
-            allowed = [i for i, row in enumerate(matrix.rows) if _matches(scope, row)]
+            allowed = np.fromiter(
+                (i for i, row in enumerate(matrix.rows) if _matches(scope, row)), dtype=np.int64
+            )
             if len(matrix.allowed) < _ALLOWED_CACHE_ENTRIES:
                 matrix.allowed[scope] = allowed
         return allowed
@@ -1495,14 +1504,16 @@ class LiteStore:
         if not matrix.rows:
             return []
         allowed = self._allowed(matrix, coerce_scope(scope, source))
-        positions = np.arange(len(matrix.rows)) if allowed is None else np.asarray(allowed, dtype=np.int64)
+        positions = np.arange(len(matrix.rows)) if allowed is None else allowed
         if positions.size == 0:
             return []
         # Multiply the cached matrix itself and index the scores: indexing the matrix with the
         # positions would copy those rows (up to 54 MB on the 13,304 chunk memory corpus) on every
         # query, which measured 2026-10-07 as most of a 114 ms dense search against 5 ms for the
         # product alone. A scoped score is then the same number top_cosine computes.
-        scores = matrix.vectors @ self._query_vector(vector)
+        q = self._query_vector(vector)
+        scores = matrix.vectors @ q
+        self._last_scores = (matrix.version, q.tobytes(), scores)
         if allowed is not None:
             scores = scores[positions]
         # Select with numpy, then order only those in Python. Every row scoring at least the k-th
@@ -1545,12 +1556,19 @@ class LiteStore:
         """One chunk scored against `vector` exactly as `query_dense` scores it; None when absent.
 
         Read from the whole matrix product, as `query_dense` computes it: BLAS sums a lone row in
-        another order, a few float32 ulps away, and this score meets a calibrated threshold."""
+        another order, a few float32 ulps away, and this score meets a calibrated threshold. The
+        product of the search that just ran with this query is reused (CCA PERF-003)."""
         matrix = self._load()
         position = _chunk_position(matrix, chunk_id)
         if position is None:
             return None
-        return self._hit(matrix.rows[position], float((matrix.vectors @ self._query_vector(vector))[position]))
+        q = self._query_vector(vector)
+        last = self._last_scores
+        if last is not None and last[0] == matrix.version and last[1] == q.tobytes():
+            scores = last[2]
+        else:
+            scores = matrix.vectors @ q
+        return self._hit(matrix.rows[position], float(scores[position]))
 
     def atomic_rescue_manifest(self, root: str | Path, generation_id: str, calibration_id: str | None) -> Path:
         """Where `recall.trust` loads this store's atomic rescue artifact: see `recall.lite.atomic`."""
