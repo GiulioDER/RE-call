@@ -46,7 +46,7 @@ from PySide6.QtWidgets import (
 )
 
 from recall.desktop.models import RuntimeMode, RuntimeProfile, SourceCategory, SourceSelection
-from recall.desktop.profiles import load_pipelines, save_pipelines, save_profile
+from recall.desktop.profiles import save_profile
 from recall.desktop.runtime import (
     _CORPUS_SUFFIXES,
     DockerRuntime,
@@ -289,38 +289,13 @@ class MainWindow(QMainWindow):
         self.calibration_snapshot: Any = None
         self._project_names: list[str] = [self.profile.default_tenant]
         self._last_scope_index = 0
-        self._config_dirty = False
-        self._calibration_required = False
         self._calibration_targets_by_row: list[tuple[str, str, str]] = []
         self._calibration_results: dict[str, Any] = {}
         self._latest_release: Any = None
         self._calibration_running = False
-        self._api_keys: dict[str, str] = {"OpenRouter": "", "Voyage": "", "OpenAI": ""}
         self.github_pending: list[tuple[Path, SourceCategory]] = []
         self.github_root: Path | None = None
         self.github_import: GithubImport | None = None
-        self._active_config_type = "Documents"
-        self._pipeline_configs: dict[str, dict[str, Any]] = {
-            source_type: {
-                "embedder": "Hashing offline",
-                "reranker": "Disabled",
-                "judge": "Disabled",
-                "reasoning": "Disabled",
-                "model": "hashing-64",
-                "reranker_model": "cross-encoder/ms-marco-MiniLM-L-6-v2",
-                "arm": "Threshold",
-            }
-            for source_type in ("Documents", "Memory", "Code")
-        }
-        # Saved choices layered OVER the defaults, key by key. A wholesale replacement would
-        # drop any setting added after the file was written, so an upgrade would silently lose
-        # a control's value rather than keep the new default for it. Only keys the page still
-        # has are taken, so a choice whose control was removed (SPLADE, 2026-11-19) is not saved
-        # back as though it still applied.
-        for source_type, saved in load_pipelines().items():
-            if source_type in self._pipeline_configs:
-                defaults = self._pipeline_configs[source_type]
-                defaults.update({key: value for key, value in saved.items() if key in defaults})
         self.setWindowTitle("RE-call")
         self.resize(980, 760)
         self._build_ui()
@@ -444,12 +419,10 @@ class MainWindow(QMainWindow):
         self.main_button = self._make_nav_button("MAIN", 0)
         self.github_button = self._make_nav_button("GITHUB", 1)
         self.calibration_button = self._make_nav_button("CALIBRATION", 2)
-        self.config_button = self._make_nav_button("CONFIG", 3)
-        self.settings_button = self._make_nav_button("SETTINGS", 4)
+        self.settings_button = self._make_nav_button("SETTINGS", 3)
         header.addWidget(self.main_button)
         header.addWidget(self.github_button)
         header.addWidget(self.calibration_button)
-        header.addWidget(self.config_button)
         header.addWidget(self.settings_button)
         outer.addLayout(header)
 
@@ -587,18 +560,20 @@ class MainWindow(QMainWindow):
         self._set_runtime_state(False)
         self.github_page = self._build_github_page()
         self.calibration_page = self._build_calibration_page()
-        self.config_page = self._build_config_page()
         self.settings_page = self._build_settings_page()
         self.pages.addWidget(self.github_page)
         self.pages.addWidget(self.calibration_page)
-        self.pages.addWidget(self.config_page)
         self.pages.addWidget(self.settings_page)
         self.setCentralWidget(root)
         self._run(self._prepare_runtime, self._runtime_ready, self._runtime_failed)
         self.update_timer = QTimer(self)
         self.update_timer.setInterval(6 * 60 * 60 * 1000)
         self.update_timer.timeout.connect(lambda: self._run(self._check_update_safely, self._update_checked))
-        self.update_timer.start()
+        # `update_enabled: false` in runtime.json stops the checks the app makes by itself, here
+        # and in `_runtime_ready`. "Check for updates" on the Settings page still works, because
+        # pressing it is the user asking.
+        if self.profile.update_enabled:
+            self.update_timer.start()
 
     def _make_nav_button(self, label: str, page_index: int) -> QPushButton:
         button = QPushButton(label)
@@ -614,8 +589,7 @@ class MainWindow(QMainWindow):
             (0, self.main_button),
             (1, self.github_button),
             (2, self.calibration_button),
-            (3, self.config_button),
-            (4, self.settings_button),
+            (3, self.settings_button),
         ):
             button.setChecked(index == page_index)
         if page_index == 2:
@@ -695,180 +669,6 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.github_status)
         return page
 
-    def _build_config_page(self) -> QWidget:
-        page = QWidget()
-        layout = QVBoxLayout(page)
-        title = QLabel("PIPELINE CONFIGURATION")
-        title.setObjectName("pageTitle")
-        layout.addWidget(title)
-        intro = QLabel(
-            "Choose the retrieval components RE-call should use for new indexing and search jobs. "
-            "These choices are runtime-wide and must remain compatible with the detected machine."
-        )
-        intro.setObjectName("pageIntro")
-        intro.setWordWrap(True)
-        layout.addWidget(intro)
-
-        type_row = QHBoxLayout()
-        type_row.addWidget(QLabel("Configuration for file type"))
-        self.config_type_combo = QComboBox()
-        self.config_type_combo.addItems(["Documents", "Memory", "Code"])
-        self.config_type_combo.currentTextChanged.connect(self._switch_config_type)
-        type_row.addWidget(self.config_type_combo)
-        type_row.addStretch()
-        layout.addLayout(type_row)
-
-        pipeline = QGroupBox("Retrieval stack")
-        pipeline.setObjectName("watermarkGroup")
-        form = QFormLayout(pipeline)
-        self.embedder_combo = QComboBox()
-        self.embedder_combo.addItems(
-            [
-                "Hashing offline",
-                "Sentence Transformers local",
-                "SFR code local",
-                "OpenAI-compatible cloud",
-                "Voyage cloud (unavailable)",
-                "BGE local (unavailable)",
-            ]
-        )
-        self._disable_config_items(
-            self.embedder_combo,
-            {"Voyage cloud (unavailable)", "BGE local (unavailable)"},
-        )
-        self.reranker_combo = QComboBox()
-        self.reranker_combo.addItems(
-            [
-                "Disabled",
-                "Local cross-encoder",
-                "Local code reranker",
-                "Local model path",
-                "Voyage reranker (unavailable)",
-                "BGE reranker (unavailable)",
-            ]
-        )
-        self._disable_config_items(
-            self.reranker_combo,
-            {"Voyage reranker (unavailable)", "BGE reranker (unavailable)"},
-        )
-        self.judge_combo = QComboBox()
-        self.judge_combo.addItems(["Disabled", "Remote LLM judge"])
-        self.reasoning_combo = QComboBox()
-        self.reasoning_combo.addItems(["Disabled", "Enabled"])
-        self.model_edit = QLineEdit("hashing-64")
-        self.model_edit.setPlaceholderText("Embedder model identifier or pinned alias")
-        self.reranker_model_edit = QLineEdit("cross-encoder/ms-marco-MiniLM-L-6-v2")
-        self.reranker_model_edit.setPlaceholderText("Local reranker model id or artifact path")
-        self.arm_combo = QComboBox()
-        self.arm_combo.addItems(["Threshold"])
-        # The only arm since the entailment arms were removed (#849): shown, not choosable.
-        self.arm_combo.setEnabled(False)
-        form.addRow("Embedder", self.embedder_combo)
-        form.addRow("Re-ranker", self.reranker_combo)
-        form.addRow("Judge", self.judge_combo)
-        form.addRow("Reasoning", self.reasoning_combo)
-        form.addRow("Embedder model", self.model_edit)
-        form.addRow("Reranker model/path", self.reranker_model_edit)
-        form.addRow("Calibration arm", self.arm_combo)
-        layout.addWidget(pipeline)
-
-        self.configuration_warning = QLabel(
-            "BGE and Voyage remain visible as unavailable options. Any new configuration set requires a complete corpus calibration before it can be activated."
-        )
-        self.configuration_warning.setObjectName("warningLabel")
-        self.configuration_warning.setWordWrap(True)
-        layout.addWidget(self.configuration_warning)
-        config_actions = QHBoxLayout()
-        config_actions.addStretch()
-        save = QPushButton("Save configuration")
-        save.clicked.connect(self._save_configuration)
-        config_actions.addWidget(save)
-        layout.addLayout(config_actions)
-        layout.addStretch()
-
-        for control in (
-            self.embedder_combo,
-            self.reranker_combo,
-            self.judge_combo,
-            self.reasoning_combo,
-            self.arm_combo,
-        ):
-            control.currentTextChanged.connect(self._configuration_changed)
-        self.model_edit.textChanged.connect(self._configuration_changed)
-        self.reranker_model_edit.textChanged.connect(self._configuration_changed)
-        self._load_config_type(self._active_config_type)
-        self._add_page_watermark(page)
-        return page
-
-    def _disable_config_items(self, combo: QComboBox, labels: set[str]) -> None:
-        model = combo.model()
-        for index in range(combo.count()):
-            if combo.itemText(index) not in labels:
-                continue
-            item = getattr(model, "item", lambda _index: None)(index)
-            if item is not None:
-                item.setEnabled(False)
-                item.setToolTip("Unavailable in this RE-call build")
-
-    def _config_controls(self) -> tuple[Any, ...]:
-        return (
-            self.embedder_combo,
-            self.reranker_combo,
-            self.judge_combo,
-            self.reasoning_combo,
-            self.model_edit,
-            self.reranker_model_edit,
-            self.arm_combo,
-        )
-
-    def _capture_config(self) -> dict[str, Any]:
-        return {
-            "embedder": self.embedder_combo.currentText(),
-            "reranker": self.reranker_combo.currentText(),
-            "judge": self.judge_combo.currentText(),
-            "reasoning": self.reasoning_combo.currentText(),
-            "model": self.model_edit.text(),
-            "reranker_model": self.reranker_model_edit.text(),
-            "arm": self.arm_combo.currentText(),
-        }
-
-    def _load_config_type(self, source_type: str) -> None:
-        values = self._pipeline_configs[source_type]
-        controls = self._config_controls()
-        for control in controls:
-            control.blockSignals(True)
-        # `setCurrentText` is a NO-OP on a non-editable combo when the text is not an item, so
-        # a saved value that no longer exists would leave the widget on its first entry while
-        # `_pipeline_configs` still held the stale string — and the next Save would write that
-        # stale string straight back. Restoring only what the combo can actually show, and
-        # writing the fallback back into the config, keeps memory and screen saying one thing.
-        for combo, key in (
-            (self.embedder_combo, "embedder"),
-            (self.reranker_combo, "reranker"),
-            (self.judge_combo, "judge"),
-            (self.reasoning_combo, "reasoning"),
-            (self.arm_combo, "arm"),
-        ):
-            wanted = str(values[key])
-            if combo.findText(wanted) >= 0:
-                combo.setCurrentText(wanted)
-            else:
-                values[key] = combo.currentText()
-        self.model_edit.setText(str(values["model"]))
-        self.reranker_model_edit.setText(str(values["reranker_model"]))
-        for control in controls:
-            control.blockSignals(False)
-
-    def _switch_config_type(self, source_type: str) -> None:
-        if source_type == self._active_config_type:
-            return
-        self._pipeline_configs[self._active_config_type] = self._capture_config()
-        self._active_config_type = source_type
-        self._load_config_type(source_type)
-        self.configuration_warning.setText(
-            f"{source_type} has its own pipeline set. BGE and Voyage are unavailable. Any change requires a complete calibration."
-        )
-
     def _build_calibration_page(self) -> QWidget:
         page = QWidget()
         layout = QVBoxLayout(page)
@@ -918,9 +718,6 @@ class MainWindow(QMainWindow):
         self.refresh_calibration_button = QPushButton("Refresh")
         self.refresh_calibration_button.clicked.connect(self._refresh_calibration_table)
         refresh_layout.addWidget(self.refresh_calibration_button)
-        self.cancel_calibration_button = QPushButton("Cancel")
-        self.cancel_calibration_button.clicked.connect(self._cancel_selected_calibrations)
-        refresh_layout.addWidget(self.cancel_calibration_button)
         table_stack.addWidget(
             refresh_actions,
             0,
@@ -954,44 +751,6 @@ class MainWindow(QMainWindow):
         title = QLabel("SETTINGS")
         title.setObjectName("pageTitle")
         layout.addWidget(title)
-        user_settings = QGroupBox("User settings")
-        user_settings.setObjectName("watermarkGroup")
-        user_form = QFormLayout(user_settings)
-        self.language_combo = QComboBox()
-        self.language_combo.addItems(["English", "Italiano", "Deutsch", "Español"])
-        self.language_combo.currentTextChanged.connect(
-            lambda language: self.settings_status.setText(f"Language preference set to {language}.")
-        )
-        user_form.addRow("Language", self.language_combo)
-        layout.addWidget(user_settings)
-
-        provider_keys = QGroupBox("Provider API keys")
-        provider_keys.setObjectName("watermarkGroup")
-        provider_layout = QVBoxLayout(provider_keys)
-        provider_layout.setSpacing(10)
-        key_form = QFormLayout()
-        key_form.setVerticalSpacing(8)
-        self.openrouter_key_edit = QLineEdit()
-        self.openrouter_key_edit.setEchoMode(QLineEdit.EchoMode.Password)
-        self.openrouter_key_edit.setPlaceholderText("OpenRouter key")
-        self.voyage_key_edit = QLineEdit()
-        self.voyage_key_edit.setEchoMode(QLineEdit.EchoMode.Password)
-        self.voyage_key_edit.setPlaceholderText("Voyage key")
-        self.openai_key_edit = QLineEdit()
-        self.openai_key_edit.setEchoMode(QLineEdit.EchoMode.Password)
-        self.openai_key_edit.setPlaceholderText("OpenAI key")
-        key_form.addRow("OpenRouter", self.openrouter_key_edit)
-        key_form.addRow("Voyage", self.voyage_key_edit)
-        key_form.addRow("OpenAI", self.openai_key_edit)
-        provider_layout.addLayout(key_form)
-        key_actions = QHBoxLayout()
-        key_actions.addStretch()
-        save_keys = QPushButton("Save API keys")
-        save_keys.clicked.connect(self._save_api_keys)
-        key_actions.addWidget(save_keys)
-        provider_layout.addLayout(key_actions)
-        layout.addWidget(provider_keys)
-
         updates = QGroupBox("RE-call updates")
         updates.setObjectName("watermarkGroup")
         update_layout = QHBoxLayout(updates)
@@ -1035,12 +794,6 @@ class MainWindow(QMainWindow):
         runtime_value = QLabel(self.profile.mode.value)
         runtime_value.setObjectName("successLabel")
         runtime_info.addWidget(runtime_value)
-        self.settings_status: QLabel = QLabel("Settings are stored locally for this prototype.")
-        self.settings_status.setObjectName("mutedLabel")
-        self.settings_status.setWordWrap(True)
-        self.settings_status.setMaximumWidth(250)
-        runtime_info.addSpacing(8)
-        runtime_info.addWidget(self.settings_status)
         runtime_info.addStretch()
         info_layout.addLayout(runtime_info, 1)
         layout.addWidget(info)
@@ -1225,52 +978,6 @@ class MainWindow(QMainWindow):
         """
         return scrub_dsn_secrets(message, self.dsn_edit.text().strip())
 
-    def _save_api_keys(self) -> None:
-        self._api_keys = {
-            "OpenRouter": self.openrouter_key_edit.text().strip(),
-            "Voyage": self.voyage_key_edit.text().strip(),
-            "OpenAI": self.openai_key_edit.text().strip(),
-        }
-        self.settings_status.setText(
-            "API keys saved for this session. They will be used by the configured provider when the installer secure store is connected."
-        )
-
-    def _configuration_changed(self, *_args: Any) -> None:
-        self._config_dirty = True
-        self._calibration_required = True
-        self.configuration_warning.setText(
-            "Configuration changed. Save it, then run a complete calibration before activating the new set."
-        )
-
-    def _save_configuration(self) -> None:
-        forbidden = ("bge", "voyage")
-        selected_models = (self.model_edit.text().lower(), self.reranker_model_edit.text().lower())
-        if any(token in model for model in selected_models for token in forbidden):
-            self.status.setText("BGE and Voyage models are not available in this RE-call configuration.")
-            return
-        self._pipeline_configs[self._active_config_type] = self._capture_config()
-        # ⚠️ Actually WRITE it. Until this line the button set an in-memory dict and then told
-        # the user "Configuration saved", so reopening the app restored the defaults and the
-        # status line was a false claim. Demonstrated before fixing: set the embedder model,
-        # save, close, reopen, and the field read `hashing-64` again.
-        try:
-            save_pipelines(self._pipeline_configs)
-        except OSError as exc:
-            # Say so rather than claim success. The choices are still live in this session, so
-            # the user can keep working; what they cannot do is rely on them surviving.
-            self.status.setText(
-                f"Configuration applied for this session but NOT saved: {exc.strerror or exc}"
-            )
-            self._config_dirty = False
-            self._calibration_required = True
-            return
-        self._config_dirty = False
-        self._calibration_required = True
-        self.configuration_warning.setText(
-            f"{self._active_config_type} configuration saved. A complete calibration is required before this set can be activated."
-        )
-        self.status.setText("Configuration saved. Open Calibration to certify the new set.")
-
     def _calibration_targets(self) -> list[tuple[str, str, str]]:
         """One row per corpus that exists, naming the tenant it actually reports on.
 
@@ -1351,8 +1058,6 @@ class MainWindow(QMainWindow):
     def _needs_calibration(self, snapshot: Any) -> bool:
         status = str(getattr(snapshot, "status", "unknown")).lower()
         raw = getattr(snapshot, "raw", {}) or {}
-        if self._calibration_required or self._config_dirty:
-            return True
         if raw.get("corpus_changed") is True or raw.get("stale") is True:
             return True
         active_generation = raw.get("active_generation_id") or raw.get("current_generation_id")
@@ -1465,33 +1170,6 @@ class MainWindow(QMainWindow):
             self.calibration_page_status.setText("Select one corpus row before starting calibration.")
             return
         self._run_calibration_row(row)
-
-    def _cancel_selected_calibrations(self) -> None:
-        rows = sorted(
-            {index.row() for index in self.calibration_table.selectionModel().selectedRows()}
-        )
-        if not rows:
-            self.calibration_page_status.setText("Select one or more corpus rows before cancelling.")
-            return
-        if self._calibration_running:
-            self.calibration_page_status.setText("A calibration is already running. Wait for it to finish before cancelling.")
-            return
-        count = len(rows)
-        confirmation = QMessageBox.question(
-            self,
-            "Confirm",
-            f"Cancel the selected calibration action{'s' if count != 1 else ''}?\n\nNo corpus data or published calibration artifact will be deleted.",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
-        )
-        if confirmation != QMessageBox.StandardButton.Yes:
-            self.calibration_page_status.setText("Cancellation cancelled. The calibration selection is unchanged.")
-            return
-        self.calibration_table.clearSelection()
-        self.calibration_table.setCurrentCell(-1, -1)
-        self.calibration_page_status.setText(
-            f"Cancelled {count} selected calibration action{'s' if count != 1 else ''}. No corpus data was changed."
-        )
 
     def _set_calibration_controls_enabled(self, enabled: bool) -> None:
         self.calibration_table.setEnabled(enabled)
@@ -2227,7 +1905,8 @@ class MainWindow(QMainWindow):
         self.reconnect_button.setVisible(False)
         self.runtime_label.setText(f"Runtime: {self.profile.mode.value} ready")
         self.status.setText("Runtime ready. Drop a source to begin.")
-        self._run(self._check_update_safely, self._update_checked)
+        if self.profile.update_enabled:
+            self._run(self._check_update_safely, self._update_checked)
 
     def _runtime_failed(self, message: str) -> None:
         self._set_runtime_state(False)
@@ -2241,9 +1920,6 @@ class MainWindow(QMainWindow):
         self.connection_light.setStyleSheet(f"background: {color}; border-radius: 5px;")
         state = "ready" if connected else "disconnected"
         self.runtime_label.setText(f"Runtime: {self.profile.mode.value} {state}")
-
-    def _open_config(self) -> None:
-        self._show_page(3)
 
     def _check_update_safely(self) -> Any:
         try:
