@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import sqlite3
 import sys
@@ -426,6 +427,11 @@ def _corpus_stamp(path: Path) -> _FileStamp:
             changed = _change_time(file, stat.st_ctime_ns)
             if changed is None:
                 return None
+            # Run as root, SQLite chowns the WAL each time a connection opens it, which moves only
+            # its ctime: kept, every read would look like a write and no view would be reused.
+            # A commit still moves the WAL's size or mtime, and `corpus_version` is checked too.
+            if file != path and getattr(os, "geteuid", lambda: -1)() == 0:
+                changed = 0
             stamps.append((stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, changed))
     return tuple(stamps) if stamps[0] is not None else None
 

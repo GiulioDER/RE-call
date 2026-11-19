@@ -552,3 +552,36 @@ def test_legacy_pairing_differs_when_the_separator_is_on_the_first_line():
 def test_legacy_pairing_is_unchanged_for_a_residual_shape():
     # Still paired under both rules, so its body did not move.
     assert legacy_pairing_differs("---\nNote: something\n---\nBody.\n") is False
+
+
+def test_a_nonfinite_constant_leaves_metadata_every_store_can_hold():
+    """Invariant: what `parse_frontmatter` returns serialises as strict JSON (no NaN, Infinity).
+
+    `json.loads` accepts `NaN` and `Infinity`; PostgreSQL's jsonb and SQLite before 3.42 refuse
+    them, and the lite `chunks` index evaluates `json_extract(metadata, ...)` on every write, so
+    one such memo failed the whole refresh there ("malformed JSON"). The graph keeps its other
+    facts; a record holding one is refused as not JSON. Red proof (2026-11-19): with `json.loads`
+    restored for `recall_graph` in `parse_frontmatter`, `json.dumps(..., allow_nan=False)` raises
+    "Out of range float values are not JSON compliant"; the same test on SQLite 3.40.1 is
+    `tests/test_stated_facts.py::test_rf2_a_nan_object_is_counted_not_raised`, red before.
+    """
+    import json
+
+    from recall.frontmatter import NONFINITE_KEY, holds_nonfinite
+
+    meta, _ = parse_frontmatter(
+        "---\n"
+        'recall_graph: {"facts": [{"subject": "user", "predicate": "lucky", "object": NaN}, '
+        '{"subject": "user", "predicate": "far", "object": [-Infinity]}, '
+        '{"subject": "user", "predicate": "lucky_number", "object": 7}]}\n'
+        "---\nbody\n"
+    )
+    json.dumps(meta, allow_nan=False)
+    facts = meta["recall_graph"]["facts"]
+    assert facts[0]["object"] == {NONFINITE_KEY: "NaN"}
+    assert holds_nonfinite(facts[1]) and not holds_nonfinite(facts[2])
+    assert facts[2]["object"] == 7
+
+    record, _ = parse_frontmatter('---\nrecall_record: {"v": 1, "score": Infinity}\n---\nbody\n')
+    json.dumps(record, allow_nan=False)
+    assert "__parse_error__" in record["recall_record"]
