@@ -188,6 +188,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ### Fixed
 
+- On a PostgreSQL store, the session-end memo index no longer runs inside the hook (#1454). Codex
+  runs `SessionEnd` synchronously and stops it at 15 s, and re-indexing an unchanged folder of
+  1,000 memos took up to 10.0 s there (a first index, 37.8 s). The hook now compares a stat walk of
+  `memory/` with the walk recorded after the last successful index and skips the index when they
+  match, unless the tenant has lost its rows. When anything changed, a first index included, it
+  starts a detached `python -m recall_hooks index-memory` that indexes one folder at a time, stops
+  after 30 minutes, and refreshes the cached count when it finishes. Claude Code's `SessionEnd` and
+  `PreCompact` take the same path. The walks are kept in `recall-memory-index.json` beside the hook
+  config.
 - Plain `recall setup` scaffolded `memory/` but wrote no `memory_root` into the hook config, so
   prompt-time search read the client's own project memory folder instead (#1426). When the
   scaffold is accepted, setup now writes that folder for Claude Code and Codex.

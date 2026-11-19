@@ -880,6 +880,27 @@ def _no_real_docker(monkeypatch) -> Iterator[None]:
     yield
 
 
+@pytest.fixture(autouse=True)
+def _memory_index_runs_inline(tmp_path, monkeypatch) -> Iterator[None]:
+    """Run the session-end memory index in the test process instead of a detached child.
+
+    Since #1454 the PostgreSQL session-end path starts `python -m recall_hooks index-memory`
+    detached and returns. In a test that is a real process nobody waits for or stops, pointed at
+    whatever DSN the test configured. Autouse, because a hook test reaches it by omission. Inline,
+    so a test that stubs `recall.memory_index.index_memory_directory` still sees the call. A test of
+    the spawn itself binds the real function at import time (tests/test_memory_refresh.py).
+
+    Its state and lock go to a per-test directory: a test that stubs `load_config` but not
+    `config_path` would otherwise record walks in the operator's own `~/.claude`.
+    """
+    from recall_hooks import memory_refresh
+
+    home = tmp_path / "memory-index-home"
+    monkeypatch.setattr(memory_refresh, "_home", lambda: home)
+    monkeypatch.setattr(memory_refresh, "start_background_index", lambda cwd: memory_refresh.run([cwd]))
+    yield
+
+
 @pytest.fixture
 def make_store() -> Iterator[Callable[[int], PgVectorStore]]:
     """Hands out throwaway tables, and REFUSES to run at all when there is no database.
