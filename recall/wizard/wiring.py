@@ -841,7 +841,12 @@ def _hooks_left_alone(path: Path, project_root: Path) -> str | None:
         return None
     configured = document.get("project_root")
     if not isinstance(configured, str) or not configured:
-        return f"hooks left alone: {path} names no project"
+        # Write-time search and the session-end index refuse a config without a project, so
+        # binding one here takes nothing from anywhere. A hosted one is left alone: rebinding it
+        # would turn its sync into a local install.
+        if document.get("endpoint") or str(document.get("mode", "")).strip().lower() == "hosted":
+            return f"hooks left alone: {path} is a hosted config that names no project"
+        return None
     try:
         if Path(configured).resolve() == project_root.resolve():
             return None
@@ -1027,10 +1032,16 @@ def install_client_extras(
         text = f"registered {', '.join(reg.registered)} for this project in {reg.config_path}"
         if reg.conflicts:
             text += f"; left {', '.join(reg.conflicts)} alone, already defined there"
+        if reg.kept:
+            text += f"; kept {', '.join(reg.kept)}, registered there by an earlier run"
+        if reg.backup is not None:
+            text += f"; backed up the original to {reg.backup}"
         if reg.gitignore is not None:
-            text += f"; added `.codex/config.toml` to {reg.gitignore}: it holds this machine's store settings"
+            text += f"; added `.codex/config.toml*` to {reg.gitignore}: it holds this machine's store settings"
         if not reg.trusted:
             text += "; Codex loads them once you trust this project (open it in Codex and accept)"
+            if reg.others:
+                text += f", which also enables {', '.join(reg.others)}, already defined there"
         return text
 
     def codex_hooks() -> str:

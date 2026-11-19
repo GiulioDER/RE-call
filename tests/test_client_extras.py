@@ -567,8 +567,9 @@ def test_a_windows_edited_config_keeps_its_shape(tmp_path: Path, clients: Path) 
 
 
 def test_a_hook_config_left_alone_says_why(tmp_path: Path, clients: Path) -> None:
-    """CODE-005: an unreadable config and one that names no project are described as such, not as
-    a project they would serve."""
+    """CODE-005, and BUG-005 by the owner's decision (2026-11-19): an unreadable config and a
+    hosted one that names no project are described as such; a local config that names no project
+    serves none, so it is free to bind here."""
     from recall.wizard.wiring import _hooks_left_alone
 
     project = tmp_path / "project"
@@ -576,8 +577,10 @@ def test_a_hook_config_left_alone_says_why(tmp_path: Path, clients: Path) -> Non
     path = tmp_path / "recall-hook.json"
     path.write_text("{not json", encoding="utf-8")
     assert _hooks_left_alone(path, project) == f"hooks left alone: {path} cannot be read"
+    path.write_text(json.dumps({"endpoint": "https://example.invalid"}), encoding="utf-8")
+    assert _hooks_left_alone(path, project) == f"hooks left alone: {path} is a hosted config that names no project"
     path.write_text(json.dumps({"dsn": "x"}), encoding="utf-8")
-    assert _hooks_left_alone(path, project) == f"hooks left alone: {path} names no project"
+    assert _hooks_left_alone(path, project) is None, "a local config that serves no project was not taken over"
 
 
 def test_the_backup_is_ignored_when_the_config_already_was(tmp_path: Path, clients: Path) -> None:
@@ -596,3 +599,60 @@ def test_the_backup_is_ignored_when_the_config_already_was(tmp_path: Path, clien
         ["git", "-C", str(project), "check-ignore", "-q", "--", ".codex/config.toml.recall-backup"], capture_output=True
     )
     assert ignored.returncode == 0, "the backup of a credential file is not ignored by git"
+
+
+# ----------------------------------------------------------------------------------------------
+# Owner decisions 2026-11-19 on the uncertain findings of the deferred run.
+# ----------------------------------------------------------------------------------------------
+
+
+def test_a_codex_plugin_counts_only_once_codex_enabled_it(clients: Path) -> None:
+    """DEPLOY-004: a marketplace entry only offers the plugin; its skills load once Codex records
+    `[plugins."recall@re-call"] enabled = true`, so until then RE-call copies its own."""
+    from recall.codex import codex_plugin_installed
+
+    market = clients / ".agents" / "plugins" / "marketplace.json"
+    market.parent.mkdir(parents=True)
+    market.write_text(json.dumps({"name": "re-call", "plugins": [{"name": "recall"}]}), encoding="utf-8")
+    config = clients / ".codex" / "config.toml"
+    config.parent.mkdir(parents=True, exist_ok=True)
+    config.write_text('model = "x"\n', encoding="utf-8")
+    assert codex_plugin_installed() is False, "an offered but not enabled plugin counted"
+    config.write_text('[plugins."recall@re-call"]\nenabled = true\n', encoding="utf-8")
+    assert codex_plugin_installed() is True
+
+
+def test_a_later_run_keeps_the_servers_an_earlier_one_registered(tmp_path: Path, clients: Path) -> None:
+    """STAKES-007: as Claude Code's local scope does, Codex keeps an earlier run's servers."""
+    from recall.codex import register_project_servers
+
+    project = tmp_path / "project"
+    project.mkdir()
+    first = {"a": {"command": "python", "args": ["-m", "x"], "cwd": str(project), "env": {"K": "1"}}}
+    second = {"b": {"command": "python", "args": ["-m", "y"], "cwd": str(project), "env": {"K": "2"}}}
+    register_project_servers(first, project_root=project)
+    reg = register_project_servers(second, project_root=project)
+    assert set(_codex_servers(project)) == {"a", "b"}, "the earlier run's server was dropped"
+    assert reg.kept == ("a",) and reg.registered == ("b",)
+    assert _codex_servers(project)["a"]["env"] == {"K": "1"}
+
+
+def test_the_report_names_the_backup_and_what_trust_enables(tmp_path: Path, clients: Path) -> None:
+    """SEC-004 and the architect's backup point: the report says where the original was copied and
+    which servers already in the file trusting the project also enables."""
+    project = tmp_path / "project"
+    (project / ".codex").mkdir(parents=True)
+    (project / ".codex" / "config.toml").write_text('[mcp_servers.other]\ncommand = "other"\n', encoding="utf-8")
+    _project, _claude, report = _lite(tmp_path, project)
+    line = next(text for client, text in report.clients if client == "codex" and text.startswith("registered"))
+    assert "backed up the original to" in line, line
+    assert "which also enables other" in line, "trusting the project would enable a server the report hides"
+
+
+def test_a_local_hook_config_naming_no_project_is_taken_over(tmp_path: Path, clients: Path) -> None:
+    """BUG-005 (owner decision): Lite binds a local hook config that names no project to this one."""
+    stale = clients / ".claude" / "recall-hook.json"
+    stale.parent.mkdir(parents=True, exist_ok=True)
+    stale.write_text(json.dumps({"dsn": "postgresql://x@127.0.0.1:1/x"}), encoding="utf-8")
+    project, _claude, _report = _lite(tmp_path)
+    assert _hook_config(clients, "claude").get("project_root") == str(project.resolve()), "the config was not bound here"

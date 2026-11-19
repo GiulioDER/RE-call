@@ -100,10 +100,13 @@ the server too, but not the plugin bundle `recall setup` installs), and reports 
 The hook config is bound to this project, and prompt-time search reads the memory folder you
 passed. Write-time search stays off, because it reads PostgreSQL only. A hook config that already
 serves another project is left alone and reported, since there is one per client per machine.
-Codex loads `.codex/config.toml` only for a trusted project, and asks you to review and trust new
-hooks before they run; setup says when the project is not trusted yet. It refuses to write a
-`.codex/config.toml` that git tracks, and tells you to ignore an untracked one, because it holds
-this machine's store settings.
+Codex loads `.codex/config.toml` only for a trusted project
+([Codex MCP configuration](https://learn.chatgpt.com/docs/extend/mcp)), and asks you to review and
+trust new hooks before they run ([Codex hooks](https://learn.chatgpt.com/codex/hooks)); setup says when the project is not trusted yet. It refuses to write a
+`.codex/config.toml` that git tracks, or that git cannot answer about inside a work tree, and
+adds an untracked one to the project's `.gitignore`, because it holds this machine's store
+settings. Before its first rewrite of an existing file it keeps a private copy beside it,
+`.codex/config.toml.recall-backup`, and a later run keeps the servers an earlier one registered.
 
 `--no-register` skips all of it, for CLI use or manual client wiring.
 
