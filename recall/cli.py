@@ -110,7 +110,8 @@ _COMMAND_REGISTRATIONS: tuple[tuple[frozenset[str], str, str], ...] = (
 class StoreGiven(argparse.Action):
     """Store the value and set `<dest>_given`: the global `--embedder` defaults to RECALL_EMBEDDER
     or fastembed, so a command that must prefer a store's recorded embedder (`lite refresh`) cannot
-    otherwise tell a typed flag from that default."""
+    otherwise tell a typed flag from that default. `lite refresh` asks the same of `--tenant`, so
+    a typed `--tenant default` on a store of another tenant is refused rather than ignored."""
 
     def __call__(self, parser: argparse.ArgumentParser, namespace: argparse.Namespace,
                  values: object, option_string: str | None = None) -> None:
@@ -169,6 +170,7 @@ def build_parser(command: str | None = None) -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--tenant",
+        action=StoreGiven,
         default=DEFAULT_TENANT,
         help=f"tenant namespace to operate on (default: {DEFAULT_TENANT}).",
     )

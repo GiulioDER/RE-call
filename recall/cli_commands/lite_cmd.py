@@ -162,6 +162,14 @@ def _warn_if_over_budget(snap: Snapshot, budget: IndexBudget | None) -> None:
         )
 
 
+def _print_report(values: dict[str, object], text: str, tenant: str | None, *, as_json: bool) -> None:
+    """A refresh or check report, led by the tenant the store records (None: no store yet)."""
+    if as_json:
+        print(json.dumps({"tenant": tenant, **values}, indent=2, default=str))
+        return
+    print(text if tenant is None else f"tenant       {tenant} (recorded in the store)\n{text}")
+
+
 def _cmd_refresh(args: argparse.Namespace) -> None:
     from recall.lite.refresh import Outcome, check, policy_key, refresh, snapshot
 
@@ -171,18 +179,12 @@ def _cmd_refresh(args: argparse.Namespace) -> None:
     from recall.lite import is_lite_dsn, lite_dsn_path
     from recall.lite.setup import default_store_path
 
-    # Refused before any store is opened: refresh opens the store's one table under the default
-    # tenant, so a typed --table refreshed (and could prune) the real store, and --tenant changed
-    # nothing (#1428).
+    # Refused before any store is opened: a lite store has one table, so a typed --table would
+    # refresh (and could prune) the real store (#1428).
     if args.table != DEFAULT_TABLE:
         raise SystemExit(
             f"recall lite refresh: a lite store has one table, '{DEFAULT_TABLE}'; --table "
             f"{args.table!r} cannot be honoured. Use another --store file instead; nothing was refreshed"
-        )
-    if args.tenant != DEFAULT_TENANT:
-        raise SystemExit(
-            f"recall lite refresh: refreshes the '{DEFAULT_TENANT}' tenant only; --tenant "
-            f"{args.tenant!r} cannot be honoured. Use another --store file instead; nothing was refreshed"
         )
     # The store `recall search` and `recall index` follow when no --store is typed: the lite DSN
     # `recall setup --lite` prints for the shell, else the default in the current directory
@@ -191,13 +193,22 @@ def _cmd_refresh(args: argparse.Namespace) -> None:
         args.store
         or (lite_dsn_path(args.dsn) if is_lite_dsn(args.dsn) else default_store_path(Path.cwd()))
     ).resolve()
+    # The store is opened under the tenant it records, which one file holds for good; a typed
+    # --tenant must name that one (#1448). Typed is asked of the parser, since the flag's default
+    # is `default` and a store of another tenant must refuse `--tenant default` too.
+    info = inspect_lite_file(db)
+    tenant = info.tenant or DEFAULT_TENANT
+    if info.tenant is not None and getattr(args, "tenant_given", False) and args.tenant != info.tenant:
+        raise SystemExit(
+            f"recall lite refresh: {db} holds tenant {info.tenant!r}; --tenant {args.tenant!r} does not "
+            f"match it. Pass --tenant {info.tenant} or omit it; nothing was refreshed"
+        )
     roots = _roots(args, db)
     budget = _budget()
     if args.check:
-        # "default" is `LiteStore`'s own default tenant, which is a literal there too.
-        policy, context = _policy(inspect_lite_file(db).tenant or "default")
+        policy, context = _policy(tenant)
         report = check(db, roots, policy=policy_key(policy, context), budget=budget)
-        print(json.dumps(report.to_dict(), indent=2, default=str) if args.json else report.render())
+        _print_report(report.to_dict(), report.render(), info.tenant, as_json=args.json)
         raise SystemExit(EXIT_OK if report.current else EXIT_FAILED)
     if not db.exists():
         raise SystemExit(f"no lite store at {db}; create one with `recall setup --lite`")
@@ -205,7 +216,6 @@ def _cmd_refresh(args: argparse.Namespace) -> None:
     from recall.cli_commands import _shared
     from recall.lite import LiteStore
 
-    info = inspect_lite_file(db)
     choice = _shared._lite_embedder_spec(
         args, info.embedder_spec, db, force=args.force,
         how_to_switch="pass --force to re-embed every memo with it",
@@ -241,7 +251,7 @@ def _cmd_refresh(args: argparse.Namespace) -> None:
     # One walk serves both the refresh's change check and the budget warning below (CCA
     # PERF-004): the memo files are the same before and after, and the walk is the cost.
     snap = snapshot(roots)
-    with LiteStore(db, dim=embedder.dim) as store:
+    with LiteStore(db, dim=embedder.dim, tenant=tenant) as store:
         policy, context = _policy(store.tenant)
         result = refresh(
             store,
@@ -261,7 +271,7 @@ def _cmd_refresh(args: argparse.Namespace) -> None:
             record_spec=spec if spec and (switched or rebind or adopt) else None,
             record_profile=profile,
         )
-    print(json.dumps(result.to_dict(), indent=2, default=str) if args.json else result.render())
+    _print_report(result.to_dict(), result.render(), info.tenant, as_json=args.json)
     _warn_if_over_budget(snap, budget)
     if result.outcome is Outcome.FAILED:
         raise SystemExit(EXIT_FAILED)

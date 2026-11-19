@@ -1369,3 +1369,90 @@ def test_the_default_table_and_tenant_typed_out_still_refresh(project: Path, cap
                 "--memory", str(project / "memory"), "--embedder", "hashing")
     assert code == 0, capsys.readouterr()
     assert read_state(db).get("last_success")
+
+
+def _team_store(project: Path) -> Path:
+    """A lite store that records tenant `team`, as `recall --tenant team --dsn sqlite:///... index`
+    leaves one (#1448)."""
+    db = project / ".recall" / "memory.db"
+    LiteStore(db, dim=64, tenant="team").close()
+    return db
+
+
+def _refresh_argv(db: Path, project: Path, *extra: str) -> list[str]:
+    return ["lite", "refresh", "--store", str(db), "--memory", str(project / "memory"), "--embedder", "hashing", *extra]
+
+
+def test_a_store_of_another_tenant_is_refreshed_under_its_recorded_tenant(
+    project: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """T2 (#1448): refresh opened every store as `default`, so a store recording tenant `team`
+    stopped with a tenant mismatch and no flag could refresh it. It now opens the store under the
+    tenant the file records, and says which, in text and in --json.
+
+    Red proof, 2026-11-19, on the test host against master 64ee49795 (`LiteStore(db,
+    dim=embedder.dim)` in `recall.cli_commands.lite_cmd._cmd_refresh`): failed in "a team store
+    was not refreshed" (exit -1, the mismatch). Mutation M1, `tenant=tenant` dropped from that
+    `LiteStore(...)`, failed it and T4 the same way.
+    """
+    db = _team_store(project)
+    code = _cli(*_refresh_argv(db, project))
+    out = capsys.readouterr()
+    assert code == 0, f"a team store was not refreshed (exit {code}): {out}"
+    assert "tenant       team (recorded in the store)" in out.out, out.out
+    assert read_state(db).get("last_success"), "the refresh was not recorded"
+    with LiteStore(db, dim=64, tenant="team") as opened:
+        assert opened.count() == 3
+    _write_memos(project / "memory", 1, start=3)
+    assert _cli(*_refresh_argv(db, project, "--json")) == 0
+    assert json.loads(capsys.readouterr().out)["tenant"] == "team"
+
+
+def test_check_names_the_recorded_tenant(project: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """T3 (#1448): --check reports the tenant it checked against, in text and in --json.
+
+    Red proof, 2026-11-19, against master 64ee49795: --check already read the recorded tenant for
+    its policy but printed none, so this failed in "names no tenant".
+    """
+    db = _team_store(project)
+    _cli(*_refresh_argv(db, project, "--check"))
+    out = capsys.readouterr().out
+    assert "tenant       team (recorded in the store)" in out, f"--check names no tenant: {out}"
+    _cli(*_refresh_argv(db, project, "--check", "--json"))
+    assert json.loads(capsys.readouterr().out)["tenant"] == "team"
+
+
+def test_a_tenant_flag_matching_the_store_is_accepted(project: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """T4 (#1448): `--tenant team` on a store recording `team` refreshes it.
+
+    Red proof, 2026-11-19, against master 64ee49795: refused by #1445's blanket refusal of any
+    tenant other than `default`, so this failed in "was refused".
+    """
+    db = _team_store(project)
+    code = _cli("--tenant", "team", *_refresh_argv(db, project))
+    assert code == 0, f"--tenant team was refused on a team store: {capsys.readouterr()}"
+    assert read_state(db).get("last_success")
+
+
+@pytest.mark.parametrize("typed", ["other", "default"])
+def test_a_tenant_flag_the_store_does_not_hold_is_refused_naming_both(
+    project: Path, capsys: pytest.CaptureFixture[str], typed: str
+) -> None:
+    """T5 (#1448): a typed --tenant that differs from the recorded one is refused before the store
+    is opened, naming both values, and the store is left as it was. A typed `--tenant default`
+    counts as typed: it is refused on a `team` store, not read as "no flag".
+
+    Red proof, 2026-11-19, against master 64ee49795: `other` was refused without naming `team`,
+    and `default` passed #1445's check and stopped in the store's own mismatch, which names no
+    flag; both failed in "does not name both". Mutation M2, `getattr(args, "tenant_given", False)`
+    replaced by `args.tenant != "default"`, failed the `default` case in "refreshed the store".
+    """
+    db = _team_store(project)
+    message: object = None
+    try:
+        cli_main(["--tenant", typed, *_refresh_argv(db, project)])
+    except SystemExit as exc:
+        message = exc.code
+    assert not read_state(db), f"--tenant {typed} refreshed the store"
+    assert isinstance(message, str), f"--tenant {typed} was not refused (exit {message!r})"
+    assert f"--tenant {typed!r}" in message and "'team'" in message, f"does not name both: {message}"
