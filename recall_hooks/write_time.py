@@ -98,6 +98,11 @@ COOLDOWN_SECONDS = 300
 MAX_COOLDOWN_SECONDS = 3600.0
 MAX_K = 20
 
+#: The setting the legacy table's row-level security isolates tenants by. Spelled out rather than
+#: imported from `recall.db_constants.TENANT_GUC`, because importing `recall` costs this hook its
+#: start-up budget; `tests/test_write_time_legacy_store.py` pins the two together.
+LEGACY_TENANT_GUC = "recall.tenant_id"
+
 WRITE_TOOLS = ("Write", "Edit", "MultiEdit", "NotebookEdit")
 COMMAND_TOOLS = ("Bash", "BashOutput")
 TOKEN_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]{2,}")
@@ -282,19 +287,56 @@ def _search_connection(
     if not terms:
         return []
     tenant = str(config.get("tenant", "default"))
+    k = int(options["k"])
+    # Still one round trip for a generation install: the first column says whether the tenant
+    # has an active generation, and the LEFT JOIN keeps that row when there are no hits.
     rows = connection.execute(
-        "SELECT source_uri, text, ts_rank(tsv, to_tsquery('english', %s)) AS rank "
-        "FROM recall_chunks_v1 "
-        "WHERE tenant_id = %s "
-        "  AND generation_id = ("
-        "        SELECT generation_id FROM recall_generations "
-        "        WHERE tenant_id = %s AND state = 'active' "
-        "        ORDER BY created_at DESC LIMIT 1) "
-        "  AND tsv @@ to_tsquery('english', %s) "
-        "ORDER BY rank DESC LIMIT %s",
-        (terms, tenant, tenant, terms, int(options["k"])),
+        "SELECT g.has_active, h.source_uri, h.text, h.rank "
+        "FROM (SELECT EXISTS ("
+        "        SELECT 1 FROM recall_generations "
+        "        WHERE tenant_id = %s AND state = 'active') AS has_active) g "
+        "LEFT JOIN LATERAL ("
+        "    SELECT source_uri, text, ts_rank(tsv, to_tsquery('english', %s)) AS rank "
+        "    FROM recall_chunks_v1 "
+        "    WHERE tenant_id = %s "
+        "      AND generation_id = ("
+        "            SELECT generation_id FROM recall_generations "
+        "            WHERE tenant_id = %s AND state = 'active' "
+        "            ORDER BY created_at DESC LIMIT 1) "
+        "      AND tsv @@ to_tsquery('english', %s) "
+        "    ORDER BY rank DESC LIMIT %s) h ON true",
+        (tenant, terms, tenant, tenant, terms, k),
     ).fetchall()
-    return [(Path(str(uri)).name, str(text), float(rank)) for uri, text, rank in rows]
+    if rows and rows[0][0]:
+        return [
+            (Path(str(uri)).name, str(text), float(rank))
+            for _, uri, text, rank in rows
+            if uri is not None
+        ]
+    return _search_legacy_table(connection, terms, tenant, str(config.get("table", "chunks")), k)
+
+
+def _search_legacy_table(
+    connection: Any, terms: str, tenant: str, table: str, k: int
+) -> list[tuple[str, str, float]]:
+    """Search the legacy table plain `recall setup` indexes into (issue 1425).
+
+    Reached only when the tenant has no active generation, which is every install `recall setup`
+    made without the wizard: it writes memos to the legacy table (`recall.memory_index`), so
+    searching generations alone found nothing there. The table is row-level-security forced, so
+    the tenant is set for this transaction first.
+    """
+    from psycopg import sql
+
+    statement = sql.SQL(
+        "SELECT source, text, ts_rank(tsv, to_tsquery('english', %s)) AS rank "
+        "FROM {} WHERE tenant_id = %s AND tsv @@ to_tsquery('english', %s) "
+        "ORDER BY rank DESC LIMIT %s"
+    ).format(sql.Identifier(table))
+    with connection.transaction():
+        connection.execute("SELECT set_config(%s, %s, true)", (LEGACY_TENANT_GUC, tenant))
+        rows = connection.execute(statement, (terms, tenant, terms, k)).fetchall()
+    return [(Path(str(source)).name, str(text), float(rank)) for source, text, rank in rows]
 
 
 def search(query: str, config: dict[str, Any], options: dict[str, Any]) -> list[tuple[str, str, float]]:
