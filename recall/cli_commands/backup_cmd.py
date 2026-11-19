@@ -32,7 +32,12 @@ def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     create.add_argument("--snapshot", required=True, dest="snapshot_identifier")
     create.add_argument("--region", default=None)
     create.add_argument("--receipt-bucket", default=None)
-    create.add_argument("--receipt-key", default=None)
+    create.add_argument(
+        "--receipt-key",
+        default=None,
+        help="object key for the receipt in --receipt-bucket (default receipts/<snapshot>.json); "
+        "refused without --receipt-bucket",
+    )
 
     verify = commands.add_parser("verify", help="verify snapshot metadata and cluster ownership")
     verify.add_argument("--cluster", required=True, dest="cluster_identifier")
@@ -60,6 +65,13 @@ def _cmd_backup(args: argparse.Namespace) -> None:
         print(json.dumps(_manager(args.region).status(args.cluster_identifier), indent=2, default=str))
         return
     if args.backup_cmd == "create":
+        # Refused before the snapshot: the key is read only with a bucket, so without one the
+        # snapshot was taken and the receipt the caller asked for was silently not written.
+        if args.receipt_key is not None and not args.receipt_bucket:
+            raise SystemExit(
+                "--receipt-key names the receipt's object in --receipt-bucket; without a bucket "
+                "no receipt is written. Pass --receipt-bucket, or drop --receipt-key."
+            )
         manager = _manager(args.region)
         snapshot = manager.create_snapshot(args.cluster_identifier, args.snapshot_identifier)
         result: dict[str, object] = {"snapshot": snapshot}
