@@ -133,6 +133,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   enforced again: one budget per process, shared by every answer and proof provider and by both
   backends, debited before the request is sent. `off` removes it; `0`, a negative or a non-number
   is refused naming the variable.
+- `recall setup` refuses the flags it accepted and then ignored, naming each one, instead of
+  running without them. Without `--lite` it refuses the global `--embedder` (the interview chooses
+  the embedder), `--tenant` other than `default`, and the Lite-only `--memory`, `--store` and
+  `--no-register`. A tenant was only half applied: the scaffolded memory and the Codex wiring used
+  it, while the seed, the Claude Code server and its hooks used `default`, so the registered server
+  could not see that memory. `recall setup --lite` refuses `--tenant` and `--table` other than their
+  defaults, since a Lite store has one tenant and one table; use `--store` for another file.
+  `--embedder` with `--lite` and `--table` without it are applied as before.
 - A memo whose `recall_graph` held a `NaN` or `Infinity` failed the whole Lite refresh with
   "malformed JSON" on SQLite before 3.42 (Debian 12 ships 3.40, Ubuntu 22.04 3.37), and the same
   memo failed indexing on PostgreSQL, whose `jsonb` refuses those values too. Such a value is now
