@@ -141,6 +141,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   on the legacy profile, which has no latency budget and admitted four searches at once, each a
   cross-encoder predict on every core, in every server a client opens. Re-run `recall setup` to
   update an existing registration; set the variable in the registration to choose otherwise.
+- When the shell `recall setup` runs in exports `RECALL_RETRIEVAL_PROFILE` and a reranker is chosen,
+  setup now runs the server's own startup check and says what that profile will do to the
+  server it registers. A profile the server would refuse with that reranker (`fast`; `quality`
+  without its pinned artifact; `code` without coreb-code consent; an unknown name) gets a
+  warning, since a client shows a refused server only as one with no tools. A `quality` or
+  `hosted-quality` server that starts gets a note that it runs one search at a time under its
+  latency budget. Setup sees only its own shell; the client's environment is what decides.
 - The desktop's `update_enabled` in `runtime.json` is read as a boolean: the string `"false"`
   (or `0`, `no`, `off`) now turns the release checks off, where `bool("false")` left them on, and
   any other value that is not a boolean turns them off too; the rest of the profile is kept.

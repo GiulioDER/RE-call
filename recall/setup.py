@@ -109,6 +109,48 @@ def _server_settings(values: Mapping[str, str]) -> dict[str, str]:
     return settings
 
 
+def _retrieval_profile_warning(
+    settings: Mapping[str, str], environ: Mapping[str, str]
+) -> str | None:
+    """What an exported RECALL_RETRIEVAL_PROFILE will do to the server setup registers, or None.
+
+    The client lays the registration over its own environment, so a profile it exports meets the
+    reranker setup chose. RECALL_RETRIEVAL_PROFILE=fast with RECALL_RERANK=1 makes the server
+    refuse to start, which a client shows only as a server with no tools (CCA DEPLOY-003, owner
+    decision 2026-11-19: warn at setup). Setup can see only its own shell, so the warning says
+    that the client's environment is what decides. The check is the server's own startup check,
+    which also refuses `quality` without its pinned artifact and `code` without coreb-code.
+    """
+    exported = environ.get("RECALL_RETRIEVAL_PROFILE", "").strip()
+    if not exported or settings.get("RECALL_RERANK") != "1":
+        return None
+    from recall.profiles import resolve_retrieval_profile
+    from recall_mcp.retrieval import startup_retrieval_profile
+
+    try:
+        startup_retrieval_profile(dict({**environ, **settings}))
+    except ValueError as exc:
+        return (
+            f"Warning: this shell exports RECALL_RETRIEVAL_PROFILE={exported}. If the client that "
+            f"starts the registered server exports it too, that server will refuse to start ({exc}). "
+            "Unset it in that client, or set what this message names."
+        )
+    without_cap = {k: v for k, v in settings.items() if k != "RECALL_SEARCH_CONCURRENCY"}
+    try:
+        own = resolve_retrieval_profile({**environ, **without_cap}).max_concurrency
+    except ValueError:
+        # A malformed RECALL_SEARCH_CONCURRENCY in this shell: the registration's value wins on
+        # the server, so there is nothing to say, and setup must not fail over a note.
+        return None
+    if own > 1 and settings.get("RECALL_SEARCH_CONCURRENCY") == "1":
+        return (
+            f"Note: this shell exports RECALL_RETRIEVAL_PROFILE={exported}. The registered server "
+            f"runs the reranker one search at a time (RECALL_SEARCH_CONCURRENCY=1), not the {own} "
+            "that profile allows, so under its latency budget a waiting search may be shed."
+        )
+    return None
+
+
 DEFAULT_CALIBRATION_PATH = Path("calibration.json")
 MODEL_DOWNLOAD_FLOOR_BYTES = 1_500_000_000
 CLAUDE_MD_BEGIN = "<!-- recall setup begin -->"
@@ -1486,6 +1528,10 @@ def run_setup_wizard(
         "Search threshold: not calibrated by setup. Run recall wizard to build, calibrate and "
         "publish a generation, which is the calibration search uses."
     )
+    if claude_wiring_requested or codex_wiring_requested:
+        warning = _retrieval_profile_warning(_server_settings(values), os.environ)
+        if warning:
+            print_fn(warning)
     if scaffold_requested:
         _run_scaffold()
     if seed_requested:
