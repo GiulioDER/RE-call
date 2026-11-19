@@ -240,8 +240,8 @@ def test_cuda_vram_ignores_unparseable_output(monkeypatch: pytest.MonkeyPatch) -
 def test_splade_is_only_offered_with_enough_vram() -> None:
     """The user's rule: no capable GPU means the question is never asked.
 
-    `sparse_choices` in the existing wizard gates on `cuda_available` alone, which would offer
-    SPLADE on a 2 GB laptop GPU that cannot load the encoder.
+    `sparse_choices` in the old `recall setup` wizard gated on `cuda_available` alone, which
+    offered SPLADE on a 2 GB laptop GPU that cannot load the encoder.
     """
     assert P.splade_is_feasible(cuda_available=False, vram_bytes=None) is False
     assert P.splade_is_feasible(cuda_available=True, vram_bytes=None) is False

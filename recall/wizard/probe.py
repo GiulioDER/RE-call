@@ -65,7 +65,7 @@ COMFORTABLE_RAM_BYTES = 8 * 1024**3
 RAM_REPORTING_SLACK_BYTES = 1 * 1024**3
 
 #: The SPLADE encoder plus its vocabulary-width activations. Gating on `cuda_available` alone,
-#: which is what `recall.setup.sparse_choices` does today, offers SPLADE on a 2 GB laptop GPU that
+#: as `recall.setup.sparse_choices` did before setup stopped offering it, offers SPLADE on a GPU that
 #: cannot load it — an option that is visible, selectable, and fails later.
 SPLADE_MIN_VRAM_BYTES = 6 * 1024**3
 

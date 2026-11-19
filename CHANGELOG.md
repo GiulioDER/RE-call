@@ -288,6 +288,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   checkpoint from truncating the write-ahead log, or when its one-time VACUUM could not run, so
   erased bytes could stay on disk while the answer read as complete. Its JSON now carries a
   `warning` naming what is left and the command that finishes it, as `recall forget` already did.
+- `recall setup` no longer asks for a sparse retrieval backend. Its SPLADE option wrote
+  `RECALL_SPARSE=splade`, which no indexing or search path reads, so every search still ran
+  PostgreSQL full text. Setup now writes `RECALL_SPARSE=fts` without asking; SPLADE remains a
+  library option through `HybridRetriever(sparse_backend=...)`. A scripted run of setup has one
+  answer fewer.
 - Documentation that disagreed with the code: the plugin README said there is no embedded mode
   (Lite is one); the tool routing map counted 26 tools while routing 29, now pinned by test;
   `docs/PRODUCTION.md` said four auth scopes and six failure codes (six and seven), and it and

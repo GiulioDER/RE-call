@@ -421,7 +421,7 @@ def _prepare_schema_for_embedder(
     )
 
 
-def _why_unavailable(probe: HardwareProbe, *, needs_cuda: bool = False) -> str:
+def _why_unavailable(probe: HardwareProbe) -> str:
     """The conditions that actually failed, not the one that usually fails.
 
     These mirror the guards the callers use to compute `runnable`, and must stay in step with
@@ -429,8 +429,6 @@ def _why_unavailable(probe: HardwareProbe, *, needs_cuda: bool = False) -> str:
     blocker is free disk, sends them to fix the wrong thing.
     """
     missing: list[str] = []
-    if needs_cuda and not probe.cuda_available:
-        missing.append("no CUDA device was detected")
     if not probe.sentence_transformers_available:
         missing.append("sentence-transformers is not installed")
     if not _can_download_models(probe):
@@ -487,35 +485,6 @@ def reranker_choices(
                 unavailable_tag=bge_tag,
             )
         )
-    return choices
-
-
-def sparse_choices(probe: HardwareProbe) -> list[Choice]:
-    choices = [
-        Choice(
-            label="postgres fts",
-            value="RECALL_SPARSE=fts",
-            description="Current sparse retrieval path, no extra GPU requirement",
-        )
-    ]
-    runnable = (
-        probe.cuda_available
-        and probe.sentence_transformers_available
-        and _can_download_models(probe)
-    )
-    choices.append(
-        Choice(
-            label="splade",
-            value="RECALL_SPARSE=splade",
-            description="CUDA sparse encoder for higher coverage when the machine can run it",
-            available=runnable,
-            unavailable_note=(
-                f"SPLADE is unavailable here: {_why_unavailable(probe, needs_cuda=True)}. The "
-                'extra is pip install "recall-rag[sparse]". Rerun setup and choose it again once '
-                "it can run."
-            ),
-        )
-    )
     return choices
 
 
@@ -874,7 +843,7 @@ def _choose(
     """The option the reader picks, never one this machine cannot run.
 
     Picking an unavailable option normally keeps `choices[0]`, the runnable baseline: for a
-    reranker or a sparse backend that baseline is "off", which is a sound default. For the
+    reranker that baseline is "off", which is a sound default. For the
     embedder it is `hashing`, which retrieves far worse than the model the reader was reaching
     for, so that call site passes `ask_again_when_unavailable` and the menu asks again instead.
     """
@@ -912,7 +881,7 @@ def _choose(
             # machine cannot hold the model, so it would fail at index or query time, long after
             # the person who could fix it walked away.
             # Falling back to choices[0] relies on the first entry being the always-runnable
-            # baseline, which `reranker_choices` and `sparse_choices` both guarantee.
+            # baseline, which `reranker_choices` guarantees.
             print_fn(picked.unavailable_note)
             if ask_again_when_unavailable:
                 print_fn("Choose another option.")
@@ -1244,12 +1213,6 @@ def run_setup_wizard(
         "Choose whether to enable reranking:",
         rerankers,
     )
-    sparse_backend = _choose(
-        input_fn,
-        print_fn,
-        "Choose the sparse retrieval backend:",
-        sparse_choices(probe),
-    )
     reasoning_values = _reasoning_interview(
         input_fn,
         print_fn,
@@ -1458,11 +1421,6 @@ def run_setup_wizard(
                 values[key] = value
     else:
         values["RECALL_RERANK"] = "0"
-
-    if sparse_backend.value:
-        key, _, value = sparse_backend.value.partition("=")
-        if key and value:
-            values[key] = value
 
     values.update(reasoning_values)
     values.update(cloud_keys)
