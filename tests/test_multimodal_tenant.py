@@ -368,14 +368,30 @@ def test_a_reference_stores_the_values_it_validated() -> None:
     project_media_evidence(ref, requester_tenant="re-call-multimodal", principal="tester")
 
 
-def test_an_out_of_range_bound_names_its_variable_and_ceiling() -> None:
-    """The refusal says which variable is wrong and what the limit is (ENV-101).
+def test_the_unapplied_multimodal_bounds_are_not_configuration() -> None:
+    """#1409: the three multimodal bounds were parsed and validated, but no serving path applied
+    them, so they are no longer offered or read. The module constants stay the fixed bounds.
 
-    Red proof: ``Regex pattern did not match``; the message was 'multimodal max_items is outside
-    the bounded limit'.
+    Invariant: a value nothing applies neither refuses startup nor appears in the schema that
+    generates the operator reference.
+
+    Red proof (2026-11-19, against master 63b7c3ea2, where ``MultimodalTenantConfig.__post_init__``
+    still range checked ``max_items`` and ``ENVIRONMENT_SCHEMA`` still listed the three names):
+    this node failed at ``pytest.fail`` with "startup refused a variable nothing applies:
+    RECALL_MULTIMODAL_MAX_ITEMS is 99; it must be between 1 and 20".
     """
-    with pytest.raises(MediaValidationError, match=r"RECALL_MULTIMODAL_MAX_ITEMS is 99.*1 and 20"):
-        MultimodalTenantConfig(max_items=99)
+    from recall_mcp.settings import ENVIRONMENT_SCHEMA
+
+    names = {
+        "RECALL_MULTIMODAL_MAX_MEDIA_BYTES",
+        "RECALL_MULTIMODAL_MAX_RESPONSE_BYTES",
+        "RECALL_MULTIMODAL_MAX_ITEMS",
+    }
+    try:
+        Settings.from_env({"RECALL_MULTIMODAL_MAX_ITEMS": "99"})
+    except MediaValidationError as exc:
+        pytest.fail(f"startup refused a variable nothing applies: {exc}")
+    assert not {spec.name for spec in ENVIRONMENT_SCHEMA} & names
 
 
 # Owner decisions of 2026-11-06 on the second hunt's open items. Red proofs, 2026-11-06, against

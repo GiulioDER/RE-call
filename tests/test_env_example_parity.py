@@ -126,6 +126,10 @@ REASONING_UNDOCUMENTED_ON_PURPOSE = {
     # reintroduce the very confusion that comment was written to end. No runtime reads it:
     #     grep -rn 'RECALL_REASONING\b' recall/ recall_mcp/ --include=*.py
     "RECALL_REASONING",
+    # The retired model id (#1406). `recall/reasoning_expansion.py` names it only to refuse it:
+    # an old config that sets it with expansion on is told it is no longer read. Documenting it
+    # would offer a setting that does nothing.
+    "RECALL_REASONING_MODEL",
 }
 
 

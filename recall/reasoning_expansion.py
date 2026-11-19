@@ -276,6 +276,14 @@ def resolve_expansion_provider(
         or source.get("RECALL_REASONING_API_KEY", "").strip()
     )
     if not model:
+        # Unlike the key, timeout and base URL, the bare model name is no fallback: older setup
+        # files wrote it for the generic reasoning arm, so it may name a model never chosen to
+        # plan (and spend on) expansion queries. Name it so the operator knows why it was ignored.
+        if source.get("RECALL_REASONING_MODEL", "").strip():
+            raise ValueError(
+                "RECALL_REASONING_MODEL is no longer read; set RECALL_REASONING_EXPANSION_MODEL "
+                "to the expansion model when expansion is enabled"
+            )
         raise ValueError("RECALL_REASONING_EXPANSION_MODEL is required when expansion is enabled")
     if not key:
         raise ValueError(

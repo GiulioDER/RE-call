@@ -65,11 +65,11 @@ The object root must be an `s3://` or `file://` URI with an absolute path prefix
 tenant with any other root refuses to start.
 
 The fixed tenant and profile cannot be renamed through environment configuration.
-`RECALL_MULTIMODAL_MAX_MEDIA_BYTES`, `RECALL_MULTIMODAL_MAX_RESPONSE_BYTES`, and
-`RECALL_MULTIMODAL_MAX_ITEMS` are validated at startup and may only lower the module bounds, but
-no serving path applies them yet: `build_media_ref` and `project_media_evidence` enforce the
-budget a caller passes, defaulting to the 30 MiB module constants, and nothing enforces the item
-bound. The session MCP file
+The media and response byte bounds are not configurable: `build_media_ref` and
+`project_media_evidence` enforce the budget a caller passes, defaulting to the 30 MiB module
+constants. The `RECALL_MULTIMODAL_MAX_MEDIA_BYTES`, `RECALL_MULTIMODAL_MAX_RESPONSE_BYTES` and
+`RECALL_MULTIMODAL_MAX_ITEMS` variables of earlier releases are no longer read, because no serving
+path applied them. The session MCP file
 does not include this specialist unless `RECALL_MCP_INCLUDE_MULTIMODAL=1` is set.
 
 ## Evidence boundary
