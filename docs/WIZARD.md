@@ -6,8 +6,8 @@ run the PostgreSQL wizard or its automatic Codex integration.
 
 > **When to prefer this page:** use `recall wizard` for a calibrated, promoted generation. It can
 > ask questions interactively or run a saved config with `--headless --config` for CI and
-> provisioning. `recall setup` configures the installation and offers legacy calibration; it
-> does not build or promote a generation. For the manual command-by-command path, see
+> provisioning. `recall setup` configures the installation; it does not calibrate, and it does
+> not build or promote a generation. For the manual command-by-command path, see
 > [FIRST_CALIBRATION.md](FIRST_CALIBRATION.md).
 
 `recall wizard` takes a JSON config and drives every corpus from a directory to a calibrated,

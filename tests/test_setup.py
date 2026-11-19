@@ -112,122 +112,12 @@ def test_setup_wizard_writes_env_and_accepts_api_keys(tmp_path, monkeypatch):
 
     text = (tmp_path / ".env").read_text(encoding="utf-8")
     assert "RECALL_DSN=postgresql://example/recall" in text
-    assert "RECALL_SECURITY_REQUIRED=0" in text
     assert "VOYAGE_API_KEY=voyage-key" in text
     assert "OPENAI_API_KEY=openai-key" in text
     assert "OPENROUTER_API_KEY=openrouter-key" in text
     assert "RECALL_EMBEDDER=voyage:voyage-3" in text
     assert "RECALL_RERANK=0" in text
-    assert "RECALL_SPARSE=fts" in text
     assert "RECALL_ENTAILMENT" not in text
-    assert "Calibration skipped" in output.getvalue()
-
-
-def test_setup_wizard_skips_blank_calibration_inputs(tmp_path, monkeypatch):
-    probe = HardwareProbe(
-        cpu_count=8,
-        gpu="nvidia",
-        cuda_available=False,
-        free_bytes=10_000_000_000,
-        internet=True,
-        fastembed_available=True,
-        sentence_transformers_available=True,
-    )
-    monkeypatch.setattr("recall.setup.probe_hardware", lambda: probe)
-    monkeypatch.setattr("recall.setup._module_available", lambda name: True)
-    monkeypatch.setattr(
-        "recall.setup.calibrate_from_files",
-        lambda **kw: (_ for _ in ()).throw(AssertionError("calibration should be skipped")),
-    )
-    answers = iter([
-        "n",
-        "voyage-key",
-        "openai-key",
-        "openrouter-key",
-        "6",  # embedder: voyage cloud, now 6th since bge base and large were added
-        "1",  # reranker menu
-        "n",  # reasoning arm declined
-        "n",  # scaffold CLAUDE.md / memory/? declined
-        "y",
-        "",
-        "",
-    ])
-    output = io.StringIO()
-
-    def fake_input(_prompt: str = "") -> str:
-        return next(answers)
-
-    run_setup_wizard(
-        dsn="postgresql://example/recall",
-        env_path=tmp_path / ".env",
-        input_fn=fake_input,
-        print_fn=lambda *a, **k: print(*a, **k, file=output),
-    )
-
-    text = (tmp_path / ".env").read_text(encoding="utf-8")
-    assert "RECALL_DSN=postgresql://example/recall" in text
-    assert "RECALL_EMBEDDER=voyage:voyage-3" in text
-    assert "RECALL_SPARSE=fts" in text
-    assert "Calibration skipped" in output.getvalue()
-
-
-def test_setup_wizard_treats_calibration_directory_as_output_folder(tmp_path, monkeypatch):
-    probe = HardwareProbe(
-        cpu_count=8,
-        gpu="nvidia",
-        cuda_available=False,
-        free_bytes=10_000_000_000,
-        internet=True,
-        fastembed_available=True,
-        sentence_transformers_available=True,
-    )
-    monkeypatch.setattr("recall.setup.probe_hardware", lambda: probe)
-    monkeypatch.setattr("recall.setup._module_available", lambda name: True)
-    (tmp_path / "nested").mkdir()
-    seen = {}
-
-    def fake_calibrate_from_files(**kw):
-        seen["out"] = kw["out"]
-        return type(
-            "R",
-            (),
-            {
-                "path": kw["out"],
-                "calibration": type("C", (), {"threshold": 0.5})(),
-                "report": None,
-            },
-        )()
-
-    monkeypatch.setattr("recall.setup.calibrate_from_files", fake_calibrate_from_files)
-    answers = iter([
-        "n",
-        "voyage-key",
-        "openai-key",
-        "openrouter-key",
-        "6",  # embedder: voyage cloud, now 6th since bge base and large were added
-        "1",  # reranker menu
-        "n",  # reasoning arm declined
-        "n",  # scaffold CLAUDE.md / memory/? declined
-        "y",
-        str(tmp_path / "queries.json"),
-        str(tmp_path / "corpus"),
-        str(tmp_path / "nested"),
-        "",
-    ])
-    output = io.StringIO()
-
-    def fake_input(_prompt: str = "") -> str:
-        return next(answers)
-
-    run_setup_wizard(
-        dsn="postgresql://example/recall",
-        env_path=tmp_path / ".env",
-        input_fn=fake_input,
-        print_fn=lambda *a, **k: print(*a, **k, file=output),
-    )
-
-    assert seen["out"] == tmp_path / "nested" / "calibration.json"
-    assert "Calibration saved to" in output.getvalue()
 
 
 def test_setup_wizard_rejects_windows_host_path_for_calibration_output(tmp_path, monkeypatch):
@@ -758,7 +648,6 @@ def test_setup_wizard_survives_scaffold_failure_and_still_writes_env(tmp_path, m
     text = (tmp_path / ".env").read_text(encoding="utf-8")
     assert "RECALL_DSN=postgresql://example/recall" in text
     assert "RECALL_EMBEDDER=voyage:voyage-3" in text
-    assert "RECALL_SPARSE=fts" in text
     assert "Could not scaffold" in output.getvalue()
 
 
@@ -868,71 +757,6 @@ def test_setup_wizard_scaffold_prompt_defaults_to_yes_on_blank_answer(tmp_path, 
     assert index_calls["memory_dir"] == memory_dir
 
 
-def test_setup_wizard_still_scaffolds_when_calibration_output_path_is_invalid(
-    tmp_path, monkeypatch
-):
-    probe = HardwareProbe(
-        cpu_count=8,
-        gpu=None,
-        cuda_available=False,
-        free_bytes=10_000_000_000,
-        internet=True,
-        fastembed_available=True,
-        sentence_transformers_available=True,
-    )
-    monkeypatch.setattr("recall.setup.probe_hardware", lambda: probe)
-    monkeypatch.setattr("recall.setup._module_available", lambda name: True)
-    monkeypatch.setattr(
-        "recall.setup.calibrate_from_files",
-        lambda **kw: (_ for _ in ()).throw(ValueError("bad calibration input")),
-    )
-    index_calls = {}
-    monkeypatch.setattr(
-        "recall.setup.index_memory_directory",
-        lambda **kw: index_calls.update(kw),
-    )
-    answers = iter([
-        "n",
-        "voyage-key",
-        "openai-key",
-        "openrouter-key",
-        "6",  # embedder: voyage cloud, now 6th since bge base and large were added
-        "1",  # reranker menu
-        "n",  # reasoning arm declined
-        "y",  # scaffold CLAUDE.md / memory/? accepted
-        "y",  # calibrate now? accepted
-        str(tmp_path / "queries.json"),
-        str(tmp_path / "corpus"),
-        "",  # calibration output path, default — calibrate_from_files raises ValueError
-    ])
-    output = io.StringIO()
-
-    def fake_input(_prompt: str = "") -> str:
-        return next(answers)
-
-    claude_md_path = tmp_path / "CLAUDE.md"
-    memory_dir = tmp_path / "memory"
-
-    with pytest.raises(SystemExit) as exc_info:
-        run_setup_wizard(
-            dsn="postgresql://example/recall",
-            env_path=tmp_path / ".env",
-            claude_md_path=claude_md_path,
-            memory_dir=memory_dir,
-            input_fn=fake_input,
-            print_fn=lambda *a, **k: print(*a, **k, file=output),
-        )
-
-    assert exc_info.value.code == 2
-    # A bad calibration path aborts the wizard before .env is ever written, unchanged from
-    # before this refactor — but a scaffold the user separately asked for must not be silently
-    # dropped just because a later, unrelated step failed.
-    assert not (tmp_path / ".env").exists()
-    assert claude_md_path.exists()
-    assert (memory_dir / "MEMORY.md").exists()
-    assert index_calls["memory_dir"] == memory_dir
-
-
 def test_a_real_choice_is_still_offered_as_a_menu(tmp_path, monkeypatch):
     """The shortcut must not swallow a decision the machine can actually make.
 
@@ -958,7 +782,6 @@ def test_a_real_choice_is_still_offered_as_a_menu(tmp_path, monkeypatch):
         "2",  # reranker menu, genuinely offered: ms marco
         "n",  # reasoning arm declined
         "n",  # scaffold
-        "n",  # calibrate
     ])
     output = io.StringIO()
 
@@ -998,7 +821,6 @@ def test_a_sole_embedder_says_what_it_costs_rather_than_offering_a_menu(tmp_path
         "1",  # reranker menu, still offered because unavailable options are listed
         "n",  # reasoning arm declined
         "n",  # scaffold
-        "n",  # calibrate
     ])
     output = io.StringIO()
 
@@ -1038,7 +860,7 @@ def test_options_this_machine_cannot_run_are_still_listed_and_marked(tmp_path, m
     """
     monkeypatch.setattr("recall.setup.probe_hardware", _no_extras_probe)
     monkeypatch.setattr("recall.setup._module_available", lambda name: False)
-    answers = iter(["n", "", "", "", "1", "1", "n", "n", "n"])
+    answers = iter(["n", "", "", "", "1", "1", "n", "n"])
     output = io.StringIO()
 
     run_setup_wizard(
@@ -1065,7 +887,7 @@ def test_picking_an_unavailable_reranker_explains_and_keeps_the_baseline(
     """
     monkeypatch.setattr("recall.setup.probe_hardware", _no_extras_probe)
     monkeypatch.setattr("recall.setup._module_available", lambda name: False)
-    answers = iter(["n", "", "", "", "1", "2", "n", "n", "n"])  # reranker 2 is not installed
+    answers = iter(["n", "", "", "", "1", "2", "n", "n"])  # reranker 2 is not installed
     output = io.StringIO()
 
     run_setup_wizard(
@@ -1293,7 +1115,6 @@ def test_picking_a_withheld_embedder_asks_again_instead_of_keeping_hashing(
         "1",  # reranker
         "n",  # reasoning arm declined
         "n",  # scaffold
-        "n",  # calibrate
     ])
     output = io.StringIO()
 
@@ -1693,7 +1514,6 @@ def test_declining_the_reasoning_arm_writes_only_the_off_flag(tmp_path, monkeypa
             "1",   # reranker: none
             "n",   # reasoning arm declined
             "n",   # scaffold declined
-            "n",   # calibrate declined
         ],
     )
     assert "RECALL_REASONING_EXPANSION=0" in env
@@ -1730,7 +1550,6 @@ def test_seeding_runs_before_the_hooks_are_installed(tmp_path, monkeypatch):
             "y",   # wire up Claude Code
             "y",   # search memory on every write (the write-time hook)
             "y",   # search memory on every prompt (the prompt-time hook)
-            "n",   # calibrate declined
         ],
     )
 
@@ -1771,7 +1590,6 @@ def test_each_injection_answer_reaches_the_installer(
             "y",             # wire up Claude Code
             write_answer,    # the write-time hook
             prompt_answer,   # the prompt-time hook
-            "n",             # calibrate declined
         ],
     )
 
@@ -1868,7 +1686,6 @@ def test_accepting_the_wiring_prompt_registers_the_server_and_installs_the_hooks
             "y",   # wire up Claude Code
             "y",   # search memory on every write (the write-time hook)
             "y",   # search memory on every prompt (the prompt-time hook)
-            "n",   # calibrate declined
         ],
     )
 
@@ -1908,7 +1725,7 @@ def test_declining_the_wiring_prompt_touches_no_client_configuration(tmp_path, m
     _run_wizard(
         tmp_path,
         monkeypatch,
-        ["y", "2", "1", "1", "n", "n", "n", "n"],  # ...scaffold n, wiring n, calibrate n
+        ["y", "2", "1", "1", "n", "n", "n"],  # ...scaffold n, wiring n
     )
 
 
@@ -1924,8 +1741,8 @@ def test_a_failed_wiring_step_does_not_lose_the_completed_interview(tmp_path, mo
         tmp_path,
         monkeypatch,
         # security y, embedder 2, reranker 1, reasoning n, scaffold n,
-        # wiring y, write-time hook y, prompt-time hook y, calibrate n
-        ["y", "2", "1", "n", "n", "y", "y", "y", "n"],
+        # wiring y, write-time hook y, prompt-time hook y
+        ["y", "2", "1", "n", "n", "y", "y", "y"],
     )
 
     assert "RECALL_EMBEDDER=fastembed" in env
@@ -1941,7 +1758,7 @@ def test_the_plugin_install_lines_are_the_wizards_last_words(tmp_path, monkeypat
     _, output = _run_wizard(
         tmp_path,
         monkeypatch,
-        ["y", "2", "1", "1", "n", "n", "n", "n"],  # ...wiring n, calibrate n
+        ["y", "2", "1", "1", "n", "n", "n"],  # ...wiring n
     )
 
     assert "/plugin marketplace add GiulioDER/RE-call" in output
@@ -1973,7 +1790,7 @@ def test_accepting_the_skill_copy_installs_it_under_the_config_home(tmp_path, mo
     _, output = _run_wizard(
         tmp_path,
         monkeypatch,
-        ["y", "2", "1", "1", "n", "n", "n", "y", "n"],  # ...wiring n, copy the skill y, calibrate n
+        ["y", "2", "1", "1", "n", "n", "n", "y"],  # ...wiring n, copy the skill y
     )
 
     dest = config_home / "skills" / "check-memory-before-acting" / "SKILL.md"
@@ -2021,7 +1838,7 @@ def test_declining_the_skill_copy_writes_nothing(tmp_path, monkeypatch):
     _, output = _run_wizard(
         tmp_path,
         monkeypatch,
-        ["y", "2", "1", "1", "n", "n", "n", "n", "n"],  # ...wiring n, copy the skill n, calibrate n
+        ["y", "2", "1", "1", "n", "n", "n", "n"],  # ...wiring n, copy the skill n
     )
 
     assert not (config_home / "skills").exists()
@@ -2146,7 +1963,6 @@ def test_choosing_openrouter_and_deepseek_writes_all_four_keys(tmp_path, monkeyp
             "2",              # provider: openrouter
             "2",              # model: deepseek chat, second now that deepseek v4.1 flash leads
             "n",              # scaffold declined
-            "n",              # calibrate declined
         ],
     )
     assert "RECALL_REASONING_EXPANSION=1" in env
@@ -2179,7 +1995,6 @@ def test_a_key_captured_during_the_interview_is_also_written_under_its_provider_
             "captured-key",   # OPENROUTER_API_KEY, typed during the interview
             "2",              # model: deepseek chat
             "n",              # scaffold declined
-            "n",              # calibrate declined
         ],
     )
     assert "OPENROUTER_API_KEY=captured-key" in env
@@ -2200,7 +2015,6 @@ def test_a_local_endpoint_takes_the_default_base_url(tmp_path, monkeypatch):
             "",         # base URL: take the default
             "qwen2.5",  # model id
             "n",        # scaffold declined
-            "n",        # calibrate declined
         ],
     )
     assert "RECALL_REASONING_EXPANSION_BASE_URL=http://localhost:11434/v1" in env
@@ -2231,7 +2045,6 @@ def test_a_malformed_base_url_does_not_end_the_interview(tmp_path, monkeypatch):
             "http://[::1:11434/v1",   # base URL with an unclosed IPv6 bracket
             "qwen2.5",                # model id
             "n",                      # scaffold declined
-            "n",                      # calibrate declined
         ],
     )
     assert "RECALL_REASONING_EXPANSION_BASE_URL=http://[::1:11434/v1" in env
@@ -2256,7 +2069,6 @@ def test_a_failing_probe_still_writes_the_configuration(tmp_path, monkeypatch):
             "",        # base URL default
             "qwen2.5", # model id
             "n",       # scaffold declined
-            "n",       # calibrate declined
         ],
     )
     assert "model not found" in output
@@ -2278,7 +2090,6 @@ def test_a_blank_model_id_twice_turns_the_arm_off(tmp_path, monkeypatch):
             "",    # model id blank
             "",    # model id blank again
             "n",   # scaffold declined
-            "n",   # calibrate declined
         ],
     )
     assert "RECALL_REASONING_EXPANSION=0" in env
@@ -2305,7 +2116,6 @@ def test_a_blank_cloud_api_key_twice_turns_the_arm_off(tmp_path, monkeypatch):
             "",    # OPENROUTER_API_KEY blank
             "",    # OPENROUTER_API_KEY blank again
             "n",   # scaffold declined
-            "n",   # calibrate declined
         ],
     )
     assert "RECALL_REASONING_EXPANSION=0" in env
@@ -2366,7 +2176,6 @@ def test_the_interview_enables_the_flag_the_runtime_actually_reads(tmp_path, mon
             "",         # base URL: take the default
             "qwen2.5",  # model id
             "n",        # scaffold declined
-            "n",        # calibrate declined
         ],
     )
     written = {
@@ -2393,7 +2202,6 @@ def test_unreachable_database_reports_a_message_instead_of_staying_silent(tmp_pa
         "1",  # reranker: none
         "n",  # reasoning arm declined
         "n",  # scaffold declined
-        "n",  # calibrate declined
     ])
     output = io.StringIO()
 
@@ -2431,7 +2239,6 @@ def test_a_remote_local_endpoint_base_url_warns_about_the_tradeoff(tmp_path, mon
             "https://reasoning.example.com/v1",  # base URL, not obviously local
             "qwen2.5",  # model id
             "n",  # scaffold declined
-            "n",  # calibrate declined
         ],
     )
     assert "withheld the cloud providers" in output
@@ -2453,7 +2260,6 @@ def test_the_default_local_base_url_prints_no_warning(tmp_path, monkeypatch):
             "",  # base URL, take the default, obviously local
             "qwen2.5",  # model id
             "n",  # scaffold declined
-            "n",  # calibrate declined
         ],
     )
     assert "withheld the cloud providers" not in output

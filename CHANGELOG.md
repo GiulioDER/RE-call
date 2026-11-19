@@ -97,6 +97,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ### Changed
 
+- `recall setup` no longer writes settings that nothing reads, and no longer offers a calibration
+  that search never uses. It still asks "Is data security necessary for this installation?" and
+  still hides the cloud choices for that run, but it no longer saves `RECALL_SECURITY_REQUIRED`,
+  which nothing read afterwards, and its closing summary says the answer applied to that run only
+  (#1396). It no longer writes `RECALL_SPARSE=fts`, the built-in behaviour, which nothing read
+  (#1398). It no longer asks to "calibrate the threshold now": the `calibration.json` it fitted
+  was never loaded by search, which serves only a calibration published against a generation, so
+  setup now points at `recall wizard` instead (#1395). `recall calibrate` still writes that file
+  as a measurement. A rerun of setup drops both keys from the managed block in `.env`.
 - With the supersession arbiter on (`RECALL_SUPERSESSION_ARBITER=1`), `recall rewrite` and the
   dashboard review page find their candidate memo pairs 9 to 24 times faster, with identical
   results: on synthetic corpora of 500, 1,000 and 2,000 memos, 7 s, 31 s and 133 s became 0.8 s,
