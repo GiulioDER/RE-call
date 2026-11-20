@@ -29,18 +29,24 @@ also want the per-turn memory block and write tools limited to the session you d
    recall --embedder fastembed setup --lite --memory <memo folder> --store <store>/memory.db --no-register
    ```
 
-3. **The plugin's dependencies.** Clone this repository and run `bun install --production` in
-   `integrations/opencode/`: `src/index.ts` imports `@opencode/plugin` from that folder's `node_modules`.
-   `--production` skips the test tools, the OpenCode CLI among them.
+3. **The plugin**, installed by OpenCode from this repository. Pin a full commit hash of `master`:
 
-4. **The plugin entry** in `opencode.json`. OpenCode 2.2.7 loads a configured plugin only from a
-   directory, so the path is this folder's `src/`, and it passes `options` only through such an entry:
+   ```bash
+   opencode plugin add 'github:GiulioDER/RE-call#<commit>::path:integrations/opencode'
+   ```
+
+   OpenCode clones the repository, installs this folder's runtime dependencies (not its test tools)
+   into its own cache, and adds the spec to the global `opencode.json`. The first install took 3 min 37 s
+   and about 430 MB of cache (2026-11-20, OpenCode 2.2.7 on Windows); later starts reuse it.
+
+4. **The plugin entry** in `opencode.json`. With no options the plugin uses the defaults below. To pass
+   options, replace the string entry `plugin add` wrote with an object carrying the same spec:
 
    ```json
    {
      "plugins": [
        {
-         "package": "<clone>/integrations/opencode/src",
+         "package": "github:GiulioDER/RE-call#<commit>::path:integrations/opencode",
          "options": {
            "recall_command": "<.venv-recall>/Scripts/recall-mcp.exe",
            "dsn": "sqlite:///<store>/memory.db",
@@ -50,6 +56,10 @@ also want the per-turn memory block and write tools limited to the session you d
      ]
    }
    ```
+
+   From a clone instead: run `bun install --production` in `integrations/opencode/` and give
+   `"package"` the path `<clone>/integrations/opencode/src`. OpenCode 2.2.7 loads a configured local
+   plugin only from a directory.
 
    | Option | Default | Meaning |
    |---|---|---|
