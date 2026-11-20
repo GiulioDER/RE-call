@@ -57,7 +57,8 @@ export function install(opts: InstallOptions): { configDir: string; written: str
 if (import.meta.main) {
   const args = process.argv.slice(2);
   const at = args.indexOf("--recall-command");
-  const recallCommand = at >= 0 ? args[at + 1] : undefined;
+  // Absolute, because the plugin takes a `recall_command` path only when it is absolute.
+  const recallCommand = at >= 0 && args[at + 1] ? resolve(args[at + 1]!) : undefined;
   if (!args.includes("--real-home") || (at >= 0 && !recallCommand)) {
     console.error("usage: bun port/install.ts --real-home [--recall-command <path>]   (writes into the real ~/.config/opencode)");
     process.exit(2);
