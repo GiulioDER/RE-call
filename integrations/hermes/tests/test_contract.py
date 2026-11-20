@@ -91,3 +91,24 @@ def test_memory_manager_routes_prefetch_tools_and_writes(harness, monkeypatch):
     assert wait_for(lambda: len(harness.events("call")) == 3)
     manager.shutdown_all()
     harness.provider = None
+
+
+def test_the_real_gate_refuses_a_write_nobody_can_approve(harness, monkeypatch):
+    """Invariant: against Hermes's real tools/write_approval.py, with memory.write_approval on and no
+    approval channel (a test run has none, so Hermes would stage), recall_remember is refused and
+    never reaches RE-call; with it off, the same call goes through.
+
+    Red proof (2026-11-20, `HERMES_SRC=... python tests/mutations.py CONTRACT-APPROVAL`): in
+    re_call_hermes/provider.py, `if tool_name in WRITE_TOOLS:` became `if False:`; the test failed at
+    `AssertionError: assert 'error' in {'memo_id': 'm1.md'}`. Restored, green.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(harness.home))
+    (harness.home / "config.yaml").write_text("memory:\n  write_approval: true\n", encoding="utf-8")
+    harness.scenario({"recall_remember": [{"memo_id": "m1.md"}]})
+    provider = harness.start()
+    answer = json.loads(provider.handle_tool_call("recall_remember", {"text": "Lives in Rome"}))
+    assert "error" in answer
+    assert [c for c in harness.events("call") if c["tool"] == "recall_remember"] == []
+    (harness.home / "config.yaml").write_text("memory:\n  write_approval: false\n", encoding="utf-8")
+    os.utime(harness.home / "config.yaml", (1, 1))  # a different mtime, whatever the cache keys on
+    assert json.loads(provider.handle_tool_call("recall_remember", {"text": "Lives in Rome"})) == {"memo_id": "m1.md"}

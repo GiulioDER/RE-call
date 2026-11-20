@@ -84,6 +84,55 @@ def _memo_text(folder: Path, memo_id: str) -> str | None:
     return raw.strip()
 
 
+# The model-facing tools that write memory, which Hermes's `memory.write_approval` gates.
+WRITE_TOOLS = ("recall_apply_fact", "recall_remember", "recall_forget_memo")
+APPROVAL_UNAVAILABLE = (
+    "memory.write_approval is on and nobody can approve this write now, so it was not saved to RE-call "
+    "(Hermes holds pending memory writes for its own memory only). Ask the user to approve it in an "
+    "interactive session, or to turn memory.write_approval off.")
+APPROVAL_CHECK_FAILED = "the memory write-approval check failed, so this write was not saved to RE-call"
+
+
+def _write_summary(tool_name: str, arguments: dict[str, Any]) -> tuple[str, str]:
+    """What the approval prompt shows: one line, and the full detail."""
+    if tool_name == "recall_remember":
+        text = str(arguments.get("text", ""))
+        return f"RE-call: remember {text[:80]!r}", text
+    if tool_name == "recall_forget_memo":
+        line = f"RE-call: forget memo {arguments.get('memo_id', '')}"
+        return line, line
+    fact = " ".join(str(arguments.get(k, "")) for k in ("subject", "predicate", "object"))
+    return f"RE-call: record the fact {fact[:80]!r}", json.dumps(arguments, ensure_ascii=False, indent=2)
+
+
+def _approval_refusal(tool_name: str, arguments: dict[str, Any]) -> str | None:
+    """Why Hermes's memory.write_approval keeps this write from RE-call, or None to write it.
+
+    Hermes's own gate decides (an inline prompt where someone can answer). Its pending store replays
+    writes into its built-in memory, so a write it would stage is refused here instead, saying why.
+    A check that fails refuses while approval is on, or while its state cannot be read."""
+    try:
+        from tools import write_approval
+    except ImportError:
+        return None  # a Hermes without the gate has nothing to ask, as for its own memory tool
+    summary, detail = _write_summary(tool_name, arguments)
+    try:
+        decision = write_approval.evaluate_gate(write_approval.MEMORY, inline_summary=summary,
+                                                inline_detail=detail)
+    except Exception:
+        logger.warning("re-call: the memory write-approval check failed", exc_info=True)
+        try:
+            gated = write_approval.write_approval_enabled(write_approval.MEMORY)
+        except Exception:
+            gated = True
+        return APPROVAL_CHECK_FAILED if gated else None
+    if decision.allow:
+        return None
+    if decision.blocked:
+        return decision.message or "Memory write denied by user. The change was not saved."
+    return APPROVAL_UNAVAILABLE
+
+
 def _held_memos(memos: dict[str, str], folder: Path) -> tuple[dict[str, str], dict[str, str]] | None:
     """The journal's mappings split into those whose memo in `folder` holds the entry's text and those
     whose memo could not be read there; None when one names a memo holding other text, or when none
@@ -384,6 +433,10 @@ class ReCallMemoryProvider(MemoryProvider):
         if tool_name not in offered:
             return json.dumps({"error": f"re-call does not offer {tool_name} here"})
         arguments = {k: v for k, v in (args or {}).items() if v not in (None, "")}
+        if tool_name in WRITE_TOOLS:
+            refusal = _approval_refusal(tool_name, arguments)
+            if refusal:
+                return json.dumps({"error": refusal})
         if tool_name == "recall_search":
             arguments.setdefault("k", self._settings.k if self._settings else 5)
         try:

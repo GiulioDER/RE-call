@@ -129,6 +129,14 @@ The three write tools (`recall_apply_fact`, `recall_remember`, `recall_forget_me
 to the primary agent on a Lite store; subagents and cron runs get the three read tools. A PostgreSQL
 store gets `recall_search` and `recall_evidence`, the tools its server registers.
 
+The write tools honour Hermes's `memory.write_approval`. With it on, Hermes asks you inline before each
+write, where someone can answer; a write you deny is not saved. Where nobody can answer (a single
+query, cron, an unattended platform, a background review), Hermes would stage the write for later
+review, but its pending store holds writes for its own memory only, so the provider refuses the write
+and tells the model why. If the check itself fails, the write is refused while approval is on, or
+while its state cannot be read. Mirrored writes are the built-in memory tool's own, so they have
+already passed the same gate.
+
 ## Behaviour worth knowing
 
 - Hermes waits at startup until the server is ready (the first start loads the embedding model), up
