@@ -8,6 +8,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ## [Unreleased]
 
+## [0.16.0] (2026-11-20)
+
+RE-call 0.16.0 turns the atomic rescue on at first install, for Lite and the PostgreSQL wizard, and
+makes `recall setup --lite` and `recall wizard` wire Codex and give Claude Code its hooks and skills,
+as plain `recall setup` already did. Codex's `SessionEnd` hook now fits within the 3 s Codex allows
+it. Most of the remaining changes are fixes for settings and flags that were accepted and then never
+applied: setup answers, CLI flags, desktop controls and the paid-call ceilings either reach what they
+name now or are refused, naming the flag. It also carries the fixes of the pre-release audits of
+Lite, the atomic rescue, setup and the desktop app. Several flags that used to be ignored now
+refuse, so read the upgrade notes before upgrading a script or a serving host.
+
 ### Upgrade notes
 
 * **The lock moves `onnxruntime` from 1.31.0 to 1.31.1.** Every FastEmbed profile records the
