@@ -1,6 +1,6 @@
 ---
 name: install-re-call
-description: Walk the user through installing RE-call, a local persistent memory for Claude Code: the `recall-rag` Python package, a SQLite store built by `recall setup --lite`, and optionally the full RE-call plugin from its own marketplace. Use when the user agrees to add memory across sessions, asks how to install RE-call or recall-rag, or asks to set up persistent memory for a project.
+description: "Walk the user through installing RE-call, a local persistent memory for Claude Code: the `recall-rag` Python package, a SQLite store built by `recall setup --lite`, and optionally the full RE-call plugin from its own marketplace. Use when the user agrees to add memory across sessions, asks how to install RE-call or recall-rag, or asks to set up persistent memory for a project."
 ---
 
 # Install RE-call
