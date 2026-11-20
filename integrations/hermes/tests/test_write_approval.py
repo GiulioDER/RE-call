@@ -6,6 +6,7 @@ Hermes on the path, where tests/test_contract.py checks the real gate instead.""
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 from conftest import HERMES_SRC
@@ -163,8 +164,8 @@ def test_a_hermes_without_the_gate_module_still_honours_the_setting(harness, gat
     refused while it is on, written while it is off. Never written unasked, never all refused.
 
     Red proof (2026-11-20, `python tests/mutations.py APPROVAL-NO-GATE-CONFIG`): in
-    re_call_hermes/provider.py, `return APPROVAL_NO_GATE if _approval_configured() else None` became
-    `return None`; the test failed at `AssertionError: assert {'memo_id': 'm1.md'} == {'error': ...}`.
+    re_call_hermes/provider.py, `if not _approval_configured():` became `if True:` (the setting
+    ignored); the test failed at `AssertionError: assert {'memo_id': 'm1.md'} == {'error': ...}`.
     Restored, green.
     Red proof (2026-11-20, `python tests/mutations.py APPROVAL-NO-GATE-REMOVED`): in
     re_call_hermes/provider.py, the condition became the merged #1474 one, `if isinstance(exc,
@@ -195,3 +196,92 @@ def test_a_hermes_without_the_gate_module_still_honours_the_setting(harness, gat
     assert harness.events("call") == []
     setting["memory"]["write_approval"] = False
     assert json.loads(provider.handle_tool_call("recall_remember", {"text": "a"})) == {"memo_id": "m1.md"}
+
+
+def _without_the_gate(monkeypatch, tmp_path, gate_source=None):
+    """A `tools` package with no `write_approval` (or one whose source is `gate_source`)."""
+    import sys
+    import types
+
+    folder = tmp_path / "tools_pkg"
+    folder.mkdir()
+    if gate_source is not None:
+        (folder / "write_approval.py").write_text(gate_source, encoding="utf-8")
+    package = types.ModuleType("tools")
+    package.__path__ = [str(folder)]
+    monkeypatch.setitem(sys.modules, "tools", package)
+    monkeypatch.delitem(sys.modules, "tools.write_approval", raising=False)
+
+
+def _hermes_config(monkeypatch, **functions):
+    """A fake `hermes_cli.config` holding `functions` (and nothing else)."""
+    import sys
+    import types
+
+    config = types.ModuleType("hermes_cli.config")
+    for name, function in functions.items():
+        setattr(config, name, function)
+    monkeypatch.setitem(sys.modules, "hermes_cli", types.ModuleType("hermes_cli"))
+    monkeypatch.setitem(sys.modules, "hermes_cli.config", config)
+
+
+def test_a_config_that_cannot_be_read_refuses_rather_than_writing(harness, gate, monkeypatch, tmp_path):
+    """Invariant (review of #1475, BUG-001): without the gate module, a config API that changed (a
+    renamed function, a changed signature) counts as approval on and refuses; only a Hermes that has
+    no `hermes_cli` at all writes unasked, since there is no setting to honour.
+
+    Red proof (2026-11-20, `python tests/mutations.py APPROVAL-CONFIG-API-CLOSED`): in
+    re_call_hermes/provider.py, the `return True` after "Hermes's config API did not import" became
+    `return False`; the test failed at `AssertionError: assert {'memo_id': 'm1.md'} == {'error': ...}`.
+    Restored, green.
+    Red proof (2026-11-20, `python tests/mutations.py APPROVAL-CONFIG-READ-CLOSED`): in
+    re_call_hermes/provider.py, the `return True` after "could not read memory.write_approval" became
+    `return False`; the test failed at `AssertionError: assert {'memo_id': 'm1.md'} == {'error': ...}`.
+    Restored, green.
+    """
+    import sys
+
+    from re_call_hermes.provider import APPROVAL_NO_GATE
+
+    def remember(text):
+        return json.loads(provider.handle_tool_call("recall_remember", {"text": text}))
+
+    _without_the_gate(monkeypatch, tmp_path)
+    harness.scenario({"recall_remember": [{"memo_id": "m1.md"}, {"memo_id": "m2.md"}, {"memo_id": "m3.md"}]})
+    provider = harness.start()
+    _hermes_config(monkeypatch, cfg_get=lambda *a, **k: True)  # load_config_readonly renamed away
+    assert remember("a") == {"error": APPROVAL_NO_GATE}
+
+    def changed_signature(cfg, *keys):  # no `default=` any more
+        return False
+
+    _hermes_config(monkeypatch, cfg_get=changed_signature, load_config_readonly=dict)
+    assert remember("b") == {"error": APPROVAL_NO_GATE}
+    # Not inside Hermes at all: no `hermes_cli` anywhere, which raises ModuleNotFoundError named
+    # "hermes_cli". (A None in sys.modules would not do: it reads as "not a package", named
+    # "hermes_cli.config".)
+    monkeypatch.delitem(sys.modules, "hermes_cli", raising=False)
+    monkeypatch.delitem(sys.modules, "hermes_cli.config", raising=False)
+    monkeypatch.setattr(sys, "path", [p for p in sys.path if not (Path(p) / "hermes_cli").exists()])
+    assert remember("c") == {"memo_id": "m1.md"}
+
+
+def test_a_broken_gate_is_reported_as_a_failed_check(harness, gate, monkeypatch, tmp_path):
+    """Invariant (review of #1475, BUG-002): a gate module that exists but fails while importing a
+    sibling (an ImportError also named "tools") refuses, while approval is on, as a check that failed,
+    not as "this Hermes has no gate".
+
+    Red proof (2026-11-20, `python tests/mutations.py APPROVAL-GATE-BROKEN-NAMED`): in
+    re_call_hermes/provider.py, `APPROVAL_NO_GATE if _gate_absent() else APPROVAL_CHECK_FAILED` became
+    `APPROVAL_NO_GATE`; the test failed at `AssertionError: assert {'error': 'me...d to RE-call'} ==
+    {'error': 'th...d to RE-call'}`. Restored, green.
+    """
+    from re_call_hermes.provider import APPROVAL_CHECK_FAILED
+
+    _without_the_gate(monkeypatch, tmp_path, gate_source="from tools import a_missing_sibling\n")
+    _hermes_config(monkeypatch, cfg_get=lambda cfg, *keys, default=None: True, load_config_readonly=dict)
+    harness.scenario({"recall_remember": [{"memo_id": "m1.md"}]})
+    provider = harness.start()
+    answer = json.loads(provider.handle_tool_call("recall_remember", {"text": "a"}))
+    assert answer == {"error": APPROVAL_CHECK_FAILED}
+    assert harness.events("call") == []

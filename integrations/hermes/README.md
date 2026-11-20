@@ -137,7 +137,7 @@ and tells the model why. The prompt shows every argument of the write, including
 and the text of a memo it forgets. If the check itself fails, the write is refused while approval is
 on (Hermes reads an unreadable config as off). The gate is an internal Hermes module; on a Hermes
 that no longer has it, the provider reads `memory.write_approval` through Hermes's public config and
-refuses every write while it is on. Mirrored writes are the built-in memory tool's own, so
+refuses every write while it is on, or while that config cannot be read. Mirrored writes are the built-in memory tool's own, so
 they have already passed the same gate; a write Hermes stages is not mirrored. One gap is Hermes's:
 when you later approve a staged write with `/memory approve`, Hermes applies it without telling
 memory providers, so RE-call does not receive it.

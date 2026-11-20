@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
+import importlib.util
 import json
 import logging
 import os
@@ -100,18 +101,31 @@ APPROVAL_TRUTHY = frozenset({"on", "true", "yes", "1", "approve", "enabled"})
 def _approval_configured() -> bool:
     """memory.write_approval as Hermes's config says, read through `hermes_cli.config`, which is in the
     published plugin API: the fallback for a Hermes whose private gate module was moved or removed, so
-    the write tools never write unasked while approval is on. Outside Hermes, or with a config Hermes
-    itself would read as off, it is off."""
+    the write tools never write unasked while approval is on. Outside Hermes (no `hermes_cli` package)
+    it is off. A config API that changed, or a read that raised, counts as on: the setting cannot be
+    told, and refusing never writes unasked."""
     try:
         from hermes_cli.config import cfg_get, load_config_readonly
-    except ImportError:
-        return False  # not running inside Hermes: there is no setting to honour
+    except ImportError as exc:
+        if isinstance(exc, ModuleNotFoundError) and exc.name == "hermes_cli":
+            return False  # not running inside Hermes: there is no setting to honour
+        logger.warning("re-call: Hermes's config API did not import", exc_info=True)
+        return True
     try:
         value = cfg_get(load_config_readonly(), "memory", "write_approval", default=False)
     except Exception:
         logger.warning("re-call: could not read memory.write_approval", exc_info=True)
-        return False  # Hermes reads an unreadable config as off
+        return True
     return value is True or (isinstance(value, str) and value.strip().lower() in APPROVAL_TRUTHY)
+
+
+def _gate_absent() -> bool:
+    """True when this Hermes has no `tools.write_approval` at all, as opposed to one that failed while
+    importing (both surface as an ImportError named "tools")."""
+    try:
+        return importlib.util.find_spec("tools.write_approval") is None
+    except (ImportError, ValueError):
+        return True  # no `tools` package either
 
 
 def _write_summary(tool_name: str, arguments: dict[str, Any], folder: Path | None) -> tuple[str, str]:
@@ -141,11 +155,14 @@ def _approval_refusal(tool_name: str, arguments: dict[str, Any], folder: Path | 
     try:
         from tools import write_approval
     except ImportError as exc:
-        # No gate module here (no `tools` package, or one without `write_approval`, which raises a plain
-        # ImportError named "tools"): the setting is read through the public config instead. An error
-        # from inside the gate's own imports names something else, and is a check that failed.
+        # An error naming the gate (no `tools` package, one without `write_approval`, or a gate whose own
+        # `from tools import ...` failed, all named "tools"): the setting is read through the public
+        # config instead, and while it is on the refusal says whether the gate is missing or broken. Any
+        # other import error is a check that failed.
         if exc.name in ("tools", "tools.write_approval"):
-            return APPROVAL_NO_GATE if _approval_configured() else None
+            if not _approval_configured():
+                return None
+            return APPROVAL_NO_GATE if _gate_absent() else APPROVAL_CHECK_FAILED
         logger.warning("re-call: the memory write-approval gate did not import", exc_info=True)
         return APPROVAL_CHECK_FAILED
     summary, detail = _write_summary(tool_name, arguments, folder)

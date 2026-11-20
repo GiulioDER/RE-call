@@ -127,8 +127,8 @@ def test_without_the_gate_module_the_real_config_is_honoured(harness, monkeypatc
     memory.write_approval through the real, public hermes_cli.config: refused while it is on.
 
     Red proof (2026-11-20, `HERMES_SRC=... python tests/mutations.py CONTRACT-NO-GATE-CONFIG`): in
-    re_call_hermes/provider.py, `return APPROVAL_NO_GATE if _approval_configured() else None` became
-    `return None`; the test failed at `AssertionError: assert {'memo_id': 'm1.md'} == {'error': ...}`.
+    re_call_hermes/provider.py, `if not _approval_configured():` became `if True:` (the setting
+    ignored); the test failed at `AssertionError: assert {'memo_id': 'm1.md'} == {'error': ...}`.
     Restored, green.
     """
     import sys
@@ -146,3 +146,28 @@ def test_without_the_gate_module_the_real_config_is_honoured(harness, monkeypatc
     answer = json.loads(provider.handle_tool_call("recall_remember", {"text": "Lives in Rome"}))
     assert answer == {"error": APPROVAL_NO_GATE}
     assert [c for c in harness.events("call") if c["tool"] == "recall_remember"] == []
+
+
+def test_the_fallback_reads_the_setting_as_the_real_gate_does(harness, monkeypatch):
+    """Invariant (review of #1475, BUG-003): for each way a user may write memory.write_approval in
+    config.yaml, the fallback's reading equals Hermes's own `write_approval_enabled`.
+
+    Red proof (2026-11-20, `HERMES_SRC=... python tests/mutations.py CONTRACT-APPROVAL-PARITY`): in
+    re_call_hermes/provider.py, "approve" was dropped from APPROVAL_TRUTHY; the test failed at
+    `AssertionError: assert {'"Approve"': False} == {}`. Restored, green.
+    """
+    from tools import write_approval
+
+    from re_call_hermes.provider import _approval_configured
+
+    monkeypatch.setenv("HERMES_HOME", str(harness.home))
+    config = harness.home / "config.yaml"
+    disagree = {}
+    for stamp, raw in enumerate(["true", "false", "on", "off", "yes", "no", '"on"', '" ON "', '"Approve"',
+                                 '"enabled"', '"no"', "1", "0", '"1"', "null", '""'], start=1):
+        config.write_text(f"memory:\n  write_approval: {raw}\n", encoding="utf-8")
+        os.utime(config, (stamp * 1000, stamp * 1000))  # a new mtime each time, whatever the cache keys on
+        mine = _approval_configured()
+        if mine != write_approval.write_approval_enabled(write_approval.MEMORY):
+            disagree[raw] = mine
+    assert disagree == {}
