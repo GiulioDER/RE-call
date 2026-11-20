@@ -29,7 +29,7 @@ For other MCP clients, use [manual Lite wiring](LITE.md#connect-another-client).
 
 ### Try the PostgreSQL demo
 
-Prerequisites: Python 3.11 or newer, Docker, and a Docker installation able to run PostgreSQL with
+Prerequisites: Python 3.11.5 or newer, Docker, and a Docker installation able to run PostgreSQL with
 pgvector.
 
 ```bash

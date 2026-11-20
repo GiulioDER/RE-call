@@ -21,6 +21,10 @@ refuse, so read the upgrade notes before upgrading a script or a serving host.
 
 ### Upgrade notes
 
+* **RE-call now needs Python 3.11.5 or newer** (it accepted any 3.11 before). Every `soupsieve`
+  release that fixes CVE-2026-126190, CVE-2026-126191 and CVE-2026-126193 requires 3.11.5, so the
+  lock kept the vulnerable 2.10 for Python 3.11.0 to 3.11.4. Upgrade the interpreter of an install
+  on one of those versions before upgrading RE-call.
 * **The lock moves `onnxruntime` from 1.31.0 to 1.31.1.** Every FastEmbed profile records the
   installed `onnxruntime` version, so an install from the lock (`uv sync --frozen`, the Windows
   installer) turns each generation that recorded a FastEmbed profile into `LINEAGE_MISMATCH` until
@@ -607,10 +611,10 @@ refuse, so read the upgrade notes before upgrading a script or a serving host.
 
 ### Security
 
-- The lock file moves `soupsieve` to 4.1 (2.10 on Python below 3.11.5) for CVE-2026-126192 and
-  CVE-2026-126190, and `opentelemetry-api`, which the MCP SDK uses, to 1.45.2 for CVE-2026-126360.
-  Only `uv.lock` changes, so a pip install resolves these itself, and on Python 3.11.0 to 3.11.4
-  soupsieve 2.10 still carries CVE-2026-126190.
+- The lock file moves `soupsieve` to 4.1 for CVE-2026-126192 and CVE-2026-126190, and
+  `opentelemetry-api`, which the MCP SDK uses, to 1.45.2 for CVE-2026-126360. Only `uv.lock`
+  changes, so a pip install resolves these itself. The lock no longer carries soupsieve 2.10 for
+  Python 3.11.0 to 3.11.4, because the package now requires 3.11.5 (see Upgrade notes).
 - The Windows installer is built only from hashed packages (the locked dependencies, a hashed
   PyInstaller pin, and the checkout installed with no index access), and the job that signs it
   checks out and installs nothing. The desktop Dockerfile pins its Python base image, and both
