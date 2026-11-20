@@ -103,37 +103,104 @@ def test_no_home_directory_is_a_reason_not_an_exception(tmp_path, monkeypatch):
     assert "raised" not in problem(dsn="postgresql://recall@localhost/recall")
 
 
-def test_a_shutdown_before_the_writer_starts_does_not_join_it(harness, monkeypatch):
-    """Invariant: a shutdown() that arrives while initialize() is creating the mirror writer neither
-    joins an unstarted thread (RuntimeError) nor leaves the provider half shut down. Seen once in the
-    suite on 2026-11-14 and again on the remote host on 2026-11-20, as a teardown error of
-    test_a_start_that_cannot_make_its_folders_says_why.
+def test_a_shutdown_while_the_server_starts_leaves_no_writer(harness, monkeypatch):
+    """Invariant: a shutdown() that arrives while initialize() waits for the server leaves no mirror
+    writer: none is started for a closed provider, so none is left blocked on its queue, and none
+    joined before it started (the teardown RuntimeError seen on 2026-11-14 and on 2026-11-20).
 
-    Red proof (2026-11-20, `python tests/mutations.py WRITER-STARTED-FIRST`): in
-    re_call_hermes/provider.py, `writer.start()\\n            self._writer = writer` became
-    `self._writer = writer\\n            writer.start()`; the test failed at `AssertionError: assert
-    [RuntimeError('cannot join thread before it is started')] == []`. Restored, green.
+    Red proof (2026-11-20, `python tests/mutations.py CLOSED-NO-WRITER`): in
+    re_call_hermes/provider.py, `if self._closed:\\n                    return` was deleted; the test
+    failed at `AssertionError: assert ['re-call-writer'] == []`. Restored, green.
     """
     real_spawn = provider_module.spawn_context_thread
-    errors: list[Exception] = []
+    writers: list[str] = []
 
     def spawn(target, *, name, **kwargs):
-        thread = real_spawn(target, name=name, **kwargs)
         if name == "re-call-writer":
-            real_start = thread.start
+            writers.append(name)
+        if name != "re-call-start":
+            return real_spawn(target, name=name, **kwargs)
 
-            def start():
-                try:
-                    harness.provider.shutdown()  # Hermes shutting down while initialize() runs
-                except RuntimeError as exc:
-                    errors.append(exc)
-                real_start()
+        def start_then_shut_down():
+            target()
+            harness.provider.shutdown()  # Hermes shutting down while initialize() waits for the server
 
-            thread.start = start
-        return thread
+        return real_spawn(start_then_shut_down, name=name, **kwargs)
 
     monkeypatch.setattr(provider_module, "spawn_context_thread", spawn)
     harness.scenario({})
     provider = harness.start(ready=False, dsn="")
-    assert wait_for(lambda: provider._writer is not None or errors, timeout=10)
-    assert errors == []
+    assert wait_for(lambda: provider._closed, timeout=10)
+    wait_for(lambda: writers, timeout=3)  # long enough for initialize() to reach the writer
+    assert writers == []
+    assert provider._writer is None
+
+
+def _bound_journal(harness, shared: Path, **fields) -> Path:
+    """A journal bound to the shared store, with `fields` merged in."""
+    _shared(shared)
+    store, folder = shared / "memory.db", shared / "memos" / "hermes"
+    path = harness.data / "mirror.json"
+    path.write_text(json.dumps({"destination": provider_module._destination((store, folder)),
+                                "memos": {}, "pending": [], "submitted": [], **fields}), encoding="utf-8")
+    return path
+
+
+def test_a_memo_the_journal_maps_now_is_never_retired(harness, private_shared_store):
+    """Invariant (review of the fixes, BUG-002): a retire entry whose memo id the journal now maps (the
+    id given again to the same text, added back) is dropped, never forgotten.
+
+    Red proof (2026-11-20, `python tests/mutations.py RETIRE-SKIPS-LIVE`): in
+    re_call_hermes/provider.py, `if v in state["memos"].values()}` became `if False}`; the test failed
+    at `AssertionError: assert [{'event': 'c...'note-0002'}}] == []`. Restored, green.
+    """
+    cat = _digest("memory", "Has a cat")
+    path = _bound_journal(harness, private_shared_store, memos={cat: "note-0002"},
+                          retire_when_read={cat: "note-0002"})
+    _memo(private_shared_store / "memos" / "hermes", "note-0002", "Has a cat")
+    harness.scenario({"recall_forget_memo": [{"deleted": True}]})
+    provider = harness.start(dsn="")
+    assert wait_for(lambda: not json.loads(path.read_text(encoding="utf-8")).get("retire_when_read"), timeout=8)
+    provider.shutdown()
+    assert [c for c in harness.events("call") if c["tool"] == "recall_forget_memo"] == []
+
+
+def test_a_failed_retire_keeps_its_entry_and_the_drain_goes_on(harness, private_shared_store, monkeypatch):
+    """Invariant (review of the fixes, BUG-005): a forget that fails without a refusal (a timeout, a
+    lost server) keeps its retire entry for the next drain, and the writes queued behind it are still
+    mirrored in this drain.
+
+    Red proof (2026-11-20, `python tests/mutations.py RETIRE-ANY-MCP-ERROR`): in
+    re_call_hermes/provider.py, `except McpError:  # not sent, a timeout` became
+    `except NotSent:  # not sent, a timeout`; the test failed at `AssertionError: assert 'raised:
+    timed out' == 'drained'`. Restored, green.
+    """
+    from re_call_hermes.mcp_client import McpError
+    from re_call_hermes.provider import ReCallMemoryProvider
+
+    cat = _digest("memory", "Has a cat")
+    path = _bound_journal(harness, private_shared_store, retire_when_read={cat: "note-0002"},
+                          pending=[["r1", "add", "memory", "Likes jazz", None]])
+    _memo(private_shared_store / "memos" / "hermes", "note-0002", "Has a cat")
+    (harness.data / "config.json").write_text(json.dumps({**harness.config, "dsn": ""}), encoding="utf-8")
+    calls = []
+
+    def call(tool, arguments, timeout):
+        calls.append(tool)
+        if tool == "recall_forget_memo":
+            raise McpError("timed out")
+        return {"memo_id": "note-0003.md"}
+
+    provider = ReCallMemoryProvider()
+    provider._settings = load_settings(harness.home)
+    monkeypatch.setattr(provider, "_call", call)
+    try:
+        provider._drain_pending()
+        outcome = "drained"
+    except McpError as exc:
+        outcome = f"raised: {exc}"
+    assert outcome == "drained"
+    state = json.loads(path.read_text(encoding="utf-8"))
+    assert state["retire_when_read"] == {cat: "note-0002"}
+    assert state["pending"] == [] and calls == ["recall_forget_memo", "recall_remember"]
+

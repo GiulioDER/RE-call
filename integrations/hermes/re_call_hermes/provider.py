@@ -232,10 +232,14 @@ class ReCallMemoryProvider(MemoryProvider):
             logger.info("re-call: server %s after %.2fs", "ready" if self._ready.is_set() else "failed",
                         time.monotonic() - started)
         if self._primary and self._settings.lite and self._settings.mirror_builtin:
-            # Started before it is published: a shutdown() between the two would join an unstarted thread.
-            writer = spawn_context_thread(self._write_loop, name="re-call-writer")
-            writer.start()
-            self._writer = writer
+            # Under the lock shutdown() takes the writer in: either it is published before shutdown()
+            # takes it, or shutdown() came first (during the start above) and no writer is started.
+            with self._client_lock:
+                if self._closed:
+                    return
+                writer = spawn_context_thread(self._write_loop, name="re-call-writer")
+                writer.start()
+                self._writer = writer
 
     def _launch(self, name: str) -> threading.Thread | None:
         # The check and the claim are one critical section, so two callers cannot both start a child.
@@ -520,7 +524,14 @@ class ReCallMemoryProvider(MemoryProvider):
         once it is read holding that entry's text; a memo holding other text is no longer the entry's."""
         assert self._settings is not None
         with _locked(path):
-            retire = dict(self._bound_state(path)["retire_when_read"])
+            state = self._bound_state(path)
+            # A memo the journal maps now is a live entry (its id given again to a re-added text), never
+            # one to retire.
+            live = {k: v for k, v in state["retire_when_read"].items() if v in state["memos"].values()}
+            if live:
+                state["retire_when_read"] = {k: v for k, v in state["retire_when_read"].items() if k not in live}
+                atomic_json_write(path, state)
+            retire = dict(state["retire_when_read"])
         for key, memo_id in retire.items():
             text = _memo_text(self._settings.assistant_folder, memo_id)
             if text is None:
@@ -528,11 +539,13 @@ class ReCallMemoryProvider(MemoryProvider):
             if _digest(key.rpartition(":")[0], text) == key:
                 try:
                     self._call("recall_forget_memo", {"memo_id": memo_id}, TOOL_TIMEOUT_S)
-                except NotSent:
-                    continue  # the server is gone: tried again on the next drain
                 except ToolError:
                     logger.warning("re-call: RE-call refused to forget %s, an entry removed before it "
                                    "was in place", memo_id, exc_info=True)
+                except McpError:  # not sent, a timeout or a lost server: kept and tried on the next drain
+                    logger.warning("re-call: could not yet forget %s, an entry removed before it was in "
+                                   "place", memo_id, exc_info=True)
+                    continue
             with _locked(path):
                 state = self._bound_state(path)
                 if state["retire_when_read"].get(key) == memo_id:
@@ -674,12 +687,13 @@ class ReCallMemoryProvider(MemoryProvider):
 
     def shutdown(self) -> None:
         self._stop_writer.set()
-        if self._writer is not None:
-            self._writes.put(None)
-            self._writer.join(timeout=10)
-            self._writer = None
         with self._client_lock:
             self._closed = True  # a start in flight, or a late thread, must not revive the server
+            writer, self._writer = self._writer, None
+        if writer is not None:
+            self._writes.put(None)
+            writer.join(timeout=10)
+        with self._client_lock:
             client, self._client = self._client, None
         self._ready.clear()
         if client is not None:
