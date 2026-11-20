@@ -35,7 +35,9 @@ links to the canonical guides. It repeats facts kept elsewhere, so update it whe
 path, the licence, the package name or a linked page changes. It is linked from the homepage
 `<head>` and footer and is not listed in the sitemap, which holds HTML pages only.
 
-`compare.html` describes other memory projects from their public sources, with the check date in
+`compare.html` and `benchmarks.html` have maintained Markdown copies in `docs/COMPARE.md` and
+`docs/BENCHMARKS.md`, which `context7.json` keeps indexed while it excludes this directory; change
+both copies together. `compare.html` describes other memory projects from their public sources, with the check date in
 its text. Recheck those descriptions and update the date together; keep score claims to the
 paired measurements on the benchmark scorecard.
 
