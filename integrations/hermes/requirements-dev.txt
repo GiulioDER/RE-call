@@ -1,0 +1,4 @@
+# Development tools only. Kept out of pyproject.toml so Hermes's package manager sees a plugin that
+# installs nothing.
+pytest>=8,<10
+ruff>=0.6,<1
