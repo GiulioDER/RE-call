@@ -41,6 +41,7 @@ Lite ships in the PyPI wheel from `0.15.0`; earlier wheels do not contain it.
 | [FEDERATED_RETRIEVAL.md](FEDERATED_RETRIEVAL.md) | Bounded tenant and specialist retrieval federation. |
 | [USING_WITH_CLAUDE.md](USING_WITH_CLAUDE.md) | MCP setup and tool behavior. |
 | [CODEX_RECALL_INTEGRATION.md](CODEX_RECALL_INTEGRATION.md) | Automatic Codex installation, hooks, plugin layout, and shared memo contract. |
+| [../integrations/hermes/](../integrations/hermes/README.md) | The Hermes Agent memory provider: per-turn recall with trust verdicts, supersession and abstention, on the shared Lite store. |
 | [USING_WITH_AGENT_SDK.md](USING_WITH_AGENT_SDK.md) | In-process tools for a Claude Agent SDK application: no MCP server, the same tool surface, and the boundaries the server was providing for you. |
 | [ENTERPRISE_RETRIEVAL.md](ENTERPRISE_RETRIEVAL.md) | The enterprise control plane: routes, profiles, and multi-store serving. |
 | [REASONING_OPERATIONS.md](REASONING_OPERATIONS.md) | Opt-in reasoning commands, MCP tools, failure behavior, review policy, and metrics. |

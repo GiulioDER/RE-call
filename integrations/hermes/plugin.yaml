@@ -1,0 +1,10 @@
+name: re-call
+version: 0.1.0
+description: "RE-call memory: per-turn recall with a trust verdict per memory, superseded memories flagged, and an explicit abstention when nothing clears the calibrated threshold. Runs RE-call's own server locally."
+author: Giulio D'Erme
+homepage: https://github.com/GiulioDER/RE-call/tree/master/integrations/hermes
+license: MIT
+requires_hermes: ">=0.23.0"
+requires_env: []
+hooks:
+  - on_memory_write

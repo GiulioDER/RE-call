@@ -1,0 +1,39 @@
+# No [build-system] table and no optional dependencies, on purpose: Hermes's package manager reads
+# either as "this plugin installs packages" and would build it into its shared environment.
+# pip and uv build it with setuptools' default backend when it is pip-installed instead.
+
+[project]
+name = "recall-hermes"
+version = "0.1.0"
+description = "RE-call memory provider for Hermes Agent: trust verdicts, supersession and abstention per turn."
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+authors = [{ name = "Giulio D'Erme" }]
+# Standard library only: RE-call runs as its own process, installed in its own environment.
+dependencies = []
+
+[project.entry-points."hermes_agent.memory_providers"]
+re-call = "re_call_hermes:register"
+
+[tool.setuptools]
+packages = ["re_call_hermes"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/mutations.py" = ["E501"]  # the table quotes production lines verbatim
+"tests/test_shared_store.py" = ["E501"]  # red-proof records quote production lines verbatim
+"re_call_hermes/surface.py" = ["E501"]  # vendored verbatim from RE-call
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+  "e2e: crosses the real process boundary into a real RE-call Lite store (RECALL_HERMES_E2E=1)",
+  "contract: loads the provider with a real Hermes checkout (HERMES_SRC)",
+]
