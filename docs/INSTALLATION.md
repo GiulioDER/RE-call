@@ -22,7 +22,7 @@ install the unrelated PyPI package named `recall`.
 
 ## Prerequisites
 
-- Python 3.11 or newer
+- Python 3.11.5 or newer
 - For the PostgreSQL path, PostgreSQL with the pgvector extension
 - Docker, if you want RE-call to start PostgreSQL for you, including for the bundled quickstart
   (`recall quickstart --existing-dsn <dsn>` uses an existing PostgreSQL with pgvector instead)
