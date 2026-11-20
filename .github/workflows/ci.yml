@@ -1536,7 +1536,8 @@ jobs:
             "${{ needs.resilience-redis.result }}" \
             "${{ needs.prior-art.result }}" \
             "${{ needs.workflow-security.result }}" \
-            "${{ needs.test-py314.result }}" \n            "${{ needs.hermes-provider.result }}"; do
+            "${{ needs.test-py314.result }}" \
+            "${{ needs.hermes-provider.result }}"; do
             if [[ "$result" != success ]]; then
               echo "::error::required CI job result was $result"
               failed=1

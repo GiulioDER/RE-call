@@ -22,7 +22,9 @@ from .config import (
     DATA_DIR,
     DEFAULTS,
     SEARCH_TOOLS,
+    STORE_FILE,
     Settings,
+    _shared_dir_or_none,
     atomic_json_write,
     load_settings,
     normal_path,
@@ -119,9 +121,15 @@ def _mirror_state(raw: dict[str, Any]) -> dict[str, Any]:
     unconfirmed = raw.get("unconfirmed")
     unconfirmed = {k: v for k, v in (unconfirmed if isinstance(unconfirmed, dict) else {}).items()
                    if isinstance(v, str)}
+    # Mappings of entries removed or replaced while their memo was not yet readable here; each memo
+    # is forgotten once it is read holding its entry's text (`_retire_when_read`).
+    retire = raw.get("retire_when_read")
+    retire = {k: v for k, v in (retire if isinstance(retire, dict) else {}).items() if isinstance(v, str)}
+    previous = raw.get("previous")
+    previous = [p for p in (previous if isinstance(previous, list) else []) if isinstance(p, dict)]
     return {"memos": {k: v for k, v in memos.items() if isinstance(v, str)}, "pending": pending,
             "submitted": submitted, "destination": raw.get("destination"), "store": raw.get("store"),
-            "unconfirmed": unconfirmed}
+            "unconfirmed": unconfirmed, "retire_when_read": retire, "previous": previous}
 
 
 # The lock covers reading and writing mirror.json only, never a server call, so it is held briefly.
@@ -224,8 +232,10 @@ class ReCallMemoryProvider(MemoryProvider):
             logger.info("re-call: server %s after %.2fs", "ready" if self._ready.is_set() else "failed",
                         time.monotonic() - started)
         if self._primary and self._settings.lite and self._settings.mirror_builtin:
-            self._writer = spawn_context_thread(self._write_loop, name="re-call-writer")
-            self._writer.start()
+            # Started before it is published: a shutdown() between the two would join an unstarted thread.
+            writer = spawn_context_thread(self._write_loop, name="re-call-writer")
+            writer.start()
+            self._writer = writer
 
     def _launch(self, name: str) -> threading.Thread | None:
         # The check and the claim are one critical section, so two callers cannot both start a child.
@@ -441,6 +451,16 @@ class ReCallMemoryProvider(MemoryProvider):
             atomic_json_write(path, state)
         return True
 
+    def _switched_to_shared(self, recorded: Any) -> bool:
+        """True when the journal names this profile's old default store, still in place, and the
+        profile now uses the shared store: the switch the shared store's appearance makes."""
+        assert self._settings is not None and self._settings.store_path is not None
+        shared = _shared_dir_or_none()
+        old = self._settings.data_dir / STORE_FILE
+        return (shared is not None and isinstance(recorded, list) and bool(recorded)
+                and recorded[0] == normal_path(old) and old.is_file()
+                and normal_path(self._settings.store_path) == normal_path(shared / STORE_FILE))
+
     def _bound_state(self, path: Path) -> dict[str, Any]:
         """mirror.json, bound to this store; the caller holds the lock."""
         assert self._settings is not None and self._settings.store_path is not None
@@ -457,6 +477,18 @@ class ReCallMemoryProvider(MemoryProvider):
         held = None
         if recorded is not None and changed:
             found = _held_memos(state["memos"], self._settings.assistant_folder)
+            if found is None and self._switched_to_shared(recorded):
+                # The profile's own old store is still in place and the shared one appeared, so the
+                # profile switched stores rather than moving its own. Those mappings say nothing about
+                # this store: they are set aside, and mirroring maps afresh here. A dsn or memo_folder
+                # the user pointed elsewhere is not this case, and stays refused for reconciliation.
+                logger.warning("re-call: this profile now uses %s; the mirror journal of %s is kept under "
+                               "'previous' in %s and mirroring starts afresh", destination[0], recorded[0],
+                               MIRROR_FILE)
+                state["previous"] = [*state["previous"], {"destination": recorded, "memos": state["memos"],
+                                                          "unconfirmed": state["unconfirmed"]}]
+                state["unconfirmed"] = {}
+                found = ({}, {})
             if found is None:
                 raise ToolError("mirror journal names memos this store does not hold; "
                                 "reconcile mirror.json before mirroring")
@@ -475,6 +507,7 @@ class ReCallMemoryProvider(MemoryProvider):
         if held is not None:
             binding["memos"] = held
             binding["unconfirmed"] = state["unconfirmed"]
+            binding["previous"] = state["previous"]
         # Only a journal that was read: deciding by a second look at the disk could overwrite one
         # written meanwhile with this empty state. Its other fields go back as read, so an entry the
         # normalized state drops stays on disk for reconciliation.
@@ -482,9 +515,34 @@ class ReCallMemoryProvider(MemoryProvider):
             atomic_json_write(path, {**raw, **binding})  # records the identity a later move is recognised by
         return state
 
+    def _retire_when_read(self, path: Path) -> None:
+        """Forget each memo whose entry was removed or replaced before the memo could be read here,
+        once it is read holding that entry's text; a memo holding other text is no longer the entry's."""
+        assert self._settings is not None
+        with _locked(path):
+            retire = dict(self._bound_state(path)["retire_when_read"])
+        for key, memo_id in retire.items():
+            text = _memo_text(self._settings.assistant_folder, memo_id)
+            if text is None:
+                continue  # not in place yet
+            if _digest(key.rpartition(":")[0], text) == key:
+                try:
+                    self._call("recall_forget_memo", {"memo_id": memo_id}, TOOL_TIMEOUT_S)
+                except NotSent:
+                    continue  # the server is gone: tried again on the next drain
+                except ToolError:
+                    logger.warning("re-call: RE-call refused to forget %s, an entry removed before it "
+                                   "was in place", memo_id, exc_info=True)
+            with _locked(path):
+                state = self._bound_state(path)
+                if state["retire_when_read"].get(key) == memo_id:
+                    del state["retire_when_read"][key]
+                    atomic_json_write(path, state)
+
     def _drain_pending(self) -> None:
         assert self._settings is not None
         path = self._settings.data_dir / MIRROR_FILE
+        self._retire_when_read(path)
         while True:
             with _locked(path):
                 pending = self._bound_state(path)["pending"]
@@ -510,7 +568,9 @@ class ReCallMemoryProvider(MemoryProvider):
                 candidate = state["unconfirmed"].pop(old_key)
                 text = _memo_text(self._settings.assistant_folder, candidate)
                 if text is None:
-                    state["unconfirmed"][old_key] = candidate  # still unread: kept, not used
+                    # Still unread, so this remove or replace cannot act on it now; its memo is
+                    # forgotten once it is read holding the entry's text, or it would come back current.
+                    state["retire_when_read"][old_key] = candidate
                 elif _digest(target, text) == old_key:
                     memos[old_key] = candidate  # confirmed: the entry's own memo
             retired = memos.get(old_key) if old_key else None

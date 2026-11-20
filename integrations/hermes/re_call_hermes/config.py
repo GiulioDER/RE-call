@@ -117,6 +117,19 @@ def shared_dir() -> Path:
     return (Path(xdg) if os.path.isabs(xdg) else Path.home() / ".config") / DATA_DIR
 
 
+def _shared_dir_or_none() -> Path | None:
+    """shared_dir(), or None where no home directory can be found (a service with no HOME): the
+    shared store then has no path, which problem() reports instead of raising."""
+    try:
+        return shared_dir()
+    except RuntimeError:
+        return None
+
+
+NO_HOME = ("no home directory was found, so the shared store has no path; set XDG_CONFIG_HOME to an "
+           "absolute path, or set dsn")
+
+
 def _store_dir(data_dir: Path) -> Path:
     """Where the default store lives: the shared directory, unless only this profile's old store exists."""
     shared, old = shared_dir(), data_dir / STORE_FILE
@@ -211,8 +224,8 @@ class Settings:
         if not self.lite and (urlsplit(self.dsn).password or _DSN_PASSWORD.search(self.dsn)):
             return "the dsn holds a password; keep it in ~/.pgpass instead of the Hermes config"
         store = self.store_path
-        shared = shared_dir()
-        if store is not None and _same_path(store, shared / STORE_FILE) != _same_path(
+        shared = _shared_dir_or_none()
+        if store is not None and shared is not None and _same_path(store, shared / STORE_FILE) != _same_path(
                 self.memo_folder, shared / MEMO_DIR):
             return (
                 f"the shared store {shared / STORE_FILE} and the shared memo folder {shared / MEMO_DIR} go "
@@ -265,12 +278,17 @@ def load_settings(hermes_home: str | Path) -> Settings:
     # The shared store indexes only <shared>/memos, so a custom memo folder keeps a store under the
     # profile, as does an explicit dsn for its memos.
     memos = _absolute(Path(values["memo_folder"]), data_dir) if values["memo_folder"] else None
-    custom_memos = memos is not None and not _same_path(memos, shared_dir() / MEMO_DIR)
-    store_dir = data_dir if dsn or custom_memos else _store_dir(data_dir)
+    shared = _shared_dir_or_none()
+    custom_memos = memos is not None and (shared is None or not _same_path(memos, shared / MEMO_DIR))
+    if shared is None and not dsn and not custom_memos:
+        error = error or NO_HOME
+        store_dir = data_dir  # a placeholder path; problem() refuses with NO_HOME before it is used
+    else:
+        store_dir = data_dir if dsn or custom_memos else _store_dir(data_dir)
     if not dsn or dsn.startswith("sqlite:///"):
         store = _absolute(Path(dsn[len("sqlite:///"):]), data_dir) if dsn else store_dir / STORE_FILE
         dsn = "sqlite:///" + store.as_posix()
-        if _same_path(store, shared_dir() / STORE_FILE):
+        if shared is not None and _same_path(store, shared / STORE_FILE):
             store_dir = store.parent  # a dsn naming the shared store gets its memo root too
     memo_folder = memos or store_dir / MEMO_DIR
     return Settings(

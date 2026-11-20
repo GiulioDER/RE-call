@@ -203,10 +203,12 @@ MUTATIONS = [
      "tests/test_shared_store.py::test_a_custom_memo_folder_keeps_a_store_of_its_own"),
     ("DSN-SHARED-MEMOS", C, "            store_dir = store.parent  # a dsn naming the shared store", "            pass  # a dsn naming the shared store",
      "tests/test_shared_store.py::test_the_shared_store_and_the_shared_memo_folder_go_together"),
-    ("SHARED-MEMOS-AS-BLANK", C, "    custom_memos = memos is not None and not _same_path(memos, shared_dir() / MEMO_DIR)",
+    ("SHARED-MEMOS-AS-BLANK", C,
+     "    custom_memos = memos is not None and (shared is None or not _same_path(memos, shared / MEMO_DIR))",
      "    custom_memos = memos is not None",
      "tests/test_shared_store.py::test_the_shared_store_and_the_shared_memo_folder_go_together"),
-    ("SHARED-MEMO-ROOT-GUARD", C, "        if store is not None and _same_path(store, shared / STORE_FILE) != _same_path(",
+    ("SHARED-MEMO-ROOT-GUARD", C,
+     "        if store is not None and shared is not None and _same_path(store, shared / STORE_FILE) != _same_path(",
      "        if False and _same_path(store, shared / STORE_FILE) != _same_path(",
      "tests/test_shared_store.py::test_the_shared_store_and_the_shared_memo_folder_go_together"),
     ("GUARD-BOTH-WAYS", C, "_same_path(store, shared / STORE_FILE) != _same_path(", "_same_path(store, shared / STORE_FILE) > _same_path(",
@@ -228,6 +230,18 @@ MUTATIONS = [
     ("UNCONFIRMED-CHECKED", P, "                elif _digest(target, text) == old_key:\n                    memos[old_key] = candidate",
      "                else:\n                    memos[old_key] = candidate",
      "tests/test_shared_store.py::test_a_rebound_journal_drops_mappings_whose_memo_is_absent"),
+    # 2026-11-20 review of the shared store commits (tests/test_move_review_fixes.py).
+    ("SWITCH-FRESH-MAPPING", P,
+     "if found is None and self._switched_to_shared(recorded):", "if False:",
+     "tests/test_move_review_fixes.py::test_a_switch_to_the_shared_store_keeps_mirroring"),
+    ("RETIRE-WHEN-READ", P, 'state["retire_when_read"][old_key] = candidate',
+     'state["unconfirmed"][old_key] = candidate',
+     "tests/test_move_review_fixes.py::test_an_entry_removed_before_its_memo_is_in_place_is_forgotten_once_it_is"),
+    ("NO-HOME-REASON", C, "    except RuntimeError:\n        return None", "    except ValueError:\n        return None",
+     "tests/test_move_review_fixes.py::test_no_home_directory_is_a_reason_not_an_exception"),
+    ("WRITER-STARTED-FIRST", P, "            writer.start()\n            self._writer = writer",
+     "            self._writer = writer\n            writer.start()",
+     "tests/test_move_review_fixes.py::test_a_shutdown_before_the_writer_starts_does_not_join_it"),
 ]
 
 # Run only with HERMES_SRC set: without a real Hermes these tests skip, which proves nothing.
