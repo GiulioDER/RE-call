@@ -9,27 +9,27 @@ Install facts: the PyPI package is `recall-rag` (MCP Registry name `io.github.Gi
 ## Start
 
 - [Lite installation guide](https://github.com/GiulioDER/RE-call/blob/master/docs/LITE.md): local SQLite memory for one project, automatic refresh and calibration
-- [Install guide](https://giulioder.github.io/RE-call/start.html): Lite and PostgreSQL paths
-- [Claude Code setup](https://giulioder.github.io/RE-call/claude-code.html): MCP registration and hooks
-- [Integrations](https://giulioder.github.io/RE-call/integrations.html): LangChain, LlamaIndex, Claude Agent SDK, any MCP client
+- [Install guide](https://re-call.dev/start.html): Lite and PostgreSQL paths
+- [Claude Code setup](https://re-call.dev/claude-code.html): MCP registration and hooks
+- [Integrations](https://re-call.dev/integrations.html): LangChain, LlamaIndex, Claude Agent SDK, any MCP client
 - [RE-call for agents](https://github.com/GiulioDER/RE-call/blob/master/docs/FOR_AGENTS.md): how an agent should search, cite and write memory
 
 ## Reference
 
 - [API reference](https://github.com/GiulioDER/RE-call/blob/master/docs/API.md): MCP tools (`recall_search`, `recall_evidence`, `recall_remember`, `recall_forget`, and others) and result contracts
-- [How it works](https://giulioder.github.io/RE-call/how-it-works.html): generations, trusted search and the trust gate
-- [Calibration](https://giulioder.github.io/RE-call/calibration.html): how the abstention threshold is certified for a corpus
-- [Troubleshooting](https://giulioder.github.io/RE-call/troubleshooting.html)
+- [How it works](https://re-call.dev/how-it-works.html): generations, trusted search and the trust gate
+- [Calibration](https://re-call.dev/calibration.html): how the abstention threshold is certified for a corpus
+- [Troubleshooting](https://re-call.dev/troubleshooting.html)
 
 ## Evidence
 
-- [Benchmark scorecard](https://giulioder.github.io/RE-call/benchmarks.html): published results with their method, limits and who ran them
+- [Benchmark scorecard](https://re-call.dev/benchmarks.html): published results with their method, limits and who ran them
 - [Evidence and limits](https://github.com/GiulioDER/RE-call/blob/master/docs/EVIDENCE.md): what persistent memory has and has not been shown to improve
-- [Comparison with other memory layers](https://giulioder.github.io/RE-call/compare.html): when to choose RE-call, Mem0, Graphiti or Zep, Letta, LangMem, or plain pgvector
+- [Comparison with other memory layers](https://re-call.dev/compare.html): when to choose RE-call, Mem0, Graphiti or Zep, Letta, LangMem, or plain pgvector
 
 ## Optional
 
 - [Repository](https://github.com/GiulioDER/RE-call)
 - [PyPI package](https://pypi.org/project/recall-rag/)
 - [Prior art](https://github.com/GiulioDER/RE-call/blob/master/docs/PRIOR_ART.md): sourced capability comparison
-- [Blog](https://giulioder.github.io/RE-call/blog/)
+- [Blog](https://re-call.dev/blog/)
