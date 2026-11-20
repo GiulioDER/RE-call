@@ -155,3 +155,43 @@ def test_a_gate_that_fails_to_import_refuses(harness, gate, monkeypatch, tmp_pat
     answer = json.loads(provider.handle_tool_call("recall_remember", {"text": "Lives in Rome"}))
     assert "error" in answer
     assert harness.events("call") == []
+
+
+def test_a_hermes_without_the_gate_module_still_honours_the_setting(harness, gate, monkeypatch, tmp_path):
+    """Invariant: on a Hermes whose `tools` package has no `write_approval` (moved or removed in a
+    release), the write tools read memory.write_approval through the public `hermes_cli.config`:
+    refused while it is on, written while it is off. Never written unasked, never all refused.
+
+    Red proof (2026-11-20, `python tests/mutations.py APPROVAL-NO-GATE-CONFIG`): in
+    re_call_hermes/provider.py, `return APPROVAL_NO_GATE if _approval_configured() else None` became
+    `return None`; the test failed at `AssertionError: assert {'memo_id': 'm1.md'} == {'error': ...}`.
+    Restored, green.
+    Red proof (2026-11-20, `python tests/mutations.py APPROVAL-NO-GATE-REMOVED`): in
+    re_call_hermes/provider.py, the condition became the merged #1474 one, `if isinstance(exc,
+    ModuleNotFoundError) and exc.name in (...)`; the test failed at `AssertionError: assert {'error':
+    'th...d to RE-call'} == {'error': 'me...d to RE-call'}` (the check-failed refusal, the one that
+    also refused every write with approval off). Restored, green.
+    """
+    import sys
+    import types
+
+    from re_call_hermes.provider import APPROVAL_NO_GATE
+
+    empty = tmp_path / "tools_without_gate"
+    empty.mkdir()
+    package = types.ModuleType("tools")
+    package.__path__ = [str(empty)]
+    monkeypatch.setitem(sys.modules, "tools", package)
+    monkeypatch.delitem(sys.modules, "tools.write_approval", raising=False)
+    setting = {"memory": {"write_approval": "on"}}
+    config = types.ModuleType("hermes_cli.config")
+    config.load_config_readonly = lambda: setting
+    config.cfg_get = lambda cfg, *keys, default=None: cfg.get(keys[0], {}).get(keys[1], default)
+    monkeypatch.setitem(sys.modules, "hermes_cli", types.ModuleType("hermes_cli"))
+    monkeypatch.setitem(sys.modules, "hermes_cli.config", config)
+    harness.scenario({"recall_remember": [{"memo_id": "m1.md"}]})
+    provider = harness.start()
+    assert json.loads(provider.handle_tool_call("recall_remember", {"text": "a"})) == {"error": APPROVAL_NO_GATE}
+    assert harness.events("call") == []
+    setting["memory"]["write_approval"] = False
+    assert json.loads(provider.handle_tool_call("recall_remember", {"text": "a"})) == {"memo_id": "m1.md"}

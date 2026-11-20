@@ -120,3 +120,29 @@ def test_the_real_gate_refuses_a_write_nobody_can_approve(harness, monkeypatch):
     (harness.home / "config.yaml").write_text("memory:\n  write_approval: false\n", encoding="utf-8")
     os.utime(harness.home / "config.yaml", (1, 1))  # a different mtime, whatever the cache keys on
     assert json.loads(provider.handle_tool_call("recall_remember", {"text": "Lives in Rome"})) == {"memo_id": "m1.md"}
+
+
+def test_without_the_gate_module_the_real_config_is_honoured(harness, monkeypatch):
+    """Invariant: when Hermes's tools.write_approval cannot be imported, the provider reads
+    memory.write_approval through the real, public hermes_cli.config: refused while it is on.
+
+    Red proof (2026-11-20, `HERMES_SRC=... python tests/mutations.py CONTRACT-NO-GATE-CONFIG`): in
+    re_call_hermes/provider.py, `return APPROVAL_NO_GATE if _approval_configured() else None` became
+    `return None`; the test failed at `AssertionError: assert {'memo_id': 'm1.md'} == {'error': ...}`.
+    Restored, green.
+    """
+    import sys
+
+    import tools
+
+    from re_call_hermes.provider import APPROVAL_NO_GATE
+
+    monkeypatch.setenv("HERMES_HOME", str(harness.home))
+    (harness.home / "config.yaml").write_text("memory:\n  write_approval: true\n", encoding="utf-8")
+    monkeypatch.delattr(tools, "write_approval", raising=False)
+    monkeypatch.setitem(sys.modules, "tools.write_approval", None)
+    harness.scenario({"recall_remember": [{"memo_id": "m1.md"}]})
+    provider = harness.start()
+    answer = json.loads(provider.handle_tool_call("recall_remember", {"text": "Lives in Rome"}))
+    assert answer == {"error": APPROVAL_NO_GATE}
+    assert [c for c in harness.events("call") if c["tool"] == "recall_remember"] == []
