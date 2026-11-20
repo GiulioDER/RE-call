@@ -56,9 +56,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   outside the project through a link. The first rewrite of an existing file keeps its earlier
   content in `.codex/config.toml.recall-backup`. `recall setup --lite --no-register` writes none of
   them, and `recall uninstall` removes none of them; delete them by hand.
-* **Codex's SessionEnd hook can still run past Codex's 3 s cap** on a large unchanged memo folder
-  (#1454, open): measured on 1,000 memos, 6 of 15 runs took 3.14 to 5.97 s (median 2.79 s). Codex
-  then stops the hook for that session; the memo index itself runs in a detached child (see Fixed).
+* **A Codex install keeps its old 15 s `SessionEnd` timeout until `recall setup` runs again**
+  (#1454). Codex clamps it to 3 s either way and logs a clamping warning when it loads the hooks;
+  upgrading the package alone does not rewrite `~/.codex/hooks.json`.
 * **The Codex server `recall setup` registers now runs `RECALL_TRUST_MODE=development`**, the trust
   mode of its Claude Code registration, from the `server_env` block of `recall-hook.json`, which
   the Codex launcher applies over the shell's value. Answers from the uncalibrated corpus setup
@@ -235,17 +235,22 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ### Fixed
 
-- On a PostgreSQL store, the session-end memo index no longer runs inside the hook (#1454). Codex
-  runs `SessionEnd` synchronously and caps it at 3 s (a longer configured timeout is clamped), and
-  re-indexing an unchanged folder of 1,000 memos took up to 10.0 s there (a first index, 37.8 s).
-  The hook now compares a stat walk of the memo folder (the hook config's `memory_root` when it is
-  set, else `memory/`) with the walk recorded after the last successful index and skips the index
-  when they match, unless the tenant has lost its rows. When anything changed, a first index included, it
-  starts a detached `python -m recall_hooks index-memory` that indexes one folder at a time, stops
-  after 30 minutes, and refreshes the cached count when it finishes. Claude Code's `SessionEnd` and
-  `PreCompact` take the same path. The walks are kept in `recall-memory-index.json` beside the hook
-  config. #1454 stays open: on 1,000 unchanged memos the hook still runs past Codex's 3 s cap in 6
-  of 15 measured samples (median 2.79 s, longest 5.97 s), mostly in MCP transport cleanup.
+- On a PostgreSQL store, Codex's `SessionEnd` hook now fits within the 3 s Codex allows it
+  (#1454). Codex clamps a `SessionEnd` timeout to at most 3 s whatever the hook config asks for, so
+  the 15 s RE-call wrote was never in force, and the hook re-indexed the memo folder in process: up
+  to 10.0 s for an unchanged folder of 1,000 memos, 37.8 s for a first index. The hook now closes
+  this session's MCP transports, stops the write-time relay, and starts a detached
+  `python -m recall_hooks index-memory`. That process compares a stat walk of the memo folder (the
+  hook config's `memory_root` when it is set, else `memory/`) with the walk recorded after the last
+  successful index, indexes only when they differ or the tenant has lost its rows, and refreshes the
+  cached count; one indexes at a time, at most one more waits, and each stops after 30 minutes.
+  Claude Code's `SessionEnd` and `PreCompact` start the same detached index. On Windows, MCP
+  cleanup reads the process table through the Win32 API instead of PowerShell (1.2 to 2.4 s
+  before, 0.06 to 0.27 s now, measured 2026-11-20). The generated Codex `SessionEnd` timeout is
+  3 s. Measured at 1,000 unchanged memos with no MCP transport to close, the hook took 0.48 to
+  0.51 s; each transport it closes adds one `taskkill` of at most 1.5 s, and the relay stop is
+  bounded per step, not in total. In hosted mode the upload still runs inside the hook. The walks
+  are kept in `recall-memory-index.json` beside the hook config.
 - The session-end memo index on a local PostgreSQL install read `<project>/memory` even when the
   hook config named another `memory_root`, the folder prompt-time search and the hosted sync
   already read, so memos kept there were never indexed. It now indexes `memory_root` when it is set

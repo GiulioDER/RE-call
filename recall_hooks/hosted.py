@@ -522,7 +522,7 @@ def call_tool(
 
     Imports the SDK lazily and inside the call. `SessionEnd` and `PreCompact` are the only events
     that reach here, and neither is a session launch (Claude Code runs both async; Codex runs
-    `SessionEnd` synchronously with a 15 s timeout), so the cost is never charged to a launch — which is the whole
+    `SessionEnd` synchronously and kills it at 3 s), so the cost is never charged to a launch — which is the whole
     reason this package avoids `recall`.
 
     Raises `SyncError` with a classified kind. Never leaks an `ExceptionGroup`.
@@ -847,8 +847,8 @@ def sync_memory_roots(
 
     The deadline bounds when a NEW batch may start, and everything past it stays pending, which
     is exactly the retry mechanism. In Claude Code `SessionEnd` and `PreCompact` are registered
-    async and so have no client timeout. Codex runs `SessionEnd` synchronously with a 15 s
-    timeout (`recall/codex.py`), after MCP cleanup and the relay stop, so there the client's kill
+    async and so have no client timeout. Codex runs `SessionEnd` synchronously and kills it at
+    3 s, whatever `recall/codex.py` asks for, after MCP cleanup and the relay stop, so there the client's kill
     is the real bound, and a sync it interrupts records neither `pending` nor `last_error`.
 
     ⛔ **`clock` is a CALLABLE, and that is the whole point.** It used to be a `now: float`, and

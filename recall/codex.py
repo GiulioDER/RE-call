@@ -28,9 +28,11 @@ from recall.atomic_write import atomic_write_bytes
 CODEX_PLUGIN_NAME = "recall"
 CODEX_MARKETPLACE_NAME = "re-call"
 CODEX_HOOK_MARKER = "recall_hooks.codex"
-# SessionEnd is synchronous in Codex. MCP cleanup reads the Windows process table and may close
-# more than one transport, so three seconds was too short to make the repo-owned cleanup reliable.
-SESSION_END_TIMEOUT_SECONDS = 15
+# SessionEnd is synchronous in Codex, and Codex clamps its timeout to 1 to 3 s whatever this file
+# asks for (`SESSION_END_MAX_TIMEOUT_SEC = 3` in codex-rs/hooks/src/events/session_end.rs, there
+# since SessionEnd hooks were added on 2026-07-17). The 15 s written here until #1454 was never
+# honoured. The hook fits by doing only MCP cleanup and starting the detached memory index.
+SESSION_END_TIMEOUT_SECONDS = 3
 
 
 def codex_home() -> Path:

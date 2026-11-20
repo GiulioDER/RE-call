@@ -3,14 +3,14 @@
 Red proof, one mutation per test, each run against this file with the named production line
 changed, each failing in its own assertion (recorded 2026-11-19, Python 3.14, Windows 11):
 
-- `test_an_unchanged_folder_is_not_indexed_again`: `needs_index` returning True unconditionally,
-  which is the pre-#1454 behaviour (index at every session end). Fails `calls == 1`.
+- `test_an_unchanged_folder_is_not_indexed_again`: `_run` never treating a walk as done (the
+  pre-#1454 behaviour, an index at every session end). Fails `calls == 1`.
 - `test_every_kind_of_change_is_indexed[add|rename|backdate|delete]`: a high-water mark, i.e.
-  `walk` returning only the newest mtime and `needs_index` indexing only when it is newer than the
+  `walk` returning only the newest mtime and `_run` indexing only when it is newer than the
   recorded one. Fails `calls == 2` for those four; `edit` stays green, which is why the cases are
   separate.
-- `test_rows_gone_from_an_unchanged_folder_are_indexed_again`: the `refresh_stats(config) == 0`
-  line of `needs_index` replaced by `False`. Fails `calls == 2`.
+- `test_rows_gone_from_an_unchanged_folder_are_indexed_again`: the zero-row check in `_run`
+  (`and not (first and count and refresh_stats(config) == 0)`) removed. Fails `calls == 2`.
 - `test_a_failed_index_is_retried`: `_run` recording the walk even when the index returned False.
   Fails `calls == 2`.
 - `test_another_store_is_indexed_even_when_the_folder_is_unchanged`: `tenant` dropped from
@@ -19,6 +19,8 @@ changed, each failing in its own assertion (recorded 2026-11-19, Python 3.14, Wi
   Fails `calls == 2`.
 - `test_the_hook_starts_a_detached_child_and_does_not_index_itself`: `_index_and_refresh` calling
   `memory_refresh.run([str(cwd)])` in place of `start_background_index`. Fails `indexed == []`.
+  Second mutation: the hook walking the folder and refreshing the count before the launch, as
+  the first version of this fix did. Fails `in_hook == []`.
 - `test_a_job_that_refuses_breakaway_still_gets_its_child`: the `except OSError` fallback in
   `start_background_index` removed. Fails at `len(launched) == 2` (the OSError propagates out of
   the hook's fail-open catch, so nothing is retried).
@@ -30,6 +32,8 @@ changed, each failing in its own assertion (recorded 2026-11-19, Python 3.14, Wi
   `calls == 2`.
 - `test_a_child_skips_a_folder_another_child_indexed_while_it_waited`: the initial `done` forced
   to None in `_run`. Fails `calls == 0`.
+- `tests/test_codex_integration.py::test_codex_generated_session_end_asks_for_no_more_than_codex_allows`:
+  `SESSION_END_TIMEOUT_SECONDS = 15`. Fails its first assertion.
 - `test_the_child_is_bounded_and_disarms_its_bound`: `watchdog.start()` removed. Fails
   `timers[0].started`.
 - `test_the_child_rechecks_the_project_boundary`: `_run` using `Path(args[0]) / "memory"` in
@@ -210,12 +214,25 @@ class _Popen:
 def test_the_hook_starts_a_detached_child_and_does_not_index_itself(
     tmp_path: Path, monkeypatch: Any
 ) -> None:
-    """Invariant: the hook never indexes in its own process; it launches one detached child."""
+    """Invariant: in its own process the hook neither indexes, walks the folder, nor queries the
+    count (which costs `import psycopg`, 0.55 s); it launches one detached child. Codex kills the
+    hook at 3 s."""
     memory = _project(tmp_path, monkeypatch)
     _memo(memory / "a.md", "a fact\n")
     indexed: list[Any] = []
+    in_hook: list[str] = []
     monkeypatch.setattr("recall.memory_index.index_memory_directory", lambda **kw: indexed.append(kw))
-    monkeypatch.setattr(recall_hooks, "refresh_stats", lambda config=None: 5)
+
+    def refresh(config: Any = None) -> int:
+        in_hook.append("refresh_stats")
+        return 5
+
+    def walk(memory_dir: Path) -> tuple[str, int, bool]:
+        in_hook.append("walk")
+        return "digest", 1, False
+
+    monkeypatch.setattr(recall_hooks, "refresh_stats", refresh)
+    monkeypatch.setattr(memory_refresh, "walk", walk)
     monkeypatch.setattr("recall_hooks.mcp_cleanup.close_own_mcp_transports", lambda *a, **kw: None)
     monkeypatch.setattr(memory_refresh, "start_background_index", REAL_START)
     popen = _Popen()
@@ -224,6 +241,7 @@ def test_the_hook_starts_a_detached_child_and_does_not_index_itself(
     assert recall_hooks.session_end({"cwd": str(tmp_path), "reason": "exit"}) == 0
 
     assert indexed == []
+    assert in_hook == []
     assert len(popen.launched) == 1
     argv, kwargs = popen.launched[0]
     assert argv == [sys.executable, "-P", "-m", "recall_hooks", "index-memory", str(tmp_path)]
@@ -293,6 +311,34 @@ def test_a_second_child_waits_for_the_first(tmp_path: Path, monkeypatch: Any) ->
     assert index.calls == 0
 
 
+def test_a_third_child_leaves_when_one_already_waits(tmp_path: Path, monkeypatch: Any) -> None:
+    """PERF-001 (#1454 audit). Invariant: with one child running and one waiting, a further child
+    exits at once, without waiting, importing the indexer or indexing.
+
+    Defect caught: every session end and compaction during a long index left one more child
+    polling the lock for up to 30 minutes, then repeating the same walk and count in series.
+    Red proof (2026-11-20): `_wait_for` without its `if not _try_lock(waiter): return False`
+    check; fails `memory_refresh.run([...]) == 0` with `_Waited` raised from the poll.
+    """
+    memory = _project(tmp_path, monkeypatch)
+    _memo(memory / "a.md", "a fact\n")
+    index = _Index(monkeypatch)
+    monkeypatch.setattr(recall_hooks, "refresh_stats", lambda config=None: 5)
+    home = memory_refresh._home()
+    home.mkdir(parents=True, exist_ok=True)
+
+    def waited(_seconds: float) -> None:
+        raise _Waited
+
+    monkeypatch.setattr(memory_refresh.time, "sleep", waited)
+    with (home / memory_refresh.LOCK_NAME).open("a+b") as running, \
+            (home / memory_refresh.WAITER_NAME).open("a+b") as waiting:
+        assert memory_refresh._try_lock(running) and memory_refresh._try_lock(waiting)
+        assert memory_refresh.run([str(tmp_path)]) == 0
+
+    assert index.calls == 0
+
+
 def test_memos_written_during_an_index_are_indexed_by_the_same_child(
     tmp_path: Path, monkeypatch: Any
 ) -> None:
@@ -318,7 +364,8 @@ def test_memos_written_during_an_index_are_indexed_by_the_same_child(
 def test_a_child_skips_a_folder_another_child_indexed_while_it_waited(
     tmp_path: Path, monkeypatch: Any
 ) -> None:
-    """Invariant: a child that waited does not repeat an index finished after it was started."""
+    """Invariant: a child reads the recorded walk only once it holds the lock, so it does not
+    repeat an index another child finished while it waited."""
     memory = _project(tmp_path, monkeypatch)
     _memo(memory / "a.md", "a fact\n")
     index = _Index(monkeypatch)

@@ -41,12 +41,15 @@ shared RE-call lifecycle:
   Successful commands, interrupted calls and outputs without a proven exit status stay quiet.
 * `SubagentStart` sends the shared auditor brief to recognized auditors as advisory child
   context. It neither rewrites the launch input nor makes a permission decision.
-* `PreCompact` indexes this project's `memory/` (or syncs it in hosted mode), asynchronously; it
-  refreshes no docs or code tenant. `SessionEnd` runs the bounded memory refresh synchronously because Codex treats that lifecycle event as synchronous.
+* `PreCompact` starts the memory refresh of this project's `memory/` (or syncs it in hosted mode);
+  it refreshes no docs or code tenant. `SessionEnd` does the same, and Codex runs it synchronously.
+  On a PostgreSQL store both start a detached `recall_hooks index-memory` process, which skips a
+  folder unchanged since its last index, indexes one folder at a time, and stops after 30 minutes.
   `SessionEnd` also invokes RE-call's repository-owned `recall_hooks.mcp_cleanup` module, closing
     only the local MCP transports descended from this Codex client, using the client process identity
-    rather than a Claude-only `CLAUDE_PID` variable. Its 15-second bound covers process inspection
-    and teardown of multiple transports.
+    rather than a Claude-only `CLAUDE_PID` variable. Codex kills a `SessionEnd` hook at 3 seconds
+    whatever its configured timeout, so the hook reads the process table through the Win32 API on
+    Windows rather than PowerShell, and leaves the memory index to a detached process.
 
 An MCP server launched on a remote host over ssh can also carry `RECALL_MCP_SESSION_ID` on its
 command line. Give each session its own opaque value, and keep it across a resume, so a new

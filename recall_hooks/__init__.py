@@ -511,15 +511,14 @@ def _index_and_refresh(payload: dict[str, Any]) -> int:
         return 0
     if memory_dir.is_dir():
         try:
-            from .memory_refresh import needs_index, start_background_index
+            from .memory_refresh import start_background_index
 
-            if needs_index(config, memory_dir):
-                # Detached, because indexing can outlast Codex's synchronous 15 s SessionEnd
-                # (#1454). The child refreshes the cached count itself when it finishes.
-                start_background_index(str(cwd))
-                return 0
+            # Codex caps SessionEnd at 3 s (#1454), so everything past this point (the walk, the
+            # count, any index) runs in a detached child, which refreshes the cached count too.
+            start_background_index(str(cwd))
         except Exception:  # BROAD-CATCH: fail-open
-            return 0
+            pass
+        return 0
     refresh_stats(config)
     return 0
 
@@ -561,8 +560,8 @@ def session_end(payload: dict[str, Any]) -> int:
     In Claude Code it runs with `async: true`, so nothing waits on it and nothing reads its
     output. That is the honest configuration rather than a concession: `SessionEnd` cannot block
     termination, so a synchronous index would be a promise the client is not obliged to keep.
-    ⚠️ Codex runs this same handler SYNCHRONOUSLY with a 15 s timeout (`recall/codex.py`), so
-    there the client does wait, and kills whatever is still running at 15 s.
+    ⚠️ Codex runs this same handler SYNCHRONOUSLY and kills it at 3 s whatever its config says
+    (`SESSION_END_MAX_TIMEOUT_SEC` in openai/codex), so there the client does wait.
     """
     # MCP transports belong to the client session, not to the checkout. Keep this before the
     # memory refresh so a slow or missing corpus cannot skip transport cleanup. The import stays
