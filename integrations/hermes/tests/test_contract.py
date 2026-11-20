@@ -91,3 +91,32 @@ def test_memory_manager_routes_prefetch_tools_and_writes(harness, monkeypatch):
     assert wait_for(lambda: len(harness.events("call")) == 3)
     manager.shutdown_all()
     harness.provider = None
+
+
+def test_the_real_gate_refuses_a_write_nobody_can_approve(harness, monkeypatch):
+    """Invariant: against Hermes's real tools/write_approval.py, with memory.write_approval on and no
+    approval channel (a test run has none, so Hermes would stage), recall_remember is refused and
+    never reaches RE-call; with it off, the same call goes through.
+
+    Red proof (2026-11-20, `HERMES_SRC=... python tests/mutations.py CONTRACT-APPROVAL`): in
+    re_call_hermes/provider.py, `if tool_name in WRITE_TOOLS:` became `if False:`; the test failed at
+    `AssertionError: assert {'memo_id': 'm1.md'} == {'error': ...}`. Restored, green.
+    Red proof (2026-11-20, `HERMES_SRC=... python tests/mutations.py CONTRACT-APPROVAL-CALL`): in
+    re_call_hermes/provider.py, the gate call's `inline_summary=summary` became `inline_sumary=summary`,
+    so the real evaluate_gate raised TypeError; the test failed at `AssertionError: assert {'error':
+    'the memory...ot saved to RE-call'} == {'error': ...}`. Restored, green.
+    """
+    from re_call_hermes.provider import APPROVAL_UNAVAILABLE
+
+    monkeypatch.setenv("HERMES_HOME", str(harness.home))
+    (harness.home / "config.yaml").write_text("memory:\n  write_approval: true\n", encoding="utf-8")
+    harness.scenario({"recall_remember": [{"memo_id": "m1.md"}]})
+    provider = harness.start()
+    answer = json.loads(provider.handle_tool_call("recall_remember", {"text": "Lives in Rome"}))
+    # The exact refusal for a write Hermes would stage: a gate call that raised would also refuse,
+    # but with APPROVAL_CHECK_FAILED, so this tells a working call from a broken one (review BUG-002).
+    assert answer == {"error": APPROVAL_UNAVAILABLE}
+    assert [c for c in harness.events("call") if c["tool"] == "recall_remember"] == []
+    (harness.home / "config.yaml").write_text("memory:\n  write_approval: false\n", encoding="utf-8")
+    os.utime(harness.home / "config.yaml", (1, 1))  # a different mtime, whatever the cache keys on
+    assert json.loads(provider.handle_tool_call("recall_remember", {"text": "Lives in Rome"})) == {"memo_id": "m1.md"}

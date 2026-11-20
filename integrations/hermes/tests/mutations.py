@@ -8,6 +8,7 @@ failed for a reason other than an assertion (an ImportError or a collection erro
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -246,10 +247,32 @@ MUTATIONS = [
      "tests/test_move_review_fixes.py::test_a_memo_the_journal_maps_now_is_never_retired"),
     ("RETIRE-ANY-MCP-ERROR", P, "except McpError:  # not sent, a timeout", "except NotSent:  # not sent, a timeout",
      "tests/test_move_review_fixes.py::test_a_failed_retire_keeps_its_entry_and_the_drain_goes_on"),
+    # memory.write_approval for the write tools (tests/test_write_approval.py). These run WITHOUT
+    # HERMES_SRC: they drive the fake gate and skip beside a real Hermes.
+    ("APPROVAL-GATED", P, "        if tool_name in WRITE_TOOLS:", "        if False:",
+     "tests/test_write_approval.py::test_a_write_hermes_would_stage_is_refused_and_not_sent"),
+    ("APPROVAL-BLOCKED", P, "    if decision.blocked:", "    if False:",
+     "tests/test_write_approval.py::test_a_write_the_user_denies_is_refused_with_hermes_message"),
+    ("APPROVAL-FAIL-CLOSED", P, "            gated = True", "            gated = False",
+     "tests/test_write_approval.py::test_a_failed_check_refuses_only_while_approval_may_be_on"),
+    ("APPROVAL-READS-FREE", P, "        if tool_name in WRITE_TOOLS:", "        if True:",
+     "tests/test_write_approval.py::test_reads_are_never_gated"),
+    ("APPROVAL-SHOWS-SUPERSEDES", P, """            line += f", replacing memo {str(arguments['supersedes'])!r}\"""",
+     "            pass",
+     "tests/test_write_approval.py::test_the_prompt_shows_what_a_write_replaces_and_forgets"),
+    ("APPROVAL-SHOWS-FORGOTTEN", P, "text = _memo_text(folder, memo_id) if folder is not None else None", "text = None",
+     "tests/test_write_approval.py::test_the_prompt_shows_what_a_write_replaces_and_forgets"),
+    ("APPROVAL-IMPORT-CLOSED", P,
+     'if isinstance(exc, ModuleNotFoundError) and exc.name in ("tools", "tools.write_approval"):', "if True:",
+     "tests/test_write_approval.py::test_a_gate_that_fails_to_import_refuses"),
 ]
 
 # Run only with HERMES_SRC set: without a real Hermes these tests skip, which proves nothing.
 CONTRACT_MUTATIONS = [
+    ("CONTRACT-APPROVAL", P, "        if tool_name in WRITE_TOOLS:", "        if False:",
+     "tests/test_contract.py::test_the_real_gate_refuses_a_write_nobody_can_approve"),
+    ("CONTRACT-APPROVAL-CALL", P, "inline_summary=summary,", "inline_sumary=summary,",
+     "tests/test_contract.py::test_the_real_gate_refuses_a_write_nobody_can_approve"),
     ("CONTRACT-ABC", P, "    def get_tool_schemas(self) -> list[dict[str, Any]]:\n",
      "    def _get_tool_schemas(self) -> list[dict[str, Any]]:\n",
      "tests/test_contract.py::test_the_provider_is_a_concrete_subclass_of_the_real_abc"),
@@ -281,8 +304,13 @@ def run(name: str, path: str, old: str, new: str, test: str) -> bool:
         return False
     target.write_bytes(text.replace(old, new).encode("utf-8"))
     try:
+        # No bytecode is written: Python reuses a module's cached bytecode while the source's mtime
+        # (in whole seconds) and size match, so two same-size mutations written within one second ran
+        # the first one's code. Measured 2026-11-20: PREFETCH-STATUS and TRIVIAL both remove 28
+        # bytes, and TRIVIAL then passed in two full runs while it failed in every run alone.
         out = subprocess.run([sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", test],
-                             cwd=ROOT, capture_output=True, text=True, timeout=300)
+                             cwd=ROOT, capture_output=True, text=True, timeout=300,
+                             env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"})
     finally:
         target.write_bytes(original)
     lines = out.stdout.splitlines()
@@ -299,8 +327,6 @@ def run(name: str, path: str, old: str, new: str, test: str) -> bool:
 
 
 if __name__ == "__main__":
-    import os
-
     rows = MUTATIONS + (CONTRACT_MUTATIONS if os.environ.get("HERMES_SRC") else [])
     rows += E2E_MUTATIONS if os.environ.get("RECALL_HERMES_E2E") == "1" else []
     if len(sys.argv) > 1:
