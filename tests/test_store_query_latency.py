@@ -107,8 +107,16 @@ def test_recorded_latency_tracks_injected_delay(store, monkeypatch):
         time.sleep(baseline_ms / 1000.0)
         return original(self, op)
 
+    # The baseline is the cheapest of three warm queries. A single first query carries the
+    # connection's warm-up and any load on a shared host, which once measured 69 ms against 22 ms
+    # of real work in the slowed query, so the delta read 203 ms for 250 ms injected. Load can
+    # only make the slowed query slower, so the minimum keeps the assertion about the instrument.
     store.query_dense(_vec(), k=2)
+    _series(LEG_DENSE)
+    for _ in range(3):
+        store.query_dense(_vec(), k=2)
     fast, _ = _series(LEG_DENSE)
+    fast = [min(fast)]
 
     monkeypatch.setattr(type(store), "_with_retry", _slow)
     store.query_dense(_vec(), k=2)
