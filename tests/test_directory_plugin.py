@@ -23,6 +23,8 @@ import json
 import re
 from pathlib import Path
 
+import pytest
+
 from recall.claude_code import PLUGIN_INSTALL_LINES
 
 REPO = Path(__file__).resolve().parent.parent
@@ -65,6 +67,22 @@ def test_every_skill_has_front_matter_with_a_description() -> None:
         header = text.split("---", 2)[1]
         assert f"name: {skill.parent.name}\n" in header
         assert re.search(r"^description: \S", header, re.M), f"{skill} has no description"
+
+
+def test_every_skill_front_matter_parses_as_yaml() -> None:
+    """The directory's validator flagged an unquoted description holding ": " (2026-11-20).
+
+    Claude Code's loader accepted it, so only a strict YAML reader shows the defect.
+
+    Red proof, 2026-11-20: run against `7db648a6a`, where the `install-re-call` description was
+    unquoted, this failed at the safe_load call ("mapping values are not allowed here").
+    """
+    yaml = pytest.importorskip("yaml")
+    for skill in _skills():
+        header = skill.read_text(encoding="utf-8").split("---", 2)[1]
+        data = yaml.safe_load(header)
+        assert data["name"] == skill.parent.name
+        assert isinstance(data["description"], str)
 
 
 def test_the_name_is_distinct_from_the_full_plugin_and_the_taken_name() -> None:
