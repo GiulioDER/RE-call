@@ -43,7 +43,7 @@ that are expired or not yet valid. Use `recall forget` to erase a memo's indexed
 ## Quickstart
 
 ```bash
-python -m pip install "recall-rag[fastembed,mcp]>=0.15.0"
+python -m pip install "recall-rag[fastembed,mcp]>=0.16.0"
 recall setup --lite --memory ./notes
 ```
 
