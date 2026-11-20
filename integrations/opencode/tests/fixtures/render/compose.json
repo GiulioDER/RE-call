@@ -1,0 +1,30 @@
+[
+ {
+  "input": {
+   "user": "Where do I work?",
+   "injection": "<memory-context>\nx\n</memory-context>"
+  },
+  "output": "Where do I work?\n\n<memory-context>\nx\n</memory-context>"
+ },
+ {
+  "input": {
+   "user": "Where do I work?",
+   "injection": ""
+  },
+  "output": "Where do I work?"
+ },
+ {
+  "input": {
+   "user": "",
+   "injection": "<memory-context>\nx\n</memory-context>"
+  },
+  "output": "\n\n<memory-context>\nx\n</memory-context>"
+ },
+ {
+  "input": {
+   "user": "pasted <memory-context>mine</memory-context> text",
+   "injection": "<memory-context>\ny\n</memory-context>"
+  },
+  "output": "pasted <memory-context>mine</memory-context> text\n\n<memory-context>\ny\n</memory-context>"
+ }
+]

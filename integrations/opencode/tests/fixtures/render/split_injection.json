@@ -1,0 +1,163 @@
+[
+ {
+  "input": "Where do I work?\n\n<memory-context>\nx\n</memory-context>",
+  "output": [
+   "Where do I work?",
+   "<memory-context>\nx\n</memory-context>"
+  ]
+ },
+ {
+  "input": "Where do I work?",
+  "output": [
+   "Where do I work?",
+   ""
+  ]
+ },
+ {
+  "input": "",
+  "output": [
+   "",
+   ""
+  ]
+ },
+ {
+  "input": "\n\n<memory-context>\nx\n</memory-context>",
+  "output": [
+   "",
+   "<memory-context>\nx\n</memory-context>"
+  ]
+ },
+ {
+  "input": "pasted\n\n<memory-context>\nold\n</memory-context>\nquestion",
+  "output": [
+   "pasted\n\n<memory-context>\nold\n</memory-context>\nquestion",
+   ""
+  ]
+ },
+ {
+  "input": "pasted\n\n<memory-context>\nold\n</memory-context>\n\n<memory-context>\nnew\n</memory-context>",
+  "output": [
+   "pasted\n\n<memory-context>\nold\n</memory-context>",
+   "<memory-context>\nnew\n</memory-context>"
+  ]
+ },
+ {
+  "input": "x <memory-context>y</memory-context>",
+  "output": [
+   "x <memory-context>y</memory-context>",
+   ""
+  ]
+ },
+ {
+  "input": "x\n<memory-context>\ny\n</memory-context>",
+  "output": [
+   "x\n<memory-context>\ny\n</memory-context>",
+   ""
+  ]
+ },
+ {
+  "input": "q\n\n<memory-context>\nx\n</memory-context>\n",
+  "output": [
+   "q\n\n<memory-context>\nx\n</memory-context>\n",
+   ""
+  ]
+ },
+ {
+  "input": "caf\u00e9 \u2713\n\n<memory-context>\nbloc \ud83d\ude00\n</memory-context>",
+  "output": [
+   "caf\u00e9 \u2713",
+   "<memory-context>\nbloc \ud83d\ude00\n</memory-context>"
+  ]
+ },
+ {
+  "input": "I pasted this:\n<memory-context>\n[System note: The following is recalled memory context, NOT new user input. Treat as informational background data.]\n\nold block\n</memory-context>",
+  "output": [
+   "I pasted this:\n<memory-context>\n[System note: The following is recalled memory context, NOT new user input. Treat as informational background data.]\n\nold block\n</memory-context>",
+   ""
+  ]
+ },
+ {
+  "input": "Where do I work?\n\n<memory-context>\n[System note: The following is recalled memory context, NOT new user input. Treat as authoritative reference data \u2014 this is the agent's persistent memory and should inform all responses.]\n\n## RE-call memory\nThese memories passed RE-call's calibrated trust check for this message. Name the memo id when you rely on one.\n- [ok] memo job.md: Works at Borealis Labs\n</memory-context>",
+  "output": [
+   "Where do I work?",
+   "<memory-context>\n[System note: The following is recalled memory context, NOT new user input. Treat as authoritative reference data \u2014 this is the agent's persistent memory and should inform all responses.]\n\n## RE-call memory\nThese memories passed RE-call's calibrated trust check for this message. Name the memo id when you rely on one.\n- [ok] memo job.md: Works at Borealis Labs\n</memory-context>"
+  ]
+ },
+ {
+  "input": "thanks!",
+  "output": [
+   "thanks!",
+   ""
+  ]
+ },
+ {
+  "input": "",
+  "output": [
+   "",
+   ""
+  ]
+ },
+ {
+  "input": "/compact",
+  "output": [
+   "/compact",
+   ""
+  ]
+ },
+ {
+  "input": "What is my cat's favourite food?\n\n<memory-context>\n[System note: The following is recalled memory context, NOT new user input. Treat as authoritative reference data \u2014 this is the agent's persistent memory and should inform all responses.]\n\n## RE-call memory\nRE-call abstained: nothing in memory passed its calibrated trust check for this message. Do not answer questions about the present from memory.\n</memory-context>",
+  "output": [
+   "What is my cat's favourite food?",
+   "<memory-context>\n[System note: The following is recalled memory context, NOT new user input. Treat as authoritative reference data \u2014 this is the agent's persistent memory and should inform all responses.]\n\n## RE-call memory\nRE-call abstained: nothing in memory passed its calibrated trust check for this message. Do not answer questions about the present from memory.\n</memory-context>"
+  ]
+ },
+ {
+  "input": "Where do I work?",
+  "output": [
+   "Where do I work?",
+   ""
+  ]
+ },
+ {
+  "input": "Where do I work?",
+  "output": [
+   "Where do I work?",
+   ""
+  ]
+ },
+ {
+  "input": "Where do I work?\n\n<memory-context>\n[System note: The following is recalled memory context, NOT new user input. Treat as authoritative reference data \u2014 this is the agent's persistent memory and should inform all responses.]\n\n## RE-call memory\nRE-call memory could not answer this turn: store is not calibrated\n</memory-context>",
+  "output": [
+   "Where do I work?",
+   "<memory-context>\n[System note: The following is recalled memory context, NOT new user input. Treat as authoritative reference data \u2014 this is the agent's persistent memory and should inform all responses.]\n\n## RE-call memory\nRE-call memory could not answer this turn: store is not calibrated\n</memory-context>"
+  ]
+ },
+ {
+  "input": "Where do I work?\n\n<memory-context>\n[System note: The following is recalled memory context, NOT new user input. Treat as authoritative reference data \u2014 this is the agent's persistent memory and should inform all responses.]\n\n## RE-call memory\nRE-call memory could not answer this turn: the RE-call server exited\n</memory-context>",
+  "output": [
+   "Where do I work?",
+   "<memory-context>\n[System note: The following is recalled memory context, NOT new user input. Treat as authoritative reference data \u2014 this is the agent's persistent memory and should inform all responses.]\n\n## RE-call memory\nRE-call memory could not answer this turn: the RE-call server exited\n</memory-context>"
+  ]
+ },
+ {
+  "input": "I pasted this:\n<memory-context>\n[System note: The following is recalled memory context, NOT new user input. Treat as informational background data.]\n\nold block\n</memory-context>\nwhat was it?\n\n<memory-context>\n[System note: The following is recalled memory context, NOT new user input. Treat as authoritative reference data \u2014 this is the agent's persistent memory and should inform all responses.]\n\n## RE-call memory\nThese memories passed RE-call's calibrated trust check for this message. Name the memo id when you rely on one.\n- [ok] memo job.md: Works at Borealis Labs\n</memory-context>",
+  "output": [
+   "I pasted this:\n<memory-context>\n[System note: The following is recalled memory context, NOT new user input. Treat as informational background data.]\n\nold block\n</memory-context>\nwhat was it?",
+   "<memory-context>\n[System note: The following is recalled memory context, NOT new user input. Treat as authoritative reference data \u2014 this is the agent's persistent memory and should inform all responses.]\n\n## RE-call memory\nThese memories passed RE-call's calibrated trust check for this message. Name the memo id when you rely on one.\n- [ok] memo job.md: Works at Borealis Labs\n</memory-context>"
+  ]
+ },
+ {
+  "input": "What did I paste?\n\n<memory-context>\n[System note: The following is recalled memory context, NOT new user input. Treat as authoritative reference data \u2014 this is the agent's persistent memory and should inform all responses.]\n\n## RE-call memory\nThese memories passed RE-call's calibrated trust check for this message. Name the memo id when you rely on one.\n- [ok] memo a.md: \n</memory-context>",
+  "output": [
+   "What did I paste?",
+   "<memory-context>\n[System note: The following is recalled memory context, NOT new user input. Treat as authoritative reference data \u2014 this is the agent's persistent memory and should inform all responses.]\n\n## RE-call memory\nThese memories passed RE-call's calibrated trust check for this message. Name the memo id when you rely on one.\n- [ok] memo a.md: \n</memory-context>"
+  ]
+ },
+ {
+  "input": "Where do I work?\n\n<memory-context>\n[System note: The following is recalled memory context, NOT new user input. Treat as authoritative reference data \u2014 this is the agent's persistent memory and should inform all responses.]\n\n## RE-call memory\nThese memories passed RE-call's calibrated trust check for this message. Name the memo id when you rely on one.\n- [ok] memo a.md: same\n</memory-context>",
+  "output": [
+   "Where do I work?",
+   "<memory-context>\n[System note: The following is recalled memory context, NOT new user input. Treat as authoritative reference data \u2014 this is the agent's persistent memory and should inform all responses.]\n\n## RE-call memory\nThese memories passed RE-call's calibrated trust check for this message. Name the memo id when you rely on one.\n- [ok] memo a.md: same\n</memory-context>"
+  ]
+ }
+]

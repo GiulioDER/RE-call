@@ -1,0 +1,30 @@
+{
+  "source": "RE-call v0.15.0: docs/API.md (MCP tool table), recall_mcp/tool_surface.py ALL_TOOL_NAMES, and a real Lite tools/list (recall-rag 0.15.0, hashing embedder, workstation, 2026-11-10)",
+  "kept": [
+    {"name": "recall_related", "write": false, "reason": "Read only: independently trusted related evidence (source, ordinal, supersession, caused_by) around a hit; no model call."},
+    {"name": "recall_records", "write": false, "reason": "Read only: exact key lookup of audit records memos carry; no embedding, no model call; served on a Lite store."},
+    {"name": "recall_current_state", "write": false, "reason": "Read only: the deterministic authored current state projection; no model call."},
+    {"name": "recall_resolve_reference", "write": false, "reason": "Read only: which memo a supersedes reference names, by search's own rule; writes nothing. Named by the FT-5 design."},
+    {"name": "recall_query_construction_challenge", "write": false, "reason": "Read only: the calling model answers the challenge and the server validates its frame; the server calls no model (open_world_hint false)."},
+    {"name": "recall_report_stale", "write": true, "reason": "Agent feedback: queues one stale claim for a person to review; edits no memo and changes no verdict. Writes a queue row, so primary agent and Lite only. Named by the FT-5 design."},
+    {"name": "recall_report_use", "write": true, "reason": "Agent feedback: appends one use_report row to the audit ledger; changes no memo, verdict or ranking. Writes, so primary agent and Lite only. Named by the FT-5 design."},
+    {"name": "recall_withdraw", "write": true, "reason": "Erases a memo that was a mistake and gives back what it superseded (scope recall:forget). A write, so primary agent and Lite only. Named by the FT-5 design."}
+  ],
+  "dropped": [
+    {"name": "recall_reasoning_query", "reason": "Its answer, proof and expansion paths call hosted models (an answer provider, the OpenRouter proof provider, OpenAI query expansion) when their RECALL_REASONING_* switches are on; the bundle is local."},
+    {"name": "recall_rewrite_plan", "reason": "Curation: reports the key a reasoning proposal would declare, for a person to apply with recall rewrite apply; its proposal ids come from recall_reasoning_proposals, which is kept off."},
+    {"name": "recall_reasoning_projection", "reason": "Operator: reasoning inspection tool, kept off by the spec."},
+    {"name": "recall_reasoning_proposals", "reason": "Operator: reasoning inspection tool, kept off by the spec."},
+    {"name": "recall_reasoning_audit", "reason": "Operator: reasoning inspection tool, kept off by the spec."},
+    {"name": "recall_index", "reason": "Operator: indexing, kept off by the spec."},
+    {"name": "recall_ingest", "reason": "Operator: ingest, kept off by the spec."},
+    {"name": "recall_job_status", "reason": "Operator: ingest job status, kept off by the spec."},
+    {"name": "recall_inventory", "reason": "Operator: source inventory, kept off by the spec."},
+    {"name": "recall_tenants", "reason": "Operator: tenant scopes, kept off by the spec."},
+    {"name": "recall_stats", "reason": "Operator: counters and operational state, kept off by the spec."},
+    {"name": "recall_calibration_status", "reason": "Operator: calibration, kept off by the spec."},
+    {"name": "recall_calibration_run", "reason": "Operator: calibration, kept off by the spec."},
+    {"name": "recall_calibration_publish", "reason": "Operator: calibration, kept off by the spec; a Lite server does not register it."},
+    {"name": "recall_forget", "reason": "Operator: forget by source, kept off by the spec; the trained recall_forget_memo forgets by memo id."}
+  ]
+}
