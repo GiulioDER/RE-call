@@ -239,9 +239,13 @@ MUTATIONS = [
      "tests/test_move_review_fixes.py::test_an_entry_removed_before_its_memo_is_in_place_is_forgotten_once_it_is"),
     ("NO-HOME-REASON", C, "    except RuntimeError:\n        return None", "    except ValueError:\n        return None",
      "tests/test_move_review_fixes.py::test_no_home_directory_is_a_reason_not_an_exception"),
-    ("WRITER-STARTED-FIRST", P, "            writer.start()\n            self._writer = writer",
-     "            self._writer = writer\n            writer.start()",
-     "tests/test_move_review_fixes.py::test_a_shutdown_before_the_writer_starts_does_not_join_it"),
+    ("CLOSED-NO-WRITER", P, "                if self._closed:\n                    return\n                writer = ",
+     "                writer = ",
+     "tests/test_move_review_fixes.py::test_a_shutdown_while_the_server_starts_leaves_no_writer"),
+    ("RETIRE-SKIPS-LIVE", P, 'if v in state["memos"].values()}', "if False}",
+     "tests/test_move_review_fixes.py::test_a_memo_the_journal_maps_now_is_never_retired"),
+    ("RETIRE-ANY-MCP-ERROR", P, "except McpError:  # not sent, a timeout", "except NotSent:  # not sent, a timeout",
+     "tests/test_move_review_fixes.py::test_a_failed_retire_keeps_its_entry_and_the_drain_goes_on"),
 ]
 
 # Run only with HERMES_SRC set: without a real Hermes these tests skip, which proves nothing.
