@@ -2,9 +2,9 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
   <title>RE-call blog</title>
   <subtitle>Technical notes on trustworthy agent memory on PostgreSQL and pgvector: validity, supersession, calibration and abstention.</subtitle>
-  <link href="https://giulioder.github.io/RE-call/blog/feed.xml" rel="self" type="application/atom+xml"/>
-  <link href="https://giulioder.github.io/RE-call/blog/index.html" rel="alternate" type="text/html"/>
-  <id>https://giulioder.github.io/RE-call/blog/</id>
+  <link href="https://re-call.dev/blog/feed.xml" rel="self" type="application/atom+xml"/>
+  <link href="https://re-call.dev/blog/index.html" rel="alternate" type="text/html"/>
+  <id>https://re-call.dev/blog/</id>
   <updated>2026-08-23T18:00:00Z</updated>
   <author>
     <name>Giulio D'Erme</name>
@@ -12,8 +12,8 @@
 
   <entry>
     <title>The retracted claim is the nearer match</title>
-    <link href="https://giulioder.github.io/RE-call/blog/the-retracted-claim-is-the-nearer-match.html" rel="alternate" type="text/html"/>
-    <id>https://giulioder.github.io/RE-call/blog/the-retracted-claim-is-the-nearer-match.html</id>
+    <link href="https://re-call.dev/blog/the-retracted-claim-is-the-nearer-match.html" rel="alternate" type="text/html"/>
+    <id>https://re-call.dev/blog/the-retracted-claim-is-the-nearer-match.html</id>
     <author>
       <name>Giulio D'Erme</name>
     </author>

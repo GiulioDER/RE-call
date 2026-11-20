@@ -1,7 +1,9 @@
 # Legacy site source
 
-This directory contains the retired GitHub Pages site. Its canonical URLs and sitemap record the
-former deployment. Update them for the new domain before reusing these pages. The maintained
+This directory contains the retired GitHub Pages site. Its canonical URLs and sitemap point at
+the new domain, `https://re-call.dev/`, at the same paths. On 2026-11-20 only `/` and
+`/start.html` answered there, and that `start.html` is the new site's own page, so publish a page
+at its path before relying on its canonical. The maintained
 project documentation is in [docs/README.md](../docs/README.md).
 
 ## Page identity
