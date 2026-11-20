@@ -8,7 +8,7 @@ an existing setup.
 
 | Goal | Command or guide |
 |---|---|
-| Keep one project's memory in a local file | [Install Lite](LITE.md) (0.15.0 or later), then `recall setup --lite --memory ./notes` |
+| Keep one project's memory in a local file | [Install Lite](LITE.md) (0.16.0 or later), then `recall setup --lite --memory ./notes` |
 | See the PostgreSQL demo | `pip install "recall-rag[fastembed]"` then `recall quickstart` |
 | Install your own PostgreSQL corpus | `pip install "recall-rag[fastembed]"` then `recall setup` |
 | Provision from a reviewed JSON file | `recall wizard --headless --config wizard.json` |
@@ -37,7 +37,7 @@ the [dependency guide](DEPENDENCIES.md).
 ## Local memory in one file
 
 Use [the Lite guide](LITE.md) for installation, client wiring, refresh, upgrades, and backup
-and restore. After installing 0.15.0 or later, run from your own project:
+and restore. After installing 0.16.0 or later, run from your own project:
 
 ```bash
 recall setup --lite --memory ./notes

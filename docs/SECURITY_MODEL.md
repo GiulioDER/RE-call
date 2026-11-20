@@ -290,8 +290,9 @@ retrieval scores, so they can disclose corpus topics and evaluation intent. Prot
 same access controls as the corpus itself.
 
 Publication is serialized per tenant and generation and preserves superseded artifacts for audit.
-This session does not yet enforce the next release's strict trust policy: until that gate lands,
-missing or stale calibration can still produce explicitly uncalibrated development results.
+Strict trust is the default, so missing or stale calibration is refused. Only
+`RECALL_TRUST_MODE=development` relaxes the gate, and then such results are served marked
+uncalibrated and degraded; under `RECALL_ENV=production` that mode also logs a warning.
 
 ## The evaluation harness (`recall/eval/`)
 

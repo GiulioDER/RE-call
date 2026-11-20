@@ -4,8 +4,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="canonical" href="https://giulioder.github.io/RE-call/download.html">
-<title>Download · RE-call 0.14.0</title>
-<meta name="description" content="Install RE-call 0.14.0 from PyPI on Windows, macOS or Linux.">
+<title>Download · RE-call 0.16.0</title>
+<meta name="description" content="Install RE-call 0.16.0 from PyPI on Windows, macOS or Linux.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@300..900&family=Geist+Mono:wght@400..600&display=swap">
@@ -57,17 +57,17 @@
 <section class="hero">
   <img class="hero-logo" src="assets/re_call_logo.png" alt="">
   <div class="shell hero-inner">
-    <p class="eyebrow eyebrow--signal">Current release · 0.14.0</p>
+    <p class="eyebrow eyebrow--signal">Current release · 0.16.0</p>
     <h1>Install RE-call from PyPI on the platform you already use.</h1>
     <hr class="rule">
-    <p class="hero-lede">The published 0.14.0 package supports the PostgreSQL path. RE-call Lite is available from the repository source and uses a local SQLite file. Choose the matching installation below.</p>
+    <p class="hero-lede">The published 0.16.0 package supports both paths: RE-call Lite, which uses a local SQLite file, and PostgreSQL. Choose the matching installation below.</p>
     <div class="hero-actions">
-      <a class="button" href="https://pypi.org/project/recall-rag/0.14.0/">Open 0.14.0 on PyPI</a>
+      <a class="button" href="https://pypi.org/project/recall-rag/0.16.0/">Open 0.16.0 on PyPI</a>
       <a class="button-ghost" href="start.html">Read the install guide</a>
     </div>
   </div>
   <div class="shell hero-meta">
-    <span>Version <b>0.14.0</b></span>
+    <span>Version <b>0.16.0</b></span>
     <span>Python <b>3.11+</b></span>
     <span>Windows <b>·</b> macOS <b>·</b> Linux</span>
     <span>License <b>AGPL-3.0</b></span>
@@ -77,11 +77,11 @@
 <section class="band" id="status">
   <div class="shell" data-reveal>
     <div class="notice notice--signal">
-      <p class="notice-title">There is no standalone Windows installer in 0.14.0</p>
+      <p class="notice-title">There is no standalone Windows installer in 0.16.0</p>
       <p>The current GitHub release contains the Python wheel, source archive, checksums and SBOM. It does not contain the old unsigned Windows zip, so do not use an archived installer link. On Windows, install the package from PyPI and follow the same setup guide used on macOS and Linux.</p>
       <div class="hero-actions" style="margin-top: 1.5rem;">
         <a class="button" href="start.html">Install from PyPI</a>
-        <a class="button-ghost" href="https://github.com/GiulioDER/RE-call/releases/tag/v0.14.0">View the GitHub release</a>
+        <a class="button-ghost" href="https://github.com/GiulioDER/RE-call/releases/tag/v0.16.0">View the GitHub release</a>
       </div>
     </div>
   </div>
@@ -91,7 +91,7 @@
   <div class="shell split" data-reveal>
     <div>
       <p class="eyebrow">Install the current release</p>
-      <h2>Published package: PostgreSQL.</h2>
+      <h2>PostgreSQL with Docker.</h2>
       <p>Python 3.11 or newer and Docker are the supported prerequisites. Docker runs the PostgreSQL database locally; the default embedding path keeps corpus text on your machine.</p>
       <div class="terminal terminal--command" data-shell="powershell">
         <div class="terminal-bar">
@@ -108,7 +108,7 @@
       <h2>Local memory without a database server.</h2>
       <p>Lite ships in the PyPI wheel from 0.15.0. Follow the <a href="start.html#lite">installation</a>, then run from your project with its environment active:</p>
       <div class="terminal terminal--command">
-        <div class="terminal-bar"><span class="terminal-label">After installing 0.15.0 or later</span><button class="copy-button" type="button">Copy</button></div>
+        <div class="terminal-bar"><span class="terminal-label">After installing 0.16.0</span><button class="copy-button" type="button">Copy</button></div>
         <div class="terminal-body"><pre><span class="line">recall setup --lite --memory ./notes</span></pre></div>
       </div>
       <p class="muted">Lite indexes your notes, attempts automatic calibration, and registers Claude Code. From 0.16.0 it also installs the hooks and skills for Claude Code, and the server, hooks and skills for Codex. It refreshes changed memos automatically. The <a href="start.html#lite-maintenance">maintenance guide</a> covers checks, updates, and backups.</p>
@@ -126,9 +126,9 @@
       <table>
         <thead><tr><th>File</th><th>Use it for</th><th>Where it is</th></tr></thead>
         <tbody>
-          <tr><td>Wheel</td><td>Normal Python installation</td><td><a href="https://pypi.org/project/recall-rag/0.14.0/">PyPI</a> or the GitHub release</td></tr>
-          <tr><td>Source archive</td><td>Source based builds and inspection</td><td><a href="https://github.com/GiulioDER/RE-call/releases/tag/v0.14.0">GitHub release</a></td></tr>
-          <tr><td>Checksums and SBOM</td><td>Artifact verification and inventory</td><td><a href="https://github.com/GiulioDER/RE-call/releases/tag/v0.14.0">GitHub release</a></td></tr>
+          <tr><td>Wheel</td><td>Normal Python installation</td><td><a href="https://pypi.org/project/recall-rag/0.16.0/">PyPI</a> or the GitHub release</td></tr>
+          <tr><td>Source archive</td><td>Source based builds and inspection</td><td><a href="https://github.com/GiulioDER/RE-call/releases/tag/v0.16.0">GitHub release</a></td></tr>
+          <tr><td>Checksums and SBOM</td><td>Artifact verification and inventory</td><td><a href="https://github.com/GiulioDER/RE-call/releases/tag/v0.16.0">GitHub release</a></td></tr>
         </tbody>
       </table>
     </div>
@@ -138,8 +138,8 @@
 <section class="closer">
   <div class="shell-narrow" data-reveal>
     <h2>Start with the current release.</h2>
-    <p>RE-call 0.14.0 is available on PyPI for Python 3.11 and newer.</p>
-    <a class="button" href="https://pypi.org/project/recall-rag/0.14.0/">Open PyPI</a>
+    <p>RE-call 0.16.0 is available on PyPI for Python 3.11 and newer.</p>
+    <a class="button" href="https://pypi.org/project/recall-rag/0.16.0/">Open PyPI</a>
   </div>
 </section>
 
