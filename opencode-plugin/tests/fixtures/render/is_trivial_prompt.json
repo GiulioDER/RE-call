@@ -1,0 +1,322 @@
+[
+ {
+  "input": "",
+  "output": true
+ },
+ {
+  "input": "   ",
+  "output": true
+ },
+ {
+  "input": "\n\t",
+  "output": true
+ },
+ {
+  "input": "/help",
+  "output": true
+ },
+ {
+  "input": "/compact now",
+  "output": true
+ },
+ {
+  "input": " /x",
+  "output": true
+ },
+ {
+  "input": "hi!",
+  "output": true
+ },
+ {
+  "input": "thanks :)",
+  "output": true
+ },
+ {
+  "input": "done???",
+  "output": true
+ },
+ {
+  "input": "k8s",
+  "output": false
+ },
+ {
+  "input": "yolo",
+  "output": false
+ },
+ {
+  "input": "note",
+  "output": false
+ },
+ {
+  "input": "Where do I work?",
+  "output": false
+ },
+ {
+  "input": "ok then",
+  "output": false
+ },
+ {
+  "input": "okay.",
+  "output": true
+ },
+ {
+  "input": "OK",
+  "output": true
+ },
+ {
+  "input": "Thank you!",
+  "output": true
+ },
+ {
+  "input": "thank  you",
+  "output": false
+ },
+ {
+  "input": "go ahead",
+  "output": true
+ },
+ {
+  "input": "GO AHEAD...",
+  "output": true
+ },
+ {
+  "input": "lgtm",
+  "output": true
+ },
+ {
+  "input": "k",
+  "output": true
+ },
+ {
+  "input": "kk",
+  "output": false
+ },
+ {
+  "input": "yes\u2026",
+  "output": true
+ },
+ {
+  "input": "no\u2014",
+  "output": true
+ },
+ {
+  "input": "sure\u00a0",
+  "output": true
+ },
+ {
+  "input": "cool \u201cnice\u201d",
+  "output": false
+ },
+ {
+  "input": "nice*&^%$#@!+=`~",
+  "output": true
+ },
+ {
+  "input": "great (done)",
+  "output": false
+ },
+ {
+  "input": "next [ok]",
+  "output": false
+ },
+ {
+  "input": "y",
+  "output": true
+ },
+ {
+  "input": "n",
+  "output": true
+ },
+ {
+  "input": "yep",
+  "output": true
+ },
+ {
+  "input": "nope",
+  "output": true
+ },
+ {
+  "input": "yeah",
+  "output": true
+ },
+ {
+  "input": "nah",
+  "output": true
+ },
+ {
+  "input": "hey",
+  "output": true
+ },
+ {
+  "input": "hello",
+  "output": true
+ },
+ {
+  "input": "yo",
+  "output": true
+ },
+ {
+  "input": "sup",
+  "output": true
+ },
+ {
+  "input": "continue",
+  "output": true
+ },
+ {
+  "input": "do it",
+  "output": true
+ },
+ {
+  "input": "proceed",
+  "output": true
+ },
+ {
+  "input": "got it",
+  "output": true
+ },
+ {
+  "input": "thanks\u0085",
+  "output": true
+ },
+ {
+  "input": "thanks\u001c!",
+  "output": true
+ },
+ {
+  "input": "thanks\ufeff",
+  "output": false
+ },
+ {
+  "input": "o\u212a",
+  "output": true
+ },
+ {
+  "input": "\u017fure",
+  "output": true
+ },
+ {
+  "input": "h\u0130",
+  "output": true
+ },
+ {
+  "input": "h\u0131",
+  "output": true
+ },
+ {
+  "input": "HELLO\u3000!",
+  "output": true
+ },
+ {
+  "input": "ok\u200b",
+  "output": false
+ },
+ {
+  "input": "yes yes",
+  "output": false
+ },
+ {
+  "input": "ok\nok",
+  "output": false
+ },
+ {
+  "input": "\u00a0hi\u00a0",
+  "output": true
+ },
+ {
+  "input": "hi'",
+  "output": true
+ },
+ {
+  "input": "hi\"",
+  "output": true
+ },
+ {
+  "input": "hi\u2019",
+  "output": true
+ },
+ {
+  "input": "hi\u2013",
+  "output": true
+ },
+ {
+  "input": "hi|",
+  "output": false
+ },
+ {
+  "input": "hi_",
+  "output": false
+ },
+ {
+  "input": "hi-",
+  "output": false
+ },
+ {
+  "input": "hi/",
+  "output": false
+ },
+ {
+  "input": "hi\\",
+  "output": false
+ },
+ {
+  "input": "Hi.  ",
+  "output": true
+ },
+ {
+  "input": "thanks!!! :)",
+  "output": true
+ },
+ {
+  "input": "yes",
+  "output": true
+ },
+ {
+  "input": "no",
+  "output": true
+ },
+ {
+  "input": "ok",
+  "output": true
+ },
+ {
+  "input": "okay",
+  "output": true
+ },
+ {
+  "input": "sure",
+  "output": true
+ },
+ {
+  "input": "thanks",
+  "output": true
+ },
+ {
+  "input": "thank you",
+  "output": true
+ },
+ {
+  "input": "hi",
+  "output": true
+ },
+ {
+  "input": "cool",
+  "output": true
+ },
+ {
+  "input": "nice",
+  "output": true
+ },
+ {
+  "input": "great",
+  "output": true
+ },
+ {
+  "input": "done",
+  "output": true
+ },
+ {
+  "input": "next",
+  "output": true
+ }
+]

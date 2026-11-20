@@ -1,0 +1,29 @@
+{
+  "name": "re-call-opencode",
+  "version": "0.0.0",
+  "license": "AGPL-3.0-only",
+  "private": true,
+  "type": "module",
+  "main": "src/index.ts",
+  "scripts": {
+    "test": "bun test tests/unit",
+    "test:integration": "bun test tests/integration",
+    "test:contract": "bun test tests/contract",
+    "test:e2e": "bun test tests/e2e",
+    "typecheck": "tsc --noEmit",
+    "mutations": "bun tests/mutations.ts",
+    "test:all": "bun test tests/unit tests/port tests/contract"
+  },
+  "dependencies": {
+    "@opencode/plugin": "2.2.7"
+  },
+  "devDependencies": {
+    "@opencode/cli": "2.2.7",
+    "@opencode/sdk": "2.2.7",
+    "@types/bun": "1.3.1",
+    "typescript": "5.9.3"
+  },
+  "trustedDependencies": [
+    "@opencode/cli"
+  ]
+}

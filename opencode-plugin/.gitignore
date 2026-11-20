@@ -1,0 +1,6 @@
+node_modules/
+.venv-recall/
+.worktrees/
+*.log
+/out/
+.claude/
