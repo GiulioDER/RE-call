@@ -7,7 +7,7 @@ import re
 import signal
 import subprocess
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 MCP_PATTERN = "recall_mcp.server"
 _MARKER_RE = re.compile(r"(?<!\S)RECALL_MCP_CLIENT=([^\s;&\"']+)")
@@ -58,11 +58,24 @@ def _process_table() -> list[tuple[str, str, str]] | None:
             return None
     if output is None:
         return None
+    return _parse_rows(output)
 
+
+def _is_pid(token: str) -> bool:
+    # ASCII digits with no leading zero: taskkill reads `01234` as pid 1234, so a padded pid would
+    # pass the duplicate filter below as a second, unrelated process (SEC-001, #1454 audit).
+    return token.isascii() and token.isdigit() and str(int(token)) == token
+
+
+def _parse_rows(output: str) -> list[tuple[str, str, str]]:
+    """`(pid, ppid, command line)` per line of a process table, forged-looking rows dropped."""
     rows = []
-    for line in output.splitlines():
+    # "\n" only. `str.splitlines` also breaks on \v, \f, \x1c to \x1e, U+0085, U+2028 and U+2029,
+    # so a command line holding one would carry a line of its own shaped like a row (SEC-001; the
+    # same row through CR/LF was STAKES-007).
+    for line in output.split("\n"):
         parts = line.strip().split(None, 2)
-        if len(parts) >= 2 and parts[0].isdigit() and parts[1].isdigit():
+        if len(parts) >= 2 and _is_pid(parts[0]) and _is_pid(parts[1]):
             rows.append((parts[0], parts[1], parts[2] if len(parts) > 2 else ""))
     # A pid listed twice means one of its rows is not a process (a forged line, however it got
     # in); neither row can be trusted for a parent chain that decides a kill.
@@ -144,6 +157,15 @@ def _windows_process_rows() -> str | None:
         kernel32.CloseHandle(snapshot)
     if not pairs:
         return None
+    return _format_rows(pairs, command_line)
+
+
+def _format_rows(pairs: list[tuple[int, int]], command_line: Callable[[int], str]) -> str:
+    """The table text `_parse_rows` reads, one `pid ppid command line` per line.
+
+    Separate from the Win32 calls so the flattening, which keeps a command line on its own row,
+    is tested on every platform (CODE-001, CODE-002 of the #1454 audit).
+    """
     return "\n".join(f"{pid} {ppid} {_NEWLINES.sub(' ', command_line(pid))}" for pid, ppid in pairs)
 
 

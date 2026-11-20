@@ -311,6 +311,34 @@ def test_a_second_child_waits_for_the_first(tmp_path: Path, monkeypatch: Any) ->
     assert index.calls == 0
 
 
+def test_a_third_child_leaves_when_one_already_waits(tmp_path: Path, monkeypatch: Any) -> None:
+    """PERF-001 (#1454 audit). Invariant: with one child running and one waiting, a further child
+    exits at once, without waiting, importing the indexer or indexing.
+
+    Defect caught: every session end and compaction during a long index left one more child
+    polling the lock for up to 30 minutes, then repeating the same walk and count in series.
+    Red proof (2026-11-20): `_wait_for` without its `if not _try_lock(waiter): return False`
+    check; fails `memory_refresh.run([...]) == 0` with `_Waited` raised from the poll.
+    """
+    memory = _project(tmp_path, monkeypatch)
+    _memo(memory / "a.md", "a fact\n")
+    index = _Index(monkeypatch)
+    monkeypatch.setattr(recall_hooks, "refresh_stats", lambda config=None: 5)
+    home = memory_refresh._home()
+    home.mkdir(parents=True, exist_ok=True)
+
+    def waited(_seconds: float) -> None:
+        raise _Waited
+
+    monkeypatch.setattr(memory_refresh.time, "sleep", waited)
+    with (home / memory_refresh.LOCK_NAME).open("a+b") as running, \
+            (home / memory_refresh.WAITER_NAME).open("a+b") as waiting:
+        assert memory_refresh._try_lock(running) and memory_refresh._try_lock(waiting)
+        assert memory_refresh.run([str(tmp_path)]) == 0
+
+    assert index.calls == 0
+
+
 def test_memos_written_during_an_index_are_indexed_by_the_same_child(
     tmp_path: Path, monkeypatch: Any
 ) -> None:

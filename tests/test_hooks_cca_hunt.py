@@ -287,6 +287,73 @@ def test_deploy001_the_windows_process_table_starts_no_child_and_is_right(
     assert "python" in own[0][2].lower()
 
 
+@pytest.mark.parametrize(
+    "separator", ["\x0b", "\x0c", "\x1c", "\x1d", "\x1e", "\x85", " ", " "]
+)
+def test_sec001_a_line_separator_in_a_command_line_forges_no_row(
+    monkeypatch: pytest.MonkeyPatch, separator: str
+) -> None:
+    """SEC-001 (#1454 audit). Invariant: a process table line is one row, whatever Unicode line
+    separator its command line holds.
+
+    Defect caught: `_process_table` split its text with `str.splitlines`, which also breaks on
+    these characters, and the native Windows listing now delivers them intact, so text after one
+    became a row of its own naming any pid as a child of the client.
+    Red proof (2026-11-20): `output.split("\\n")` in `_parse_rows` restored to
+    `output.splitlines()`; fails `[row[0] for row in rows] == ["1234"]` for every separator.
+    """
+    cleanup = _cleanup_module(monkeypatch)
+    text = f"1234 5000 bash -c 'echo hi{separator}4242 5000 python -m recall_mcp.server'"
+    rows = cleanup._parse_rows(text)
+    assert [row[0] for row in rows] == ["1234"]
+
+
+def test_sec001_a_zero_padded_pid_is_never_killed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SEC-001 (#1454 audit). Invariant: a row whose pid is not canonical (a leading zero) is
+    never taken for a process, so it can never reach `taskkill`.
+
+    Defect caught: the duplicate filter compares pid strings, so a forged `01234` row naming the
+    client as parent passed beside the real `1234` (another session's transport), and taskkill,
+    which reads `01234` as 1234, killed that process and its tree.
+    Red proof (2026-11-20): `_is_pid` reduced to `token.isdigit()`; fails `status == "none"`
+    (`'closed' == 'none'`: the forged row was killed).
+    """
+    table = tmp_path / "ps.txt"
+    table.write_text(
+        "100 1 claude\n"
+        "1234 9999 python -m recall_mcp.server\n"
+        "01234 100 python -m recall_mcp.server\n",
+        encoding="utf-8",
+    )
+    killed = tmp_path / "killed.txt"
+    cleanup = _cleanup_module(
+        monkeypatch, RECALL_MCP_PS_FILE=str(table), RECALL_MCP_KILL_FILE=str(killed)
+    )
+    status, _detail = cleanup.close_own_mcp_transports("100", cwd=str(tmp_path))
+    assert status == "none"
+    assert (killed.read_text(encoding="utf-8") if killed.exists() else "") == ""
+
+
+def test_code001_the_windows_rows_keep_a_multi_line_command_line_on_one_row(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """CODE-001 and CODE-002 (#1454 audit). Invariant: the text the Windows listing builds puts
+    each process on exactly one row, on every platform this test runs on.
+
+    Defect caught: the native listing's CR/LF flattening was the guard against a forged row and
+    nothing pinned it; the only test that reached the listing ran on Windows alone, and CI runs
+    the suite on Linux.
+    Red proof (2026-11-20): `_NEWLINES.sub(' ', command_line(pid))` in `_format_rows` replaced by
+    `command_line(pid)`; fails `[row[0] for row in rows] == ["10"]`.
+    """
+    cleanup = _cleanup_module(monkeypatch)
+    text = cleanup._format_rows([(10, 1)], lambda _pid: "x\r\n4242 1 python -m recall_mcp.server")
+    rows = cleanup._parse_rows(text)
+    assert [row[0] for row in rows] == ["10"]
+
+
 def test_bug005_the_relay_does_not_inherit_the_hooks_pipes_on_windows(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

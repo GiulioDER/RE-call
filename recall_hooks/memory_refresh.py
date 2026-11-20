@@ -13,9 +13,12 @@ about 0.8 s once the count refresh's `import psycopg` is included. So the hook o
 2. indexes only when they differ, or when the tenant has lost its rows;
 3. refreshes the cached count either way.
 
-One child works at a time (a lock held for its whole life, which the OS releases if it dies), and
-each is killed at `TIME_LIMIT_SECONDS`. Codex keeps a detached child running when the hook it came
-from completed in time (`command_runner.rs`); the hook now does too little to come near the cap.
+One child works at a time and at most one more waits (locks held for their whole life, which the
+OS releases if a child dies); each is killed at `TIME_LIMIT_SECONDS`. Codex keeps a detached child
+running when the hook it came from completed in time (`command_runner.rs`). Measured 2026-11-20
+with no MCP transport to close, the whole hook took 0.48 to 0.51 s at 1,000 memos. What it still
+does before the launch is not bounded in total: one `taskkill` per owned MCP transport (1.5 s each
+at most) and the write-time relay stop.
 """
 
 from __future__ import annotations
@@ -33,6 +36,8 @@ from typing import IO, Any
 
 STATE_NAME = "recall-memory-index.json"
 LOCK_NAME = "recall-memory-index.lock"
+#: Held by the one child that waits for `LOCK_NAME`.
+WAITER_NAME = "recall-memory-index.waiter.lock"
 #: A child still running then is killed. Whatever it indexed stays indexed, and the next child
 #: skips those files by content hash, so a folder too large for one run still converges.
 TIME_LIMIT_SECONDS = 30 * 60
@@ -183,8 +188,22 @@ def run(args: list[str]) -> int:
         watchdog.cancel()
 
 
+def _wait_for(lock: IO[bytes], waiter_path: Path) -> bool:
+    """Wait for `lock` unless another child already waits for it; True once it is held.
+
+    A child that finds one waiting leaves at once: the waiter walks the folder only after the
+    running child ends, so it sees every change made before this one started (PERF-001, #1454
+    audit). Without this, every session end during a long index left a child polling.
+    """
+    with waiter_path.open("a+b") as waiter:
+        if not _try_lock(waiter):
+            return False
+        while not _try_lock(lock):
+            time.sleep(1.0)
+    return True
+
+
 def _run(args: list[str]) -> int:
-    from recall.memory_index import index_memory_directory
     from recall_hooks import _project_memory_dir, load_config, refresh_stats
 
     if len(args) != 1:
@@ -201,8 +220,11 @@ def _run(args: list[str]) -> int:
     home = _home()
     home.mkdir(parents=True, exist_ok=True)
     with (home / LOCK_NAME).open("a+b") as lock:
-        while not _try_lock(lock):
-            time.sleep(1.0)
+        if not _try_lock(lock) and not _wait_for(lock, home / WAITER_NAME):
+            return 0
+        # Imported once the lock is held, so a waiting child does not hold the indexer's modules.
+        from recall.memory_index import index_memory_directory
+
         key = folder_key(config, memory_dir)
         # Read only once the lock is held, so a walk another child recorded while this one waited
         # counts as done.
