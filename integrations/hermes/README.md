@@ -133,9 +133,12 @@ The write tools honour Hermes's `memory.write_approval`. With it on, Hermes asks
 write, where someone can answer; a write you deny is not saved. Where nobody can answer (a single
 query, cron, an unattended platform, a background review), Hermes would stage the write for later
 review, but its pending store holds writes for its own memory only, so the provider refuses the write
-and tells the model why. If the check itself fails, the write is refused while approval is on, or
-while its state cannot be read. Mirrored writes are the built-in memory tool's own, so they have
-already passed the same gate.
+and tells the model why. The prompt shows every argument of the write, including a memo it replaces
+and the text of a memo it forgets. If the check itself fails, the write is refused while approval is
+on (Hermes reads an unreadable config as off). Mirrored writes are the built-in memory tool's own, so
+they have already passed the same gate; a write Hermes stages is not mirrored. One gap is Hermes's:
+when you later approve a staged write with `/memory approve`, Hermes applies it without telling
+memory providers, so RE-call does not receive it.
 
 ## Behaviour worth knowing
 

@@ -44,7 +44,7 @@ def test_a_write_hermes_would_stage_is_refused_and_not_sent(harness, gate):
     assert "error" in answer
     assert "memory.write_approval is on" in answer["error"]
     assert _calls(harness, "recall_remember") == []
-    assert gate.CALLS[0]["subsystem"] == "memory" and gate.CALLS[0]["detail"] == "Lives in Rome"
+    assert gate.CALLS[0]["subsystem"] == "memory" and '"text": "Lives in Rome"' in gate.CALLS[0]["detail"]
 
 
 def test_a_write_the_user_denies_is_refused_with_hermes_message(harness, gate):
@@ -103,3 +103,55 @@ def test_reads_are_never_gated(harness, gate):
     answer = json.loads(provider.handle_tool_call("recall_search", {"query": "where do I live?"}))
     assert "error" not in answer
     assert gate.CALLS == []
+
+
+def test_the_prompt_shows_what_a_write_replaces_and_forgets(harness, gate):
+    """Invariant (review BUG-001, BUG-004): the approval prompt names the memo a correction replaces
+    and shows the text of the memo a forget deletes, so the user never approves a hidden effect.
+
+    Red proof (2026-11-20, `python tests/mutations.py APPROVAL-SHOWS-SUPERSEDES`): in
+    re_call_hermes/provider.py, the `line += f", replacing memo ...` line became `pass`; the test
+    failed at `AssertionError: assert "replacing memo 'm5.md'" in "RE-call: remember 'Lives in Milan'"`.
+    Restored, green.
+    Red proof (2026-11-20, `python tests/mutations.py APPROVAL-SHOWS-FORGOTTEN`): in
+    re_call_hermes/provider.py, `text = _memo_text(folder, memo_id) if folder is not None else None`
+    became `text = None`; the test failed at `AssertionError: assert 'Has a cat' in '{...'`. Restored,
+    green.
+    """
+    harness.scenario({"recall_remember": [{"memo_id": "m6.md"}], "recall_forget_memo": [{"deleted": True}]})
+    provider = harness.start()
+    provider.handle_tool_call("recall_remember", {"text": "Lives in Milan", "supersedes": "m5.md"})
+    assert "replacing memo 'm5.md'" in gate.CALLS[-1]["summary"]
+    assert '"supersedes": "m5.md"' in gate.CALLS[-1]["detail"]
+    folder = provider._settings.assistant_folder
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "note-0003.md").write_text("---\nvalid_from: 2026-11-01\n---\nHas a cat\n", encoding="utf-8")
+    provider.handle_tool_call("recall_forget_memo", {"memo_id": "note-0003"})
+    assert "Has a cat" in gate.CALLS[-1]["detail"]
+
+
+def test_a_gate_that_fails_to_import_refuses(harness, gate, monkeypatch, tmp_path):
+    """Invariant (review BUG-003): only a Hermes without the gate module lets a write through
+    unasked; a gate module that fails while importing refuses, since that is a check that failed.
+
+    Red proof (2026-11-20, `python tests/mutations.py APPROVAL-IMPORT-CLOSED`): in
+    re_call_hermes/provider.py, `if isinstance(exc, ModuleNotFoundError) and exc.name in (...)` became
+    `if True:`; the test failed at `AssertionError: assert 'error' in {'memo_id': 'm1.md'}`.
+    Restored, green.
+    """
+    import sys
+    import types
+
+    broken = tmp_path / "broken_tools"
+    broken.mkdir()
+    (broken / "write_approval.py").write_text('raise ImportError("a dependency of the gate is missing")\n',
+                                              encoding="utf-8")
+    package = types.ModuleType("tools")
+    package.__path__ = [str(broken)]
+    monkeypatch.setitem(sys.modules, "tools", package)
+    monkeypatch.delitem(sys.modules, "tools.write_approval", raising=False)
+    harness.scenario({"recall_remember": [{"memo_id": "m1.md"}]})
+    provider = harness.start()
+    answer = json.loads(provider.handle_tool_call("recall_remember", {"text": "Lives in Rome"}))
+    assert "error" in answer
+    assert harness.events("call") == []

@@ -93,29 +93,40 @@ APPROVAL_UNAVAILABLE = (
 APPROVAL_CHECK_FAILED = "the memory write-approval check failed, so this write was not saved to RE-call"
 
 
-def _write_summary(tool_name: str, arguments: dict[str, Any]) -> tuple[str, str]:
-    """What the approval prompt shows: one line, and the full detail."""
+def _write_summary(tool_name: str, arguments: dict[str, Any], folder: Path | None) -> tuple[str, str]:
+    """What the approval prompt shows: one line, and every argument the write sends, so a correction
+    that retires another memo, or the memory a forget deletes, is never hidden."""
+    detail = json.dumps(arguments, ensure_ascii=False, indent=2, default=str)
     if tool_name == "recall_remember":
-        text = str(arguments.get("text", ""))
-        return f"RE-call: remember {text[:80]!r}", text
+        line = f"RE-call: remember {str(arguments.get('text', ''))[:80]!r}"
+        if arguments.get("supersedes"):
+            line += f", replacing memo {str(arguments['supersedes'])!r}"
+        return line, detail
     if tool_name == "recall_forget_memo":
-        line = f"RE-call: forget memo {arguments.get('memo_id', '')}"
-        return line, line
+        memo_id = str(arguments.get("memo_id", ""))
+        text = _memo_text(folder, memo_id) if folder is not None else None
+        return f"RE-call: forget memo {memo_id!r}", f"{detail}\n\nThat memo holds:\n{text}" if text else detail
     fact = " ".join(str(arguments.get(k, "")) for k in ("subject", "predicate", "object"))
-    return f"RE-call: record the fact {fact[:80]!r}", json.dumps(arguments, ensure_ascii=False, indent=2)
+    return f"RE-call: record the fact {fact[:80]!r}", detail
 
 
-def _approval_refusal(tool_name: str, arguments: dict[str, Any]) -> str | None:
+def _approval_refusal(tool_name: str, arguments: dict[str, Any], folder: Path | None) -> str | None:
     """Why Hermes's memory.write_approval keeps this write from RE-call, or None to write it.
 
     Hermes's own gate decides (an inline prompt where someone can answer). Its pending store replays
     writes into its built-in memory, so a write it would stage is refused here instead, saying why.
-    A check that fails refuses while approval is on, or while its state cannot be read."""
+    A check that raises refuses while approval is on (Hermes reads an unreadable config as off), or
+    when that cannot be asked either."""
     try:
         from tools import write_approval
-    except ImportError:
-        return None  # a Hermes without the gate has nothing to ask, as for its own memory tool
-    summary, detail = _write_summary(tool_name, arguments)
+    except ImportError as exc:
+        # Only a Hermes without the gate module has nothing to ask, as for its own memory tool; a
+        # gate that fails to import is a check that failed.
+        if isinstance(exc, ModuleNotFoundError) and exc.name in ("tools", "tools.write_approval"):
+            return None
+        logger.warning("re-call: the memory write-approval gate did not import", exc_info=True)
+        return APPROVAL_CHECK_FAILED
+    summary, detail = _write_summary(tool_name, arguments, folder)
     try:
         decision = write_approval.evaluate_gate(write_approval.MEMORY, inline_summary=summary,
                                                 inline_detail=detail)
@@ -434,7 +445,8 @@ class ReCallMemoryProvider(MemoryProvider):
             return json.dumps({"error": f"re-call does not offer {tool_name} here"})
         arguments = {k: v for k, v in (args or {}).items() if v not in (None, "")}
         if tool_name in WRITE_TOOLS:
-            refusal = _approval_refusal(tool_name, arguments)
+            refusal = _approval_refusal(tool_name, arguments,
+                                        self._settings.assistant_folder if self._settings else None)
             if refusal:
                 return json.dumps({"error": refusal})
         if tool_name == "recall_search":

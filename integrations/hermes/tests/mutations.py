@@ -257,11 +257,21 @@ MUTATIONS = [
      "tests/test_write_approval.py::test_a_failed_check_refuses_only_while_approval_may_be_on"),
     ("APPROVAL-READS-FREE", P, "        if tool_name in WRITE_TOOLS:", "        if True:",
      "tests/test_write_approval.py::test_reads_are_never_gated"),
+    ("APPROVAL-SHOWS-SUPERSEDES", P, """            line += f", replacing memo {str(arguments['supersedes'])!r}\"""",
+     "            pass",
+     "tests/test_write_approval.py::test_the_prompt_shows_what_a_write_replaces_and_forgets"),
+    ("APPROVAL-SHOWS-FORGOTTEN", P, "text = _memo_text(folder, memo_id) if folder is not None else None", "text = None",
+     "tests/test_write_approval.py::test_the_prompt_shows_what_a_write_replaces_and_forgets"),
+    ("APPROVAL-IMPORT-CLOSED", P,
+     'if isinstance(exc, ModuleNotFoundError) and exc.name in ("tools", "tools.write_approval"):', "if True:",
+     "tests/test_write_approval.py::test_a_gate_that_fails_to_import_refuses"),
 ]
 
 # Run only with HERMES_SRC set: without a real Hermes these tests skip, which proves nothing.
 CONTRACT_MUTATIONS = [
     ("CONTRACT-APPROVAL", P, "        if tool_name in WRITE_TOOLS:", "        if False:",
+     "tests/test_contract.py::test_the_real_gate_refuses_a_write_nobody_can_approve"),
+    ("CONTRACT-APPROVAL-CALL", P, "inline_summary=summary,", "inline_sumary=summary,",
      "tests/test_contract.py::test_the_real_gate_refuses_a_write_nobody_can_approve"),
     ("CONTRACT-ABC", P, "    def get_tool_schemas(self) -> list[dict[str, Any]]:\n",
      "    def _get_tool_schemas(self) -> list[dict[str, Any]]:\n",
