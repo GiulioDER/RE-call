@@ -6,7 +6,7 @@ question the corpus cannot answer is refused rather than answered from the neare
 
 ## Install for Claude Code
 
-For a local SQLite store, [install Lite](../docs/LITE.md) (`recall-rag` 0.15.0 or later) and run
+For a local SQLite store, [install Lite](../docs/LITE.md) (`recall-rag` 0.16.0 or later) and run
 `recall setup --lite --memory ./notes`. Setup registers
 a project server directly; this plugin is optional. If using its server instead, pass
 `--no-register` to setup and use the printed SQLite DSN in the plugin's Database DSN setting. The

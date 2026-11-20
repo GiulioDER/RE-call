@@ -17,7 +17,7 @@ On Windows PowerShell:
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
-python -m pip install "recall-rag[fastembed,mcp]>=0.15.0"
+python -m pip install "recall-rag[fastembed,mcp]>=0.16.0"
 ```
 
 On macOS or Linux:
@@ -25,7 +25,7 @@ On macOS or Linux:
 ```bash
 python3 -m venv .venv
 . .venv/bin/activate
-python -m pip install "recall-rag[fastembed,mcp]>=0.15.0"
+python -m pip install "recall-rag[fastembed,mcp]>=0.16.0"
 ```
 
 To run unreleased changes instead, install from a clone of the repository with the same extras:

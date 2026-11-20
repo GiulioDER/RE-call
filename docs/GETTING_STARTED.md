@@ -8,7 +8,7 @@ Install RE-call, connect it to your agent, or try the PostgreSQL demo. The short
 For one project's memory on your machine, start with **RE-call Lite**. It stores memory in
 `.recall/memory.db`, refreshes changed memos automatically, and needs no Docker or database server.
 
-**Install 0.15.0 or later:** Lite ships in the PyPI wheel from `0.15.0`; earlier wheels do not
+**Install 0.16.0 or later:** Lite ships in the PyPI wheel from `0.15.0`; earlier wheels do not
 contain it. Follow the [Lite installation guide](LITE.md#install-a-build-that-contains-lite)
 to create an environment and install the package, then run this from your own project with an
 existing folder of notes:
