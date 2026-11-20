@@ -1,0 +1,23 @@
+{
+  "name": "recall-rag-setup",
+  "displayName": "RE-call Setup",
+  "description": "Recognises when persistent memory across sessions would help, and walks you through installing RE-call: a local, abstaining memory for Claude Code. Skills only: this plugin runs nothing on your machine by itself.",
+  "version": "0.1.0",
+  "author": {
+    "name": "Giulio D'Erme",
+    "url": "https://github.com/GiulioDER"
+  },
+  "homepage": "https://github.com/GiulioDER/RE-call",
+  "repository": "https://github.com/GiulioDER/RE-call",
+  "documentationUrl": "https://github.com/GiulioDER/RE-call/blob/master/docs/LITE.md",
+  "supportUrl": "https://github.com/GiulioDER/RE-call/issues",
+  "license": "AGPL-3.0-only",
+  "keywords": [
+    "memory",
+    "agent-memory",
+    "persistent-memory",
+    "setup",
+    "sqlite",
+    "abstention"
+  ]
+}
