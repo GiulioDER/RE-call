@@ -37,7 +37,10 @@ also want the per-turn memory block and write tools limited to the session you d
 
    OpenCode clones the repository, installs this folder's runtime dependencies (not its test tools)
    into its own cache, and adds the spec to the global `opencode.json`. The first install took 3 min 37 s
-   and about 430 MB of cache (2026-11-20, OpenCode 2.2.7 on Windows); later starts reuse it.
+   and about 430 MB of cache (2026-11-20, OpenCode 2.2.7 on Windows); later starts reuse it. When no
+   OpenCode background service is running, `plugin add` starts one, which loads the plugin at once: with
+   a store in place its `recall-mcp` child, and the embedding model in it, then stays up as long as that
+   service (seen on Linux, 2026-11-20).
 
 4. **The plugin entry** in `opencode.json`. With no options the plugin uses the defaults below. To pass
    options, replace the string entry `plugin add` wrote with an object carrying the same spec:
