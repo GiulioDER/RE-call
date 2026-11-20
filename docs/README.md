@@ -55,6 +55,7 @@ Lite ships in the PyPI wheel from `0.15.0`; earlier wheels do not contain it.
 | [ENGINEERING.md](ENGINEERING.md) | Engineering decisions and the measurements behind them. |
 | [Validity Frontmatter 1.0](https://github.com/GiulioDER/validity-frontmatter) | The open vocabulary RE-call implements (`valid_from`, `valid_until`, `supersedes`), its resolution rules and its verdict algorithm. MIT licensed and maintained in its own repository, so it stays implementable without RE-call. RE-call is the Python implementation; a zero-dependency TypeScript one ships alongside the spec. |
 | [PRIOR_ART.md](PRIOR_ART.md) | How RE-call relates to existing memory and retrieval systems. |
+| [COMPARE.md](COMPARE.md) | When to choose RE-call, Mem0, Graphiti or Zep, Letta, LangMem, or plain pgvector. |
 | [REASONING_CONTRACT.md](REASONING_CONTRACT.md) | Reasoning vocabulary, invariants, Session 1 baseline fixture, and Session 6 evaluation controls. |
 | [REASONING_API.md](REASONING_API.md) | Typed reasoning request and response surface, provider ports, serialization, and validation rules. |
 | [REASONING_GRAPH.md](REASONING_GRAPH.md) | Generation-bound reasoning graph projection schema and invariants. |
@@ -67,6 +68,7 @@ Lite ships in the PyPI wheel from `0.15.0`; earlier wheels do not contain it.
 | Document | Use it for |
 |---|---|
 | [EVIDENCE.md](EVIDENCE.md) | The shortest evidence path: claims, measurements, limits, and withdrawn claims. |
+| [BENCHMARKS.md](BENCHMARKS.md) | The benchmark scorecard: published results, dated positions, and who ran each test. |
 | [../results/FINDINGS.md](../results/FINDINGS.md) | What the measurements establish, where they stop, and which claims were corrected. |
 | [../results/README.md](../results/README.md) | Map of committed result summaries and compact artifacts. |
 | [../results/RESULTS.md](../results/RESULTS.md) | Published tables and result summaries. |
