@@ -30,7 +30,7 @@ also want the per-turn memory block and write tools limited to the session you d
    ```
 
 3. **The plugin's dependencies.** Clone this repository and run `bun install --production` in
-   `opencode-plugin/`: `src/index.ts` imports `@opencode/plugin` from that folder's `node_modules`.
+   `integrations/opencode/`: `src/index.ts` imports `@opencode/plugin` from that folder's `node_modules`.
    `--production` skips the test tools, the OpenCode CLI among them.
 
 4. **The plugin entry** in `opencode.json`. OpenCode 2.2.7 loads a configured plugin only from a
@@ -40,7 +40,7 @@ also want the per-turn memory block and write tools limited to the session you d
    {
      "plugins": [
        {
-         "package": "<clone>/opencode-plugin/src",
+         "package": "<clone>/integrations/opencode/src",
          "options": {
            "recall_command": "<.venv-recall>/Scripts/recall-mcp.exe",
            "dsn": "sqlite:///<store>/memory.db",

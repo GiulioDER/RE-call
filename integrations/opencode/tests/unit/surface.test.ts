@@ -9,7 +9,7 @@ import { cleandoc, DROPPED, EXTRA, normalizeTool, selectTools, TRAINED } from ".
 
 /** RE-call's own pin of the six tools, `tests/fixtures/assistant_surface_contract.json` at the repository
  * root, which `tests/test_assistant_surface.py` checks against `recall_mcp.assistant`. */
-const CONTRACT = resolve(import.meta.dir, "..", "..", "..", "tests", "fixtures", "assistant_surface_contract.json");
+const CONTRACT = resolve(import.meta.dir, "..", "..", "..", "..", "tests", "fixtures", "assistant_surface_contract.json");
 
 /** The six tools as the contract holds them, in the order the plugin offers them. */
 function vendored(): ToolDef[] {

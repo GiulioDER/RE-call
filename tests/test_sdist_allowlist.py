@@ -30,7 +30,9 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 
 #: Top-level trees that hold research artefacts or operator tooling, never package code.
-NOT_FOR_PYPI = ("docs", "results", "benchmarks", "scripts", "launch", "infra", "tests", "site")
+NOT_FOR_PYPI = (
+    "docs", "results", "benchmarks", "scripts", "launch", "infra", "tests", "site", "integrations",
+)
 
 
 def _sdist_config() -> dict[str, Any]:
