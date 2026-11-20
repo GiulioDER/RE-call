@@ -52,7 +52,12 @@ from tests.conftest import TEST_DSN, requires_db
 # global `timeout = 120` in pyproject.toml, so the run dies on a loaded CI box while passing
 # locally. Raise the ceiling for this module only, per the escape hatch that setting documents;
 # the point of the global timeout is to fail a HUNG chunker fast, and it keeps doing that here.
-pytestmark = [requires_db, pytest.mark.timeout(300)]
+#
+# 900 s, not 300 s: in the 0.16.0 full suite on the testbench (-n 6, PostgreSQL capped at one CPU
+# for all six workers) the setup took 221.61 s when it survived and passed 300 s when it did not;
+# the thread-method timeout then ends the worker with os._exit, which xdist reports only as
+# "node down: Not properly terminated", at two freezes in a row. It passes serially in ~73 s.
+pytestmark = [requires_db, pytest.mark.timeout(900)]
 
 DIM = 64
 N_ROWS = 20_000
