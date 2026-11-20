@@ -8,15 +8,6 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ## [Unreleased]
 
-### Added
-
-* **`recall setup --lite` and `recall wizard` now wire Codex, and give Claude Code its hooks and
-  skills.** Codex gets the same MCP servers in the project's `.codex/config.toml` (loaded for a
-  trusted project), RE-call's hooks and the five skills; Claude Code gets the hooks and skills
-  beside the servers it already got. On Lite, write-time search stays off and prompt-time search
-  reads the `--memory` folder. A hook config that already serves another project is left alone
-  and reported.
-
 ### Upgrade notes
 
 * **The lock moves `onnxruntime` from 1.31.0 to 1.31.1.** Every FastEmbed profile records the
@@ -46,14 +37,28 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   other than `chunks` and a `--tenant` that differs from the tenant the store records. `recall
   manifest verify` now compares `--sha256` and `--size` with a local manifest file, so a pin that
   does not describe the file fails where it used to print `verified`; the pins are the
-  `file_sha256=` and `size=` values the command prints, not its `sha256=` digest. Each is listed
-  under Fixed.
+  `file_sha256=` and `size=` values the command prints, not its `sha256=` digest. Also refused: on
+  `recall setup` without `--lite`, the global `--embedder`, `--tenant` other than `default`,
+  `--memory`, `--store` and `--no-register`; on `recall setup --lite`, `--tenant` or `--table` other
+  than their defaults, and a typed `sqlite:///` DSN; the global `--table` other than `chunks` on
+  `recall forget`, `withdraw`, `search`, `scopes`, `reasoning` and `records` under
+  `RECALL_INDEX_MODE=generation`, and on `recall generation`, `recall graph` and
+  `recall calibration` on PostgreSQL. Each is listed under Fixed.
 * **`recall setup --lite` and `recall wizard` now write client configuration they did not write
-  before:** Claude Code hooks and skills (unless the RE-call plugin already supplies them) and,
-  when Codex is detected, the project's
-  `.codex/config.toml` (each server's environment, the DSN included), Codex's hooks file and
-  `recall-hook.json`, and skills under `~/.agents/skills`. `recall setup --lite --no-register`
-  writes none of them.
+  before:** Claude Code hooks and skills (unless the RE-call plugin, installed for this project and
+  enabled, already supplies them) and, when Codex is detected, the project's `.codex/config.toml`
+  (each server's environment, the DSN and a hosted profile's key included), Codex's hooks file and
+  `recall-hook.json`, and skills under `~/.agents/skills`. Both clients' `recall-hook.json` also
+  hold the server's settings, a hosted key included, in `server_env`. Inside a git work tree
+  `.codex/config.toml*` is added to the project's `.gitignore`, and the file is not written at all
+  when git tracks it or cannot say whether it does (git missing, or the repository refused). It is
+  written owner-only (0600) on Linux and macOS and is refused when `.codex` or the file leads
+  outside the project through a link. The first rewrite of an existing file keeps its earlier
+  content in `.codex/config.toml.recall-backup`. `recall setup --lite --no-register` writes none of
+  them, and `recall uninstall` removes none of them; delete them by hand.
+* **A Codex install keeps its old 15 s `SessionEnd` timeout until `recall setup` runs again**
+  (#1454). Codex clamps it to 3 s either way and logs a clamping warning when it loads the hooks;
+  upgrading the package alone does not rewrite `~/.codex/hooks.json`.
 * **The Codex server `recall setup` registers now runs `RECALL_TRUST_MODE=development`**, the trust
   mode of its Claude Code registration, from the `server_env` block of `recall-hook.json`, which
   the Codex launcher applies over the shell's value. Answers from the uncalibrated corpus setup
@@ -64,6 +69,24 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ### Added
 
+- **`recall setup --lite` and `recall wizard` now wire Codex, and give Claude Code its hooks and
+  skills.** Codex gets the same MCP servers in the project's `.codex/config.toml` (loaded for a
+  trusted project), RE-call's hooks and the five skills. Claude Code gets the hooks and skills
+  beside the servers it already got. When the RE-call plugin is installed for this project,
+  enabled, and its `recall-hooks` command is on PATH, only the hook config its hooks read is
+  written. Both hook configs carry the server's own settings as `server_env`: the Codex launcher
+  starts its server with them, and the session-end index embeds with them. On Lite, write-time
+  search stays off, prompt-time search reads the `--memory` folder, and the session-start note
+  counts the store's chunks. A hook config that serves another project, a hosted one, or one that
+  cannot be read is left alone and reported; a local one that names no project is bound to this
+  one. A prompt-time or write-time switch turned off in this project's hook config stays off on a
+  rerun. A later run keeps the Codex servers an earlier run registered in `.codex/config.toml`, as
+  Claude Code's local scope does, and removes and reports anything else between RE-call's markers;
+  the Codex plugin counts as installed only once `CODEX_HOME/config.toml` enables it. A skill of the same name that RE-call did not install is left
+  alone and reported; RE-call's own copies now carry an `.installed-by-recall` marker, which
+  `recall setup` writes too. The wizard counts an install whose Claude Code registration was
+  refused as complete when Codex got the servers, and its report names the client that was
+  skipped.
 - The atomic rescue is on at first install. `recall setup --lite` and the PostgreSQL wizard register
   it `active`, with its artifacts beside the Lite store or under `<project_root>/.recall/atomic`,
   and build the first artifact before they finish, which on Lite takes most of the install (the
@@ -212,21 +235,31 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ### Fixed
 
-- On a PostgreSQL store, the session-end memo index no longer runs inside the hook (#1454). Codex
-  runs `SessionEnd` synchronously and stops it at 15 s, and re-indexing an unchanged folder of
-  1,000 memos took up to 10.0 s there (a first index, 37.8 s). The hook now compares a stat walk of
-  `memory/` with the walk recorded after the last successful index and skips the index when they
-  match, unless the tenant has lost its rows. When anything changed, a first index included, it
-  starts a detached `python -m recall_hooks index-memory` that indexes one folder at a time, stops
-  after 30 minutes, and refreshes the cached count when it finishes. Claude Code's `SessionEnd` and
-  `PreCompact` take the same path. The walks are kept in `recall-memory-index.json` beside the hook
-  config.
-- Codex's `SessionEnd` hook now fits within the 3 s Codex allows it (#1454). Codex clamps a
-  `SessionEnd` timeout to at most 3 s, so the 15 s RE-call wrote was never honoured. On a
-  PostgreSQL store the hook now only closes this session's MCP transports and starts the detached
-  `python -m recall_hooks index-memory`, which does the walk, any index and the count refresh. On
-  Windows, MCP cleanup reads the process table through the Win32 API instead of PowerShell (1.2 to
-  2.4 s before, about 0.1 s now). The generated Codex `SessionEnd` timeout is 3 s.
+- On a PostgreSQL store, Codex's `SessionEnd` hook now fits within the 3 s Codex allows it
+  (#1454). Codex clamps a `SessionEnd` timeout to at most 3 s whatever the hook config asks for, so
+  the 15 s RE-call wrote was never in force, and the hook re-indexed the memo folder in process: up
+  to 10.0 s for an unchanged folder of 1,000 memos, 37.8 s for a first index. The hook now closes
+  this session's MCP transports, stops the write-time relay, and starts a detached
+  `python -m recall_hooks index-memory`. That process compares a stat walk of the memo folder (the
+  hook config's `memory_root` when it is set, else `memory/`) with the walk recorded after the last
+  successful index, indexes only when they differ or the tenant has lost its rows, and refreshes the
+  cached count; one indexes at a time, at most one more waits, and each stops after 30 minutes.
+  Claude Code's `SessionEnd` and `PreCompact` start the same detached index. On Windows, MCP
+  cleanup reads the process table through the Win32 API instead of PowerShell (1.2 to 2.4 s
+  before, 0.06 to 0.27 s now, measured 2026-11-20). The generated Codex `SessionEnd` timeout is
+  3 s. Measured at 1,000 unchanged memos with no MCP transport to close, the hook took 0.48 to
+  0.51 s; each transport it closes adds one `taskkill` of at most 1.5 s, and the relay stop is
+  bounded per step, not in total. In hosted mode the upload still runs inside the hook. The walks
+  are kept in `recall-memory-index.json` beside the hook config.
+- The session-end memo index on a local PostgreSQL install read `<project>/memory` even when the
+  hook config named another `memory_root`, the folder prompt-time search and the hosted sync
+  already read, so memos kept there were never indexed. It now indexes `memory_root` when it is set
+  (an absolute path; a relative one indexes nothing and only refreshes the count), and embeds with
+  the settings in the hook config's `server_env`, so a corpus built under an embedding profile is
+  not indexed with another model.
+- A rerun of `recall setup`, or of any installer that writes the hook config, dropped the `k`,
+  `min_chars` and `store` settings of its `prompt_time` block. They are now kept, and only
+  `enabled` is rewritten.
 - Plain `recall setup` scaffolded `memory/` but wrote no `memory_root` into the hook config, so
   prompt-time search read the client's own project memory folder instead (#1426). When the
   scaffold is accepted, setup now writes that folder for Claude Code and Codex.

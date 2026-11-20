@@ -9,6 +9,7 @@ and fail-open behaviour remain in :mod:`recall_hooks`.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import importlib
 import os
@@ -374,7 +375,10 @@ def install_codex_integration(
 
 
 def codex_user_skill_dir() -> Path:
-    """Where Codex loads a user's own skills from (`$HOME/.agents/skills`)."""
+    """Where Codex loads a user's own skills from (`$HOME/.agents/skills`).
+
+    Per the Codex skills documentation (https://learn.chatgpt.com/codex/build-skills).
+    """
     return Path.home() / ".agents" / "skills"
 
 
@@ -387,15 +391,26 @@ def codex_skill_sources() -> dict[str, Path]:
 
 
 def codex_plugin_installed() -> bool:
-    """Whether the personal marketplace already offers the RE-call plugin, which carries the skills."""
+    """Whether Codex has the RE-call plugin, which carries the skills, enabled.
+
+    The personal marketplace only offers it; Codex records an enabled plugin in `config.toml` as
+    `[plugins."<plugin>@<marketplace>"] enabled = true`, and until then none of its skills load.
+    The marketplace part is that file's own name, which `_update_marketplace` keeps when the user's
+    marketplace already had one.
+    """
     try:
         document = _marketplace_document(personal_marketplace_path())
-    except ValueError:
+        config = tomllib.loads((codex_home() / "config.toml").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
         return False
-    return any(
+    offered = any(
         isinstance(item, dict) and item.get("name") == CODEX_PLUGIN_NAME
         for item in document.get("plugins", [])
     )
+    marketplace = document.get("name") or CODEX_MARKETPLACE_NAME
+    plugins = config.get("plugins")
+    entry = plugins.get(f"{CODEX_PLUGIN_NAME}@{marketplace}") if isinstance(plugins, dict) else None
+    return offered and isinstance(entry, dict) and entry.get("enabled") is True
 
 
 #: The lines that delimit the servers this installer owns inside a project's `.codex/config.toml`.
@@ -421,6 +436,14 @@ class ProjectServerRegistration:
     trusted: bool = False
     #: The `.gitignore` this call added `.codex/config.toml` to, when it had to.
     gitignore: Path | None = None
+    #: The copy of the file as it stood before this call rewrote it, made once and never replaced.
+    backup: Path | None = None
+    #: RE-call servers an earlier run on this machine registered here, kept beside this run's.
+    kept: tuple[str, ...] = ()
+    #: Servers found in RE-call's block that this machine has no record of writing as they stand, removed.
+    dropped: tuple[str, ...] = ()
+    #: Servers the file already defined that RE-call did not write: trusting the project enables them.
+    others: tuple[str, ...] = ()
 
 
 def _toml_string(value: str) -> str:
@@ -450,16 +473,56 @@ def _render_servers(servers: dict[str, dict[str, Any]]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _split_managed_block(text: str) -> tuple[str, str]:
-    """The user's text `(before, after)` RE-call's block, whose markers must be whole lines."""
+def _split_managed_block(text: str) -> tuple[str, str, str]:
+    """`(before, block, after)` around RE-call's block, whose markers must be whole lines."""
     lines = text.splitlines(keepends=True)
     begin = next((i for i, line in enumerate(lines) if line.strip() == MANAGED_BEGIN), None)
     if begin is None:
-        return text, ""
+        return text, "", ""
     end = next((i for i in range(begin + 1, len(lines)) if lines[i].strip() == MANAGED_END), None)
     if end is None:
         raise ValueError("it has an unterminated RE-call block")
-    return "".join(lines[:begin]), "".join(lines[end + 1:])
+    return "".join(lines[:begin]), "".join(lines[begin:end + 1]), "".join(lines[end + 1:])
+
+
+def _server_digest(entry: object) -> str:
+    return hashlib.sha256(json.dumps(entry, sort_keys=True, default=str).encode("utf-8")).hexdigest()
+
+
+def _written_servers_path() -> Path:
+    """Where this machine records the servers RE-call wrote into each project's block."""
+    return codex_home() / "re-call" / "project-servers.json"
+
+
+def _project_key(root: Path) -> str:
+    return os.path.normcase(str(root))
+
+
+def _written_servers() -> dict[str, Any]:
+    try:
+        document = json.loads(_written_servers_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return document if isinstance(document, dict) else {}
+
+
+def _earlier_servers(block: str, root: Path) -> tuple[dict[str, dict[str, Any]], tuple[str, ...]]:
+    """`(kept, dropped)`: the servers of RE-call's block that a run on this machine wrote, unchanged.
+
+    The block is in the project, so anything can stand between its markers: a server planted in a
+    downloaded project, or one the user disabled or changed by hand. Only an entry whose content
+    matches what this machine recorded writing is RE-call's, and is rendered again as it was.
+    """
+    try:
+        servers = tomllib.loads(block).get("mcp_servers", {})
+    except ValueError:
+        return {}, ()
+    if not isinstance(servers, dict):
+        return {}, ()
+    recorded = _written_servers().get(_project_key(root))
+    recorded = recorded if isinstance(recorded, dict) else {}
+    keep = {name: entry for name, entry in servers.items() if recorded.get(name) == _server_digest(entry)}
+    return keep, tuple(name for name in servers if name not in keep)
 
 
 def _git(project_root: Path, *args: str) -> int | None:
@@ -514,6 +577,9 @@ def register_project_servers(
     env holds a DSN and may hold a provider key). Inside a git work tree it is also refused when
     git cannot say whether it tracks the file, and otherwise added to the project's `.gitignore`.
     The file is written 0600, and a `.codex` that leads outside the project is refused.
+
+    A later run keeps only the servers in RE-call's block that `CODEX_HOME/re-call/project-servers.json`
+    records this machine writing, unchanged; anything else there is removed and reported.
     """
     from recall.wizard.wiring import _write_private_configuration
 
@@ -551,7 +617,7 @@ def register_project_servers(
         raw = target.read_bytes() if target.exists() else b""
         # `utf-8-sig`: a BOM a Windows editor wrote is not the user's content, and tomllib refuses it.
         original = raw.decode("utf-8-sig")
-        before, after = _split_managed_block(original.replace("\r\n", "\n"))
+        before, block, after = _split_managed_block(original.replace("\r\n", "\n"))
         user_servers = tomllib.loads(before + after).get("mcp_servers", {})
     except (OSError, ValueError) as exc:
         return ProjectServerRegistration(
@@ -564,9 +630,20 @@ def register_project_servers(
         return ProjectServerRegistration(
             target, conflicts=conflicts, skipped_reason="every server name is already defined in it"
         )
+    # As Claude Code's local scope keeps the servers an earlier install registered, so does this:
+    # Lite and the wizard in one project each keep the other's.
+    earlier, unrecorded = _earlier_servers(block, root)
+    # A name the user also defines outside the block stays theirs: rendering it again would
+    # declare it twice, and Codex, like tomllib, refuses the whole file.
+    kept = {name: entry for name, entry in earlier.items() if name not in mine and name not in taken}
+    dropped = tuple(name for name in unrecorded if name not in mine and name not in taken)
     head, tail = before.rstrip("\n"), after.lstrip("\n")
-    text = (head + "\n\n" if head else "") + _render_servers(mine) + ("\n" + tail if tail else "")
-    tomllib.loads(text)  # never write a file Codex would refuse to parse
+    text = (
+        (head + "\n\n" if head else "")
+        + _render_servers({**kept, **mine})
+        + ("\n" + tail if tail else "")
+    )
+    written = tomllib.loads(text)["mcp_servers"]  # never write a file Codex would refuse to parse
     gitignore = None
     # Each path asked on its own: with several, check-ignore succeeds when any one is ignored, and
     # the backup can hold the credentials of an earlier RE-call block.
@@ -580,9 +657,16 @@ def register_project_servers(
         with gitignore.open("a", encoding="utf-8", newline="\n") as handle:
             handle.write(f"{separator}.codex/config.toml*\n")
     target.parent.mkdir(parents=True, exist_ok=True)
-    backup = target.with_name(target.name + ".recall-backup")
-    if raw and not backup.exists():
-        _write_private_configuration(backup, original)
+    backup_path = target.with_name(target.name + ".recall-backup")
+    backup = None
+    if raw and not backup_path.exists():
+        _write_private_configuration(backup_path, original)
+        backup = backup_path
+    # Recorded before the file is written: a record naming a server the file lacks keeps nothing.
+    record = _written_servers()
+    record[_project_key(root)] = {name: _server_digest(written[name]) for name in (*kept, *mine)}
+    _written_servers_path().parent.mkdir(parents=True, exist_ok=True)
+    _write_private_configuration(_written_servers_path(), json.dumps(record, indent=2, sort_keys=True) + "\n")
     _write_private_configuration(target, text.replace("\n", "\r\n") if b"\r\n" in raw else text)
     return ProjectServerRegistration(
         target,
@@ -590,6 +674,10 @@ def register_project_servers(
         conflicts=conflicts,
         trusted=_project_trusted(root),
         gitignore=gitignore,
+        backup=backup,
+        kept=tuple(kept),
+        dropped=dropped,
+        others=tuple(taken),
     )
 
 
