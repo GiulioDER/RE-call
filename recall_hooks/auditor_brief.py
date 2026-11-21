@@ -8,8 +8,9 @@ just before launch, by appending one block to the subagent's prompt through `upd
 What it reads, and what it does not:
 
 - **Scope** is the repository of the session's `cwd`: its identity (`owner/name`, from the `origin`
-  remote), the files the prompt names that exist in it, and the files changed against the merge
-  base with `origin/HEAD` (else `origin/master`, else `origin/main`). A changed Python line is
+  remote) and the files the prompt names that exist in it. Only an empty prompt (CCA's own
+  reader, the Codex bridge) is scoped by the files changed against the merge base with
+  `origin/HEAD` (else `origin/master`, else `origin/main`) instead. A changed Python line is
   resolved to its enclosing symbol by `recall.anchors`, so those files are looked up by anchor;
   every other file at file level.
 - **Source** is the CCA memo directory on this machine (`RECALL_AUDITOR_MEMOS`, else
@@ -727,7 +728,10 @@ def _collect(
             raise RuntimeError("the origin remote names no owner/name repository")
         base, diff = _base_and_diff(started, cwd, deadline, processes)
         found = _GitScope(root=root, repo=repo, named=named_files(prompt, root), base=base)
-        found.changes = changed_lines(diff) if diff is not None else {}
+        # A prompt with text scopes by the files it names: the work tree's own diff is often not
+        # the code under audit (measured 2026-11-21: 2 of 16 diff-sourced lines relevant, 14 of
+        # 20 named-file lines). An empty prompt (CCA's reader, the Codex bridge) has only the diff.
+        found.changes = changed_lines(diff) if diff is not None and not prompt.strip() else {}
         # One batch for every copy git must supply: a named Python file's merge-base copy (its
         # uncommitted change is found against it) and a changed file's HEAD copy (the commit diff's
         # line numbers count that copy's lines, not the work tree's).
@@ -805,11 +809,14 @@ def finish_scope(
     The committed changes come from a commit-to-commit diff against the merge base, which never
     reads the work tree. The files the prompt names are compared in Python: the work-tree copy read
     from disk against the merge-base copy from `git cat-file --batch`, so their uncommitted changes
-    count too. An uncommitted change in a file the prompt does not name is not in scope.
+    count too. An uncommitted change in a file the prompt does not name is not in scope. When
+    `prompt` has text, only the files it names are in scope; the diff applies to an empty prompt.
     """
     from recall.records import MAX_QUERY_ANCHORS
 
     found = _collect(started, cwd, prompt, deadline)
+    if prompt.strip() and not found.named:
+        _log("the prompt names no file in the repository, so no prior records apply; prompt left unchanged")
     anchors, cut = _anchors(found, deadline)
     unique: dict[tuple[str, str | None], dict[str, Any]] = {}
     for anchor in anchors:
