@@ -8,6 +8,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ## [Unreleased]
 
+### Changed
+
+* The auditor brief hook scopes a launch whose prompt has text by the files that prompt names only.
+  It no longer adds the files changed on the session's own branch, which often are not the code
+  under audit. A prompt that names no file in the repository gets no brief, and the hook log says
+  why. An empty prompt (CCA's own reader, the Codex bridge) is still scoped by the changed files.
+
 ## [0.16.0] (2026-11-20)
 
 RE-call 0.16.0 turns the atomic rescue on at first install, for Lite and the PostgreSQL wizard, and

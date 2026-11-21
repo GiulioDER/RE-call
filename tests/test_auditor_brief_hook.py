@@ -369,7 +369,7 @@ class _NoStdin:
 def _payload(
     cwd: Path,
     agent_type: str = "bug-auditor",
-    prompt: str = "Audit the change.",
+    prompt: str = f"Audit the change to {FILE}.",
     **extra: Any,
 ) -> dict[str, Any]:
     return {
@@ -685,7 +685,7 @@ def test_non_ascii_prompt_survives_a_code_page_stdin(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     """H16 (BUG-001): the event is read as UTF-8 bytes, whatever the console code page."""
-    prompt = "Audit — café → ok"
+    prompt = f"Audit — café → ok, {FILE}"
     raw = json.dumps(_payload(repo, prompt=prompt), ensure_ascii=False).encode("utf-8")
     monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(raw), encoding="cp1252"))
     assert recall_hooks.main(["pre-agent"]) == 0
@@ -725,7 +725,7 @@ def test_no_command_the_repository_configures_runs(
     ]
     monkeypatch.setenv("RECALL_AUDITOR_MEMOS", str(_write_memos(tmp_path / "planted", records)))
 
-    output = _run(_payload(repo, prompt=f"Audit {FILE} and the branch."), monkeypatch, capsys)
+    output = _run(_payload(repo, prompt=f"Audit {FILE} and pkg/extra.py."), monkeypatch, capsys)
     block = _block(output)
 
     assert not marker.exists(), "a command the audited repository configures ran"
@@ -814,7 +814,7 @@ def test_scope_stops_at_the_query_limit(
 
     monkeypatch.setattr(auditor_brief, "_finish_git", recording)
     deadline = time.monotonic() + 30
-    _repo, anchors = auditor_brief.scope(str(root), "Audit the branch.", deadline=deadline)
+    _repo, anchors = auditor_brief.scope(str(root), "", deadline=deadline)
 
     fetched = sum(request.count(b"\n") for request in requests)
     assert fetched <= 3, f"{fetched} blobs were fetched for a limit of 3"
@@ -848,7 +848,7 @@ def test_scope_stops_at_the_deadline(
         return real(file, source, lines)
 
     monkeypatch.setattr(auditor_brief, "_python_anchors", counting)
-    auditor_brief.scope(str(root), "Audit the branch.", deadline=real_monotonic() + 30)
+    auditor_brief.scope(str(root), "", deadline=real_monotonic() + 30)
 
     assert len(parsed) == 1, f"the scope parsed {len(parsed)} files after its deadline passed"
     assert "scope cut" in env.read_text(encoding="utf-8")
@@ -913,7 +913,7 @@ def test_an_oversized_file_is_never_streamed(
     monkeypatch.setattr(auditor_brief, "_finish_git", recording)
     monkeypatch.setattr(auditor_brief, "MAX_FILE_BYTES", 10)
     deadline = time.monotonic() + 30
-    _repo, anchors = auditor_brief.scope(str(repo), "Audit the change.", deadline=deadline)
+    _repo, anchors = auditor_brief.scope(str(repo), "", deadline=deadline)
 
     sent = any(FILE.encode() in request for request in requests)
     assert not sent, "an oversized blob was requested"
@@ -940,7 +940,7 @@ def test_a_changed_file_missing_from_the_work_tree_is_never_streamed(
     monkeypatch.setattr(auditor_brief, "_finish_git", recording)
     (repo / FILE).unlink()
     deadline = time.monotonic() + 30
-    _repo, anchors = auditor_brief.scope(str(repo), "Audit the change.", deadline=deadline)
+    _repo, anchors = auditor_brief.scope(str(repo), "", deadline=deadline)
 
     sent = any(FILE.encode() in request for request in requests)
     assert not sent, "a missing file's HEAD blob was requested"
@@ -1164,7 +1164,7 @@ def test_a_pure_rename_is_in_scope(env: Path, tmp_path: Path) -> None:
     _git(root, "mv", FILE, "pkg/pool2.py")
     _git(root, "commit", "-q", "-m", "rename")
     deadline = time.monotonic() + 30
-    _repo, anchors = auditor_brief.scope(str(root), "Audit the branch.", deadline=deadline)
+    _repo, anchors = auditor_brief.scope(str(root), "", deadline=deadline)
     assert "pkg/pool2.py" in {anchor["file"] for anchor in anchors}, "a renamed file left the scope"
 
 
@@ -1185,7 +1185,8 @@ def test_an_unread_file_never_matches_a_null_hash_exactly(
     _write_memo(memos, "the-lesson", lesson)
     monkeypatch.setenv("RECALL_AUDITOR_MEMOS", str(memos))
     (repo / FILE).unlink()  # changed in HEAD, missing from the work tree: its content is not read
-    block = _block(_run(_payload(repo), monkeypatch, capsys))
+    # The empty prompt of CCA's reader and the Codex bridge: only the diff sees a file the work tree lacks.
+    block = _block(_run(_payload(repo, prompt=""), monkeypatch, capsys))
     assert f"LESSON {lesson['id']} [symbol_changed] {FILE} (module):" in block, block
     assert "[exact]" not in block, "an unread file matched a null hash as exact"
 
@@ -1421,7 +1422,7 @@ def test_a_changed_file_through_a_link_is_never_followed(
     _link_directory(link, outside)
     following, lstats = _spy_link_following_calls(monkeypatch)
 
-    _repo, anchors = auditor_brief.scope(str(root), "Audit the branch.", deadline=time.monotonic() + 30)
+    _repo, anchors = auditor_brief.scope(str(root), "", deadline=time.monotonic() + 30)
 
     assert not _through(link, following), f"a link was followed: {_through(link, following)}"
     assert not _beneath(link, lstats), f"a path beneath a link was looked up: {_beneath(link, lstats)}"
@@ -2035,3 +2036,55 @@ def test_the_outer_holdout_timeout_names_the_cwd(
     assert f"bug-auditor: cwd {repo}: the CCA holdout check did not finish" in log, (
         f"the holdout timeout line does not name the cwd: {log!r}"
     )
+
+
+def test_a_prompt_with_text_ignores_changed_files_it_does_not_name(
+    repo: Path,
+    env: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """H32: an auditor told to audit one file is not briefed about the branch's other changes.
+
+    Invariant: when the prompt has text, only the files it names are in scope; the work tree's own
+    diff against the base is not. Failure caught: records about the session's branch reaching an
+    auditor that audits something else (measured 2026-11-21: diff-sourced lines were relevant 2 of
+    16 times). The branch changed `pkg/pool.py`, where the bug is anchored; the prompt names only
+    `pkg/other.py`.
+    """
+    other = "pkg/other.py"
+    (repo / other).write_text("def unrelated():\n    return 0\n", encoding="utf-8", newline="\n")
+    _git(repo, "add", other)
+    _git(repo, "commit", "-q", "-m", "other")
+    output = _run(_payload(repo, prompt=f"Audit {other}."), monkeypatch, capsys)
+    assert output is None or _bug(1)["id"] not in _prompt(output), (
+        "a record at a changed file the prompt does not name reached the auditor"
+    )
+
+
+def test_a_prompt_naming_no_file_gets_no_brief_and_says_why(
+    repo: Path,
+    env: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """H33: a prompt that names no file in the repository falls back to nothing, and the log says so.
+
+    Before 2026-11-21 such a prompt was scoped by the work tree's diff, the source of 8 of the 11
+    unrelated lines in that day's labelled sample.
+    """
+    assert _run(_payload(repo, prompt="Audit the change."), monkeypatch, capsys) is None
+    assert "the prompt names no file in the repository" in _log_text(env)
+
+
+def test_an_empty_prompt_keeps_the_changed_files(
+    repo: Path,
+    env: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """H34: CCA's reader and the Codex bridge send no prompt, so their scope stays the branch's
+    changed files, through both entry points they use."""
+    assert _bug(1)["id"] in _block(_run(_payload(repo, prompt=""), monkeypatch, capsys))
+    block = auditor_brief.build_block(str(repo), "", deadline=time.monotonic() + 30)
+    assert _bug(1)["id"] in block, "CCA's empty-prompt brief lost the changed files"

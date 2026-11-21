@@ -124,7 +124,7 @@ def test_decoded_git_path_is_confined_before_filesystem_access(
     monkeypatch.setattr(auditor_brief, "_log", unexpected_log)
 
     repo, anchors = auditor_brief.scope(
-        str(root), "Audit this branch", deadline=time.monotonic() + 30,
+        str(root), "", deadline=time.monotonic() + 30,
     )
 
     assert repo == "example/audited"

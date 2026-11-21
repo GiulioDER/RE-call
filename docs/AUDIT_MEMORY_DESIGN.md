@@ -233,7 +233,11 @@ Claude settings is approved.
   THESE FILES`, `PRIOR BUGS AT THE CHANGED CODE`, `LESSONS AT THE CHANGED CODE`) or the hook's own
   marker, the prompt is left unchanged, so no auditor sees the context twice.
 - **Scope:** the repository of the session's working directory; the files the prompt names that
-  exist in it, plus the files changed against the merge base with the default branch. For Python
+  exist in it. An empty prompt (CCA's own reader, the Codex bridge) is scoped by the files changed
+  against the merge base with the default branch instead. 🔁 Changed 2026-11-21: a prompt with text
+  used to get those changed files too, and lines from them were relevant 2 times in 16 against 14
+  in 20 for named files, because an auditor often audits code other than its work tree's branch.
+  For Python
   files, the changed symbols are resolved with `recall.anchors`, so the lookup is by anchor; other
   files match at file level.
 - **Git never runs what the audited repository configures** (decided 2026-10-22, from the CCA
