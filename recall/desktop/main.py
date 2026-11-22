@@ -362,7 +362,7 @@ def uninstall_main(
         tell("Cannot uninstall", str(exc))
         return 1
     tell("Uninstall finished", report.render())
-    return 0
+    return int(bool(report.failed))
 
 
 def main(argv: list[str] | None = None) -> int:

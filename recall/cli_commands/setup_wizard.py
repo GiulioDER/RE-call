@@ -145,19 +145,16 @@ def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
         help="remove an install's containers, stack files and MCP registrations. Never removes the "
         "folders it was indexing.",
         description=(
-            "Undo what an install created: its Docker containers and volumes, its generated stack "
-            "files and the MCP server registrations. It never touches the "
-            "folders you pointed it at, and never the memos in them. Requires --data-root, "
-            "because the thing being removed is one install rather than every install on the "
-            "machine, and guessing which would be the wrong way to be convenient."
+            "Remove an install's client registrations and any wizard-managed stack. "
+            "Pass --data-root to identify the install. Corpus folders and existing databases "
+            "are kept."
         ),
     )
     p_uninstall.set_defaults(func=_cmd_uninstall)
     p_uninstall.add_argument(
         "--data-root",
         required=True,
-        help="the data folder chosen during installation; it is recorded in that install's "
-        "wizard.json.",
+        help="the managed data folder, or the folder containing wizard.json for an existing database.",
     )
     p_uninstall.add_argument(
         "--purge-data",
@@ -556,6 +553,8 @@ def _cmd_uninstall(args: argparse.Namespace) -> None:
     except (UninstallRefusal, OSError) as exc:
         raise SystemExit(str(exc)) from exc
     print(uninstall_report.render())
+    if uninstall_report.failed:
+        raise SystemExit(1)
 
 
 def _cmd_wizard(args: argparse.Namespace) -> None:

@@ -661,6 +661,15 @@ def _written_by_this_project(existing: object, project_root: Path) -> bool:
         return cwd == str(project_root)
 
 
+def registered_server_dsn(entry: object) -> str | None:
+    """The database selected by an MCP server definition, if it names one."""
+    env = entry.get("env") if isinstance(entry, dict) else None
+    if not isinstance(env, dict):
+        return None
+    dsn = env.get("RECALL_SERVING_DSN") or env.get("RECALL_DSN")
+    return dsn if isinstance(dsn, str) else None
+
+
 def _describe_owner(existing: object) -> str:
     """What to tell the user about the entry that is in the way, without pretending to know more."""
     if isinstance(existing, dict):
