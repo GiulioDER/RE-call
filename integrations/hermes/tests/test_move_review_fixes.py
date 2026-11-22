@@ -7,6 +7,7 @@ import json
 import os
 import shutil
 from pathlib import Path
+from types import SimpleNamespace
 
 from conftest import wait_for
 from test_shared_store import NOTE, _bound_on_the_old_store, _memo, _shared
@@ -44,10 +45,9 @@ def test_an_entry_removed_before_its_memo_is_in_place_is_forgotten_once_it_is(
     in pieces) forgets that memo once it is in place holding the entry's text, so the removed text is
     not served as current.
 
-    Red proof (2026-11-20, `python tests/mutations.py RETIRE-WHEN-READ`): in
-    re_call_hermes/provider.py, `state["retire_when_read"][old_key] = candidate` became
-    `state["unconfirmed"][old_key] = candidate`, the earlier behaviour; the test failed at
-    `assert False` (no forget call within 8 s). Restored, green.
+    Red proof (`python tests/mutations.py RETIRE-WHEN-READ`): in
+    re_call_hermes/provider.py, keeping the candidate in `unconfirmed` instead of appending
+    it to `retire_when_read` fails the assertion that the memo is queued for removal.
     """
     old = (harness.data / "memory.db", harness.data / "memos" / "hermes")
     _memo(old[1], NOTE, "Prefers tea")
@@ -65,14 +65,79 @@ def test_an_entry_removed_before_its_memo_is_in_place_is_forgotten_once_it_is(
     harness.scenario({"recall_forget_memo": [{"deleted": True}], "recall_remember": [{"memo_id": "note-0003.md"}]})
     provider = harness.start(dsn="")
     provider.on_memory_write("remove", "memory", "", {"previous_content": "Has a cat"})
-    assert wait_for(lambda: cat in json.loads(path.read_text(encoding="utf-8")).get("retire_when_read", {}),
-                    timeout=8)
+    assert wait_for(
+        lambda: [cat, "note-0002"] in json.loads(path.read_bytes()).get("retire_when_read", []),
+        timeout=8,
+    )
     assert harness.events("call") == []  # nothing forgotten while the memo is not in place
     shutil.move(tmp_path / "note-0002.md", private_shared_store / "memos" / "hermes" / "note-0002.md")
     provider.on_memory_write("add", "memory", "Likes jazz", {})  # the next write drains the journal
     assert wait_for(lambda: any(c["tool"] == "recall_forget_memo" for c in harness.events("call")), timeout=8)
     forgets = [c for c in harness.events("call") if c["tool"] == "recall_forget_memo"]
     assert forgets[0]["arguments"] == {"memo_id": "note-0002"}
+
+
+def test_two_partial_moves_keep_both_pending_removals(tmp_path, monkeypatch):
+    """Removing the same text twice retires both memo ids, including a failed forget on retry.
+
+    Red on 78b37b76c: _apply overwrote note-0001 and the first drain only tried note-0002.
+    RETIRE-SETTLES-PAIR proves settling by digest alone also loses note-0001 after its timeout.
+    """
+    from re_call_hermes.mcp_client import McpError
+    from re_call_hermes.provider import ReCallMemoryProvider, _destination
+
+    source, interim, destination = (tmp_path / name for name in ("source", "interim", "destination"))
+    for folder in (source, interim, destination):
+        (folder / "memos").mkdir(parents=True)
+    content, anchor = "Has a cat", "Prefers tea"
+    (source / "memory.db").touch()
+    _memo(source / "memos", "anchor", anchor)
+    _memo(source / "memos", "note-0001", content)
+    path = tmp_path / "mirror.json"
+    path.write_text(json.dumps({
+        "destination": _destination((source / "memory.db", source / "memos")),
+        "memos": {_digest("memory", anchor): "anchor", _digest("memory", content): "note-0001"},
+    }), encoding="utf-8")
+
+    provider = ReCallMemoryProvider()
+    attempts = []
+
+    def call(tool, arguments, _timeout):
+        if tool == "recall_remember":
+            _memo(interim / "memos", "note-0002", content)
+            return {"memo_id": "note-0002"}
+        assert tool == "recall_forget_memo"
+        attempts.append(arguments["memo_id"])
+        if attempts == ["note-0001"]:
+            raise McpError("timed out")
+        return {"deleted": True}
+
+    def move_partially(old, new):
+        (old / "memory.db").replace(new / "memory.db")
+        (old / "memos" / "anchor.md").replace(new / "memos" / "anchor.md")
+        provider._settings = SimpleNamespace(
+            data_dir=tmp_path, store_path=new / "memory.db", assistant_folder=new / "memos",
+        )
+
+    def mirror(request_id, action, text, previous=None):
+        assert provider._journal(action, "memory", text, {"_request_id": request_id, "previous_content": previous})
+        provider._drain_pending()
+
+    monkeypatch.setattr(provider, "_call", call)
+    move_partially(source, interim)
+    mirror("remove-first", "remove", "", content)
+    mirror("re-add", "add", content)
+    move_partially(interim, destination)
+    mirror("remove-second", "remove", "", content)
+    assert attempts == []
+
+    (source / "memos" / "note-0001.md").replace(destination / "memos" / "note-0001.md")
+    (interim / "memos" / "note-0002.md").replace(destination / "memos" / "note-0002.md")
+    provider._drain_pending()
+    assert attempts == ["note-0001", "note-0002"]
+    provider._drain_pending()
+    assert attempts == ["note-0001", "note-0002", "note-0001"]
+    assert not json.loads(path.read_bytes())["retire_when_read"]
 
 
 def test_no_home_directory_is_a_reason_not_an_exception(tmp_path, monkeypatch):
@@ -150,9 +215,8 @@ def test_a_memo_the_journal_maps_now_is_never_retired(harness, private_shared_st
     """Invariant (review of the fixes, BUG-002): a retire entry whose memo id the journal now maps (the
     id given again to the same text, added back) is dropped, never forgotten.
 
-    Red proof (2026-11-20, `python tests/mutations.py RETIRE-SKIPS-LIVE`): in
-    re_call_hermes/provider.py, `if v in state["memos"].values()}` became `if False}`; the test failed
-    at `AssertionError: assert [{'event': 'c...'note-0002'}}] == []`. Restored, green.
+    Red proof (`python tests/mutations.py RETIRE-SKIPS-LIVE`): in
+    re_call_hermes/provider.py, skipping the live-memo filter causes a forget call for the live memo.
     """
     cat = _digest("memory", "Has a cat")
     path = _bound_journal(harness, private_shared_store, memos={cat: "note-0002"},
@@ -201,6 +265,6 @@ def test_a_failed_retire_keeps_its_entry_and_the_drain_goes_on(harness, private_
         outcome = f"raised: {exc}"
     assert outcome == "drained"
     state = json.loads(path.read_text(encoding="utf-8"))
-    assert state["retire_when_read"] == {cat: "note-0002"}
+    assert state["retire_when_read"] == [[cat, "note-0002"]]
     assert state["pending"] == [] and calls == ["recall_forget_memo", "recall_remember"]
 
