@@ -18,12 +18,13 @@ import subprocess
 import sys
 import tomllib
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from collections.abc import Iterator, Mapping
 from typing import Any, Callable, cast
 
 from recall.atomic_write import atomic_write_bytes
+from recall.wizard.config_lock import configuration_lock
 
 CODEX_PLUGIN_NAME = "recall"
 CODEX_MARKETPLACE_NAME = "re-call"
@@ -506,7 +507,7 @@ def _written_servers() -> dict[str, Any]:
     return document if isinstance(document, dict) else {}
 
 
-def _earlier_servers(block: str, root: Path) -> tuple[dict[str, dict[str, Any]], tuple[str, ...]]:
+def _earlier_servers(block: str, recorded: object) -> tuple[dict[str, dict[str, Any]], tuple[str, ...]]:
     """`(kept, dropped)`: the servers of RE-call's block that a run on this machine wrote, unchanged.
 
     The block is in the project, so anything can stand between its markers: a server planted in a
@@ -519,7 +520,6 @@ def _earlier_servers(block: str, root: Path) -> tuple[dict[str, dict[str, Any]],
         return {}, ()
     if not isinstance(servers, dict):
         return {}, ()
-    recorded = _written_servers().get(_project_key(root))
     recorded = recorded if isinstance(recorded, dict) else {}
     keep = {name: entry for name, entry in servers.items() if recorded.get(name) == _server_digest(entry)}
     return keep, tuple(name for name in servers if name not in keep)
@@ -561,6 +561,77 @@ def _project_trusted(project_root: Path) -> bool:
     return False
 
 
+@dataclass(frozen=True)
+class ProjectServerRemoval:
+    """The exact change reviewed in the wizard's uninstall plan."""
+
+    path: Path
+    names: tuple[str, ...]
+    original: bytes = field(repr=False)
+    updated: str = field(repr=False)
+
+    def apply(self) -> None:
+        from recall.wizard.wiring import _write_private_configuration
+
+        target = self.path
+        if target.resolve() != target:
+            raise ValueError("the Codex config path changed; review a new uninstall plan")
+        with configuration_lock(target):
+            if target.resolve() != target or target.read_bytes() != self.original:
+                raise ValueError("the Codex config changed; review a new uninstall plan")
+            _write_private_configuration(target, self.updated)
+
+
+def plan_project_server_removal(
+    project_root: Path, tenants: frozenset[str], dsn: str,
+) -> ProjectServerRemoval | None:
+    """Select only unchanged registrations this machine wrote for this install."""
+    from recall.wizard.wiring import registered_server_dsn
+
+    root = project_root.resolve()
+    records = _written_servers().get(_project_key(root))
+    if not isinstance(records, dict) or tenants.isdisjoint(records):
+        return None
+    target = root / ".codex" / "config.toml"
+    if target.resolve() != target:
+        raise ValueError("the Codex config path is linked; client cleanup requires a real project file")
+    try:
+        raw = target.read_bytes()
+    except FileNotFoundError:
+        return None
+    text = raw.decode("utf-8-sig")
+    before, block, after = _split_managed_block(text)
+    if not block:
+        return None
+    expected = tomllib.loads(text)
+    recorded, _ = _earlier_servers(block, records)
+    owned = {
+        name: entry for name, entry in recorded.items()
+        if name in tenants and registered_server_dsn(entry) == dsn
+    }
+    if not owned:
+        return None
+
+    # Remove the generated text for each verified entry, keeping even an edited neighbour verbatim.
+    ending = "\r\n" if "\r\n" in block else "\n"
+    for name, entry in owned.items():
+        generated = _render_servers({name: entry}).split("\n", 1)[1].removesuffix(MANAGED_END + "\n")
+        section = generated.replace("\n", ending)
+        if block.count(section) != 1:
+            raise ValueError(f"the Codex entry {name!r} has been reformatted; left the file untouched")
+        block = block.replace(section, "", 1)
+    updated = before + block + after
+    remaining = {name: entry for name, entry in expected["mcp_servers"].items() if name not in owned}
+    expected["mcp_servers"] = remaining
+    actual = tomllib.loads(updated)
+    actual.setdefault("mcp_servers", {})
+    if actual != expected:
+        raise ValueError("the Codex edit would change other settings; left the file untouched")
+    if raw.startswith(b"\xef\xbb\xbf"):
+        updated = "\ufeff" + updated
+    return ProjectServerRemoval(target, tuple(owned), raw, updated)
+
+
 def register_project_servers(
     servers: dict[str, dict[str, Any]], *, project_root: Path
 ) -> ProjectServerRegistration:
@@ -581,8 +652,6 @@ def register_project_servers(
     A later run keeps only the servers in RE-call's block that `CODEX_HOME/re-call/project-servers.json`
     records this machine writing, unchanged; anything else there is removed and reported.
     """
-    from recall.wizard.wiring import _write_private_configuration
-
     root = project_root.resolve()
     target = root / ".codex" / "config.toml"
     if not servers:
@@ -613,6 +682,18 @@ def register_project_servers(
                 "refused), so RE-call will not write this machine's store settings there"
             ),
         )
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with configuration_lock(target):
+        return _register_project_servers_locked(servers, root, target, in_work_tree)
+
+
+def _register_project_servers_locked(
+    servers: dict[str, dict[str, Any]], root: Path, target: Path, in_work_tree: bool,
+) -> ProjectServerRegistration:
+    from recall.wizard.wiring import _write_private_configuration
+
+    if target.resolve() != target:
+        return ProjectServerRegistration(target, skipped_reason=f"{target} is linked; left untouched")
     try:
         raw = target.read_bytes() if target.exists() else b""
         # `utf-8-sig`: a BOM a Windows editor wrote is not the user's content, and tomllib refuses it.
@@ -632,7 +713,8 @@ def register_project_servers(
         )
     # As Claude Code's local scope keeps the servers an earlier install registered, so does this:
     # Lite and the wizard in one project each keep the other's.
-    earlier, unrecorded = _earlier_servers(block, root)
+    recorded = _written_servers().get(_project_key(root))
+    earlier, unrecorded = _earlier_servers(block, recorded)
     # A name the user also defines outside the block stays theirs: rendering it again would
     # declare it twice, and Codex, like tomllib, refuses the whole file.
     kept = {name: entry for name, entry in earlier.items() if name not in mine and name not in taken}
@@ -656,7 +738,6 @@ def register_project_servers(
         separator = "" if not existing or existing.endswith("\n") else "\n"
         with gitignore.open("a", encoding="utf-8", newline="\n") as handle:
             handle.write(f"{separator}.codex/config.toml*\n")
-    target.parent.mkdir(parents=True, exist_ok=True)
     backup_path = target.with_name(target.name + ".recall-backup")
     backup = None
     if raw and not backup_path.exists():
