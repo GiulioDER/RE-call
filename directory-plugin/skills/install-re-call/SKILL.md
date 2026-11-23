@@ -33,7 +33,7 @@ On Windows PowerShell:
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
-python -m pip install "recall-rag[fastembed,mcp]>=0.16.0"
+python -m pip install "recall-rag[fastembed,mcp]>=0.16.1"
 ```
 
 On macOS or Linux:
@@ -41,7 +41,7 @@ On macOS or Linux:
 ```bash
 python3 -m venv .venv
 . .venv/bin/activate
-python -m pip install "recall-rag[fastembed,mcp]>=0.16.0"
+python -m pip install "recall-rag[fastembed,mcp]>=0.16.1"
 ```
 
 ## 2. Build the project's store
