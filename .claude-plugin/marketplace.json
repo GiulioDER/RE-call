@@ -10,7 +10,7 @@
       "name": "recall",
       "source": "./plugin",
       "description": "Project memory with a verdict on every search. Searches your project's own notes and decisions, marks a retracted claim as superseded, and refuses when nothing clears the threshold.",
-      "version": "0.16.0",
+      "version": "0.16.1",
       "category": "memory",
       "tags": ["memory", "rag", "retrieval", "postgresql", "pgvector"],
       "author": {
