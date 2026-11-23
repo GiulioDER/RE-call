@@ -130,6 +130,13 @@ def test_localized_response_is_additive_and_fails_back_to_canonical() -> None:
     assert payload["localized"]["canonical_unchanged"] is True
 
 
+def test_original_locale_has_the_canonical_wire_shape() -> None:
+    from recall_mcp.compat import serving_json
+
+    result = _search_result()
+    assert render_search_response(result, "original", NullTranslationProvider()) == serving_json(result)
+
+
 def test_invalid_locale_is_rejected() -> None:
     with pytest.raises(ValueError, match="locale"):
         render_search_response(_search_result(), "italian;drop", NullTranslationProvider())

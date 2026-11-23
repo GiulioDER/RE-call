@@ -7,9 +7,7 @@
   "main": "src/index.ts",
   "scripts": {
     "test": "bun test tests/unit",
-    "test:integration": "bun test tests/integration",
     "test:contract": "bun test tests/contract",
-    "test:e2e": "bun test tests/e2e",
     "typecheck": "tsc --noEmit",
     "mutations": "bun tests/mutations.ts",
     "test:all": "bun test tests/unit tests/port tests/contract"

@@ -366,7 +366,7 @@ def _validate_runtime_options(source: Mapping[str, str]) -> None:
         raise ValueError("RECALL_RATE_LIMIT_BACKEND must be local, redis, or off")
     if source.get("RECALL_ROUTING_MODE", "shadow").strip().lower() not in {"shadow", "active"}:
         raise ValueError("RECALL_ROUTING_MODE must be shadow or active")
-    if source.get("RECALL_INDEX_MODE", "legacy").strip().lower() not in {"legacy", "generation"}:
+    if source.get("RECALL_INDEX_MODE", "").strip().lower() not in {"", "legacy", "generation"}:
         raise ValueError("RECALL_INDEX_MODE must be legacy or generation")
     if source.get("RECALL_SOURCE_CONDITIONING_MODE", "off").strip().lower() not in {
         "off",

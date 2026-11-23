@@ -540,3 +540,22 @@ def test_a_memo_in_place_after_the_rebind_is_still_managed(harness, private_shar
     provider.on_memory_write("remove", "memory", "", {"previous_content": "Has a cat"})
     assert wait_for(lambda: harness.events("call"), timeout=8)
     assert harness.events("call")[0]["arguments"] == {"memo_id": "note-0002"}
+
+
+def test_drive_rooted_xdg_is_ignored_on_older_windows_python(monkeypatch):
+    """The shared default uses the same absolute path rule as OpenCode on every Python version."""
+    from pathlib import PureWindowsPath
+    from types import SimpleNamespace
+
+    from re_call_hermes import config
+
+    class WindowsPath(PureWindowsPath):
+        @classmethod
+        def home(cls):
+            return cls("C:/Users/sample")
+
+    monkeypatch.setattr(config, "Path", WindowsPath)
+    monkeypatch.setattr(config, "os", SimpleNamespace(
+        environ={"XDG_CONFIG_HOME": "/drive-rooted"}, path=SimpleNamespace(isabs=lambda _: True),
+    ))
+    assert config.shared_dir() == WindowsPath("C:/Users/sample/.config/re-call")

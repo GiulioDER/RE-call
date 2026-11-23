@@ -65,7 +65,7 @@ import hashlib
 import re
 import shutil
 import tempfile
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, TypeVar
 
@@ -82,15 +82,16 @@ TENANT_PREFIX = "their-bench-"
 #: Encodes the ingest timestamp into the document filename — see decision 2 in the module docstring.
 #: ``NONE`` when their runner supplied no timestamp, so the absence is explicit rather than a 0 epoch
 #: silently dated 1970 (their answerer prints the date it is given, and 1970 would be a fabrication).
-_TS_RE = re.compile(r"__ts(?P<ts>\d+|NONE)\.md$")
+_TS_RE = re.compile(r"__ts(?P<ts>-?\d+|NONE)\.md$")
 
 #: The one format their `benchmarks.locomo.prompts._to_human_date` parses without falling back to a
 #: bare date slice. Written in UTC because their harness derives the epoch in UTC too.
 _ISO_FMT = "%Y-%m-%dT%H:%M:%S"
+_EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
 
 
 def _iso_from_epoch(epoch: int) -> str:
-    return datetime.fromtimestamp(epoch, tz=timezone.utc).strftime(_ISO_FMT)
+    return (_EPOCH + timedelta(seconds=epoch)).strftime(_ISO_FMT)
 
 
 def resolve_embedder(name: str) -> Any:
@@ -208,6 +209,7 @@ class RecallBackend:
         # measured axis is retrieval quality, not how many cores the local embedder can saturate.
         self._lock = asyncio.Lock()
         self._closed = False
+        self._cleanup_done = False
 
     # ------------------------------------------------------------------ reporting
 
@@ -364,11 +366,15 @@ class RecallBackend:
 
         Explicitly supplied workspace roots remain caller-owned and are retained.
         """
-        if self._closed:
+        if self._cleanup_done:
             return
+        # Stop new work immediately. If this caller is cancelled while waiting for the lock,
+        # a later close still needs to perform the cleanup.
         self._closed = True
 
         def work() -> None:
+            if self._cleanup_done:
+                return
             for scope in self._scopes.values():
                 try:
                     scope.store.close()
@@ -377,6 +383,7 @@ class RecallBackend:
             self._scopes.clear()
             if self._own_root and not self._keep_workspace:
                 shutil.rmtree(self._root, ignore_errors=True)
+            self._cleanup_done = True
 
         await self._run_serialized(work)
 
@@ -463,7 +470,7 @@ def _resolve_epoch(timestamp: int | None, observation_date: str | None) -> int |
             d = datetime.strptime(observation_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
         except ValueError:
             return None
-        return int(d.timestamp())
+        return int((d - _EPOCH).total_seconds())
     return None
 
 

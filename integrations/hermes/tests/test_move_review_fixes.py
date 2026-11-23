@@ -268,3 +268,31 @@ def test_a_failed_retire_keeps_its_entry_and_the_drain_goes_on(harness, private_
     assert state["retire_when_read"] == [[cat, "note-0002"]]
     assert state["pending"] == [] and calls == ["recall_forget_memo", "recall_remember"]
 
+
+
+def test_lite_writer_busy_keeps_the_retirement_for_the_next_drain(harness, private_shared_store, monkeypatch):
+    """A structured pre-write busy refusal keeps a matching retirement until it succeeds."""
+    from test_mcp_client import _client
+
+    from re_call_hermes.provider import ReCallMemoryProvider
+
+    cat = _digest("memory", "Has a cat")
+    path = _bound_journal(harness, private_shared_store, retire_when_read={cat: "note-0002"})
+    _memo(private_shared_store / "memos" / "hermes", "note-0002", "Has a cat")
+    (harness.data / "config.json").write_text(json.dumps({**harness.config, "dsn": ""}), encoding="utf-8")
+    provider = ReCallMemoryProvider()
+    provider._settings = load_settings(harness.home)
+    client = _client(harness.data, tools={"recall_forget_memo": [
+        {"isError": True, "text": "Error executing tool recall_forget_memo: "
+         + json.dumps({"error": "lite_writer_busy", "message": "writer busy"})},
+        {"forgotten": True},
+    ]})
+    client.start(20)
+    monkeypatch.setattr(provider, "_call", client.call_tool)
+    try:
+        provider._drain_pending()
+        assert provider._bound_state(path)["retire_when_read"] == [(cat, "note-0002")]
+        provider._drain_pending()
+        assert json.loads(path.read_text(encoding="utf-8"))["retire_when_read"] == []
+    finally:
+        client.close()

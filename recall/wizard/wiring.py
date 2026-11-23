@@ -1108,12 +1108,18 @@ def install_client_extras(
     return tuple(lines)
 
 
-def _write_private_configuration(path: Path, content: str) -> None:
+def _write_private_configuration(
+    path: Path, content: str, *, prepare_staging: Callable[[Path], None] | None = None,
+) -> None:
     """Stage credentials in an exclusively created 0600 file, then replace without following links."""
-    descriptor, name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    # Codex places staging within its existing config.toml* exclusion rule.
+    prefix = f"{path.name}." if prepare_staging is not None else f".{path.name}."
+    descriptor, name = tempfile.mkstemp(dir=path.parent, prefix=prefix, suffix=".tmp")
     temporary = Path(name)
     try:
         try:
+            if prepare_staging is not None:
+                prepare_staging(temporary)
             handle = os.fdopen(descriptor, "w", encoding="utf-8", newline="\n")
         except BaseException:
             os.close(descriptor)

@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -362,7 +362,7 @@ describe("McpClient", () => {
   }, 45_000);
 
   /** Invariant (review P3, item 3): a request is not sent when less than SEND_FLOOR_MS of its budget
-   * is left. The client's clock advances 400 ms per reading, so 100 ms are left of 500.
+   * is left. The clock advances 400 ms after the request joins the queue, so 100 ms are left of 500.
    *
    * Node: `tests/unit/mcp_client.test.ts > McpClient > a call is not sent with its budget almost
    * spent`. Red proof (2026-11-10, local Windows, `bun run mutations MCP-FLOOR`): in
@@ -372,10 +372,12 @@ describe("McpClient", () => {
   test("a call is not sent with its budget almost spent", async () => {
     const fake = fakeScenario({ tools: { recall_search: [SEARCH_ANSWER] } });
     let clock = 1_000_000;
-    const client = track(fakeClient(fake, { now: () => (clock += 400) }));
+    const client = track(fakeClient(fake, { now: () => clock }));
     await client.start();
     await client.ready(30_000);
-    expect(await client.call("recall_search", { query: "x" }, 500)).toEqual({
+    const request = client.call("recall_search", { query: "x" }, 500);
+    clock += 400;
+    expect(await request).toEqual({
       ok: false,
       error: "recall_search was not sent: 100 ms of its budget left",
     });
@@ -462,6 +464,47 @@ describe("McpClient", () => {
     expect(queued.ok).toBe(false);
     expect(elapsed).toBeLessThan(3_500);
     expect(await slow).toEqual({ ok: true, json: EVIDENCE_ANSWER });
+  }, 30_000);
+
+  test("a backward wall clock adjustment does not extend a queued call's budget", async () => {
+    const fake = fakeScenario({
+      tools: { recall_search: [SEARCH_ANSWER], recall_evidence: [EVIDENCE_ANSWER] },
+      delay: { recall_evidence: 1, recall_search: 2.5 },
+    });
+    const wallTime = Date.now;
+    let correction = 0;
+    const wall = spyOn(Date, "now").mockImplementation(() => wallTime() + correction);
+    try {
+      const client = track(fakeClient(fake));
+      await client.start();
+      await client.ready(30_000);
+      const slow = client.call("recall_evidence", { query: "slow" }, 10_000);
+      const queued = client.call("recall_search", { query: "queued" }, 3_000);
+      correction = -120_000;
+      expect(await slow).toEqual({ ok: true, json: EVIDENCE_ANSWER });
+      expect((await queued).ok).toBe(false);
+      expect(fake.events().some((e) => e.event === "call" && e.tool === "recall_search")).toBe(true);
+    } finally {
+      wall.mockRestore();
+    }
+  }, 30_000);
+
+  test("a backward wall clock adjustment does not extend restart cooldown", async () => {
+    const fake = fakeScenario({ tools: { recall_evidence: [EVIDENCE_ANSWER] }, exit_on: "recall_search" });
+    const wallTime = Date.now;
+    let correction = 0;
+    const wall = spyOn(Date, "now").mockImplementation(() => wallTime() + correction);
+    try {
+      const client = track(fakeClient(fake, { restartIntervalMs: 300 }));
+      await client.start();
+      await client.ready(30_000);
+      expect((await client.call("recall_search", { query: "x" }, 10_000)).ok).toBe(false);
+      correction = -120_000;
+      await Bun.sleep(400);
+      expect(await client.call("recall_evidence", { query: "x" }, 10_000)).toEqual({ ok: true, json: EVIDENCE_ANSWER });
+    } finally {
+      wall.mockRestore();
+    }
   }, 30_000);
 
   /** Invariant (audit H-03): a late answer to a request that timed out shows a child that still reads,

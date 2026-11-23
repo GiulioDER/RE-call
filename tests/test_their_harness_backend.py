@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from types import SimpleNamespace
 
 import psycopg
 import pytest
@@ -106,6 +107,25 @@ def test_resolve_epoch_matches_their_two_spellings():
     assert _resolve_epoch(MAY_2023, "2020-01-01") == MAY_2023
 
 
+def test_close_retries_cleanup_after_cancellation_while_waiting(tmp_path):
+    async def exercise():
+        subject = RecallBackend("postgresql://unused", embedder_name="hashing", workspace_root=tmp_path)
+        closed = []
+        subject._scopes["fixture"] = SimpleNamespace(store=SimpleNamespace(close=lambda: closed.append(True)))
+        async with subject._lock:
+            pending = asyncio.create_task(subject.close())
+            await asyncio.sleep(0)
+            assert not pending.done()
+            pending.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await pending
+        await subject.close()
+        await subject.close()
+        assert closed == [True]
+
+    asyncio.run(exercise())
+
+
 class _FakeHit:
     def __init__(self, file_key):
         self.chunk = type("C", (), {"metadata": {"file": file_key}, "source": file_key})()
@@ -116,6 +136,12 @@ def test_created_at_decodes_the_filename_stamp_on_both_path_separators():
     """`metadata["file"]` is posix on Linux and can arrive with backslashes on Windows."""
     assert _created_at_of(_FakeHit(f"m000001__ts{MAY_2023}.md")) == "2023-05-08T13:56:00"
     assert _created_at_of(_FakeHit(f"sub\\m000001__ts{MAY_2023}.md")) == "2023-05-08T13:56:00"
+
+
+def test_negative_observation_time_keeps_its_original_date():
+    epoch = _resolve_epoch(None, "1969-12-31")
+    assert epoch == -86400
+    assert _created_at_of(_FakeHit(f"m000001__ts{epoch}.md")) == "1969-12-31T00:00:00"
 
 
 def test_missing_timestamp_is_absent_not_epoch_zero():

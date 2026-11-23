@@ -1,8 +1,8 @@
 /** The plugin's options from `opencode.json`, validated once, with Hermes's defaults. */
 
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
-import { isAbsolute, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 
 export type Config = {
   recallCommand: string;
@@ -41,13 +41,35 @@ function pythonIsAbs(path: string): boolean {
 /** The per-user store every agent uses by default (owner, 2026-11-13: "One shared Lite store").
  * XDG_CONFIG_HOME counts only when absolute, as Hermes reads it, so both resolve the same folder. */
 export function sharedStoreDir(env: Record<string, string | undefined> = process.env): string {
-  const xdg = env.XDG_CONFIG_HOME ?? "";
-  return join(pythonIsAbs(xdg) ? xdg : join(homedir(), ".config"), "re-call");
+  return join(configHome(env.XDG_CONFIG_HOME), "re-call");
+}
+
+export function configHome(xdg = "", home = homedir()): string {
+  return pythonIsAbs(xdg) ? xdg : join(home, ".config");
 }
 
 /** A user path made absolute against the data folder, which is the child's cwd too (as Hermes does). */
 function absolute(path: string, base: string): string {
   return isAbsolute(path) ? resolve(path) : resolve(base, path);
+}
+
+function pathIdentity(path: string): string {
+  const absolutePath = resolve(path);
+  let ancestor = absolutePath;
+  const suffix: string[] = [];
+  // A junction or symlink above a missing memo directory still identifies the same store.
+  while (!existsSync(ancestor)) {
+    const parent = dirname(ancestor);
+    if (parent === ancestor) break;
+    suffix.push(basename(ancestor));
+    ancestor = parent;
+  }
+  const resolved = existsSync(ancestor) ? join(realpathSync(ancestor), ...suffix.reverse()) : absolutePath;
+  return process.platform === "win32" ? resolved.toLowerCase() : resolved;
+}
+
+function samePath(left: string, right: string): boolean {
+  return pathIdentity(left) === pathIdentity(right);
 }
 
 /** RE-call's documented form: `sqlite:///C:/x/memory.db` on Windows, `sqlite:////home/x/memory.db` elsewhere. */
@@ -56,8 +78,8 @@ function liteDsn(file: string): string {
 }
 
 /** `dataDir` is OpenCode's own folder: relative paths resolve against it, and without `sharedDir` the
- * default store is there. With `sharedDir` and no `dsn`, the default store is the shared one, unless only
- * `dataDir` holds a store: that one is kept, so it is not stranded, and `notice` says how to move it. */
+ * default store is there. A custom memo folder uses the OpenCode store unless a DSN is supplied.
+ * With neither option set, an older OpenCode store is kept if the shared store is absent. */
 export function loadConfig(options: Record<string, unknown>, dataDir: string, sharedDir?: string): Config {
   const known = new Set<string>([...Object.keys(STRINGS), ...Object.keys(BOOLEANS), "k"]);
   for (const key of Object.keys(options)) {
@@ -77,23 +99,35 @@ export function loadConfig(options: Record<string, unknown>, dataDir: string, sh
   const k = options.k ?? 5;
   if (typeof k !== "number" || !Number.isInteger(k)) throw new Error("re-call: option k must be an integer");
 
-  const memo = text("memo_folder");
+  const memoOption = text("memo_folder");
+  const memo = memoOption ? absolute(memoOption, dataDir) : undefined;
   let dsn = text("dsn");
+  const sharedMemo = sharedDir === undefined ? undefined : join(sharedDir, "memos");
+  const usesSharedMemo = (!dsn || isLiteDsn(dsn)) && memo !== undefined && sharedMemo !== undefined && samePath(memo, sharedMemo);
   let storeDir = dataDir;
   let notice: string | undefined;
   if (!dsn && sharedDir !== undefined) {
     const sharedHasStore = existsSync(join(sharedDir, "memory.db"));
-    if (!sharedHasStore && existsSync(join(dataDir, "memory.db"))) {
+    if (usesSharedMemo) storeDir = sharedDir;
+    else if (memo !== undefined) storeDir = dataDir;
+    else if (!sharedHasStore && existsSync(join(dataDir, "memory.db"))) {
       // RE-call's docs/LITE.md: the -wal and -shm sidecars go with the store file.
       notice = `re-call: using the older store ${join(dataDir, "memory.db")}, not the shared one ${join(sharedDir, "memory.db")}; to share it, close every agent, then move memory.db, memory.db-wal, memory.db-shm and the memos folder from ${dataDir} to ${sharedDir}`;
     } else storeDir = sharedDir;
   }
   if (!dsn) dsn = liteDsn(join(storeDir, "memory.db"));
   else if (isLiteDsn(dsn)) dsn = liteDsn(absolute(storePath(dsn), dataDir));
+  if (isLiteDsn(dsn) && sharedDir !== undefined) {
+    const usesSharedStore = samePath(storePath(dsn), join(sharedDir, "memory.db"));
+    if (memo !== undefined && usesSharedStore !== usesSharedMemo) {
+      throw new Error("re-call: the shared Lite store and its memo folder must be used together; set dsn and memo_folder to a private pair or use both shared paths");
+    }
+    if (usesSharedStore) storeDir = sharedDir;
+  }
   return {
     recallCommand: text("recall_command") || "recall-mcp",
     dsn,
-    memoFolder: memo ? absolute(memo, dataDir) : join(storeDir, "memos"),
+    memoFolder: memo ?? join(storeDir, "memos"),
     k: Math.max(1, Math.min(k, 20)), // Hermes's bounds for the same setting
     prefetch: flag("prefetch"),
     writeTools: flag("write_tools"),

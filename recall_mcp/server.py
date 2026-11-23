@@ -278,7 +278,7 @@ _ASSISTANT_VIEWS: frozenset[str] = frozenset(
 )
 #: The views, and `recall_withdraw` and `recall_forget`, which the assistant surface serves with
 #: memo ids too, erasing a memo's file with its rows.
-_ASSISTANT_HELD: frozenset[str] = _ASSISTANT_VIEWS | {"recall_withdraw", "recall_forget"}
+_ASSISTANT_HELD = _ASSISTANT_VIEWS
 
 
 def build_server(settings: Settings | None = None) -> MCPServer:
@@ -543,7 +543,7 @@ def build_server(settings: Settings | None = None) -> MCPServer:
     if assistant is None:
         surface = surface - ASSISTANT_TOOLS
     registrar = cast(MCPServer, FilteredToolRegistrar(mcp, surface))
-    # With the assistant surface on, five tools are registered in another form by
+    # With the assistant surface on, four tools are registered in another form by
     # `_register_assistant_tools`, which reuses the held declarations' annotations and descriptions.
     held = _HeldTools(registrar, _ASSISTANT_HELD if assistant is not None else frozenset())
     tools = cast(MCPServer, held)

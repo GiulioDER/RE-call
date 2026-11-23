@@ -21,12 +21,20 @@ also want the per-turn memory block and write tools limited to the session you d
    ```
 
 2. **A Lite store**, created once (the plugin does not run setup). RE-call certifies trusted answers only
-   when the memo folder holds at least 20 distinct chunks; on an empty folder setup binds no calibration
+   when the memo folder holds at least 20 distinct chunks. On an empty folder setup binds no calibration
    and every search fails with "no calibration artifact is bound to this tenant and generation". Run it in
-   the store's own folder, since it writes a `.env` in its working directory:
+   the store's own folder, since it writes a `.env` in its working directory.
+
+   In Windows PowerShell, run the installed command using the path to the virtual environment.
+
+   ```powershell
+   & "<path to .venv-recall>/Scripts/recall.exe" --embedder fastembed setup --lite --memory "<memo folder>" --store "<store>/memory.db" --no-register
+   ```
+
+   On macOS or Linux, use the virtual environment's bin directory.
 
    ```bash
-   recall --embedder fastembed setup --lite --memory <memo folder> --store <store>/memory.db --no-register
+   "<path to .venv-recall>/bin/recall" --embedder fastembed setup --lite --memory "<memo folder>" --store "<store>/memory.db" --no-register
    ```
 
 3. **The plugin**, installed by OpenCode from this repository. Pin a full commit hash of `master`:
@@ -75,18 +83,21 @@ also want the per-turn memory block and write tools limited to the session you d
    | `extra_tools` | `true` | the tools beyond the six |
 
    The shared dir is `<XDG_CONFIG_HOME or ~/.config>/re-call`, one per user and the same for every agent;
-   XDG_CONFIG_HOME counts only when it is an absolute path. With no `dsn`, the dsn and memo defaults point
-   there, and with no store anywhere the plugin logs the setup command that creates one.
+   XDG_CONFIG_HOME counts only when it is an absolute path. The shared store and its memo folder are
+   used together. If you set only the shared database path, the plugin uses the shared memo folder.
+   If you set only a custom memo folder, it uses the OpenCode data directory's Lite database. You can
+   set both options to your own Lite database and memo folder.
+   If there is no store at the selected path, the plugin logs the command to create it.
 
    The data dir is `<XDG_CONFIG_HOME or ~/.config>/opencode/re-call`, OpenCode's own. It is the server's
    working directory, and the server's stderr goes to `server.log` there, so two agents never write one
    log. At a start, a `server.log` of 8 MiB or more becomes `server.log.1` (replacing an older one) and a
    new log begins.
 
-   A store made by an earlier version of this plugin sits in the data dir. With no `dsn` and no shared
-   store, the plugin keeps using it and logs one line naming both paths. To move it, close every agent,
-   then move `memory.db`, `memory.db-wal`, `memory.db-shm` and the `memos` folder from the data dir to the
-   shared dir.
+   A store made by an earlier version of this plugin sits in the data dir. With neither `dsn` nor
+   `memo_folder` set and no shared store, the plugin keeps using it and logs both paths. To move it,
+   close every agent, then move `memory.db`, `memory.db-wal`, `memory.db-shm` and the `memos` folder
+   from the data dir to the shared dir.
 
 5. **A model whose context OpenCode knows.** OpenCode 2.2.7 takes an Ollama model's context length from
    its native length in `/api/show`, not the Modelfile's `num_ctx`, so a model served with a smaller

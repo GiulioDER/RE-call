@@ -128,3 +128,69 @@ def test_a_refusal_without_content_is_still_a_refusal(tmp_path):
         assert isinstance(raised, ToolError), repr(raised)
     finally:
         client.close()
+
+
+def test_pending_requests_are_bounded(tmp_path, monkeypatch):
+    """A full pool refuses a third call before sending it."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    from conftest import wait_for
+
+    from re_call_hermes import mcp_client
+
+    monkeypatch.setattr(mcp_client, "MAX_PENDING", 2, raising=False)
+    client = _client(tmp_path, no_answer_text=["None"])
+    client.start(20)
+    log = tmp_path / "log.jsonl"
+
+    def call():
+        with pytest.raises(McpError):
+            client.call_tool("recall_search", {}, timeout=3)
+
+    try:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            futures = [pool.submit(call) for _ in range(2)]
+            assert wait_for(lambda: log.read_text(encoding="utf-8").count('"event": "call"') == 2, timeout=2)
+            with pytest.raises(mcp_client.NotSent, match="too many outstanding"):
+                client.call_tool("recall_search", {}, timeout=0.1)
+            assert log.read_text(encoding="utf-8").count('"event": "call"') == 2
+            client.close()
+            for future in futures:
+                future.result()
+    finally:
+        client.close()
+
+
+def test_a_queued_deadline_reports_the_request_unsent(tmp_path):
+    """An expired frame that never reached the writer has a known outcome."""
+    from types import SimpleNamespace
+
+    from re_call_hermes.mcp_client import NotSent
+
+    client = _client(tmp_path)
+    # Model a live child before the writer can take this frame.
+    client._proc = SimpleNamespace(stdin=object(), poll=lambda: None)
+    with pytest.raises(NotSent, match="got no answer"):
+        client.call_tool("recall_remember", {"text": "memo"}, timeout=0)
+
+
+def test_a_known_late_reply_resets_the_timeout_streak(tmp_path):
+    """A late reply proves the client is responsive without becoming another call's answer."""
+    client = _client(
+        tmp_path,
+        tools={"slow": [{"n": 1}], "fast": [{"n": 2}]},
+        delay={"slow": 0.4},
+        no_answer_text=["silent"],
+    )
+    client.start(20)
+    try:
+        with pytest.raises(McpError, match="got no answer"):
+            client.call_tool("slow", {}, timeout=0.1)
+        # The slow reply arrives before this separate, unanswered call expires.
+        with pytest.raises(McpError, match="got no answer"):
+            client.call_tool("silent", {"text": "silent"}, timeout=1.5)
+        assert client.healthy
+        assert client.call_tool("fast", {}, timeout=3) == {"n": 2}
+        assert client._pending == {}
+    finally:
+        client.close()
