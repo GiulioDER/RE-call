@@ -47,7 +47,7 @@ from PySide6.QtWidgets import (
 )
 
 from recall.desktop.install_ui import _dimension_for
-from recall.desktop.models import RuntimeMode, RuntimeProfile, SourceCategory, SourceSelection
+from recall.desktop.models import CalibrationSnapshot, RuntimeMode, RuntimeProfile, SourceCategory, SourceSelection
 from recall.desktop.profiles import save_profile
 from recall.desktop.runtime import (
     _CORPUS_SUFFIXES,
@@ -1090,7 +1090,12 @@ class MainWindow(QMainWindow):
         results: list[tuple[int, str, Any]] = []
         for row, (_project, _corpus, physical_tenant) in enumerate(self._calibration_targets_by_row):
             if physical_tenant not in cache:
-                cache[physical_tenant] = self.runtime.calibration_status(physical_tenant)
+                try:
+                    cache[physical_tenant] = self.runtime.calibration_status(physical_tenant)
+                except Exception as exc:  # noqa: BLE001  # BROAD-CATCH: isolate each corpus status check
+                    cache[physical_tenant] = CalibrationSnapshot(
+                        tenant=physical_tenant, generation_id=None, status="unavailable", raw={"error": str(exc)},
+                    )
             results.append((row, physical_tenant, cache[physical_tenant]))
         return results
 
@@ -1115,7 +1120,10 @@ class MainWindow(QMainWindow):
             status = "CERTIFIED"
         last = raw.get("published_at") or raw.get("calibrated_at") or raw.get("created_at") or "Not calibrated"
         fingerprint = raw.get("corpus_fingerprint") or "Not available"
-        self.calibration_table.setItem(row, 2, QTableWidgetItem(status))
+        status_item = QTableWidgetItem(status)
+        if error := raw.get("error"):
+            status_item.setToolTip(str(error))
+        self.calibration_table.setItem(row, 2, status_item)
         self.calibration_table.setItem(row, 3, QTableWidgetItem(str(last)))
         self.calibration_table.setItem(row, 4, QTableWidgetItem(str(fingerprint)))
         self._set_calibration_actions(row, physical_tenant, snapshot)
@@ -1143,6 +1151,7 @@ class MainWindow(QMainWindow):
         run = QPushButton("Run")
         run.setObjectName("tableActionButton")
         run.setFixedSize(62, 40)
+        run.setEnabled(getattr(snapshot, "status", None) != "unavailable")
         run.clicked.connect(lambda _checked=False, target_row=row: self._run_calibration_row(target_row))
         actions.addWidget(run)
         publish = QPushButton("Publish")
@@ -1170,6 +1179,10 @@ class MainWindow(QMainWindow):
             self.calibration_page_status.setText("Another calibration is already running. Wait for it to finish.")
             return
         project, corpus, physical_tenant = self._calibration_targets_by_row[row]
+        snapshot = self._calibration_results.get(physical_tenant)
+        if getattr(snapshot, "status", None) == "unavailable":
+            self.calibration_page_status.setText(f"Calibration status unavailable for {physical_tenant}.")
+            return
         confirmation = QMessageBox.question(
             self,
             "Start calibration test?",
@@ -1189,13 +1202,16 @@ class MainWindow(QMainWindow):
             self._calibration_failed,
         )
 
-    def _calibration_row_done(self, row: int, physical_tenant: str, snapshot: Any) -> None:
+    def _calibration_row_done(
+        self, row: int, physical_tenant: str, snapshot: Any, *, published: bool = False,
+    ) -> None:
         self._calibration_running = False
         self._calibration_results[physical_tenant] = snapshot
         self.calibration_snapshot = snapshot
         self._populate_calibration_row(row, physical_tenant, snapshot)
         self._set_calibration_controls_enabled(True)
         self.calibration_page_status.setText(
+            f"Calibration published for {physical_tenant}." if published else
             f"Calibration draft created for {physical_tenant}. Publish it after reviewing the result."
         )
 
@@ -1225,7 +1241,7 @@ class MainWindow(QMainWindow):
         self._set_calibration_controls_enabled(False)
         self._run(
             lambda: self.runtime.publish_calibration(physical_tenant, calibration_id),
-            lambda result: self._calibration_row_done(row, physical_tenant, result),
+            lambda result: self._calibration_row_done(row, physical_tenant, result, published=True),
             self._calibration_failed,
         )
 
@@ -1276,6 +1292,8 @@ class MainWindow(QMainWindow):
         self._run(runtime.restart_with_pinned_images, self._stack_restarted, self._stack_restart_failed)
 
     def _stack_restarted(self, result: Any) -> None:
+        self._set_runtime_state(True)
+        self.reconnect_button.setVisible(False)
         self.restart_stack_button.setEnabled(True)
         self.update_result_label.setText(
             "Stack restarted on the images its compose file pins, and its health checked. "
@@ -1284,8 +1302,9 @@ class MainWindow(QMainWindow):
         self.status.setText("RE-call stack restarted.")
 
     def _stack_restart_failed(self, message: str) -> None:
+        self._runtime_failed(message)
         self.restart_stack_button.setEnabled(True)
-        self.update_result_label.setText(f"The stack was not restarted: {message}")
+        self.update_result_label.setText(f"The restart or readiness check failed: {message}")
 
     def _scope_data(self) -> dict[str, Any]:
         data = self.scope.currentData()

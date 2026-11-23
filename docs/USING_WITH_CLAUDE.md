@@ -359,10 +359,8 @@ run `python -m recall.cli index memory/` yourself once the schema is ready. Unde
 development-only there — see [PRODUCTION.md](PRODUCTION.md)); index it through your production
 build pipeline instead.
 
-Auto-index always targets the default table and tenant (`DEFAULT_TABLE`/`DEFAULT_TENANT`), even if
-you ran `recall setup` with a non-default `--tenant` or `--table`. If your project uses a
-non-default tenant or table, the rows written by auto-index will not show up in that tenant's later
-searches; index `memory/` yourself against the correct table/tenant instead.
+Auto-index uses the table selected by `--table` and the `default` tenant. Plain `recall setup`
+refuses a non-default `--tenant`. Use `recall wizard` for a project with its own tenants.
 
 The first auto-index run indexes `memory/MEMORY.md` itself along with any facts already present,
 since it walks the whole directory. On a fresh scaffold that means the starter file's own

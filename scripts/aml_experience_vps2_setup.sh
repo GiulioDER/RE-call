@@ -142,8 +142,12 @@ if [[ "$actual_commit" != "$expected_commit" ]]; then
     echo "app commit does not match the requested immutable revision" >&2
     exit 2
 fi
-if [[ ! -x "$resolved_root/.venv/bin/recall" || ! -x "$resolved_root/.venv/bin/recall-hosted" ]]; then
+if [[ ! -x "$resolved_root/.venv/bin/recall" || ! -x "$resolved_root/.venv/bin/python" ]]; then
     echo "hosted virtual environment is incomplete" >&2
+    exit 2
+fi
+if [[ ! -f "$resolved_root/recall_aml/__main__.py" || ! -r "$resolved_root/recall_aml/__main__.py" ]]; then
+    echo "hosted module is missing or unreadable in the pinned checkout" >&2
     exit 2
 fi
 if [[ "$selected_variant" == C[1-4]_* ]]; then

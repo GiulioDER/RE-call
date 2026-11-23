@@ -135,14 +135,14 @@
 
           <p>If that prints a version, Python is on the machine and only the name was wrong. On macOS and Linux, use <code>python3</code> everywhere this guide writes it and you are done. On Windows you can keep typing <code>py</code>, but I recommend reinstalling from <a href="https://www.python.org/downloads/">python.org</a> with the <strong>Add python.exe to PATH</strong> box ticked, because the rest of the guide, and every tool that shells out to Python, expects the plain name to work.</p>
 
-          <h3 style="font-size: 1.1875rem; margin-top: 2.5rem; margin-bottom: 0.85rem;">The version is below 3.11</h3>
+          <h3 style="font-size: 1.1875rem; margin-top: 2.5rem; margin-bottom: 0.85rem;">The version is below 3.11.5</h3>
 
           <div class="terminal terminal--output">
             <div class="terminal-bar"><span class="terminal-label">Error</span></div>
             <div class="terminal-body"><pre><span class="warn">Python 3.9.13</span></pre></div>
           </div>
 
-          <p>Not an error message, but it stops you all the same. RE-call's floor is 3.11, and 3.12 to 3.14 are supported. An older interpreter will fail somewhere during the install with a syntax or dependency error that does not name the real cause.</p>
+          <p>RE-call requires Python 3.11.5 or newer and supports Python 3.12 to 3.14. An older interpreter can fail during installation with a syntax or dependency error.</p>
 
           <p>Install a current version from <a href="https://www.python.org/downloads/">python.org</a> and check again before continuing. You do not have to remove the old one.</p>
 

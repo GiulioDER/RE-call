@@ -25,7 +25,14 @@ from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NamedTuple
 
-from recall.dashboard.db import SEARCH_EVENTS, USE_REPORT_EVENT, DatabaseUnavailable, _summarise, stale_row
+from recall.dashboard.db import (
+    SEARCH_EVENTS,
+    USE_REPORT_EVENT,
+    DatabaseUnavailable,
+    _search_outcome,
+    _summarise,
+    stale_row,
+)
 from recall.lite import LiteStoreError, lite_dsn_path
 from recall.stale_reports import STALE_REPORT_EVENT
 
@@ -98,16 +105,19 @@ def _tenant(c: sqlite3.Connection) -> str:
 
 def _events(
     c: sqlite3.Connection, tenant: str, types: tuple[str, ...], *,
-    limit: int | None = None, event_id: str | None = None,
+    limit: int | None = None, event_id: str | None = None, omit_hits: bool = False,
 ) -> Iterator[tuple[Any, ...]]:
     """`(event_id, event_type, actor, generation_id, source_uri, payload, created_at)`, newest first."""
     if tenant != _tenant(c):
         return
+    # Keep malformed or nonstandard JSON on the existing Python decoding path.
     sql = (
-        "SELECT event_id, event_type, actor, generation_id, source_uri, payload, created_at FROM audit_events "
+        "SELECT event_id, event_type, actor, generation_id, source_uri, "
+        "CASE WHEN ? = 0 THEN payload WHEN typeof(payload) = 'text' AND json_valid(payload) "
+        "THEN json_remove(payload, '$.hits') ELSE payload END, created_at FROM audit_events "
         "WHERE event_type IN (SELECT value FROM json_each(?))"
     )
-    args: list[Any] = [json.dumps(list(types))]
+    args: list[Any] = [omit_hits, json.dumps(list(types))]
     if event_id is not None:
         sql += " AND event_id = ?"
         args.append(event_id)
@@ -140,7 +150,7 @@ def tenants(dsn: str) -> list[dict[str, Any]]:
     from recall.calibration_v2 import CalibrationStatus
     from recall.lite.inspect import inspect_lite_file
 
-    found = inspect_lite_file(store_path(dsn))
+    found = inspect_lite_file(store_path(dsn), include_timestamps=True)
     if found.error is not None:
         raise DatabaseUnavailable(found.error)
     if not found.exists:
@@ -154,15 +164,15 @@ def tenants(dsn: str) -> list[dict[str, Any]]:
             "published_at": _when(found.calibrated_at),
             "state": found.calibration.value,
         }
-    with connect(dsn) as c:
-        newest = c.execute("SELECT max(indexed_at) FROM chunks").fetchone()[0]
+    newest = _when(found.newest_indexed_at)
     return [
         {
             "tenant": found.tenant,
             "generation": found.generation_id if found.chunks else None,
             "state": "active" if found.chunks else None,
-            "activated_at": _when(newest),
-            "updated_at": _when(newest),
+            "created_at": _when(found.first_indexed_at),
+            "activated_at": newest,
+            "updated_at": newest,
             "embedder": {"provider": None, "model": found.embedder_model, "dimension": found.dim, "profile_id": None, "verified": None},
             "chunks": found.chunks,
             "sources": found.sources,
@@ -171,13 +181,14 @@ def tenants(dsn: str) -> list[dict[str, Any]]:
     ]
 
 
-def generations(dsn: str, tenant: str, limit: int = 15) -> list[dict[str, Any]]:
+def generations(
+    dsn: str, tenant: str, limit: int = 15, *, inspected_tenant: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
     """A lite store keeps no history of builds: its one corpus is the current one."""
-    every = [t for t in tenants(dsn) if t["tenant"] == tenant and t["generation"]]
-    with connect(dsn) as c:
-        first = c.execute("SELECT min(first_indexed_at) FROM chunks").fetchone()[0]
+    inventory = tenants(dsn) if inspected_tenant is None else [inspected_tenant]
+    every = [t for t in inventory if t["tenant"] == tenant and t["generation"]]
     return [
-        {"generation": t["generation"], "state": "active", "created_at": _when(first), "activated_at": t["activated_at"],
+        {"generation": t["generation"], "state": "active", "created_at": t["created_at"], "activated_at": t["activated_at"],
          "retired_at": None, "failure_reason": None, "created_by": "recall-lite"}
         for t in every
     ][:limit]
@@ -217,15 +228,45 @@ def searches(dsn: str, tenant: str, limit: int = 100, contains: str = "") -> lis
     return found[:limit]
 
 
+def search_count(dsn: str, tenant: str, *, limit: int) -> int:
+    """Count search events without reading their payloads."""
+    if limit <= 0:
+        return 0
+    with connect(dsn) as c:
+        if tenant != _tenant(c):
+            return 0
+        return c.execute(
+            "SELECT count(*) FROM (SELECT 1 FROM audit_events "
+            "WHERE event_type IN (SELECT value FROM json_each(?)) LIMIT ?)",
+            (json.dumps(list(SEARCH_EVENTS)), limit),
+        ).fetchone()[0]
+
+
 def search(dsn: str, tenant: str, event_id: str) -> dict[str, Any] | None:
     with connect(dsn) as c:
         row = next(_events(c, tenant, SEARCH_EVENTS, limit=1, event_id=event_id), None)
         return _search_row(row) if row is not None else None
 
 
-def control(dsn: str, tenant: str, *, retrievals: bool = True, source: str | None = None) -> dict[str, Any]:
+def control(
+    dsn: str, tenant: str, *, retrievals: bool = True, source: str | None = None, include_summary: bool = True,
+) -> dict[str, Any]:
     """`recall.dashboard.db.control`, the same rules: one retrieval per (search, memory), at its best rank."""
+    data, _ = _control(dsn, tenant, retrievals=retrievals, source=source, include_summary=include_summary)
+    return data
+
+
+def control_for_memo(
+    dsn: str, tenant: str, source: str, *, report_limit: int,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    return _control(dsn, tenant, retrievals=True, source=source, include_summary=False, report_limit=report_limit)
+
+
+def _control(
+    dsn: str, tenant: str, *, retrievals: bool, source: str | None, include_summary: bool, report_limit: int = 0,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     memos: dict[str, dict[str, Any]] = {}
+    reports: list[dict[str, Any]] = []
 
     def memo(source: str) -> dict[str, Any]:
         return memos.setdefault(source, {
@@ -234,62 +275,84 @@ def control(dsn: str, tenant: str, *, retrievals: bool = True, source: str | Non
             "succeeded": 0, "failed": 0, "last_reported": None,
         })
 
+    summary = {"searches": 0, "answered": 0, "abstained": 0, "refused": 0,
+               "reports": 0, "helped": 0, "no_difference": 0, "misled": 0, "succeeded": 0, "failed": 0}
     with connect(dsn) as c:
-        search_rows = list(_events(c, tenant, SEARCH_EVENTS))
-        report_rows = list(_events(c, tenant, (USE_REPORT_EVENT,)))
-    for _id, event_type, _a, _g, _s, raw, created in (search_rows if retrievals else ()):
-        if event_type != "search_decision":
-            continue
-        at = _when(created)
-        hits = _payload(raw).get("hits")
-        best: dict[str, dict[str, Any]] = {}
-        for rank, hit in enumerate(hits if isinstance(hits, list) else [], start=1):
-            if not isinstance(hit, dict) or hit.get("source") is None:
+        types = SEARCH_EVENTS if include_summary else ("search_decision",)
+        search_rows = _events(c, tenant, types, omit_hits=not retrievals) if include_summary or retrievals else ()
+        for _id, event_type, _a, _g, _s, raw, created in search_rows:
+            payload = _payload(raw)
+            if include_summary:
+                summary["searches"] += 1
+                outcome = _search_outcome(payload, event_type)
+                if outcome in ("answered", "abstained", "refused"):
+                    summary[outcome] += 1
+            if not retrievals or event_type != "search_decision":
                 continue
-            if source is not None and str(hit["source"]) != source:
-                continue
-            seen = best.setdefault(str(hit["source"]), {"rank": rank, "verdicts": set()})
-            seen["rank"] = min(seen["rank"], rank)
-            verdict = hit.get("verdict")
-            if isinstance(verdict, str):
-                seen["verdicts"].add(verdict)
-        for found, seen in best.items():
-            row = memo(found)
-            row["retrieved"] += 1
-            row["first"] += seen["rank"] == 1
-            row["ok"] += "ok" in seen["verdicts"]
-            row["superseded"] += "superseded" in seen["verdicts"]
-            row["low_confidence"] += "low_confidence" in seen["verdicts"]
-            if at and (row["last_retrieved"] is None or at > row["last_retrieved"]):
-                row["last_retrieved"] = at
-    outcomes = [_summarise(_payload(r[5]), r[1])["outcome"] for r in search_rows]
-    summary = {"searches": len(search_rows), "answered": outcomes.count("answered"),
-               "abstained": outcomes.count("abstained"), "refused": outcomes.count("refused"),
-               "reports": len(report_rows), "helped": 0, "no_difference": 0, "misled": 0, "succeeded": 0, "failed": 0}
-    for *_ignored, raw, created in report_rows:
-        payload, at = _payload(raw), _when(created)
-        effect, succeeded = payload.get("effect"), payload.get("task_succeeded")
-        if effect in ("helped", "no_difference", "misled"):
-            summary[effect] += 1
-        if succeeded is True or succeeded is False:
-            summary["succeeded" if succeeded else "failed"] += 1
-        for role in ("used", "wrong"):
-            for named in _sources(payload, role):
-                if source is not None and str(named) != source:
+            hits = payload.get("hits")
+            best: dict[str, dict[str, Any]] = {}
+            for rank, hit in enumerate(hits if isinstance(hits, list) else [], start=1):
+                if not isinstance(hit, dict) or hit.get("source") is None:
                     continue
-                row = memo(str(named))
-                row[role] += 1
-                if role == "used" and effect in ("helped", "no_difference"):
-                    row[effect] += 1
-                if role == "wrong" and effect == "misled":
-                    row["misled"] += 1
-                if role == "used" and (succeeded is True or succeeded is False):
-                    row["succeeded" if succeeded else "failed"] += 1
-                if at and (row["last_reported"] is None or at > row["last_reported"]):
-                    row["last_reported"] = at
-    summary["memos_retrieved"] = sum(1 for m in memos.values() if m["retrieved"])
+                named = str(hit["source"])
+                if source is not None and named != source:
+                    continue
+                seen = best.setdefault(named, {"rank": rank, "verdicts": set()})
+                verdict = hit.get("verdict")
+                if isinstance(verdict, str):
+                    seen["verdicts"].add(verdict)
+            if not best:
+                continue
+            at = _when(created)
+            for found, seen in best.items():
+                row = memo(found)
+                row["retrieved"] += 1
+                row["first"] += seen["rank"] == 1
+                row["ok"] += "ok" in seen["verdicts"]
+                row["superseded"] += "superseded" in seen["verdicts"]
+                row["low_confidence"] += "low_confidence" in seen["verdicts"]
+                if at and (row["last_retrieved"] is None or at > row["last_retrieved"]):
+                    row["last_retrieved"] = at
+        for event_id, _type, actor, _g, _s, raw, created in _events(c, tenant, (USE_REPORT_EVENT,)):
+            payload, at = _payload(raw), _when(created)
+            used, wrong = _sources(payload, "used"), _sources(payload, "wrong")
+            if len(reports) < report_limit and (not source or source in used or source in wrong):
+                reports.append(_report_row(event_id, actor, payload, at, used, wrong))
+            effect, succeeded = payload.get("effect"), payload.get("task_succeeded")
+            if include_summary:
+                summary["reports"] += 1
+                if effect in ("helped", "no_difference", "misled"):
+                    summary[effect] += 1
+                if succeeded is True or succeeded is False:
+                    summary["succeeded" if succeeded else "failed"] += 1
+            for role, names in (("used", used), ("wrong", wrong)):
+                for named in names:
+                    if source is not None and named != source:
+                        continue
+                    row = memo(named)
+                    row[role] += 1
+                    if role == "used" and effect in ("helped", "no_difference"):
+                        row[effect] += 1
+                    if role == "wrong" and effect == "misled":
+                        row["misled"] += 1
+                    if role == "used" and (succeeded is True or succeeded is False):
+                        row["succeeded" if succeeded else "failed"] += 1
+                    if at and (row["last_reported"] is None or at > row["last_reported"]):
+                        row["last_reported"] = at
+    if include_summary:
+        summary["memos_retrieved"] = sum(1 for m in memos.values() if m["retrieved"])
     ordered = sorted(memos.values(), key=lambda m: (-m["retrieved"], -m["used"], m["source"]))
-    return {"summary": summary, "memos": ordered}
+    return {"summary": summary if include_summary else {}, "memos": ordered}, reports
+
+
+def _report_row(
+    event_id: str, actor: str, payload: dict[str, Any], at: datetime | None, used: list[str], wrong: list[str],
+) -> dict[str, Any]:
+    return {
+        "event_id": event_id, "actor": actor, "created_at": at,
+        "task": str(payload.get("task", "")), "effect": payload.get("effect"), "used": used, "wrong": wrong,
+        "task_succeeded": payload.get("task_succeeded"), "query": payload.get("query"), "note": payload.get("note"),
+    }
 
 
 def use_reports(dsn: str, tenant: str, limit: int = 50, source: str = "") -> list[dict[str, Any]]:
@@ -302,11 +365,7 @@ def use_reports(dsn: str, tenant: str, limit: int = 50, source: str = "") -> lis
             used, wrong = _sources(payload, "used"), _sources(payload, "wrong")
             if source and source not in used and source not in wrong:
                 continue
-            out.append({
-                "event_id": event_id, "actor": actor, "created_at": _when(created),
-                "task": str(payload.get("task", "")), "effect": payload.get("effect"), "used": used, "wrong": wrong,
-                "task_succeeded": payload.get("task_succeeded"), "query": payload.get("query"), "note": payload.get("note"),
-            })
+            out.append(_report_row(event_id, actor, payload, _when(created), used, wrong))
             if limit > 0 and len(out) >= limit:
                 break
     return out[:limit]

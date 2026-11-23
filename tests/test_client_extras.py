@@ -604,6 +604,80 @@ def test_the_backup_is_ignored_when_the_config_already_was(tmp_path: Path, clien
     assert ignored.returncode == 0, "the backup of a credential file is not ignored by git"
 
 
+@pytest.mark.parametrize("backup_status", ["tracked", "ignore-unknown", "still-visible"])
+def test_codex_registration_requires_a_private_backup_destination(
+    tmp_path: Path, clients: Path, monkeypatch: pytest.MonkeyPatch, backup_status: str
+) -> None:
+    import recall.codex as codex
+
+    project = tmp_path / "project"
+    target = project / ".codex" / "config.toml"
+    target.parent.mkdir(parents=True)
+    (project / ".git").mkdir()
+    original = 'model = "fixture"\n'
+    target.write_text(original, encoding="utf-8")
+
+    def git_status(root: Path, *args: str) -> int | None:
+        assert root == project.resolve()
+        backup = args[-1].endswith("config.toml.recall-backup")
+        if args[0] == "ls-files":
+            return 0 if backup and backup_status == "tracked" else 1
+        assert args[0] == "check-ignore"
+        if not backup:
+            return 0
+        return None if backup_status == "ignore-unknown" else 1
+
+    monkeypatch.setattr(codex, "_git", git_status)
+    reg = codex.register_project_servers(_server(project), project_root=project)
+
+    assert not reg.registered
+    assert "config.toml.recall-backup" in reg.skipped_reason
+    assert target.read_text(encoding="utf-8") == original
+    assert not target.with_name("config.toml.recall-backup").exists()
+    assert not (clients / ".codex" / "re-call" / "project-servers.json").exists()
+
+
+def test_codex_lock_acquisition_error_is_reported(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from types import SimpleNamespace
+
+    import recall.codex as codex
+
+    def locking(_fd: int, operation: int, _size: int) -> None:
+        if operation == 1:
+            raise OSError("could not acquire lock")
+        raise OSError("unlock attempted without acquiring lock")
+
+    windows_lock = SimpleNamespace(locking=locking, LK_LOCK=1, LK_UNLCK=2)
+    monkeypatch.setattr(codex, "os", SimpleNamespace(name="nt"))
+    monkeypatch.setattr(codex, "importlib", SimpleNamespace(import_module=lambda _: windows_lock))
+
+    with pytest.raises(OSError, match="could not acquire lock"), codex._installation_lock(tmp_path / "ledger.json"):
+        pytest.fail("the unavailable lock must not allow a write")
+
+
+def test_codex_registration_keeps_an_existing_backup_ignored(tmp_path: Path, clients: Path) -> None:
+    from recall.codex import register_project_servers
+
+    project = tmp_path / "project"
+    target = project / ".codex" / "config.toml"
+    target.parent.mkdir(parents=True)
+    subprocess.run(["git", "-C", str(project), "init", "-q"], check=True, capture_output=True)
+    (project / ".gitignore").write_text(".codex/config.toml\n", encoding="utf-8")
+    backup = target.with_name("config.toml.recall-backup")
+    backup.write_bytes(b'model = "fixture"\n')
+
+    result = register_project_servers(_server(project), project_root=project)
+
+    assert result.registered
+    assert backup.read_bytes() == b'model = "fixture"\n'
+    subprocess.run(
+        ["git", "-C", str(project), "check-ignore", "-q", "--", ".codex/config.toml.recall-backup"],
+        check=True,
+    )
+
+
 # ----------------------------------------------------------------------------------------------
 # Owner decisions 2026-11-19 on the uncertain findings of the deferred run.
 # ----------------------------------------------------------------------------------------------

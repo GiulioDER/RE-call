@@ -66,6 +66,11 @@ class SdkMcpGateway:
         self._pending: set[Future[Any]] = set()
         self._failure: BaseException | None = None
 
+    @property
+    def failed(self) -> bool:
+        with self._lock:
+            return self._failure is not None
+
     def call(self, name: str, arguments: dict[str, Any]) -> Any:
         with self._lock:
             if self._closed:
@@ -393,6 +398,10 @@ class LocalDatabaseRuntime(RuntimeManager):
             )
 
         try:
+            for tenant, gateway in tuple(self._gateways.items()):
+                if isinstance(gateway, SdkMcpGateway) and gateway.failed:
+                    gateway.close()
+                    del self._gateways[tenant]
             self.health()
         except Exception as exc:  # noqa: BLE001 - re-raised below, with the cause made legible.  # BROAD-CATCH: error-translation
             raise RuntimeErrorBase(_legible(exc)) from exc
@@ -475,10 +484,10 @@ keep an existing install working."""
 
 _SERVICE_TENANTS = {service: tenant for tenant, service in _LEGACY_SERVICES.items()}
 
-_STACK_MUTATING_VERBS = frozenset({"up", "down", "pull"})
+_STACK_MUTATING_VERBS = frozenset({"up", "down", "pull", "restart"})
 """Compose verbs after which the running stack may no longer match what the caches describe."""
 
-_SLOW_VERBS = frozenset({"up", "pull", "build"})
+_SLOW_VERBS = frozenset({"up", "pull", "build", "restart"})
 """Verbs that can legitimately take minutes, so they must not share the quick budget.
 
 ⚠️ **One 120s timeout governed every verb, and it could not cover the work this stack now does.**
@@ -541,6 +550,7 @@ class DockerRuntime(RuntimeManager):
         self._process: subprocess.Popen[str] | None = None
         self._gateways: dict[str, ToolGateway] = {}
         self._services: frozenset[str] | None = None
+        self._serving_lineage = "unverified"
 
     def _service_names(self) -> frozenset[str]:
         """The services this compose file actually defines, asked of Compose itself.
@@ -667,6 +677,7 @@ class DockerRuntime(RuntimeManager):
         not be able to repeat it.
         """
         self._services = None
+        self._serving_lineage = "unverified"
         for gateway in self._gateways.values():
             gateway.close()
         self._gateways.clear()
@@ -691,11 +702,23 @@ class DockerRuntime(RuntimeManager):
             )
         first = self._service_for_tenant(migrated[0])
         self._compose("exec", "-T", first, "recall", "schema", "apply")
+        self._check_serving_lineage()
+        self.health()
+
+    def _check_serving_lineage(self) -> None:
         default_scope = self.profile.default_tenant
         if not default_scope.endswith(_CORPUS_SUFFIXES):
             default_scope = f"{default_scope}-docs"
-        self._call_for(default_scope, "recall_stats", {})
-        self.health()
+        stats = self._call_for(default_scope, "recall_stats", {})
+        lineage = stats.get("serving_lineage") if isinstance(stats, dict) else None
+        if lineage == "LINEAGE_MISMATCH":
+            self._serving_lineage = "LINEAGE_MISMATCH"
+            raise RuntimeErrorBase(
+                f"LINEAGE_MISMATCH for {default_scope}: the desktop embedding runtime differs "
+                "from the active generation. Restore the matching runtime or rebuild and "
+                "certify the generation with the runtime that will serve it."
+            )
+        self._serving_lineage = "match" if lineage == "match" else "unverified"
 
     def stop(self) -> None:
         if self.gateway:
@@ -704,10 +727,16 @@ class DockerRuntime(RuntimeManager):
             gateway.close()
         self._gateways.clear()
         self.gateway = None
+        self._serving_lineage = "unverified"
 
     def health(self) -> dict[str, Any]:
         result = self._compose("ps", "--format", "json")
-        return {"status": "ready", "compose": result.stdout, "mcp": "ready" if self._gateways or self.gateway else "starting"}
+        return {
+            "status": "failed" if self._serving_lineage == "LINEAGE_MISMATCH" else "ready",
+            "compose": result.stdout,
+            "mcp": "ready" if self._gateways or self.gateway else "starting",
+            "serving_lineage": self._serving_lineage,
+        }
 
     def list_tenants(self) -> list[str]:
         """The projects the managed local stack can actually serve.
@@ -766,7 +795,9 @@ class DockerRuntime(RuntimeManager):
         `up` still pulls an image that is missing, which is all `stack.bring_up` asks for too
         (`--policy missing`).
         """
-        self._compose("up", "-d", "--wait")
+        self._compose("restart")
+        self._compose("up", "-d", "--wait", "--no-recreate")
+        self._check_serving_lineage()
         return self.health()
 
 

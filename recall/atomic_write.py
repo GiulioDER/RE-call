@@ -26,8 +26,10 @@ import tempfile
 from pathlib import Path
 
 
-def atomic_write_bytes(path: Path, data: bytes) -> None:
+def atomic_write_bytes(path: Path, data: bytes, *, private: bool = False) -> None:
     """Write `data` to `path` atomically: on any failure the original file is left intact.
+
+    With ``private=True``, retain the staging file's owner and permissions for credentials.
 
     `Path.write_bytes` opens the target with mode ``'wb'``, which truncates it to zero bytes at
     open — before a single byte of new content is written. A crash / disk-full / I/O error in that
@@ -60,7 +62,7 @@ def atomic_write_bytes(path: Path, data: bytes) -> None:
             fh.write(data)
             fh.flush()
             os.fsync(fh.fileno())
-        if path.exists():
+        if not private and path.exists():
             if os.name == "posix":
                 owner = path.stat()
                 # chown can clear special mode bits, so preserve ownership before copymode.

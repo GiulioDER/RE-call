@@ -9,7 +9,7 @@ design violation.
 
 Packages: `recall`, `recall_mcp`, `recall_agent`, `recall_hooks`, `recall_interop`, `recall_consistency`
 Modules: 376
-Cross package edges: 456
+Cross package edges: 459
 
 ## Highest fan in modules
 
@@ -85,8 +85,8 @@ Cross package edges: 456
 | 17 | `recall_mcp.semantic_graph_cache` |
 | 16 | `recall.cli_commands.generation_cmd` |
 | 16 | `recall.cli_commands.provenance_cmd` |
+| 16 | `recall.doctor` |
 | 16 | `recall_mcp.server_search` |
-| 15 | `recall.doctor` |
 | 15 | `recall_mcp.desktop_ingest` |
 | 15 | `recall_mcp.graph_first_api` |
 | 15 | `recall_mcp.query_construction_api` |
@@ -470,6 +470,9 @@ They are observations, not automatic failures.
 | `recall_mcp.server_lifespan` | `recall.schema` |
 | `recall_mcp.server_lifespan` | `recall.security_policy` |
 | `recall_mcp.server_lifespan` | `recall.store` |
+| `recall_mcp.server_memory_admin` | `recall.embedding_core` |
+| `recall_mcp.server_memory_admin` | `recall.embeddings` |
+| `recall_mcp.server_memory_admin` | `recall.generation_store` |
 | `recall_mcp.server_memory_admin` | `recall.lite` |
 | `recall_mcp.server_memory_admin` | `recall.lite.refresh` |
 | `recall_mcp.server_memory_admin` | `recall.observability` |
@@ -649,7 +652,7 @@ They are observations, not automatic failures.
 | `recall.desktop.ui` | 3 | 198 |
 | `recall.desktop.updates` | 2 | 3 |
 | `recall.desktop.uploads` | 4 | 18 |
-| `recall.doctor` | 15 | 183 |
+| `recall.doctor` | 16 | 183 |
 | `recall.document` | 2 | 15 |
 | `recall.drift` | 6 | 142 |
 | `recall.dsn_security` | 1 | 1 |
@@ -933,7 +936,7 @@ They are observations, not automatic failures.
 | `recall_mcp.server_facts` | 5 | 163 |
 | `recall_mcp.server_ingest` | 20 | 199 |
 | `recall_mcp.server_lifespan` | 31 | 172 |
-| `recall_mcp.server_memory_admin` | 10 | 163 |
+| `recall_mcp.server_memory_admin` | 13 | 163 |
 | `recall_mcp.server_reasoning` | 24 | 199 |
 | `recall_mcp.server_search` | 16 | 166 |
 | `recall_mcp.service` | 59 | 191 |

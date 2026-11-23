@@ -1,4 +1,4 @@
-"""Persist non secret desktop runtime settings."""
+"""Persist desktop runtime settings, including private database connection settings."""
 
 from __future__ import annotations
 
@@ -33,8 +33,8 @@ def load_profile(path: Path | None = None) -> RuntimeProfile | None:
         return None
 
 
-def _write_json_atomically(target: Path, payload: object) -> Path:
-    """Write `payload` to `target` through `recall.atomic_write` (LF, bytes, fsync'd).
+def _write_json_atomically(target: Path, profile: RuntimeProfile) -> Path:
+    """Write `profile` to `target` through `recall.atomic_write` (LF, bytes, fsync'd).
 
     One implementation, because there were two and they had already diverged: `save_profile` wrote
     platform newlines and the pipeline writer (removed 2026-11-19) pinned LF, so on Windows two files in the same directory
@@ -48,12 +48,13 @@ def _write_json_atomically(target: Path, payload: object) -> Path:
     from recall.atomic_write import atomic_write_bytes
 
     target.parent.mkdir(parents=True, exist_ok=True)
-    atomic_write_bytes(target, (json.dumps(payload, indent=2) + "\n").encode("utf-8"))
+    data = (json.dumps(profile.to_dict(), indent=2) + "\n").encode("utf-8")
+    atomic_write_bytes(target, data, private=os.name == "posix" and bool(profile.dsn))
     return target
 
 
 def save_profile(profile: RuntimeProfile, path: Path | None = None) -> Path:
-    return _write_json_atomically(path or profile_path(), profile.to_dict())
+    return _write_json_atomically(path or profile_path(), profile)
 
 
 def read_token(profile: RuntimeProfile) -> str | None:

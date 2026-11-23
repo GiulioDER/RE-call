@@ -93,8 +93,7 @@ def _installation_lock(path: Path) -> Iterator[None]:
     """Serialize installer merges without adding a platform-specific dependency."""
     lock_path = path.with_name(f"{path.name}.lock")
     lock_path.parent.mkdir(parents=True, exist_ok=True)
-    handle = lock_path.open("a+b")
-    try:
+    with lock_path.open("a+b") as handle:
         if os.name == "nt":
             msvcrt = importlib.import_module("msvcrt")
 
@@ -106,17 +105,14 @@ def _installation_lock(path: Path) -> Iterator[None]:
         else:
             fcntl = importlib.import_module("fcntl")
             fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
-        yield
-    finally:
-        if os.name == "nt":
-            msvcrt = importlib.import_module("msvcrt")
-
-            handle.seek(0)
-            msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
-        else:
-            fcntl = importlib.import_module("fcntl")
-            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-        handle.close()
+        try:
+            yield
+        finally:
+            if os.name == "nt":
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
 def _marketplace_document(path: Path) -> dict[str, Any]:
@@ -538,6 +534,11 @@ def _git(project_root: Path, *args: str) -> int | None:
         return None
 
 
+def _git_tracked(project_root: Path, relative_path: str) -> int | None:
+    pathspec = f":(icase,literal){relative_path}" if os.name == "nt" else relative_path
+    return _git(project_root, "ls-files", "--error-unmatch", "--", pathspec)
+
+
 def _project_trusted(project_root: Path) -> bool:
     """Whether `CODEX_HOME/config.toml` marks this project, or a folder above it, `trusted`."""
     try:
@@ -574,17 +575,16 @@ def register_project_servers(
     Codex reads project config only for a trusted project, and the result says whether this one
     is. A server name the user already defines outside RE-call's block is reported and left alone,
     and a file git tracks is refused, since it would commit this machine's store settings (the
-    env holds a DSN and may hold a provider key). Inside a git work tree it is also refused when
-    git cannot say whether it tracks the file, and otherwise added to the project's `.gitignore`.
+    env holds a DSN and may hold a provider key). Inside a git work tree, the config and its
+    backup must be untracked and effectively ignored.
     The file is written 0600, and a `.codex` that leads outside the project is refused.
 
     A later run keeps only the servers in RE-call's block that `CODEX_HOME/re-call/project-servers.json`
     records this machine writing, unchanged; anything else there is removed and reported.
     """
-    from recall.wizard.wiring import _write_private_configuration
-
     root = project_root.resolve()
-    target = root / ".codex" / "config.toml"
+    config = ".codex/config.toml"
+    target = root / config
     if not servers:
         return ProjectServerRegistration(target, skipped_reason="no servers to register")
     # A linked `.codex` (or config.toml) would land the credentials outside this project, where
@@ -594,7 +594,7 @@ def register_project_servers(
             target, skipped_reason=f"{target} leads outside this project through a link; left untouched"
         )
     in_work_tree = any((folder / ".git").exists() for folder in (root, *root.parents))
-    tracked = _git(root, "ls-files", "--error-unmatch", "--", ".codex/config.toml")
+    tracked = _git_tracked(root, config)
     if tracked == 0:
         return ProjectServerRegistration(
             target,
@@ -613,6 +613,19 @@ def register_project_servers(
                 "refused), so RE-call will not write this machine's store settings there"
             ),
         )
+
+    # Protect both the project read/modify/write and the shared ownership ledger merge.
+    ledger = _written_servers_path()
+    with _installation_lock(ledger):
+        return _register_project_servers_locked(servers, root, target, in_work_tree, ledger)
+
+
+def _register_project_servers_locked(
+    servers: dict[str, dict[str, Any]], root: Path, target: Path, in_work_tree: bool, ledger: Path,
+) -> ProjectServerRegistration:
+    from recall.wizard.wiring import _write_private_configuration
+
+    config = target.relative_to(root).as_posix()
     try:
         raw = target.read_bytes() if target.exists() else b""
         # `utf-8-sig`: a BOM a Windows editor wrote is not the user's content, and tomllib refuses it.
@@ -645,28 +658,48 @@ def register_project_servers(
     )
     written = tomllib.loads(text)["mcp_servers"]  # never write a file Codex would refuse to parse
     gitignore = None
-    # Each path asked on its own: with several, check-ignore succeeds when any one is ignored, and
-    # the backup can hold the credentials of an earlier RE-call block.
-    covered = (".codex/config.toml", ".codex/config.toml.recall-backup")
-    if in_work_tree and any(_git(root, "check-ignore", "-q", "--", path) != 0 for path in covered):
-        # As `recall.wizard.wiring.write_project_files` does for `.env`: a `git add .` in the
-        # project must not commit the credentials.
-        gitignore = root / ".gitignore"
-        existing = gitignore.read_text(encoding="utf-8", errors="replace") if gitignore.exists() else ""
-        separator = "" if not existing or existing.endswith("\n") else "\n"
-        with gitignore.open("a", encoding="utf-8", newline="\n") as handle:
-            handle.write(f"{separator}.codex/config.toml*\n")
-    target.parent.mkdir(parents=True, exist_ok=True)
-    backup_path = target.with_name(target.name + ".recall-backup")
+    backup_name = f"{config}.recall-backup"
+    backup_path = root / backup_name
+    make_backup = bool(raw) and not backup_path.exists()
+    if in_work_tree:
+        covered = (config, backup_name)
+        # The backup may contain an earlier block's credentials, even if it is absent on disk now.
+        if _git_tracked(root, backup_name) != 1:
+            return ProjectServerRegistration(
+                target, skipped_reason=f"git could not verify that {backup_path} is untracked; left untouched"
+            )
+        ignore_status = {path: _git(root, "check-ignore", "-q", "--", path) for path in covered}
+        for path, status in ignore_status.items():
+            if status not in (0, 1):
+                return ProjectServerRegistration(
+                    target, skipped_reason=f"git could not verify whether it ignores {root / path}; left untouched"
+                )
+        if 1 in ignore_status.values():
+            gitignore = root / ".gitignore"
+            if gitignore.is_symlink():
+                return ProjectServerRegistration(
+                    target, skipped_reason=f"{gitignore} is a symbolic link; left untouched"
+                )
+            existing = gitignore.read_bytes() if gitignore.exists() else b""
+            separator = b"" if not existing or existing.endswith(b"\n") else b"\n"
+            with gitignore.open("ab") as handle:
+                handle.write(separator + b".codex/config.toml*\n")
+            # A rule closer to these files can take precedence over the rule we just added.
+            for path in covered:
+                if _git(root, "check-ignore", "-q", "--", path) != 0:
+                    return ProjectServerRegistration(
+                        target, gitignore=gitignore,
+                        skipped_reason=f"git could not confirm that it ignores {root / path}; left untouched",
+                    )
     backup = None
-    if raw and not backup_path.exists():
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if make_backup:
         _write_private_configuration(backup_path, original)
         backup = backup_path
-    # Recorded before the file is written: a record naming a server the file lacks keeps nothing.
+    # Record before writing the TOML: a record naming a server the file lacks keeps nothing.
     record = _written_servers()
     record[_project_key(root)] = {name: _server_digest(written[name]) for name in (*kept, *mine)}
-    _written_servers_path().parent.mkdir(parents=True, exist_ok=True)
-    _write_private_configuration(_written_servers_path(), json.dumps(record, indent=2, sort_keys=True) + "\n")
+    _write_private_configuration(ledger, json.dumps(record, indent=2, sort_keys=True) + "\n")
     _write_private_configuration(target, text.replace("\n", "\r\n") if b"\r\n" in raw else text)
     return ProjectServerRegistration(
         target,

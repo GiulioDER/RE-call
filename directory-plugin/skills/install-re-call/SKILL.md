@@ -68,11 +68,9 @@ Add `.recall/` to the project's `.gitignore`: the database holds memo text.
 ## 3. Restart Claude Code and check
 
 Ask the user to restart Claude Code in the same project. The `recall_search` tool should then be
-available. If it is not, run:
-
-```bash
-recall doctor
-```
+available. If it is missing, follow the complete doctor instructions printed by Lite setup. Use
+the SQLite DSN it supplies for this project. In PowerShell, run the printed environment assignments
+before running `recall doctor` in the same shell.
 
 It checks the scripts on `PATH`, the store, the schema, the calibration and the registration,
 prints the command that repairs whatever it found, and writes nothing. Do not guess the cause:

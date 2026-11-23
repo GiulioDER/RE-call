@@ -6,6 +6,7 @@ import os
 import threading
 from dataclasses import replace
 from pathlib import Path
+from subprocess import CompletedProcess
 from typing import Any
 
 import pytest
@@ -1034,8 +1035,10 @@ def test_docker_runtime_reads_its_topology_from_the_compose_file(
     assert "wizard" in str(refusal.value), "and what would make the scope servable"
 
 
+@pytest.mark.parametrize("serving_lineage", [None, "match", "LINEAGE_MISMATCH"])
 def test_docker_start_applies_the_schema_only_where_a_tenant_lives(
     monkeypatch: pytest.MonkeyPatch,
+    serving_lineage: str | None,
 ) -> None:
     """`start()` must not run `recall schema apply` inside every non-database service.
 
@@ -1044,12 +1047,22 @@ def test_docker_start_applies_the_schema_only_where_a_tenant_lives(
     fail the whole start, and the stack would look broken because of a container nothing needed.
     """
     profile = RuntimeProfile(mode=RuntimeMode.DOCKER, compose_file="whatever.yml")
-    runtime = DockerRuntime(profile)
+    gateway = FakeGateway()
+    fake_call = gateway.call
+
+    def fake_stats(name: str, arguments: dict) -> dict:
+        result = fake_call(name, arguments)
+        if serving_lineage is not None:
+            result["serving_lineage"] = serving_lineage
+        return result
+
+    monkeypatch.setattr(gateway, "call", fake_stats)
+    runtime = DockerRuntime(profile, gateway)
     calls: list[tuple[str, ...]] = []
 
-    def fake_compose(*args: str):
+    def fake_compose(*args: str) -> CompletedProcess[str]:
         calls.append(args)
-        return None
+        return CompletedProcess(args, 0, stdout="")
 
     monkeypatch.setattr(runtime, "_compose", fake_compose)
     monkeypatch.setattr(
@@ -1060,10 +1073,15 @@ def test_docker_start_applies_the_schema_only_where_a_tenant_lives(
              "otel-collector", "recall-backup"}
         ),
     )
-    monkeypatch.setattr(runtime, "health", lambda: {"status": "ready"})
-    monkeypatch.setattr(runtime, "_call_for", lambda *a, **k: {})
-
-    runtime.start()
+    if serving_lineage == "LINEAGE_MISMATCH":
+        with pytest.raises(RuntimeErrorBase, match="LINEAGE_MISMATCH for default-docs"):
+            runtime.start()
+        assert runtime.health()["status"] == "failed"
+    else:
+        runtime.start()
+        assert runtime.health()["status"] == "ready"
+    assert runtime.health()["serving_lineage"] == (serving_lineage or "unverified")
+    assert gateway.calls == [("recall_stats", {})]
 
     applied = [args[2] for args in calls if "schema" in args]
     # ONCE, not once per service. `schema apply` migrates a database and every service in the stack
@@ -1126,11 +1144,14 @@ def test_the_pinned_restart_does_not_pull_a_newer_build_of_a_moving_tag(
     runtime = DockerRuntime(profile)
     verbs: list[tuple[str, ...]] = []
     monkeypatch.setattr(runtime, "_compose", lambda *args: verbs.append(args))
+    calls = []
+    monkeypatch.setattr(runtime, "_call_for", lambda *args: calls.append(args) or {"serving_lineage": "match"})
     monkeypatch.setattr(runtime, "health", lambda: {"ok": True})
 
     runtime.restart_with_pinned_images()
 
-    assert verbs == [("up", "-d", "--wait")]
+    assert verbs == [("restart",), ("up", "-d", "--wait", "--no-recreate")]
+    assert calls == [("default-docs", "recall_stats", {})]
 
 
 def test_docker_start_refuses_a_stack_with_no_tenant_service(

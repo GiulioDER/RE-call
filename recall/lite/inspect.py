@@ -52,6 +52,8 @@ class LiteFileReport:
     #: STALE because the newest fit did not certify and the corpus has not yet grown or shrunk
     #: enough for indexing to refit it (`recall.lite.calibration._uncertified_refit_waits`).
     uncertified_waiting: bool = False
+    first_indexed_at: str | None = None
+    newest_indexed_at: str | None = None
 
     @property
     def generation_id(self) -> str:
@@ -148,7 +150,7 @@ def lite_file_meta(path: str | Path) -> dict[str, str] | None:
         conn.close()
 
 
-def inspect_lite_file(path: str | Path) -> LiteFileReport:
+def inspect_lite_file(path: str | Path, *, include_timestamps: bool = False) -> LiteFileReport:
     """Read `path` as a lite store, read-only; an unreadable file is reported, never raised."""
     from recall.lite.calibration import (
         _uncertified_refit_waits,
@@ -172,7 +174,12 @@ def inspect_lite_file(path: str | Path) -> LiteFileReport:
         # judged against a corpus that never existed.
         conn.execute("BEGIN")
         meta = dict(conn.execute("SELECT key, value FROM meta").fetchall())
-        rows = conn.execute("SELECT id, text, source, embedding FROM chunks").fetchall()
+        if include_timestamps:
+            rows = conn.execute(
+                "SELECT id, text, source, embedding, first_indexed_at, indexed_at FROM chunks"
+            ).fetchall()
+        else:
+            rows = conn.execute("SELECT id, text, source, embedding FROM chunks").fetchall()
         latest = conn.execute(f"SELECT payload FROM calibrations {LATEST_CALIBRATION_ORDER} LIMIT 1").fetchone()  # noqa: S608  # a module constant
     except sqlite3.Error as exc:
         conn.close()
@@ -230,6 +237,8 @@ def inspect_lite_file(path: str | Path) -> LiteFileReport:
         dim=dim,
         chunks=len(rows),
         sources=len({r[2] for r in rows}),
+        first_indexed_at=min((row[4] for row in rows), default=None) if include_timestamps else None,
+        newest_indexed_at=max((row[5] for row in rows), default=None) if include_timestamps else None,
         calibration=status,
         threshold=threshold,
         separability=separability,

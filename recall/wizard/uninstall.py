@@ -704,8 +704,8 @@ def execute(
     # keeping the file that names it, is the same defect as deleting the stack file itself: it
     # strands a live resource behind a tool that can no longer reach it.
     #
-    # The retry removes all three together once the teardown succeeds, which is the state in which
-    # removing any of them is correct.
+    # Remove these after ordinary files. Keep Compose last so the plan can still be rebuilt if
+    # either the handoff or wizard configuration cannot be removed.
     # 🔁 **Any failure at all, not only a container or volume failure.** This filtered on
     # `kind in {"container", "volume"}`, so a failed MCP unregistration deleted the stack file,
     # `wizard.json` and the handoff file anyway — and then the retry was impossible, because
@@ -713,11 +713,14 @@ def execute(
     # find the `~/.claude.json` entry just left behind, lived in `wizard.json`. The comment below
     # already claimed these files are kept "so the uninstall can be retried"; the predicate did not
     # cover the failure that most needs a retry.
-    teardown_failed = compose_failed or bool(report.failed)
-    for item in plan.removing("file"):
+    retry_order = {plan.data_root / "wizard.json": 2, compose_path: 3}
+
+    def file_order(item: Removable) -> int:
+        return retry_order.get(Path(item.name), int(item.detail == _PROFILE_DETAIL))
+
+    for item in sorted(plan.removing("file"), key=file_order):
         path = Path(item.name)
-        keep_for_retry = path.name in {COMPOSE_NAME, "wizard.json"} or item.detail == _PROFILE_DETAIL
-        if teardown_failed and keep_for_retry:
+        if (compose_failed or report.failed) and file_order(item):
             report.kept.append(
                 Removable(
                     item.kind,

@@ -1725,7 +1725,7 @@ def reasoning_promotion_gate(metrics: Mapping[str, Any] | None) -> dict[str, Any
 
 
 def _optional_number(value: object) -> float | None:
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 <= value <= 1:
         return None
     return float(value)
 

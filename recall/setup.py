@@ -99,11 +99,16 @@ def _server_settings(values: Mapping[str, str]) -> dict[str, str]:
     2026-11-19). One at a time bounds that; the queue still holds the others.
     """
     settings = {
+        "RECALL_ENV": "development",
+        "RECALL_INDEX_MODE": "legacy",
+        "RECALL_EMBED_PROFILE": "",
+    }
+    settings.update({
         key: values[key]
         for key in SERVER_SETTING_KEYS
         if values.get(key) not in (None, "")
         and not (key == "RECALL_RERANK" and values[key] == "0")
-    }
+    })
     if settings.get("RECALL_RERANK") == "1":
         settings["RECALL_SEARCH_CONCURRENCY"] = "1"
     return settings
@@ -1004,13 +1009,14 @@ def _refuse_removed_entailment_in(path: Path) -> None:
         raise SystemExit(problem)
 
 
-def _update_env_block(path: Path, values: dict[str, str]) -> None:
-    from recall.wizard.wiring import _write_private_configuration
+def _update_env_block(path: Path, values: dict[str, str]) -> Path | None:
+    from recall.wizard.wiring import _protect_project_env, _write_private_configuration
 
     # Every writer of the managed block refuses here (`recall setup` and `recall wizard` both
     # rebuild it), so neither can drop a leftover RECALL_ENTAILMENT; `run_setup_wizard` also
     # checks before its first question, so a refusal there costs no answers.
     _refuse_removed_entailment_in(path)
+    ignore = _protect_project_env(path)
     lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
     start = next((i for i, line in enumerate(lines) if line.strip() == SETUP_BEGIN), None)
     end = next((i for i, line in enumerate(lines) if line.strip() == SETUP_END), None)
@@ -1025,6 +1031,7 @@ def _update_env_block(path: Path, values: dict[str, str]) -> None:
             lines.append("")
         lines.extend(block)
     _write_private_configuration(path, "\n".join(lines).rstrip() + "\n")
+    return ignore
 
 
 def _update_markdown_block(path: Path, begin: str, end: str, content: str) -> None:
@@ -1358,6 +1365,9 @@ def run_setup_wizard(
             "Register the recall MCP server with Codex and install its plugin and session hooks?",
             default=True,
         )
+    if (claude_wiring_requested or codex_wiring_requested) and not _module_available("mcp"):
+        print_fn('MCP registration skipped. Install "recall-rag[mcp]" and rerun setup to register.')
+        claude_wiring_requested = codex_wiring_requested = False
     skill_sources = plugin_skill_sources() if claude_detected else {}
     skill_copy_requested = False
     if skill_sources:

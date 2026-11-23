@@ -383,7 +383,8 @@ Build it locally from the repository when you need a Python-free Windows bundle.
 has no Python and is not going to get one.
 
 ```bash
-pip install pyinstaller
+python -m pip install -r .github/requirements/pyinstaller.txt
+python -m pip install ".[desktop,mcp,fastembed,documents]"
 cd packaging && python -m PyInstaller recall-install.spec --noconfirm --distpath ../dist
 ```
 

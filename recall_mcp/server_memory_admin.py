@@ -6,12 +6,16 @@ Moved out of `recall_mcp.server` (server split). `recall_mcp.server` re-imports 
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 
 from mcp.server import MCPServer
 from mcp.server.mcpserver import Context
 from mcp.types import ToolAnnotations
 
+from recall.embedding_core import profile_lineage_mismatch
+from recall.embeddings import FastEmbedEmbedder
+from recall.generation_store import GenerationStore
 from recall.observability import METRICS
 from recall.lite import LiteStore, LiteWriterBusy
 from recall.lite.refresh import client_reason
@@ -265,8 +269,33 @@ def _register_memory_admin_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
             JSON of {chunks, newest_indexed_at, stale, metrics, refresh}.
         """
         store = await _require(SCOPE_READ, ctx)
+        state = _state(ctx)
+        embedder = state["embedder"]
 
         def stats() -> str:
+            if (
+                isinstance(store, GenerationStore)
+                and isinstance(embedder, FastEmbedEmbedder)
+                and state.get("stores") is None
+            ):
+                with store.snapshot():
+                    binding = store.generation_binding()
+                    payload = memory_stats(store).model_dump(mode="json")
+                expected_model = binding.get("embedder_model")
+                expected_dim = binding.get("embedder_dimension")
+                profile_id = binding.get("embedder_profile_id")
+                fingerprint = binding.get("embedder_profile_fingerprint")
+                if (
+                    (expected_model is not None and embedder.name != expected_model)
+                    or (expected_dim is not None and str(embedder.dim) != expected_dim)
+                    or profile_lineage_mismatch(embedder, profile_id, fingerprint) is not None
+                ):
+                    payload["serving_lineage"] = "LINEAGE_MISMATCH"
+                elif profile_id and fingerprint:
+                    payload["serving_lineage"] = "match"
+                else:
+                    payload["serving_lineage"] = "unverified"
+                return json.dumps(payload, indent=2)
             result = memory_stats(store)
             if isinstance(store, LiteStore):
                 # The last automatic refresh, so an agent can see why a memo it just wrote is not

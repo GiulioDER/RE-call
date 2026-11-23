@@ -76,7 +76,7 @@
   <div class="shell-narrow">
     <p class="eyebrow eyebrow--signal">RE-call Lite</p>
     <h2>One project's memory in one local file.</h2>
-    <p>You need Python 3.11 or newer and a folder of Markdown memos. Lite needs no PostgreSQL server or Docker. The first local embedding run downloads model files.</p>
+    <p>You need Python 3.11.5 or newer and a folder of Markdown memos. Lite needs no PostgreSQL server or Docker. The first local embedding run downloads model files.</p>
     <h3>Install the package</h3>
     <div class="terminal terminal--command" data-os-group><div class="terminal-bar"><div class="terminal-tabs" role="tablist" aria-label="Operating system"><button class="terminal-tab" type="button" role="tab" data-os="windows">Windows</button><button class="terminal-tab" type="button" role="tab" data-os="macos">macOS</button><button class="terminal-tab" type="button" role="tab" data-os="linux">Linux</button></div><button class="copy-button" type="button">Copy</button></div><div class="terminal-body"><div data-os-pane="windows" role="tabpanel"><pre><span class="line">python -m venv .venv</span><span class="line">.\.venv\Scripts\Activate.ps1</span><span class="line">python -m pip install &quot;recall-rag[fastembed,mcp]&gt;=0.16.0&quot;</span></pre></div><div data-os-pane="macos" role="tabpanel" hidden><pre><span class="line">python3 -m venv .venv</span><span class="line">. .venv/bin/activate</span><span class="line">python -m pip install &quot;recall-rag[fastembed,mcp]&gt;=0.16.0&quot;</span></pre></div><div data-os-pane="linux" role="tabpanel" hidden><pre><span class="line">python3 -m venv .venv</span><span class="line">. .venv/bin/activate</span><span class="line">python -m pip install &quot;recall-rag[fastembed,mcp]&gt;=0.16.0&quot;</span></pre></div></div></div>
     <h3>Point it at your notes</h3>
@@ -153,8 +153,8 @@
             </thead>
             <tbody>
               <tr>
-                <td>Python 3.11 or newer</td>
-                <td>RE-call is a Python package. 3.11 is the floor, and 3.12 to 3.14 are supported.</td>
+                <td>Python 3.11.5 or newer</td>
+                <td>RE-call is a Python package. 3.11.5 is the floor, and 3.12 to 3.14 are supported.</td>
                 <td><a href="https://www.python.org/downloads/">python.org</a></td>
               </tr>
               <tr>
@@ -356,7 +356,7 @@
             </div>
           </div>
 
-          <p>It opens by measuring your machine, then asks its questions. Here is every one of them, with the answer to give on a first install.</p>
+          <p>Setup checks your hardware and offers options for installed clients. Start with these choices for a local installation.</p>
 
           <div class="table-wrap">
             <table>
@@ -371,33 +371,23 @@
                 </tr>
                 <tr>
                   <td>Choose the embedder</td>
-                  <td><strong>2</strong>, fastembed</td>
+                  <td><strong>FastEmbed</strong></td>
                   <td>The local model you installed in step 2. The wizard prepares the database at its 384 wide vector size for you.</td>
                 </tr>
                 <tr>
                   <td>Choose whether to enable reranking</td>
-                  <td><strong>1</strong>, none</td>
+                  <td><strong>None</strong></td>
                   <td>Reranking improves result quality but downloads another model and slows each search. Add it once the basics work.</td>
-                </tr>
-                <tr>
-                  <td>Choose the sparse retrieval backend</td>
-                  <td><strong>1</strong>, postgres fts</td>
-                  <td>Uses the database you already have. The alternative needs an NVIDIA GPU.</td>
                 </tr>
                 <tr>
                   <td>Enable the optional reasoning arm?</td>
                   <td><strong>N</strong></td>
-                  <td>Records provider settings for a reasoning arm that the shipped tools do not call yet. The default reasoning tools stay deterministic either way. Because you answered yes to security, only a local server such as Ollama is offered, and it also needs the <code>extract</code> extra. Say no now and add it later once you have one running. This question exists from version 0.9.5 onward: on 0.9.4 you will not see it.</td>
+                  <td>Keeps optional model-assisted reasoning off. You can configure it separately once retrieval works.</td>
                 </tr>
                 <tr>
                   <td>Scaffold CLAUDE.md and a memory/ directory?</td>
                   <td><strong>Y</strong></td>
                   <td>Creates the folder your memory files go in, and the instructions Claude reads. Step 6 uses both.</td>
-                </tr>
-                <tr>
-                  <td>Calibrate the threshold now?</td>
-                  <td><strong>N</strong></td>
-                  <td>Calibration measures how confident a result must be before RE-call will answer from it. It needs example questions you have not written yet. <a href="calibration.html">Come back to it</a> once you have real memory.</td>
                 </tr>
               </tbody>
             </table>
@@ -407,8 +397,8 @@
             <p class="checkpoint-title">You should see, at the end</p>
             <div class="terminal terminal--output">
               <div class="terminal-bar"><span class="terminal-label">Output</span></div>
-              <div class="terminal-body"><pre><span class="dim">Calibration skipped. Run recall calibrate later with a labeled query file when you have one.</span>
-<span class="ok">Wrote .env</span>
+              <div class="terminal-body"><pre><span class="ok">Wrote .env</span>
+<span class="dim">Search threshold: not calibrated by setup. Run recall wizard to build, calibrate and publish a generation, which is the calibration search uses.</span>
 <span class="ok">Updated CLAUDE.md</span>
 <span class="ok">Wrote memory\MEMORY.md</span>
 <span class="dim">Indexed 1 chunks from 1 files in memory</span></pre></div>

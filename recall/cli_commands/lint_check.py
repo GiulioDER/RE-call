@@ -113,6 +113,8 @@ def _cmd_lint(args: argparse.Namespace) -> None:
         getattr(args, "table", None), getattr(args, "tenant", None), "recall lint --semantic"
     )) is not None:
         raise SystemExit(refusal)
+    if args.semantic and args.threshold is not None and not -1 <= args.threshold <= 1:
+        raise SystemExit("recall lint: --threshold must be a finite cosine between -1 and 1")
     if args.apply is not None and not args.fix:
         print("recall lint: --apply writes the edges --fix proposes; add --fix", file=sys.stderr)
         raise SystemExit(2)

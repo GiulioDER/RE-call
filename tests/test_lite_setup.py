@@ -160,16 +160,48 @@ def test_a_mode_set_in_the_shell_is_registered_as_it_is(tmp_path: Path, monkeypa
     assert not (project / ".recall" / "memory.db.atomic").exists()
 
 
+@pytest.mark.parametrize("private", [False, True])
+def test_lite_claude_registration_respects_git_visibility(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, private: bool,
+) -> None:
+    from recall import codex
+    from recall.wizard.wiring import ServerBlock, register_local_scope
+
+    (tmp_path / ".git").mkdir()
+    target = tmp_path / ".claude.json"
+    target.write_text("{}", encoding="utf-8")
+    backup = tmp_path / ".claude.json.recall-backup"
+
+    def git_status(root: Path, *args: str) -> int:
+        assert root == tmp_path.resolve()
+        if args[0] == "ls-files":
+            return 1
+        assert args[0] == "check-ignore"
+        return 0 if private or args[-1] == target.name else 1
+
+    monkeypatch.setattr(codex, "_git", git_status)
+    result = register_local_scope(
+        (ServerBlock(name="fixture", tenant="fixture", env={}, rationale="test"),),
+        project_root=tmp_path, config_path=target,
+    )
+    if private:
+        assert result.registered == ("fixture",)
+        assert backup.read_text(encoding="utf-8") == "{}"
+    else:
+        assert backup.name in result.skipped_reason
+        assert target.read_text(encoding="utf-8") == "{}"
+        assert not backup.exists()
+
+
 def test_a_per_tenant_mode_in_the_shell_does_not_skip_the_registered_build(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """E9: setup registers no `RECALL_ATOMIC_RESCUE_MODE_BY_TENANT`, so the build must not follow
-    one in the shell either: a `default:off` there skipped the artifact of a server registered
-    `active`, whose first search then found none.
+    """E9: setup clears inherited atomic rescue overrides in the build and client launch.
 
     Red proof (2026-11-18): with the setup refresh given `rescue_env={**os.environ, **atomic_env}`
     again in `recall/lite/setup.py::run_lite_setup`, this test failed at "setup built no artifact".
     """
+    from recall._env import tenant_retrieval_environment
     from recall.lite.atomic import manifest_path
 
     _blank_rescue_environment(monkeypatch)
@@ -178,7 +210,9 @@ def test_a_per_tenant_mode_in_the_shell_does_not_skip_the_registered_build(
     env = _servers(config)[SERVER_NAME]["env"]
     assert isinstance(env, dict)
     assert env.get("RECALL_ATOMIC_RESCUE_MODE") == "active"
-    assert "RECALL_ATOMIC_RESCUE_MODE_BY_TENANT" not in env
+    merged = {"RECALL_ATOMIC_RESCUE_MODE_BY_TENANT": "default:off", **env}
+    effective = tenant_retrieval_environment(merged, "default")
+    assert effective["RECALL_ATOMIC_RESCUE_MODE"] == "active"
     assert report.atomic.startswith("built for "), f"setup built no artifact: {report.atomic!r}"
     store_path = (project / ".recall" / "memory.db").resolve()
     with LiteStore(store_path, dim=DIM) as store:

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from io import BytesIO
 from pathlib import Path
+from threading import BoundedSemaphore
 
 import pytest
 
@@ -65,3 +66,95 @@ def test_valid_framing_preserves_the_exact_body(
     """Compatibility control: a cap mutation to -1 must fail this assertion."""
     responses, _consumed, dispatched = _request(tmp_path, monkeypatch, str(len(payload)), payload)
     assert responses == [200] and dispatched == [payload]
+
+
+def test_dashboard_declines_a_request_when_worker_slots_are_full(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    listener = object.__new__(server._ExclusiveServer)
+    listener._request_slots = BoundedSemaphore(1)
+    assert listener._request_slots.acquire(blocking=False)
+    dispatched = []
+    closed = []
+    request = object()
+    monkeypatch.setattr(
+        server.ThreadingHTTPServer, "process_request",
+        lambda self, request, address: dispatched.append(request),
+    )
+    monkeypatch.setattr(listener, "shutdown_request", closed.append)
+
+    listener.process_request(request, ("127.0.0.1", 12345))
+
+    assert dispatched == []
+    assert closed == [request]
+
+
+def test_dashboard_closes_a_request_after_the_read_timeout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = server.DashboardApp(tmp_path, port=8765, token="proof")
+    monkeypatch.setattr(server, "_ExclusiveServer", lambda address, handler: handler)
+    handler = object.__new__(server.serve(app))
+    configured_timeouts = []
+
+    class TimedInput:
+        def readline(self, limit: int) -> bytes:
+            raise TimeoutError("fixture read exceeded the timeout")
+
+    class Connection:
+        def settimeout(self, seconds: float) -> None:
+            configured_timeouts.append(seconds)
+
+        def makefile(self, mode: str, buffer_size: int) -> TimedInput:
+            assert mode == "rb"
+            return TimedInput()
+
+    handler.request = Connection()
+    handler.close_connection = False
+    handler.log_error = lambda *args: None
+    handler.setup()
+    handler.handle_one_request()
+
+    assert configured_timeouts == [10]
+    assert handler.close_connection is True
+
+
+def test_dashboard_enforces_the_whole_request_read_deadline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = server.DashboardApp(tmp_path, port=8765, token="proof")
+    monkeypatch.setattr(server, "_ExclusiveServer", lambda address, handler: handler)
+    handler = object.__new__(server.serve(app))
+    scheduled = []
+    shutdown = []
+
+    class Deadline:
+        def __init__(self, seconds: float, expire) -> None:
+            assert seconds == 10
+            self.expire = expire
+            self.cancelled = False
+
+        def start(self) -> None:
+            scheduled.append(self)
+
+        def cancel(self) -> None:
+            self.cancelled = True
+
+    class Input:
+        def readline(self, limit: int) -> bytes:
+            assert len(scheduled) == 1
+            scheduled[0].expire()
+            return b""
+
+    class Connection:
+        def shutdown(self, mode: int) -> None:
+            shutdown.append(mode)
+
+    monkeypatch.setattr(server.threading, "Timer", Deadline)
+    handler.rfile = Input()
+    handler.connection = Connection()
+    handler.handle_one_request()
+
+    assert shutdown == [server.socket.SHUT_RD]
+    assert scheduled[0].cancelled
+    assert handler.close_connection

@@ -328,8 +328,6 @@ def run() -> dict[str, object]:
             },
             "application_smoke": application_smoke,
         }
-        print(json.dumps(receipt, sort_keys=True, default=str))
-        return receipt
     finally:
         try:
             if instance_created:
@@ -343,6 +341,8 @@ def run() -> dict[str, object]:
         finally:
             if previous_sigterm is not None:
                 signal.signal(signal.SIGTERM, previous_sigterm)
+    print(json.dumps(receipt, sort_keys=True, default=str))
+    return receipt
 
 
 if __name__ == "__main__":
