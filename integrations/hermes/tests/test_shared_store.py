@@ -552,10 +552,10 @@ def test_drive_rooted_xdg_is_ignored_on_older_windows_python(monkeypatch):
     class WindowsPath(PureWindowsPath):
         @classmethod
         def home(cls):
-            return cls("C:/Users/sample")
+            return cls("C:/Users/example")
 
     monkeypatch.setattr(config, "Path", WindowsPath)
     monkeypatch.setattr(config, "os", SimpleNamespace(
         environ={"XDG_CONFIG_HOME": "/drive-rooted"}, path=SimpleNamespace(isabs=lambda _: True),
     ))
-    assert config.shared_dir() == WindowsPath("C:/Users/sample/.config/re-call")
+    assert config.shared_dir() == WindowsPath("C:/Users/example/.config/re-call")
