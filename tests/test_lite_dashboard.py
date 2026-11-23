@@ -138,6 +138,34 @@ def test_one_search_counts_once_per_memo_at_its_best_rank(tmp_path: Path) -> Non
     assert (memos["b.md"]["retrieved"], memos["b.md"]["first"]) == (1, 0)
 
 
+def test_control_reads_one_snapshot(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from recall.dashboard import lite_db
+    from recall.lite import LiteStore
+
+    path = tmp_path / "memory.db"
+    with LiteStore(path, dim=4) as store:
+        tenant = store.tenant
+        store.append_audit_event("search_decision", {"query": "first"})
+
+    events = lite_db._events
+    wrote = False
+
+    def publish_after_searches(connection, owner, types, **kwargs):
+        nonlocal wrote
+        yield from events(connection, owner, types, **kwargs)
+        if "search_decision" in types and not wrote:
+            wrote = True
+            with LiteStore(path, dim=4) as writer:
+                writer.append_audit_event("search_decision", {"query": "later"})
+                writer.append_audit_event("use_report", {"task": "later", "effect": "helped"})
+
+    monkeypatch.setattr(lite_db, "_events", publish_after_searches)
+    dsn = "sqlite:///" + path.as_posix()
+    assert lite_db.control(dsn, tenant)["summary"]["reports"] == 0
+    latest = lite_db.control(dsn, tenant)["summary"]
+    assert (latest["searches"], latest["reports"]) == (2, 1)
+
+
 def test_one_memory_counts_all_reports_and_lists_the_newest_from_one_scan(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:

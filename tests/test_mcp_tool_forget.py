@@ -12,6 +12,9 @@ import asyncio
 import json
 import uuid
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock
+
+import pytest
 
 from recall.embeddings import HashingEmbedder
 from recall.types import Chunk
@@ -139,3 +142,54 @@ def test_recall_forget_is_registered_with_honest_destructive_annotations():
     # to prompt the user must be told the truth, not inherit recall_index's read-only-ish hints.
     assert ann.read_only_hint is False
     assert ann.destructive_hint is True
+
+
+@pytest.mark.parametrize("cleanup_fails", [False, True])
+def test_shadow_preflight_releases_reservation(monkeypatch, cleanup_fails):
+    """A shadow lookup failure releases the key without entering erasure (STAKES-001)."""
+    from recall_mcp import server_memory_admin
+    from recall_mcp.server_common import _ToolDeps
+
+    failure = RuntimeError("shadow store unavailable")
+    release = AsyncMock(side_effect=RuntimeError("reservation store unavailable") if cleanup_fails else None)
+    registry = SimpleNamespace(get_shadow=Mock(side_effect=failure))
+    store = SimpleNamespace(tenant="fixture-tenant")
+    state = {"stores": registry, "limiter": SimpleNamespace(release_idempotency_reservation=release)}
+    eraser = Mock()
+    record = AsyncMock()
+    tools = {}
+
+    def register(*, name, **_options):
+        def add(tool):
+            tools[name] = tool
+            return tool
+
+        return add
+
+    # Every await in this fixture completes synchronously. No MCP transport or event loop is needed.
+    monkeypatch.setattr(server_memory_admin, "_to_thread", AsyncMock(side_effect=lambda task: task()))
+    monkeypatch.setattr(server_memory_admin, "forget_memory", eraser)
+    server_memory_admin._register_memory_admin_tools(
+        Mock(tool=register),
+        _ToolDeps(
+            require=AsyncMock(),
+            require_mutation=AsyncMock(return_value=(store, None)),
+            record_mutation_result=record,
+            state=lambda _ctx: state,
+            current_tenant=lambda _state: store.tenant,
+            access_context=Mock(),
+            answer_backend_configured=False,
+        ),
+    )
+    request = tools["recall_forget"](sources=["fixture.md"], ctx=None, idempotency_key="fixture-key")
+    try:
+        with pytest.raises(RuntimeError, match="shadow store unavailable") as raised:
+            request.send(None)
+    finally:
+        request.close()
+
+    assert raised.value is failure
+    registry.get_shadow.assert_called_once_with(store.tenant)
+    eraser.assert_not_called()
+    record.assert_not_called()
+    release.assert_awaited_once_with(store.tenant, "fixture-key")

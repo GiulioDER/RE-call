@@ -30,6 +30,7 @@ on:
       - "packaging/**"
       - "recall/desktop/**"
       - "recall/wizard/**"
+      - "recall_mcp/**"
       - "uv.lock"
       - "pyproject.toml"
       - ".github/requirements/pyinstaller.txt"

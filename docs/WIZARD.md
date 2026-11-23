@@ -333,10 +333,10 @@ It refuses, before asking anything, in a session with no terminal. Piping into i
 either hang on a line that never arrives or read EOF and accept every default, and both of those
 look like a successful install from the outside.
 
-- **A smoke search per server.** After wiring, one real query goes through each configured server,
-  drawn from that tenant's own indexed text and using the store its own `RECALL_ENV` selects. The
-  report shows hits, trust state and any failure code, so "a config was written" and "the install
-  answers" are separate lines rather than one assumption.
+- **A host-side smoke search per tenant.** The wizard draws a query from that tenant's indexed
+  text and uses its configured store and trust settings. The report shows hits, trust state and
+  any failure code. The search uses the wizard's embedder, so container compatibility requires a
+  check against the serving runtime.
 
 ## Uninstalling
 

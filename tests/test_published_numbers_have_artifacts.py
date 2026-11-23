@@ -41,6 +41,34 @@ def test_a_bare_integer_is_an_unmarked_claim() -> None:
     assert [c.text for c in claims] == ["17"]
 
 
+def test_scan_does_not_search_other_line_markers_for_every_claim(monkeypatch) -> None:
+    from benchmarks import claim_gate
+
+    line_of = claim_gate._line_of
+    lookups = 0
+
+    def count(offset, line_starts):
+        nonlocal lookups
+        lookups += 1
+        return line_of(offset, line_starts)
+
+    monkeypatch.setattr(claim_gate, "_line_of", count)
+    size = 40
+    text = "The clean subset holds 17 records.\n" * size
+    text += "<!--@ citation-pending: fixture -->\n" * size
+    claims = scan_text(text, doc="x.md")
+    assert len(claims) == size and all(claim.marker is None for claim in claims)
+    assert lookups <= 2 * size
+
+
+def test_exact_integer_claim_matching_does_not_round_through_binary64() -> None:
+    exact = (1 << 53) + 1
+    assert matches(f"{exact}.00", exact)
+    assert not matches(f"{exact - 1}.00", exact)
+    huge = 10**400 + 1
+    assert matches(str(huge), huge)
+
+
 def test_an_artifact_marker_binds_to_the_number_before_it() -> None:
     claims = scan_text(
         "reaches **0.777** <!--@ locomo_rerank/rerank_shipped.json # depth_curve.5.overall.hit -->",

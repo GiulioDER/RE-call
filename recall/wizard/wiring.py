@@ -350,7 +350,8 @@ def mcp_config(
     The OS passthrough from `server_os_env` is added HERE, the one place that renders a host
     launch, and not to `ServerBlock.env`: that dict also becomes the environment of the Docker
     stack's Linux containers (`headless.py` hands it to `StackSpec`), where a Windows APPDATA means
-    nothing, and the install report prints it. A block's own value wins a collision.
+    nothing, and the install report prints it. A block's own value wins a collision, except that
+    the host launch pins the transport to match its declared stdio type.
     """
     # PYTHONSAFEPATH=1 in `server_os_env()` keeps the session's directory off sys.path.
     # ast-grep-ignore: python-module-run-with-safe-path
@@ -364,7 +365,7 @@ def mcp_config(
                 "command": interpreter or sys.executable,
                 "args": args.copy(),
                 "cwd": str(project_root),
-                "env": {**server_os_env(), **block.env},
+                "env": {**server_os_env(), **block.env, "RECALL_TRANSPORT": "stdio"},
             }
             for block in blocks
         }

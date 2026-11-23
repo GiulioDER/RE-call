@@ -777,7 +777,7 @@ They are observations, not automatic failures.
 | `recall.query_class` | 0 | 0 |
 | `recall.query_construction` | 0 | 0 |
 | `recall.query_entity_resolution` | 1 | 29 |
-| `recall.quickstart` | 2 | 142 |
+| `recall.quickstart` | 2 | 143 |
 | `recall.readiness` | 5 | 141 |
 | `recall.reasoning` | 13 | 140 |
 | `recall.reasoning_expansion` | 7 | 140 |
@@ -865,7 +865,7 @@ They are observations, not automatic failures.
 | `recall.wizard.projects` | 4 | 186 |
 | `recall.wizard.queryset` | 7 | 140 |
 | `recall.wizard.questions` | 1 | 143 |
-| `recall.wizard.stack` | 4 | 141 |
+| `recall.wizard.stack` | 5 | 142 |
 | `recall.wizard.state` | 4 | 185 |
 | `recall.wizard.uninstall` | 6 | 179 |
 | `recall.wizard.wiring` | 11 | 179 |

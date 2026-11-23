@@ -238,12 +238,15 @@ def test_the_installer_cannot_resolve_unhashed_build_dependencies() -> None:
     "uv.lock",
     "pyproject.toml",
     ".github/requirements/pyinstaller.txt",
+    "recall_mcp/server.py",
+    "recall_mcp/server_memory_admin.py",
 ])
-def test_dependency_changes_select_the_windows_installer(path: str) -> None:
-    """BUG-001. Dependency-only PRs must reach the Windows bundle selftest.
+def test_bundled_inputs_select_the_windows_installer(path: str) -> None:
+    """Dependency-only and MCP-only PRs must reach the Windows bundle selftest.
 
     Red proof uses ac67de930a666e2264850c2c7cbcf5b1f2190540's workflow.
     Each input misses all four original path filters.
+    The MCP cases also fail before DEPLOY-003 expands the filter.
     """
     from fnmatch import fnmatchcase
 
