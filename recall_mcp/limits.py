@@ -93,6 +93,13 @@ class RateLimited(RuntimeError, ToolError, RecallError):
         self.retry_after_seconds = retry_after_seconds
 
 
+def _format_retry_delay(wait: float) -> str:
+    displayed = f"{wait:.1f}"
+    nearest = float(displayed)
+    # The MCP message must never tell the caller to retry before the bucket can refill.
+    return f"{nearest + 0.1:.1f}" if nearest < wait else displayed
+
+
 def _oversized_cost_message(cost: float, rate: Rate) -> str:
     """Describe a cost that cannot fit in this bucket, independently of the backend."""
     return (
@@ -288,11 +295,12 @@ class RateLimiter:
             wait = bucket.take(cost, now)
 
         if wait > 0:
-            _log.warning("tenant %r rate-limited on %s (retry in %.1fs)", tenant, key, wait)
+            retry = _format_retry_delay(wait)
+            _log.warning("tenant %r rate-limited on %s (retry in %ss)", tenant, key, retry)
             raise RateLimited(
                 f"rate limit exceeded for {key!r}: budget is {rate.capacity:,.0f} with "
                 f"{rate.per_second * _SECONDS_PER_MIN:,.1f} restored per minute. "
-                f"Retry in {wait:.1f}s.",
+                f"Retry in {retry}s.",
                 retry_after_seconds=wait,
             )
 
@@ -536,7 +544,7 @@ class RedisRateLimiter:
                 retry = max(0.001, wait_ms / 1000.0)
                 self._metric("limiter_refused", budget=key)
                 raise RateLimited(
-                    f"rate limit exceeded for {key!r}; retry after {retry:.1f}s",
+                    f"rate limit exceeded for {key!r}; retry after {_format_retry_delay(retry)}s",
                     retry_after_seconds=retry,
                 )
             if duplicate:

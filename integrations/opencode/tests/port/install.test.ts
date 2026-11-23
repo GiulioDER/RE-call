@@ -2,10 +2,11 @@
  * `tests/mutations.integration.ts`, ids INSTALL-*. The isolated home gets copies of the fixture
  * `commands` and `agents` in `tests/fixtures/claude`, which is what the install reads. */
 
-import { afterAll, describe, expect, setDefaultTimeout, test } from "bun:test";
+import { afterAll, describe, expect, setDefaultTimeout, spyOn, test } from "bun:test";
 import { createHash } from "node:crypto";
+import * as fs from "node:fs";
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { join, relative, resolve } from "node:path";
+import { basename, join, relative, resolve } from "node:path";
 import { INSTRUCTIONS, install } from "../../port/install";
 import { type IsolatedHome, isolatedHome } from "../isolated_home";
 import { realHome } from "../real_home";
@@ -145,6 +146,38 @@ describe("install", () => {
     cpSync(join(FIXTURE, "agents"), agents, { recursive: true });
     expect(install({ home: sb.home, xdgConfigHome: xdg }).written).toContain(join(configDir, "opencode.json"));
     expect(readFileSync(join(configDir, "owned-by-user.txt"), "utf-8")).toBe("keep");
+  });
+
+  // FA-1-12 red at ced240de0: the config was published, but install threw the cleanup error.
+  test("install reports a published config even when staging cleanup fails", () => {
+    const { sb, xdg } = sandbox();
+    const target = join(xdg, "opencode", "opencode.json");
+    const remove = rmSync;
+    const cleanupError = new Error("staging directory is busy");
+    let stage: string | undefined;
+    const cleanup = spyOn(fs, "rmSync").mockImplementation((path, options) => {
+      if (!basename(String(path)).startsWith("re-call-opencode-port-")) return remove(path, options);
+      stage = String(path);
+      throw cleanupError;
+    });
+    const warn = spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      let result: ReturnType<typeof install> | undefined;
+      let error: unknown;
+      try {
+        result = install({ home: sb.home, xdgConfigHome: xdg });
+      } catch (cause) {
+        error = cause;
+      }
+      expect(existsSync(target)).toBe(true);
+      expect(error).toBeUndefined();
+      expect(result?.written).toContain(target);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining("staging"), cleanupError);
+    } finally {
+      cleanup.mockRestore();
+      warn.mockRestore();
+      if (stage) rmSync(stage, { recursive: true, force: true });
+    }
   });
 
   test("install exposes compatibility warnings from both porters", () => {

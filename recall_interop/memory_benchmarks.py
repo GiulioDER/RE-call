@@ -435,17 +435,24 @@ class RecallBackend:
         store = PgVectorStore(
             self._dsn, dim=self._embedder.dim, tenant=tenant, table=self._table
         )
-        store.__enter__()
-        store.ensure_schema()
-        # A fresh run must not inherit a previous one's rows. Their harness stamps `user_id` with a
-        # per-run id, so a collision is unlikely — but "unlikely" is how a corpus silently doubles,
-        # and a doubled corpus fills top-k with duplicates and makes the published number a
-        # function of how many times the harness happened to be run.
-        stale = sorted({c.source for c in store.iter_chunks()})
-        if stale:
-            store.delete_sources(stale)
-        scope = _UserScope(tenant, workspace, store)
-        self._scopes[user_id] = scope
+        try:
+            store.__enter__()
+            store.ensure_schema()
+            # A fresh run must not inherit a previous one's rows. Their harness stamps `user_id` with a
+            # per-run id, so a collision is unlikely — but "unlikely" is how a corpus silently doubles,
+            # and a doubled corpus fills top-k with duplicates and makes the published number a
+            # function of how many times the harness happened to be run.
+            stale = sorted({c.source for c in store.iter_chunks()})
+            if stale:
+                store.delete_sources(stale)
+            scope = _UserScope(tenant, workspace, store)
+            self._scopes[user_id] = scope
+        except BaseException as setup_error:  # BROAD-CATCH: cleanup-only
+            try:
+                store.close()
+            except Exception as close_error:  # BROAD-CATCH: cleanup-only
+                raise setup_error from close_error
+            raise
         return scope
 
 
@@ -485,7 +492,12 @@ def _created_at_of(hit: Any) -> str | None:
     m = _TS_RE.search(str(file_key).replace("\\", "/"))
     if m:
         raw = m.group("ts")
-        return None if raw == "NONE" else _iso_from_epoch(int(raw))
+        if raw == "NONE":
+            return None
+        try:
+            return _iso_from_epoch(int(raw))
+        except OverflowError:
+            return None  # the timestamp cannot be represented, but the memory can still be used
     indexed_at = getattr(hit.provenance, "indexed_at", None)
     if isinstance(indexed_at, datetime):
         return indexed_at.astimezone(timezone.utc).strftime(_ISO_FMT)

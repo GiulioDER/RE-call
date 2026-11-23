@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import sys
 import threading
+from types import SimpleNamespace
 
 import pytest
 
@@ -110,3 +111,84 @@ def test_shutdown_interrupts_an_idle_writer_waiting_for_startup(tmp_path, monkey
     stopped.join(3)
     assert finished, "shutdown did not interrupt the startup wait"
     assert writer is not None and not writer.is_alive()
+
+
+def test_reinitialize_does_not_deliver_retired_stop_to_new_writer(tmp_path, monkeypatch):
+    """The replacement writer accepts new writes even when the retired writer did not exit.
+
+    Red against ced240de0: ``ReCallMemoryProvider._write_loop`` consumed the previous
+    writer's sentinel and the event was still unset at ``assert wrote.wait(2)``.
+    """
+    real_spawn = module.spawn_context_thread
+    wrote = threading.Event()
+    retired = SimpleNamespace(start=lambda: None, join=lambda timeout: None)
+    first = True
+
+    def spawn(target, *, name, **kwargs):
+        nonlocal first
+        if first and name == "re-call-writer":
+            first = False
+            # The old writer has not run yet, even when shutdown's bounded join returns.
+            return retired
+        return real_spawn(target, name=name, **kwargs)
+
+    def call(self, tool, arguments, timeout):
+        if tool == "recall_remember" and arguments["text"] == "New memory":
+            wrote.set()
+        return {"memo_id": "note-0001"}
+
+    monkeypatch.setattr(module, "spawn_context_thread", spawn)
+    provider = _start(tmp_path, monkeypatch, call)
+    provider.shutdown()
+    try:
+        provider.initialize("next", hermes_home=tmp_path)
+        provider.on_memory_write("add", "user", "New memory")
+        assert wrote.wait(2), "the replacement writer did not process the new memory"
+    finally:
+        provider.shutdown()
+
+
+def test_retired_writer_journals_only_in_its_original_profile(tmp_path, monkeypatch):
+    """A queued write stays with its old journal when a different profile starts.
+
+    Red with generation-local queues alone: ``_journal`` used the new profile's settings
+    and ``old_journal.is_file()`` was false.
+    """
+    workers = []
+    calls = []
+
+    def spawn(target, *, name, **kwargs):
+        assert name == "re-call-writer"
+        workers.append(target)
+        return SimpleNamespace(start=lambda: None, join=lambda timeout: None)
+
+    def call(self, tool, arguments, timeout):
+        calls.append((tool, arguments))
+        return {"memo_id": "note-0001"}
+
+    monkeypatch.setattr(module, "spawn_context_thread", spawn)
+    old_home = tmp_path / "old"
+    provider = _start(old_home, monkeypatch, call)
+    old_settings = provider._settings
+    provider.on_memory_write("add", "user", "Old profile memory")
+    provider.shutdown()
+
+    new_home = tmp_path / "new"
+    new_data = new_home / "re-call"
+    new_data.mkdir(parents=True)
+    (new_data / "memory.db").touch()
+    (new_data / "config.json").write_text(json.dumps({"recall_command": sys.executable}), encoding="utf-8")
+    try:
+        provider.initialize("new", hermes_home=new_home)
+        assert len(workers) == 2
+        workers[0]()  # the retired writer can resume after the new profile is ready
+        old_journal = old_settings.data_dir / module.MIRROR_FILE
+        assert old_journal.is_file(), "the retired writer did not preserve the old profile's write"
+        journal = json.loads(old_journal.read_text(encoding="utf-8"))
+        assert journal["destination"] == [module.normal_path(old_settings.store_path),
+                                          module.normal_path(old_settings.assistant_folder)]
+        assert [pending[1:] for pending in journal["pending"]] == [["add", "user", "Old profile memory", None]]
+        assert not (new_data / module.MIRROR_FILE).exists()
+        assert calls == []
+    finally:
+        provider.shutdown()

@@ -47,6 +47,7 @@ MIN_SEARCH_S = 1.0  # left for the search after waiting on a starting server
 TOOL_TIMEOUT_S = 60.0
 RESTART_INTERVAL_S = 60.0
 MIRROR_FILE = "mirror.json"
+_MirrorWrite = tuple[str, str, str, dict[str, Any]]
 
 
 def _digest(target: str, content: str) -> str:
@@ -292,7 +293,7 @@ class ReCallMemoryProvider(MemoryProvider):
         self._status: RecallStatus | None = None
         # Hermes abandons a prefetch after 8 s but its thread runs on; only the newest may set status.
         self._prefetch_token: object | None = None
-        self._writes: queue.Queue[tuple[str, str, str, dict[str, Any]] | None] = queue.Queue()
+        self._writes: queue.Queue[_MirrorWrite | None] = queue.Queue()
         self._writer: threading.Thread | None = None
 
     # -- identity and activation ------------------------------------------------------------------
@@ -317,11 +318,15 @@ class ReCallMemoryProvider(MemoryProvider):
             return os.environ.get("HERMES_HOME") or str(Path.home() / ".hermes")
 
     def initialize(self, session_id: str, **kwargs: Any) -> None:
-        self._closed = False  # an instance initialized again after shutdown() serves again
-        self._stop_writer.clear()
-        self._settings = load_settings(kwargs["hermes_home"])
+        with self._client_lock:
+            self._closed = False  # an instance initialized again after shutdown() serves again
+            if self._writer is None:
+                self._stop_writer = threading.Event()
+            stop_writer = self._stop_writer
+        settings = load_settings(kwargs["hermes_home"])
+        self._settings = settings
         self._primary = kwargs.get("agent_context", "primary") == "primary"
-        problem = self._settings.problem()
+        problem = settings.problem()
         if problem:
             self._start_error = problem
             logger.warning("re-call: inactive: %s", problem)
@@ -334,13 +339,18 @@ class ReCallMemoryProvider(MemoryProvider):
             starter.join()
             logger.info("re-call: server %s after %.2fs", "ready" if self._ready.is_set() else "failed",
                         time.monotonic() - started)
-        if self._primary and self._settings.lite and self._settings.mirror_builtin:
+        if self._primary and settings.lite and settings.mirror_builtin:
             # Under the lock shutdown() takes the writer in: either it is published before shutdown()
             # takes it, or shutdown() came first (during the start above) and no writer is started.
             with self._client_lock:
-                if self._closed:
+                if self._closed or self._writer is not None or self._stop_writer is not stop_writer:
                     return
-                writer = spawn_context_thread(self._write_loop, name="re-call-writer")
+                # A previous writer can outlive its bounded join. Its sentinel must stay in its queue.
+                writes: queue.Queue[_MirrorWrite | None] = queue.Queue()
+                self._writes = writes
+                writer = spawn_context_thread(
+                    lambda: self._write_loop(writes, stop_writer, settings), name="re-call-writer"
+                )
                 writer.start()
                 self._writer = writer
 
@@ -519,35 +529,38 @@ class ReCallMemoryProvider(MemoryProvider):
     # -- mirroring Hermes's built-in memory tool -------------------------------------------------
 
     def on_memory_write(self, action: str, target: str, content: str, metadata: dict[str, Any] | None = None) -> None:
-        if self._writer is None:
-            return
-        # One id per write, minted here, so only this write's own retry can reuse it.
-        self._writes.put((action, target, content, {**(metadata or {}), "_request_id": uuid.uuid4().hex}))
+        with self._client_lock:
+            if self._writer is None:
+                return
+            # One id per write, minted here, so only this write's own retry can reuse it.
+            self._writes.put((action, target, content, {**(metadata or {}), "_request_id": uuid.uuid4().hex}))
 
-    def _wait_for_writer_ready(self) -> bool:
+    def _wait_for_writer_ready(self, stop_writer: threading.Event) -> bool:
         deadline = time.monotonic() + START_TIMEOUT_S
         while not self._ready.is_set():
-            if self._stop_writer.wait(0.1) or time.monotonic() >= deadline:
+            if stop_writer.wait(0.1) or time.monotonic() >= deadline:
                 return False
-        return True
+        return self._stop_writer is stop_writer
 
-    def _write_loop(self) -> None:
+    def _write_loop(
+        self, writes: queue.Queue[_MirrorWrite | None], stop_writer: threading.Event, settings: Settings
+    ) -> None:
         # Only known, unsubmitted writes can resume automatically.
-        if self._wait_for_writer_ready():
+        if self._wait_for_writer_ready(stop_writer):
             try:
                 self._drain_pending()
             except Exception:
                 logger.warning("re-call: could not replay journaled built-in memory writes", exc_info=True)
         while True:
-            item = self._writes.get()
+            item = writes.get()
             if item is None:
                 return
             try:
                 # Journaled before the wait, so a write taken while the server is not ready (a start
                 # that failed, a restart, shutdown) is replayed by the next start rather than lost.
-                if not self._journal(*item):
+                if not self._journal(*item, settings=settings):
                     continue
-                if self._wait_for_writer_ready():
+                if self._wait_for_writer_ready(stop_writer):
                     self._drain_pending()
                 else:
                     logger.warning("re-call: the server is not ready; a built-in memory %s waits in %s",
@@ -555,10 +568,13 @@ class ReCallMemoryProvider(MemoryProvider):
             except Exception:  # one bad write (a corrupt mirror.json, a refusal) must not end mirroring
                 logger.warning("re-call: could not mirror a built-in memory %s", item[0], exc_info=True)
 
-    def _journal(self, action: str, target: str, content: str, metadata: dict[str, Any]) -> bool:
+    def _journal(
+        self, action: str, target: str, content: str, metadata: dict[str, Any], *, settings: Settings | None = None
+    ) -> bool:
         """Append the write to mirror.json's pending list; False when it is not one to mirror."""
-        assert self._settings is not None
-        path = self._settings.data_dir / MIRROR_FILE
+        settings = self._settings if settings is None else settings
+        assert settings is not None
+        path = settings.data_dir / MIRROR_FILE
         previous = metadata.get("previous_content")
         if action in ("replace", "remove") and previous is None:
             return False  # an older Hermes: without the entry's identity, a destructive mirror is unsafe
@@ -575,28 +591,30 @@ class ReCallMemoryProvider(MemoryProvider):
         # Every read and write takes the file lock, never a server call. Unknown outcomes stay
         # pending: the server can evict request IDs, so resubmitting could recreate forgotten text.
         with _locked(path):
-            state = self._bound_state(path)
+            state = self._bound_state(path, settings=settings)
             state["pending"].append([metadata["_request_id"], action, target, content, previous])
             atomic_json_write(path, state)
         return True
 
-    def _switched_to_shared(self, recorded: Any) -> bool:
+    @staticmethod
+    def _switched_to_shared(recorded: Any, settings: Settings) -> bool:
         """True when the journal names this profile's old default store, still in place, and the
         profile now uses the shared store: the switch the shared store's appearance makes."""
-        assert self._settings is not None and self._settings.store_path is not None
+        assert settings.store_path is not None
         shared = _shared_dir_or_none()
-        old = self._settings.data_dir / STORE_FILE
+        old = settings.data_dir / STORE_FILE
         return (shared is not None and isinstance(recorded, list) and bool(recorded)
                 and recorded[0] == normal_path(old) and old.is_file()
-                and normal_path(self._settings.store_path) == normal_path(shared / STORE_FILE))
+                and normal_path(settings.store_path) == normal_path(shared / STORE_FILE))
 
-    def _bound_state(self, path: Path) -> dict[str, Any]:
+    def _bound_state(self, path: Path, *, settings: Settings | None = None) -> dict[str, Any]:
         """mirror.json, bound to this store; the caller holds the lock."""
-        assert self._settings is not None and self._settings.store_path is not None
+        settings = self._settings if settings is None else settings
+        assert settings is not None and settings.store_path is not None
         raw = read_json(path)
         state = _mirror_state(raw)
-        destination = _destination((self._settings.store_path, self._settings.assistant_folder))
-        identity = _store_identity(self._settings.store_path)
+        destination = _destination((settings.store_path, settings.assistant_folder))
+        identity = _store_identity(settings.store_path)
         recorded = state["destination"]
         # A store at a new path (moved as the old-store notice says), or another store file at this
         # path: the journal holds only if its memo ids still name its entries' memos here. RE-call
@@ -605,8 +623,8 @@ class ReCallMemoryProvider(MemoryProvider):
         changed = recorded != destination or state["store"] not in (None, identity)
         held = None
         if recorded is not None and changed:
-            found = _held_memos(state["memos"], self._settings.assistant_folder)
-            if found is None and self._switched_to_shared(recorded):
+            found = _held_memos(state["memos"], settings.assistant_folder)
+            if found is None and self._switched_to_shared(recorded, settings):
                 # The profile's own old store is still in place and the shared one appeared, so the
                 # profile switched stores rather than moving its own. Those mappings say nothing about
                 # this store: they are set aside, and mirroring maps afresh here. A dsn or memo_folder
@@ -813,12 +831,13 @@ class ReCallMemoryProvider(MemoryProvider):
     # -- teardown ---------------------------------------------------------------------------------
 
     def shutdown(self) -> None:
-        self._stop_writer.set()
         with self._client_lock:
+            self._stop_writer.set()
             self._closed = True  # a start in flight, or a late thread, must not revive the server
             writer, self._writer = self._writer, None
+            if writer is not None:
+                self._writes.put(None)
         if writer is not None:
-            self._writes.put(None)
             writer.join(timeout=10)
         with self._client_lock:
             client, self._client = self._client, None

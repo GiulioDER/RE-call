@@ -17,6 +17,7 @@ from recall_mcp.limits import (
     Rate,
     RateLimited,
     RateLimiter,
+    RedisRateLimiter,
     _Bucket,
     _rate_from_env,
     limiter_from_env,
@@ -73,6 +74,38 @@ def test_waiting_the_advertised_time_actually_works():
 
     clock.advance(exc.value.retry_after_seconds)
     lim.check("acme", "read")  # must not raise
+
+
+@pytest.mark.parametrize("wait_ms, advertised", [(10, "0.1s"), (1010, "1.1s")])
+@pytest.mark.parametrize("limiter_kind", ["local", "redis"])
+def test_retry_message_never_rounds_down(wait_ms, advertised, limiter_kind):
+    """Local and Redis MCP error messages advertise at least the exact positive delay.
+
+    Red against ced240de0: ``RateLimiter.check`` and ``RedisRateLimiter.check``
+    advertised 0.0s and 1.0s for the two positive waits.
+    """
+    wait = wait_ms / 1000
+
+    class Redis:
+        async def script_load(self, _script):
+            return "sha"
+
+        async def evalsha(self, *args):
+            return [0, wait_ms, 0]
+
+    if limiter_kind == "local":
+        local = _limiter(1, 1 / wait, FakeClock())
+        local.check("acme", "read")
+        with pytest.raises(RateLimited) as exc:
+            local.check("acme", "read")
+    else:
+        redis = RedisRateLimiter("redis://unused", {"read": Rate(1, 1)}, redis_client=Redis())
+        with pytest.raises(RateLimited) as exc:
+            # The injected transport completes every await without suspending.
+            redis.check("acme", "read").send(None)
+
+    assert exc.value.retry_after_seconds == pytest.approx(wait)
+    assert advertised in str(exc.value)
 
 
 def test_refill_is_capped_at_the_burst_size():

@@ -654,13 +654,23 @@ def _changed_since(base: str | None, current: str) -> set[int]:
     return lines
 
 
-def start_scope(cwd: str) -> dict[str, subprocess.Popen[bytes]]:
-    """Start the scope's git calls for `cwd`, side by side, before anything else is imported."""
+def _start_ref(cwd: str, ref: str, *, include_diff: bool) -> subprocess.Popen[bytes]:
+    if include_diff:
+        return _start_git(cwd, *_DIFF_OPTIONS, "--merge-base", ref, "HEAD", "--")
+    return _start_git(cwd, "merge-base", "HEAD", ref)
+
+
+def start_scope(cwd: str, prompt: str | None = None) -> dict[str, subprocess.Popen[bytes]]:
+    """Start git calls side by side. With no prompt provided, start the merge base as before."""
     started: dict[str, subprocess.Popen[bytes]] = {}
     try:
         started["root"] = _start_git(cwd, "rev-parse", "--show-toplevel")
         started["url"] = _start_git(cwd, "config", "--get", "remote.origin.url")
-        started["base"] = _start_git(cwd, "merge-base", "HEAD", BASE_REFS[0])
+        # The empty-prompt scope needs only the diff, which finds its own merge base.
+        include_diff = prompt is not None and not prompt.strip()
+        started["diff" if include_diff else "base"] = _start_ref(
+            cwd, BASE_REFS[0], include_diff=include_diff,
+        )
     except BaseException:
         _stop(list(started.values()))
         raise
@@ -683,18 +693,18 @@ def _base_and_diff(
     started: dict[str, subprocess.Popen[bytes]], cwd: str, deadline: float,
     processes: list[subprocess.Popen[bytes]], *, include_diff: bool,
 ) -> tuple[str | None, str | None]:
-    """The merge base and the commit-to-commit diff against the first of `BASE_REFS` that has one."""
+    """The merge base for named scope or the commit diff for empty scope."""
+    key = "diff" if include_diff else "base"
     for index, ref in enumerate(BASE_REFS):
-        merge_base = started["base"] if index == 0 else _start_git(cwd, "merge-base", "HEAD", ref)
-        if index != 0:
-            processes.append(merge_base)
+        process = started.get(key) if index == 0 else None
+        if process is None:
+            process = _start_ref(cwd, ref, include_diff=include_diff)
+            processes.append(process)
         try:
-            base = _finish_git(merge_base, deadline).decode("ascii", "replace").strip() or None
-            if not include_diff:
-                return base, None
-            diff = _start_git(cwd, *_DIFF_OPTIONS, "--merge-base", ref, "HEAD", "--")
-            processes.append(diff)
-            return base, _finish_git(diff, deadline).decode("utf-8", "replace")
+            output = _finish_git(process, deadline)
+            if include_diff:
+                return None, output.decode("utf-8", "replace")
+            return output.decode("ascii", "replace").strip() or None, None
         except subprocess.CalledProcessError:
             continue  # no such ref, or no merge base with it: try the next
     _log(f"no base ref among {', '.join(BASE_REFS)} has a merge base with HEAD; scope is the named files only")
@@ -827,7 +837,7 @@ def finish_scope(
 
 def scope(cwd: str, prompt: str, *, deadline: float) -> tuple[str, list[dict[str, Any]]]:
     """``(repo, anchors)`` for the repository holding `cwd`: `start_scope`, then `finish_scope`."""
-    return finish_scope(start_scope(cwd), cwd, prompt, deadline=deadline)
+    return finish_scope(start_scope(cwd, prompt), cwd, prompt, deadline=deadline)
 
 
 # --- the block ---------------------------------------------------------------------------------
@@ -977,7 +987,7 @@ def build_block(cwd: str, prompt: str, *, deadline: float, now: datetime | None 
     `recall` imports and the memo reading overlap rather than queue. The reading stops a little
     before `deadline`, keeping what it parsed in the on-disk cache.
     """
-    started = start_scope(cwd)
+    started = start_scope(cwd, prompt)
     directory = memo_directory()
 
     def load() -> Any:

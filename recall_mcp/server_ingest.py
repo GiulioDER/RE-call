@@ -14,7 +14,6 @@ from collections.abc import Mapping
 from typing import TypedDict, cast
 
 from mcp.server.auth.middleware.auth_context import get_access_token
-from mcp.server import MCPServer
 from mcp.server.mcpserver import Context
 from mcp.types import ToolAnnotations
 
@@ -38,6 +37,7 @@ from recall_mcp.generation_admin import generation_ingest
 from recall_mcp.stores import StoreRegistry
 from recall.desktop.uploads import discard_staging, stage_uploads
 from recall_mcp.threads import _to_thread
+from recall_mcp.tool_surface import ToolRegistrar
 from recall_mcp.server_common import (
     _ToolDeps,
     _check_limiter_async,
@@ -227,7 +227,7 @@ def ingest_into_serving_store(
     )
 
 
-def _register_ingest_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
+def _register_ingest_tools(mcp: ToolRegistrar, deps: _ToolDeps) -> None:
     _require = deps.require
     _require_mutation = deps.require_mutation
     _record_mutation_result = deps.record_mutation_result
