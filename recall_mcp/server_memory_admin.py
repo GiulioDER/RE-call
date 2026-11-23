@@ -89,12 +89,19 @@ def _register_memory_admin_tools(mcp: ToolRegistrar, deps: _ToolDeps) -> None:
         assert store is not None
         registry: StoreRegistry | None = state.get("stores")
         tenant = _current_tenant(state)
-        shadow = (
-            # get_shadow holds the registry lock across a control-plane read (PERF-002).
-            await _to_thread(lambda: registry.get_shadow(tenant))
-            if registry is not None and tenant is not None
-            else None
-        )
+        try:
+            shadow = (
+                # get_shadow holds the registry lock across a control-plane read (PERF-002).
+                await _to_thread(lambda: registry.get_shadow(tenant))
+                if registry is not None and tenant is not None
+                else None
+            )
+        except Exception as exc:  # noqa: BLE001  # BROAD-CATCH: cleanup-only; release the unused reservation
+            try:
+                await _release_mutation_reservation(state, store.tenant, idempotency_key)
+            except Exception as cleanup_error:  # noqa: BLE001  # BROAD-CATCH: cleanup-only; preserve the preflight error
+                exc.add_note(f"could not release the erasure reservation ({type(cleanup_error).__name__})")
+            raise
         control = registry.control_plane if registry is not None else None
         try:
             security_context = _access_context(state, store, purpose="erasure")
@@ -391,6 +398,8 @@ def _register_memory_admin_tools(mcp: ToolRegistrar, deps: _ToolDeps) -> None:
 
         Returns:
             JSON of {chunks, newest_indexed_at, stale, metrics, refresh}.
+            Stdio FastEmbed generation stores also report `serving_lineage` as
+            `match`, `unverified`, or `LINEAGE_MISMATCH`.
         """
         store = await _require(SCOPE_READ, ctx)
         state = _state(ctx)

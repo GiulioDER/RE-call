@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import re
+from bisect import bisect_left, bisect_right
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -346,26 +347,6 @@ def _line_of(offset: int, line_starts: list[int]) -> int:
     return low + 1
 
 
-def _marker_for(
-    number_end: int,
-    line: int,
-    markers: list[tuple[int, Marker]],
-    line_starts: list[int],
-    other_number_starts: list[int],
-) -> Marker | None:
-    """The first marker starting after `number_end` on the same line, if no OTHER number's
-    occurrence lies strictly between `number_end` and that marker's start — otherwise the marker
-    binds to that nearer number instead, not to this one.
-    """
-    for start, marker in markers:
-        if start < number_end or _line_of(start, line_starts) != line:
-            continue
-        if any(number_end < other_start < start for other_start in other_number_starts):
-            return None
-        return marker
-    return None
-
-
 def scan_text(text: str, doc: str) -> list[Claim]:
     """Every numeric claim in `text`, each bound to the marker that follows it on its line.
 
@@ -396,18 +377,20 @@ def scan_text(text: str, doc: str) -> list[Claim]:
             start, value = start + 1, value[1:]
         numbers.append((start, end, value))
     number_starts = [start for start, _end, _value in numbers]
+    marker_starts = [start for start, _marker in markers]
     claims: list[Claim] = []
     for start, end, value in numbers:
         line = _line_of(start, line_starts)
-        other_starts = [s for s in number_starts if s != start]
-        claims.append(
-            Claim(
-                doc=doc,
-                line=line,
-                text=value,
-                marker=_marker_for(end, line, markers, line_starts, other_starts),
-            )
-        )
+        marker = None
+        position = bisect_left(marker_starts, end)
+        if position < len(markers):
+            offset, candidate = markers[position]
+            intervening = bisect_right(number_starts, end)
+            if _line_of(offset, line_starts) == line and (
+                intervening == len(numbers) or number_starts[intervening] >= offset
+            ):
+                marker = candidate
+        claims.append(Claim(doc=doc, line=line, text=value, marker=marker))
     return claims
 
 
@@ -463,8 +446,10 @@ def matches(published: str, actual: object) -> bool:
     normalized = published.replace(",", "").replace("−", "-")
     if "." in normalized:
         decimals = len(normalized.split(".", 1)[1])
-        return f"{float(actual):.{decimals}f}" == normalized
-    return float(actual).is_integer() and str(int(actual)) == normalized
+        if isinstance(actual, int):
+            return f"{actual}.{'0' * decimals}" == normalized
+        return f"{actual:.{decimals}f}" == normalized
+    return (isinstance(actual, int) or actual.is_integer()) and str(int(actual)) == normalized
 
 
 def resolve(claim: Claim, results_root: Path) -> None:

@@ -608,6 +608,101 @@ def test_the_calibration_page_reports_on_the_corpus_it_names(
         app.processEvents()
 
 
+def test_dsn_visibility_masks_the_saved_value(monkeypatch: pytest.MonkeyPatch) -> None:
+    from types import SimpleNamespace
+
+    pytest.importorskip("PySide6")
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtWidgets import QApplication, QLineEdit
+
+    from recall.desktop.ui import MainWindow
+
+    dsn = "postgresql://example:fixture@localhost/example"
+    app = QApplication.instance() or QApplication([])
+    profile = RuntimeProfile(mode=RuntimeMode.LOCAL_DATABASE, dsn=dsn)
+    window = MainWindow(profile, runtime=SimpleNamespace(stop=lambda: None))
+    try:
+        assert window.dsn_edit.echoMode() == QLineEdit.EchoMode.Password
+        assert window.dsn_edit.text() == dsn
+    finally:
+        window.close()
+        app.processEvents()
+
+
+@pytest.mark.parametrize("outcome", ["success", "failure"])
+def test_calibration_refresh_coalesces_and_blocks_actions(
+    monkeypatch: pytest.MonkeyPatch, outcome: str,
+) -> None:
+    from types import SimpleNamespace
+
+    pytest.importorskip("PySide6")
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtWidgets import QApplication, QMessageBox
+
+    from recall.desktop.ui import MainWindow
+
+    app = QApplication.instance() or QApplication([])
+    profile = RuntimeProfile(mode=RuntimeMode.LOCAL_DATABASE, dsn="postgresql://example@localhost/example")
+    window = MainWindow(profile, runtime=SimpleNamespace(stop=lambda: None))
+    workers = []
+    dialogs = []
+    monkeypatch.setattr(window, "_run", lambda *worker: workers.append(worker))
+    monkeypatch.setattr(
+        QMessageBox, "question",
+        lambda *args: dialogs.append(args) or QMessageBox.StandardButton.No,
+    )
+    try:
+        window._refresh_calibration_table()
+        tenant = window._calibration_targets_by_row[0][2]
+        window._calibration_results[tenant] = SimpleNamespace(calibration_id="fixture")
+        window._run_selected_calibration()
+        window._publish_calibration_row(0)
+        assert dialogs == []
+
+        window._refresh_calibration_table()
+        assert len(workers) == 1
+        _, success, failure = workers[0]
+        if outcome == "success":
+            success([])
+        else:
+            failure("fixture error")
+        assert window.calibration_table.isEnabled()
+        window._refresh_calibration_table()
+        assert len(workers) == 2
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_calibration_refresh_reads_a_changed_roster_after_completion(monkeypatch: pytest.MonkeyPatch) -> None:
+    from types import SimpleNamespace
+
+    pytest.importorskip("PySide6")
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtWidgets import QApplication
+
+    from recall.desktop.ui import MainWindow
+
+    app = QApplication.instance() or QApplication([])
+    profile = RuntimeProfile(mode=RuntimeMode.LOCAL_DATABASE, dsn="postgresql://example@localhost/example")
+    window = MainWindow(profile, runtime=SimpleNamespace(stop=lambda: None))
+    workers = []
+    targets = [("Default", "Documents", "default-docs")]
+    monkeypatch.setattr(window, "_run", lambda *worker: workers.append(worker))
+    monkeypatch.setattr(window, "_calibration_targets", lambda: list(targets))
+    try:
+        window._refresh_calibration_table()
+        targets.append(("Second", "Documents", "second-docs"))
+        window._refresh_calibration_table()
+        assert len(workers) == 1
+        workers[0][1]([])
+        assert len(workers) == 2
+        assert window._calibration_targets_by_row == targets
+    finally:
+        window.close()
+        app.processEvents()
+
+
 def test_every_background_job_delivers_its_callback(monkeypatch: pytest.MonkeyPatch) -> None:
     """`_run`'s callbacks were arriving by luck, and every page depends on them.
 
@@ -1399,8 +1494,9 @@ def test_every_tenant_gets_its_own_server_with_its_own_tenant_variable() -> None
 
     assert docs is not code, "two scopes must not share one server"
     assert docs is runtime._gateway_for("myproject-docs"), "and the same scope must be cached"
-    assert docs.env == {"RECALL_SERVING_DSN": dsn, "RECALL_DSN": dsn, "RECALL_TENANT": "myproject-docs"}
-    assert code.env == {"RECALL_SERVING_DSN": dsn, "RECALL_DSN": dsn, "RECALL_TENANT": "myproject-code"}
+    common = {"RECALL_SERVING_DSN": dsn, "RECALL_DSN": dsn, "RECALL_TRANSPORT": "stdio"}
+    assert docs.env == {**common, "RECALL_TENANT": "myproject-docs"}
+    assert code.env == {**common, "RECALL_TENANT": "myproject-code"}
 
 
 def test_the_server_is_launched_with_an_absolute_interpreter() -> None:
@@ -1443,6 +1539,103 @@ def test_the_trust_variables_are_left_to_the_install_not_asserted_by_the_runtime
 
     assert "RECALL_ENV" not in env
     assert "RECALL_TRUST_MODE" not in env
+
+
+@pytest.mark.parametrize("operation", ["restart", "docker_stop", "local_stop"])
+def test_closes_every_gateway_after_a_close_failure(
+    operation: str, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from recall.desktop import runtime as runtime_module
+
+    closes = []
+    first_error = RuntimeErrorBase("fixture close failed")
+
+    class Gateway(FakeGateway):
+        def __init__(self, name: str) -> None:
+            super().__init__()
+            self.name = name
+
+        def close(self) -> None:
+            closes.append(self.name)
+            if self.name == "first":
+                raise first_error
+
+    if operation == "local_stop":
+        profile = RuntimeProfile(mode=RuntimeMode.LOCAL_DATABASE, dsn="postgresql://example@localhost/example")
+    else:
+        profile = RuntimeProfile(mode=RuntimeMode.DOCKER, compose_file="fixture.yml")
+    runtime = create_runtime(profile)
+    runtime._gateways.update(first=Gateway("first"), second=Gateway("second"))
+    if isinstance(runtime, DockerRuntime):
+        runtime._services = frozenset({"recall-a-docs"})
+    monkeypatch.setattr(
+        runtime_module.subprocess, "run",
+        lambda *args, **kwargs: pytest.fail("Compose started despite failed cleanup"),
+    )
+
+    with pytest.raises(RuntimeErrorBase) as error:
+        if operation == "restart":
+            runtime._compose("restart")
+        else:
+            runtime.stop()
+
+    assert error.value is first_error
+    assert closes == ["first", "second"]
+    assert runtime._gateways == {}
+    if operation == "restart":
+        assert runtime._services is None
+
+
+def test_closes_every_gateway_without_dropping_a_concurrent_lookup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from recall.desktop import runtime as runtime_module
+
+    profile = RuntimeProfile(mode=RuntimeMode.LOCAL_DATABASE, dsn="postgresql://example@localhost/example")
+    runtime = create_runtime(profile)
+    closing = threading.Event()
+    looking_up = threading.Event()
+    created = threading.Event()
+    new_gateway = FakeGateway()
+    results = []
+
+    class ClosingGateway(FakeGateway):
+        def close(self) -> None:
+            closing.set()
+            assert looking_up.wait(5)
+            assert not created.wait(0.5), "gateway factory ran during teardown"
+
+    def new_session(*args, **kwargs):
+        created.set()
+        return new_gateway
+
+    def lookup() -> None:
+        if closing.wait(5):
+            looking_up.set()
+            results.append(runtime._gateway_for("new-tenant"))
+
+    runtime._gateways["existing"] = ClosingGateway()
+    monkeypatch.setattr(runtime_module, "SdkMcpGateway", new_session)
+    thread = threading.Thread(target=lookup)
+    thread.start()
+    try:
+        runtime.stop()
+    finally:
+        thread.join(5)
+
+    assert not thread.is_alive()
+    assert results == [new_gateway]
+    assert runtime._gateways == {"new-tenant": new_gateway}
+
+
+def test_local_gateway_transport_overrides_a_conflicting_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    from recall.desktop.runtime import LocalDatabaseRuntime
+
+    monkeypatch.setenv("RECALL_TRANSPORT", "streamable-http")
+    profile = RuntimeProfile(mode=RuntimeMode.LOCAL_DATABASE, dsn="postgresql://example@localhost/example")
+    runtime = LocalDatabaseRuntime(profile)
+    effective = {**os.environ, **runtime._env_for("fixture")}
+    assert effective["RECALL_TRANSPORT"] == "stdio"
 
 
 def test_the_gateway_overlays_the_environment_rather_than_replacing_it(

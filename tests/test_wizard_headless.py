@@ -53,6 +53,28 @@ def _write(tmp_path: Path, payload: dict[str, Any]) -> Path:
     return path
 
 
+def test_registered_profile_clears_an_inherited_profile(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from recall.wizard.headless import _RealServices
+
+    monkeypatch.delenv("RECALL_EMBED_PROFILE", raising=False)
+    config = load_config(_write(tmp_path, _config(tmp_path)))
+    settings = _RealServices(config).server_embedding_env()
+
+    effective = {"RECALL_EMBED_PROFILE": "client-fixture", **settings}
+    assert effective["RECALL_EMBED_PROFILE"] == ""
+
+
+def test_registered_profile_keeps_stdio_for_client_registrations(tmp_path: Path) -> None:
+    from recall.wizard.wiring import ServerBlock, mcp_config
+
+    block = ServerBlock(name="fixture", tenant="fixture", env={}, rationale="test")
+    entry = mcp_config((block,), project_root=tmp_path, interpreter="python")["mcpServers"]["fixture"]
+    effective = {"RECALL_TRANSPORT": "streamable-http", **entry["env"]}
+    assert entry["type"] == effective["RECALL_TRANSPORT"] == "stdio"
+
+
 # ----------------------------------------------------------------------------------------------
 # The config contract
 # ----------------------------------------------------------------------------------------------
