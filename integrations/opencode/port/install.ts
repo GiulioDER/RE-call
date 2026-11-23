@@ -9,11 +9,14 @@
  *
  *     bun port/install.ts --real-home [--recall-command <path to recall-mcp>] */
 
-import { existsSync } from "node:fs";
-import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import {
+  constants, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, rmdirSync, rmSync, unlinkSync,
+} from "node:fs";
+import { homedir, tmpdir } from "node:os";
+import { dirname, join, relative, resolve } from "node:path";
+import { configHome } from "../src/config";
 import { portAgents } from "./agents";
-import { portCommands } from "./commands";
+import { portCommands, type PortReport } from "./commands";
 import { writeConfig } from "./config";
 
 const ROOT = resolve(import.meta.dir, "..");
@@ -29,15 +32,19 @@ export type InstallOptions = {
   recallCommand?: string;
 };
 
-export function install(opts: InstallOptions): { configDir: string; written: string[] } {
-  const claude = join(opts.home, ".claude");
-  const configDir = join(opts.xdgConfigHome || join(opts.home, ".config"), "opencode");
+function refuseClashes(configDir: string): void {
   // Every name OpenCode 2.2.7 loads from its global config folder: a config under any of them would be
   // merged with or shadowed by the installed one without a word (audit J DEPLOY-001).
   const clash = ["opencode.json", "opencode.jsonc", "command", "commands", "agent", "agents", "mode", "modes"]
     .map((n) => join(configDir, n))
-    .filter((p) => existsSync(p));
+    .filter((p) => lstatSync(p, { throwIfNoEntry: false }) !== undefined);
   if (clash.length > 0) throw new Error(`install: refusing to overwrite ${clash.join(", ")}`);
+}
+
+export function install(opts: InstallOptions): Pick<PortReport, "written" | "unportable"> & { configDir: string } {
+  const claude = join(opts.home, ".claude");
+  const configDir = join(configHome(opts.xdgConfigHome, opts.home), "opencode");
+  refuseClashes(configDir);
   // Both sources are checked before anything is written: a missing one would fail midway and leave a
   // partial config that every later run refuses (audit J DEPLOY-002).
   const missing = ["commands", "agents"].map((n) => join(claude, n)).filter((p) => !existsSync(p));
@@ -45,13 +52,62 @@ export function install(opts: InstallOptions): { configDir: string; written: str
   const plugins = [
     { package: join(ROOT, "src"), options: opts.recallCommand ? { recall_command: opts.recallCommand } : {} },
   ];
-  const written = [
-    ...portCommands(join(claude, "commands"), join(configDir, "commands")).written,
-    ...portAgents(join(claude, "agents"), join(configDir, "agents")).written,
-  ];
-  writeConfig(configDir, { instructions: INSTRUCTIONS, plugins, mcp: {} });
-  written.push(join(configDir, "opencode.json"));
-  return { configDir, written };
+  const stage = mkdtempSync(join(tmpdir(), "re-call-opencode-port-"));
+  try {
+    const commands = portCommands(join(claude, "commands"), join(stage, "commands"));
+    const agents = portAgents(join(claude, "agents"), join(stage, "agents"));
+    writeConfig(stage, { instructions: INSTRUCTIONS, plugins, mcp: {} });
+    const staged = [...new Set([...commands.written, ...agents.written, join(stage, "opencode.json")])];
+    const written = publish(stage, configDir, staged);
+    return { configDir, written, unportable: [...commands.unportable, ...agents.unportable] };
+  } finally {
+    rmSync(stage, { recursive: true, force: true, maxRetries: 3 });
+  }
+}
+
+function publish(stage: string, configDir: string, staged: string[]): string[] {
+  refuseClashes(configDir);
+  const rollback: (() => void)[] = [];
+  try {
+    mkdirSync(dirname(configDir), { recursive: true });
+    const mkdir = (path: string) => {
+      mkdirSync(path);
+      const created = lstatSync(path, { bigint: true });
+      rollback.push(() => {
+        const current = lstatSync(path, { bigint: true, throwIfNoEntry: false });
+        if (current?.dev === created.dev && current.ino === created.ino) rmdirSync(path);
+      });
+    };
+    if (!existsSync(configDir)) {
+      mkdir(configDir);
+    }
+    // Both porters produce these directories even when they find nothing to write.
+    for (const folder of ["commands", "agents"]) mkdir(join(configDir, folder));
+    const written: string[] = [];
+    for (const source of staged) {
+      const target = join(configDir, relative(stage, source));
+      copyFileSync(source, target, constants.COPYFILE_EXCL);
+      const created = lstatSync(target, { bigint: true });
+      rollback.push(() => {
+        const current = lstatSync(target, { bigint: true, throwIfNoEntry: false });
+        if (current?.dev === created.dev && current.ino === created.ino && current.ctimeNs === created.ctimeNs) {
+          unlinkSync(target);
+        }
+      });
+      written.push(target);
+    }
+    return written;
+  } catch (error) {
+    for (const undo of rollback.reverse()) {
+      try {
+        undo();
+      } catch (cleanupError) {
+        // rmdir is deliberately nonrecursive so files introduced by a user are kept.
+        console.warn("install: incomplete rollback", cleanupError);
+      }
+    }
+    throw error;
+  }
 }
 
 if (import.meta.main) {
@@ -69,4 +125,5 @@ if (import.meta.main) {
   }
   const result = install({ home: homedir(), xdgConfigHome: process.env.XDG_CONFIG_HOME, recallCommand });
   console.log(`installed into ${result.configDir}:\n${result.written.join("\n")}`);
+  for (const { file, reason } of result.unportable) console.warn(`${file}: ${reason}`);
 }

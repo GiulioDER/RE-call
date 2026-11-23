@@ -8,19 +8,24 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
+from pathlib import PurePath
 
 from mcp.server import MCPServer
 from mcp.server.mcpserver import Context
+from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
 
+from recall.backends import write_session
 from recall.embedding_core import profile_lineage_mismatch
 from recall.embeddings import FastEmbedEmbedder
+from recall.errors import IdempotencyConflict
 from recall.generation_store import GenerationStore
-from recall.observability import METRICS
+from recall.idempotency_receipts import check_result_size
 from recall.lite import LiteStore, LiteWriterBusy
-from recall.lite.refresh import client_reason
+from recall.lite.refresh import client_reason, refresh_access_context
 from recall.lite.refresh import read_state as read_refresh_state
-from recall_mcp.assistant import WITHDRAW_DESCRIPTION
+from recall.observability import METRICS
+from recall_mcp.assistant import WITHDRAW_DESCRIPTION, memo_ref
 from recall_mcp.auth import SCOPE_FORGET, SCOPE_READ
 from recall_mcp.lifecycle import (
     ErasurePreflightRefused,
@@ -55,7 +60,23 @@ def _register_memory_admin_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
     ) -> str:
         """The body `recall_forget` and `recall_withdraw` share; they differ only in these three."""
         state = _state(ctx)
-        fingerprint = _mutation_fingerprint(operation, {"sources": sources})
+        assistant = deps.assistant
+        arguments: dict[str, object] = {"sources": sources}
+        if assistant is not None and idempotency_key:
+            # Bind the scope for possible assistant aliases using syntax only. A receipt replay
+            # must not resolve caller-selected filesystem paths. Ordinary source names keep
+            # their plain receipt identity.
+            for source in sources:
+                ref = memo_ref(source)
+                if not ref:
+                    continue
+                path = PurePath(ref)
+                if assistant.path_of(path.name) is None:
+                    continue
+                arguments["assistant_folder"] = str(assistant.folder)
+                if len(path.parts) > 1 and not path.is_absolute():
+                    arguments["assistant_index_root"] = str(assistant.index_root)
+        fingerprint = _mutation_fingerprint(operation, arguments)
         store, replay = await _require_mutation(
             SCOPE_FORGET,
             ctx,
@@ -88,20 +109,114 @@ def _register_memory_admin_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
             # An invalid clearance claim is refused before anything is read or deleted.
             await _release_mutation_reservation(state, store.tenant, idempotency_key)
             raise
+        policy = state.get("source_security_policy")
+
+        def erase_sources(names: list[str]) -> ForgetResult | WithdrawResult:
+            return eraser(
+                store,
+                names,
+                shadow,
+                control,
+                security_policy=policy,
+                security_context=security_context,
+                # An authenticated server (a store registry) keeps host paths in its log.
+                name_rescue_roots=registry is None,
+            )
+
+        def folder_memos() -> dict[str, str]:
+            if assistant is None:
+                return {}
+            return {source: memo for source in sources if (memo := assistant.folder_memo(source)) is not None}
+
+        def erase_request(memos: dict[str, str]) -> str:
+            if not memos or assistant is None or not isinstance(store, LiteStore):
+                return erase_sources(sources).model_dump_json(indent=2)
+
+            # Folder memos must lose their files too. Keep the requested names in the response.
+            rest = [source for source in sources if source not in memos]
+            done = []
+            parts = []
+            erase_memo = assistant.forget_result if operation == "recall_forget" else assistant.withdraw
+            refresh_context = refresh_access_context(store.tenant) if policy is not None else None
+            for source, memo in memos.items():
+                result = erase_memo(
+                    store,
+                    state["embedder"],
+                    memo,
+                    security_policy=policy,
+                    security_context=security_context,
+                    refresh_context=refresh_context,
+                )
+                if result is None:
+                    rest.append(str(assistant.path_of(memo)))
+                else:
+                    done.append(source)
+                    parts.append(result)
+
+            plain = erase_sources(rest) if rest or not parts else None
+            if not parts:
+                assert plain is not None
+                return plain.model_dump_json(indent=2)
+            if plain is not None:
+                parts.append(plain)
+
+            def total(field: str) -> int:
+                values = [getattr(part, field) for part in parts]
+                return -1 if -1 in values else sum(values)
+
+            removed = "sources_removed" if operation == "recall_forget" else "sources_withdrawn"
+            facts = "facts_retracted" if operation == "recall_forget" else "facts_withdrawn"
+            values = {
+                removed: done + (getattr(plain, removed) if plain is not None else []),
+                "sources_not_found": plain.sources_not_found if plain is not None else [],
+                "message": " ".join(part.message for part in parts),
+                **{field: total(field) for field in (
+                    "chunks_removed", "outbox_events_scrubbed", "staged_files_removed", facts, "facts_redacted",
+                )},
+            }
+            return parts[0].model_copy(update=values).model_dump_json(indent=2)
+
+        def keyed_lite_erasure(lite_store: LiteStore, key: str) -> str:
+            # Cover separate clients/processes sharing this file, not just callers on one server.
+            # The initial authorizer could have looked up the receipt before another call won
+            # the lane. Check again and store the response before releasing it.
+            with write_session(lite_store, "forget"):
+                try:
+                    existing = lite_store.get_operation_receipt(
+                        key, operation=operation, request_fingerprint=fingerprint
+                    )
+                except IdempotencyConflict as conflict:
+                    raise ToolError(
+                        json.dumps({"error": "idempotency_conflict", "message": str(conflict)}, sort_keys=True)
+                    ) from conflict
+                if existing is not None:
+                    return existing
+                memos = folder_memos()
+                result = erase_request(memos)
+                if memos:
+                    try:
+                        check_result_size(result)
+                    except ValueError:
+                        # The effects already ran. Keep a bounded response under the same key
+                        # so a client can reconcile instead of applying the erasure again.
+                        result = json.dumps({
+                            "status": "reconciliation_required",
+                            "operation": operation,
+                            "request_fingerprint": fingerprint,
+                            "message": "the erasure result exceeds the replay limit; inspect the requested sources",
+                        }, sort_keys=True)
+                lite_store.record_operation_receipt(
+                    key, result, operation=operation, request_fingerprint=fingerprint
+                )
+                return result
+
         try:
             with METRICS.timer("recall_tool_latency_ms", tool=tool):
-                payload = await _to_thread(
-                    lambda: eraser(
-                        store,
-                        sources,
-                        shadow,
-                        control,
-                        security_policy=state.get("source_security_policy"),
-                        security_context=security_context,
-                        # An authenticated server (a store registry) keeps host paths in its log.
-                        name_rescue_roots=registry is None,
-                    ).model_dump_json(indent=2)
-                )
+                if registry is None and isinstance(store, LiteStore) and idempotency_key:
+                    lite_store = store
+                    key = idempotency_key
+                    return await _to_thread(lambda: keyed_lite_erasure(lite_store, key))
+                payload = await _to_thread(lambda: erase_request(folder_memos()))
         except (ErasurePreflightRefused, LiteWriterBusy):
             # Refused before the first write (a malformed, ambiguous or unauthorized request, or
             # the lite store's write lane busy), so nothing was deleted and a retry may run.

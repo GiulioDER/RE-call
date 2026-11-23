@@ -25,6 +25,12 @@ class SourceCategory(StrEnum):
     MEMORY = "memory"
 
 
+EMBEDDING_PROFILE_ENV_KEYS = frozenset({
+    "RECALL_EMBED_PROFILE", "RECALL_MODEL_CACHE", "RECALL_MODEL_SHA256", "RECALL_QWEN_MODEL_PATH",
+})
+_SERVER_ENV_KEYS = EMBEDDING_PROFILE_ENV_KEYS | {"RECALL_ENV", "RECALL_INDEX_MODE", "RECALL_TRUST_MODE"}
+
+
 @dataclass(frozen=True)
 class RuntimeProfile:
     mode: RuntimeMode
@@ -49,6 +55,9 @@ class RuntimeProfile:
     #: and the key is dropped on the next save.
     update_enabled: bool = True
     token_key: str | None = None
+    #: Non-secret wizard settings keyed by physical tenant. Connection and embedder name
+    #: still come from the editable profile fields.
+    server_env_by_tenant: dict[str, dict[str, str]] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if self.mode is RuntimeMode.VPS_MCP and not self.endpoint:
@@ -59,6 +68,18 @@ class RuntimeProfile:
             raise ValueError("a local database profile needs a dsn")
         if not self.default_tenant.strip():
             raise ValueError("default_tenant must be non empty")
+        if not isinstance(self.server_env_by_tenant, dict):
+            raise ValueError("server_env_by_tenant must be an object")
+        settings = {}
+        for tenant, env in self.server_env_by_tenant.items():
+            if not isinstance(env, dict):
+                raise ValueError("tenant server settings must be an object")
+            selected = {key: value for key, value in env.items() if key in _SERVER_ENV_KEYS}
+            if any(not isinstance(value, str) for value in selected.values()):
+                raise ValueError("tenant server settings must be strings")
+            if selected:
+                settings[tenant] = selected
+        object.__setattr__(self, "server_env_by_tenant", settings)
 
     def to_dict(self) -> dict[str, Any]:
         value = asdict(self)
@@ -91,6 +112,7 @@ class RuntimeProfile:
             embedder=value.get("embedder"),
             update_enabled=update_enabled,
             token_key=value.get("token_key"),
+            server_env_by_tenant=value.get("server_env_by_tenant", {}),
         )
 
 

@@ -3,13 +3,12 @@
  * way docs/V2-FACTS.md measured OpenCode 2.2.7 (steps 2 to 5). */
 
 import { existsSync, mkdirSync } from "node:fs";
-import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 
 import type { Plugin } from "@opencode/plugin";
 
 import { childEnv, resolveExecutable } from "./child";
-import { type Config, isLiteDsn, loadConfig, sharedStoreDir, storePath } from "./config";
+import { configHome, type Config, isLiteDsn, loadConfig, sharedStoreDir, storePath } from "./config";
 import { CALL_TIMEOUT_MS, McpClient, READY_TIMEOUT_MS, type ToolDef } from "./mcp_client";
 import { compose, prefetchBlock, SYSTEM_SENTENCE } from "./prefetch";
 import { EXTRA, selectTools, TRAINED_WRITES } from "./surface";
@@ -22,7 +21,7 @@ export const PREFETCH_DEADLINE_MS = 6_000;
  * `server.log`, which are per agent, so two agents never write one log. The store is shared
  * (`sharedStoreDir`); a store made here before 2026-11-13 is kept until it is moved. */
 export function defaultDataDir(env: Record<string, string | undefined> = process.env): string {
-  return join(env.XDG_CONFIG_HOME || join(homedir(), ".config"), "opencode", "re-call");
+  return join(configHome(env.XDG_CONFIG_HOME), "opencode", "re-call");
 }
 
 export function setupCommand(config: Config): string {

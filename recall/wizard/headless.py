@@ -275,6 +275,8 @@ class HeadlessReport:
     files_written: tuple[Path, ...] = ()
     #: Why the atomic rescue is off for every tenant, or "" when it was decided per tenant.
     atomic_note: str = ""
+    #: Serving decisions are also needed by the desktop when client registration was skipped.
+    unregistered_servers: tuple[ServerBlock, ...] = field(default=(), repr=False)
 
     @property
     def unserved(self) -> tuple[str, ...]:
@@ -1856,6 +1858,7 @@ def run_headless(
     # NameError at the moment it reports success.
     registration: LocalScopeRegistration | None = None
     clients: tuple[tuple[str, str], ...] = ()
+    unregistered_servers: tuple[ServerBlock, ...] = ()
     if config.project_root is not None:
         if progress:
             progress("wiring: MCP servers (local scope)")
@@ -1932,7 +1935,7 @@ def run_headless(
             memory_root=config.memory_root,
         )
     else:
-        blocks = ()
+        unregistered_servers, blocks = blocks, ()
 
     # The verification half. Run for every block the wiring produced, and deliberately NOT gated on
     # the registration: whether a client has been told about a server is a different question from
@@ -1965,4 +1968,5 @@ def run_headless(
         files_written=files,
         smoke=smoke,
         atomic_note=atomic_note,
+        unregistered_servers=unregistered_servers,
     )

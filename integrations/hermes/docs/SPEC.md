@@ -6,8 +6,9 @@ How the provider works, for a reader of the code. [README.md](../README.md) says
   (`mcp_client.StdioMcpClient`: newline-delimited JSON-RPC over stdio, answers matched to requests by id)
   and waits until the MCP handshake completes, up to `START_TIMEOUT_S`. The child receives an allowlisted
   environment (`config.PASSTHROUGH_ENV` plus the variables `Settings.child_env` sets) and the
-  provider's data folder as its working directory. A dead child is restarted at most once per
-  `RESTART_INTERVAL_S`.
+  provider's data folder as its working directory. Child calls use a bounded queue and discard replies
+  to expired requests. Two consecutive deadlines after the handshake retire an unresponsive child.
+  Restarts run in the background at most once per `RESTART_INTERVAL_S`.
 - **Store.** With no `dsn` and no `memo_folder`, `config.load_settings` takes the default Lite store from `config._store_dir`:
   the shared per-user directory `config.shared_dir()` (`<XDG_CONFIG_HOME, else ~/.config>/re-call/`) when
   its `memory.db` exists, else the profile's old `<hermes_home>/re-call/memory.db` when that exists (one

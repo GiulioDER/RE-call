@@ -462,14 +462,14 @@ if QApplication is not None:
             self.progress_bar.setValue(1 if complete else 0)
             self.progress_heading.setText("Installed" if complete else "Install incomplete")
             self._append("\n" + _summarise(report))
-            if complete and (handed := self._hand_over_profile()):
+            if complete and (handed := self._hand_over_profile(report)):
                 self._append(handed)
             if complete and (note := _frozen_folder_note()):
                 self._append(note)
             self.close_button.setEnabled(True)
 
-        def _hand_over_profile(self) -> str:
-            """Give the desktop app this install's database and embedder, for an existing database.
+        def _hand_over_profile(self, report: Any) -> str:
+            """Give the desktop app this install's database and per-tenant serving settings.
 
             ⚠️ **The engine hands the app a profile only for a managed install** (`run_headless`
             writes the Docker one when `data_root` is set), so after an install into an existing
@@ -478,7 +478,7 @@ if QApplication is not None:
             Written to the default `runtime.json`, which is the file the engine's Docker handoff
             replaces too. The DSN is already on disk in this install's `wizard.json`.
 
-            Only the four fields this install decides change: an existing profile keeps the rest
+            Only the fields this install decides change: an existing profile keeps the rest
             (`update_enabled: false`, `token_key`, `shared_profile`, an endpoint or compose file),
             which a freshly built profile reset to their defaults.
             """
@@ -493,13 +493,17 @@ if QApplication is not None:
 
             mode = RuntimeMode.LOCAL_DATABASE
             tenant, embedder = str(config["project"]), str(config["embedder"])
+            blocks = getattr(report, "servers", ()) or getattr(report, "unregistered_servers", ())
+            # Pin an empty profile too, so a later launch cannot pick a different embedder.
+            server_env = {
+                block.tenant: {"RECALL_EMBED_PROFILE": "", **block.env} for block in blocks
+            }
             try:
-                existing = load_profile()
-                written = save_profile(
-                    replace(existing, mode=mode, dsn=dsn, default_tenant=tenant, embedder=embedder)
-                    if existing is not None
-                    else RuntimeProfile(mode=mode, dsn=dsn, default_tenant=tenant, embedder=embedder)
-                )
+                profile = load_profile() or RuntimeProfile(mode=mode, dsn=dsn)
+                written = save_profile(replace(
+                    profile, mode=mode, dsn=dsn, default_tenant=tenant, embedder=embedder,
+                    server_env_by_tenant=server_env,
+                ))
             except (OSError, ValueError) as exc:
                 return _scrubbed(f"desktop: could not write the desktop app's profile: {exc}", dsn)
             return f"desktop: {written} (database and embedder {config['embedder']})"
@@ -575,12 +579,12 @@ def _default_prober() -> Any:
     return probe_database
 
 
-def _dimension_for(embedder: str) -> int | None:
+def _dimension_for(embedder: str, *, env: dict[str, str] | None = None) -> int | None:
     """The embedder's vector width, or None when it cannot be determined without loading it."""
     try:
         from recall.embeddings import resolve_embedder
 
-        return int(resolve_embedder(embedder).dim)
+        return int(resolve_embedder(embedder, env=env).dim)
     except Exception:  # noqa: BLE001 - see the terminal flow: an unresolvable embedder is refused  # BROAD-CATCH: fail-closed
         # by name later with a better message, and the dimension check degrades to "not compared",
         # which the report states explicitly.

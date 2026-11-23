@@ -661,7 +661,6 @@ def start_scope(cwd: str) -> dict[str, subprocess.Popen[bytes]]:
         started["root"] = _start_git(cwd, "rev-parse", "--show-toplevel")
         started["url"] = _start_git(cwd, "config", "--get", "remote.origin.url")
         started["base"] = _start_git(cwd, "merge-base", "HEAD", BASE_REFS[0])
-        started["diff"] = _start_git(cwd, *_DIFF_OPTIONS, "--merge-base", BASE_REFS[0], "HEAD", "--")
     except BaseException:
         _stop(list(started.values()))
         raise
@@ -681,21 +680,21 @@ class _GitScope:
 
 
 def _base_and_diff(
-    started: dict[str, subprocess.Popen[bytes]], cwd: str, deadline: float, processes: list[subprocess.Popen[bytes]]
+    started: dict[str, subprocess.Popen[bytes]], cwd: str, deadline: float,
+    processes: list[subprocess.Popen[bytes]], *, include_diff: bool,
 ) -> tuple[str | None, str | None]:
     """The merge base and the commit-to-commit diff against the first of `BASE_REFS` that has one."""
     for index, ref in enumerate(BASE_REFS):
-        if index == 0:
-            pair = (started["base"], started["diff"])
-        else:
-            first = _start_git(cwd, "merge-base", "HEAD", ref)
-            processes.append(first)
-            second = _start_git(cwd, *_DIFF_OPTIONS, "--merge-base", ref, "HEAD", "--")
-            processes.append(second)
-            pair = (first, second)
+        merge_base = started["base"] if index == 0 else _start_git(cwd, "merge-base", "HEAD", ref)
+        if index != 0:
+            processes.append(merge_base)
         try:
-            base = _finish_git(pair[0], deadline).decode("ascii", "replace").strip() or None
-            return base, _finish_git(pair[1], deadline).decode("utf-8", "replace")
+            base = _finish_git(merge_base, deadline).decode("ascii", "replace").strip() or None
+            if not include_diff:
+                return base, None
+            diff = _start_git(cwd, *_DIFF_OPTIONS, "--merge-base", ref, "HEAD", "--")
+            processes.append(diff)
+            return base, _finish_git(diff, deadline).decode("utf-8", "replace")
         except subprocess.CalledProcessError:
             continue  # no such ref, or no merge base with it: try the next
     _log(f"no base ref among {', '.join(BASE_REFS)} has a merge base with HEAD; scope is the named files only")
@@ -726,12 +725,12 @@ def _collect(
         repo = repo_identity(url.decode("utf-8", "replace"))
         if repo is None:
             raise RuntimeError("the origin remote names no owner/name repository")
-        base, diff = _base_and_diff(started, cwd, deadline, processes)
+        base, diff = _base_and_diff(started, cwd, deadline, processes, include_diff=not prompt.strip())
         found = _GitScope(root=root, repo=repo, named=named_files(prompt, root), base=base)
         # A prompt with text scopes by the files it names: the work tree's own diff is often not
         # the code under audit (measured 2026-11-21: 2 of 16 diff-sourced lines relevant, 14 of
         # 20 named-file lines). An empty prompt (CCA's reader, the Codex bridge) has only the diff.
-        found.changes = changed_lines(diff) if diff is not None and not prompt.strip() else {}
+        found.changes = changed_lines(diff) if diff is not None else {}
         # One batch for every copy git must supply: a named Python file's merge-base copy (its
         # uncommitted change is found against it) and a changed file's HEAD copy (the commit diff's
         # line numbers count that copy's lines, not the work tree's).

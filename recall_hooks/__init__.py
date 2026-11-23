@@ -563,6 +563,17 @@ def session_end(payload: dict[str, Any]) -> int:
     ⚠️ Codex runs this same handler SYNCHRONOUSLY and kills it at 3 s whatever its config says
     (`SESSION_END_MAX_TIMEOUT_SEC` in openai/codex), so there the client does wait.
     """
+    cleanup_deadline = None
+    transport_deadline = None
+    if os.environ.get("RECALL_HOOK_CLIENT") == "codex":
+        from recall.codex import SESSION_END_TIMEOUT_SECONDS
+
+        started = HOOK_STARTED if HOOK_STARTED is not None else time.monotonic()
+        # Leave a second for Python startup, child launch and hook exit. Reserve part of
+        # the cleanup budget for signaling the relay even if the transport closes stall.
+        cleanup_deadline = started + SESSION_END_TIMEOUT_SECONDS - 1.0
+        transport_deadline = cleanup_deadline - 0.25
+
     # MCP transports belong to the client session, not to the checkout. Keep this before the
     # memory refresh so a slow or missing corpus cannot skip transport cleanup. The import stays
     # local because SessionStart is on the hot path and must not pay for process inspection.
@@ -582,6 +593,7 @@ def session_end(payload: dict[str, Any]) -> int:
                 session_id=str(payload.get("_client_session_id")
                                or os.environ.get("RECALL_MCP_SESSION_ID", "")),
                 cwd=str(payload.get("cwd") or ""),
+                deadline=transport_deadline,
             )
         except BaseException:
             # SessionEnd is fail-open. A cleanup diagnostic must never prevent memory refresh or
@@ -590,7 +602,11 @@ def session_end(payload: dict[str, Any]) -> int:
     try:
         from .relay import stop
 
-        stop(str(payload.get("session_id") or ""))
+        session_id = str(payload.get("session_id") or "")
+        if cleanup_deadline is None:
+            stop(session_id)
+        else:
+            stop(session_id, deadline=cleanup_deadline)
     except Exception:  # BROAD-CATCH: cleanup-only
         pass
     return _index_and_refresh(payload)

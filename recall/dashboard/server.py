@@ -2034,7 +2034,7 @@ class _ExclusiveServer(ThreadingHTTPServer):
         super().__init__(server_address, request_handler, bind_and_activate)
 
     def process_request(
-        self, request: socket.socket | tuple[bytes, socket.socket], client_address: tuple[str, int]
+        self, request: socket.socket | tuple[bytes, socket.socket], client_address: tuple[str, int],
     ) -> None:
         if not self._request_slots.acquire(blocking=False):
             self.shutdown_request(request)
@@ -2046,7 +2046,7 @@ class _ExclusiveServer(ThreadingHTTPServer):
             raise
 
     def process_request_thread(
-        self, request: socket.socket | tuple[bytes, socket.socket], client_address: tuple[str, int]
+        self, request: socket.socket | tuple[bytes, socket.socket], client_address: tuple[str, int],
     ) -> None:
         try:
             super().process_request_thread(request, client_address)

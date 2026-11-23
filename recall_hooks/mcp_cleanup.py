@@ -6,6 +6,7 @@ import os
 import re
 import signal
 import subprocess
+import time
 from pathlib import Path
 from typing import Any, Callable
 
@@ -31,7 +32,7 @@ def _is_mcp_transport(command: str) -> bool:
     return _mcp_pattern() in command or bool(_LAUNCHER_RE.search(command))
 
 
-def _process_table() -> list[tuple[str, str, str]] | None:
+def _process_table(deadline: float | None = None) -> list[tuple[str, str, str]] | None:
     override = os.environ.get("RECALL_MCP_PS_FILE")
     output: str | None
     if override:
@@ -44,15 +45,18 @@ def _process_table() -> list[tuple[str, str, str]] | None:
         # (2026-11-04) and 1.2 to 2.4 s (2026-11-20) here, against Codex's SessionEnd cap of 3 s
         # (#1454). The native listing took 0.06 to 0.27 s for the same processes.
         try:
-            output = _windows_process_rows()
+            output = _windows_process_rows(deadline)
         except (OSError, ValueError):
             # A refused API call is an unreadable table: report `unknown` and close nothing.
             return None
     else:
+        timeout = 2.0 if deadline is None else min(2.0, deadline - time.monotonic())
+        if timeout <= 0:
+            return None
         try:
             output = subprocess.run(
                 ["ps", "-eo", "pid=,ppid=,args="],
-                capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=2,
+                capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout,
             ).stdout
         except (OSError, subprocess.SubprocessError):
             return None
@@ -85,7 +89,7 @@ def _parse_rows(output: str) -> list[tuple[str, str, str]]:
     return [row for row in rows if seen[row[0]] == 1]
 
 
-def _windows_process_rows() -> str | None:
+def _windows_process_rows(deadline: float | None = None) -> str | None:
     """`pid ppid command line` per process, one per line, read with the Win32 API; None on failure.
 
     Every pid and parent pid comes from one Toolhelp snapshot, so the parent chain is consistent.
@@ -124,6 +128,8 @@ def _windows_process_rows() -> str | None:
     th32cs_snapprocess, process_query_limited_information, command_line_class = 0x2, 0x1000, 60
 
     def command_line(pid: int) -> str:
+        if deadline is not None and time.monotonic() >= deadline:
+            raise TimeoutError("process table deadline expired")
         handle = kernel32.OpenProcess(process_query_limited_information, False, pid)
         if not handle:
             return ""
@@ -151,6 +157,8 @@ def _windows_process_rows() -> str | None:
         entry.dwSize = ctypes.sizeof(entry)
         found = kernel32.Process32FirstW(snapshot, ctypes.byref(entry))
         while found:
+            if deadline is not None and time.monotonic() >= deadline:
+                return None
             pairs.append((entry.th32ProcessID, entry.th32ParentProcessID))
             found = kernel32.Process32NextW(snapshot, ctypes.byref(entry))
     finally:
@@ -254,7 +262,8 @@ def _session_id_from_config(cwd: str) -> str:
 
 
 def close_own_mcp_transports(
-    client_pid: str = "", client_mark: str = "", *, session_id: str = "", cwd: str = ""
+    client_pid: str = "", client_mark: str = "", *, session_id: str = "", cwd: str = "",
+    deadline: float | None = None,
 ) -> tuple[str, str]:
     """Close this session's transports and leave every unowned transport alone.
 
@@ -265,6 +274,7 @@ def close_own_mcp_transports(
     and a single session ID still counts. RECALL_MCP_PATTERN is honoured only with the two test
     seams below. Returns
     (status, detail) with status one of skipped, unknown, none, closed, partial or failed.
+    With a monotonic deadline, stop attempting closes when the shared budget is exhausted.
 
     RECALL_MCP_PS_FILE (a process table read from a file) and RECALL_MCP_KILL_FILE (a log written
     instead of a kill, with RECALL_MCP_KILL_RC as its result) are test seams. They are honoured
@@ -289,7 +299,9 @@ def close_own_mcp_transports(
     if not client_pid and not session_id and not client_mark:
         return "skipped", "no client pid, session ID, or marker; ownership could not be established"
 
-    rows = _process_table()
+    if deadline is not None and time.monotonic() >= deadline:
+        return "skipped", "transport cleanup budget exhausted"
+    rows = _process_table(deadline)
     if rows is None:
         return "unknown", "could not read the process table; nothing was closed"
     parents = {pid: ppid for pid, ppid, _ in rows}
@@ -332,6 +344,9 @@ def close_own_mcp_transports(
 
     closed: list[str] = []
     for pid in ours:
+        timeout = 1.5 if deadline is None else min(1.5, deadline - time.monotonic())
+        if timeout <= 0:
+            break
         try:
             log = os.environ.get("RECALL_MCP_KILL_FILE")
             if log:
@@ -341,7 +356,7 @@ def close_own_mcp_transports(
             elif os.name == "nt":
                 result = subprocess.run(
                     ["taskkill", "/PID", pid, "/T", "/F"],
-                    capture_output=True, timeout=1.5,
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=timeout,
                 )
                 ok = result.returncode == 0
             else:

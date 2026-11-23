@@ -185,11 +185,11 @@ def verify_against(report: dict[str, Any], harness_path: Path) -> list[str]:
             problems.append(f"depth {depth_key}: candidate row missing or invalid")
             continue
         harness_row = curve.get(depth_key)
-        if not isinstance(harness_row, dict):
-            problems.append(f"depth {depth_key}: harness row has no category rates")
-            continue
-        categories = harness_row.get("by_category")
-        if not isinstance(categories, dict) or not categories:
+        if (
+            not isinstance(harness_row, dict)
+            or not isinstance(categories := harness_row.get("by_category"), dict)
+            or not categories
+        ):
             problems.append(f"depth {depth_key}: harness row has no category rates")
             continue
         expected = {**categories, "OVERALL": harness_row.get("overall")}
@@ -211,9 +211,12 @@ def _verification_rate(cell: Any) -> tuple[int, float] | None:
     if not isinstance(cell, dict):
         return None
     n, rate = cell.get("n"), cell.get("rate")
-    if type(n) is not int or n <= 0:
-        return None
-    if (type(rate) is not int and type(rate) is not float) or not 0 <= rate <= 1:
+    if (
+        type(n) is not int
+        or n <= 0
+        or (type(rate) is not int and type(rate) is not float)
+        or not 0 <= rate <= 1
+    ):
         return None
     return n, float(rate)
 
