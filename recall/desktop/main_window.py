@@ -1117,7 +1117,7 @@ class MainWindow(QMainWindow):
             if physical_tenant not in cache:
                 try:
                     cache[physical_tenant] = self.runtime.calibration_status(physical_tenant)
-                except Exception as exc:  # noqa: BLE001  # BROAD-CATCH: isolate each corpus status check
+                except Exception as exc:  # noqa: BLE001  # BROAD-CATCH: error-translation
                     cache[physical_tenant] = CalibrationSnapshot(
                         tenant=physical_tenant, generation_id=None, status="unavailable", raw={"error": str(exc)},
                     )
