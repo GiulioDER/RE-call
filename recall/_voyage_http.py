@@ -16,8 +16,8 @@ so a vector is byte-for-byte the vector the SDK would have returned:
   `"encoding_format": "base64"` it adds to every embedding request;
 * the same decoding: base64 to float32 in the host's byte order (what the SDK's `np.frombuffer`
   does), each value widened to a Python float, which is exact;
-* only `Authorization` and `Content-Type` from the SDK's own headers (it strips the rest before
-  sending), on a `requests.Session` kept per thread and renewed after 180 s, with connection-level
+* only `Authorization` and `Content-Type` from the SDK's own headers (RE-call omits the SDK's
+  diagnostic headers), on a `requests.Session` kept per thread and renewed after 180 s, with connection-level
   retries of 2, exactly as the SDK's requestor does;
 * the same error mapping by status, and errors carrying the same attributes (`http_status`,
   `headers` as the case-insensitive `requests` mapping) and class names that

@@ -1,7 +1,7 @@
 """`recall._voyage_http.Client` sends what the `voyageai` SDK sends and reads what it reads.
 
 Invariant: for every call RE-call makes (`embed`, `contextualized_embed`, `rerank`), the HTTP
-client produces the SDK's request (URL, JSON body, the two headers the SDK keeps, timeout), decodes
+client produces the SDK's request (URL, JSON body, the two request headers RE-call uses, timeout), decodes
 the SDK's base64 vectors to the identical Python floats, and raises errors the retry layer reads
 identically (class name, `http_status`, case-insensitive `headers`). A vector that differs by one
 bit from the SDK's is a different corpus key, so these compare against the SDK itself wherever it
@@ -173,7 +173,20 @@ def test_the_request_matches_the_sdk(monkeypatch, voyageai_sdk, case) -> None:
     assert ours_seen[0]["url"] == sdk_seen[0]["url"]
     assert ours_seen[0]["body"] == sdk_seen[0]["body"]
     assert list(ours_seen[0]["body"]) == list(sdk_seen[0]["body"])
-    assert ours_seen[0]["headers"] == sdk_seen[0]["headers"]
+    # SDK 0.6.0 added diagnostic headers. Check the request headers RE-call uses.
+    sdk_diagnostics = {
+        "User-Agent",
+        "X-VoyageAI-Lang",
+        "X-VoyageAI-Package",
+        "X-VoyageAI-Package-Version",
+        "X-VoyageAI-Runtime",
+        "X-VoyageAI-Runtime-Version",
+        "X-VoyageAI-OS",
+        "X-VoyageAI-Telemetry-Version",
+    }
+    assert ours_seen[0]["headers"] == {
+        name: value for name, value in sdk_seen[0]["headers"].items() if name not in sdk_diagnostics
+    }
     assert ours_seen[0]["timeout"] == sdk_seen[0]["timeout"]
     assert _payload(ours_result) == _payload(sdk_result)
 
