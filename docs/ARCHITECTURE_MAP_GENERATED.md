@@ -21,9 +21,9 @@ Cross package edges: 460
 | 212 | `recall.cli_commands.dashboard_cmd` |
 | 211 | `recall.dashboard.server` |
 | 203 | `recall.cli_commands.setup_wizard` |
+| 200 | `recall_mcp.server_ingest` |
+| 200 | `recall_mcp.server_reasoning` |
 | 199 | `recall.desktop.main` |
-| 199 | `recall_mcp.server_ingest` |
-| 199 | `recall_mcp.server_reasoning` |
 | 198 | `recall.desktop.ui` |
 | 197 | `recall.desktop.main_window` |
 | 191 | `recall_mcp.service` |
@@ -66,7 +66,7 @@ Cross package edges: 460
 | 27 | `recall.generations` |
 | 26 | `recall_mcp.lifecycle` |
 | 26 | `recall_mcp.server` |
-| 24 | `recall_mcp.server_reasoning` |
+| 25 | `recall_mcp.server_reasoning` |
 | 23 | `recall.index` |
 | 23 | `recall_mcp.indexing` |
 | 23 | `recall_mcp.reasoning_engine` |
@@ -74,16 +74,16 @@ Cross package edges: 460
 | 22 | `recall.trust` |
 | 21 | `recall` |
 | 21 | `recall.rewrite` |
+| 21 | `recall_mcp.server_ingest` |
 | 20 | `recall.cli_commands.setup_wizard` |
 | 20 | `recall.wizard.headless` |
-| 20 | `recall_mcp.server_ingest` |
 | 19 | `recall.lite.store` |
 | 19 | `recall_mcp.provenance` |
 | 18 | `recall.cli_commands.calibration_cmd` |
+| 18 | `recall_mcp.server_search` |
 | 17 | `recall.dashboard.server` |
 | 17 | `recall.generation_store` |
 | 17 | `recall_mcp.semantic_graph_cache` |
-| 17 | `recall_mcp.server_search` |
 | 16 | `recall.cli_commands.generation_cmd` |
 | 16 | `recall.cli_commands.provenance_cmd` |
 | 15 | `recall.doctor` |
@@ -98,8 +98,8 @@ Cross package edges: 460
 | 14 | `recall.setup` |
 | 14 | `recall_mcp.assistant` |
 | 14 | `recall_mcp.reasoning_api` |
+| 14 | `recall_mcp.server_memory_admin` |
 | 13 | `recall.cli_commands._shared` |
-| 13 | `recall.dashboard.lite_db` |
 
 ## Cross package edges
 
@@ -930,16 +930,16 @@ They are observations, not automatic failures.
 | `recall_mcp.retrieval` | 23 | 154 |
 | `recall_mcp.semantic_graph_cache` | 17 | 145 |
 | `recall_mcp.server` | 26 | 219 |
-| `recall_mcp.server_assistant` | 10 | 163 |
+| `recall_mcp.server_assistant` | 11 | 164 |
 | `recall_mcp.server_auth` | 5 | 153 |
-| `recall_mcp.server_calibration` | 5 | 169 |
+| `recall_mcp.server_calibration` | 6 | 170 |
 | `recall_mcp.server_common` | 11 | 161 |
-| `recall_mcp.server_facts` | 5 | 163 |
-| `recall_mcp.server_ingest` | 20 | 199 |
+| `recall_mcp.server_facts` | 6 | 164 |
+| `recall_mcp.server_ingest` | 21 | 200 |
 | `recall_mcp.server_lifespan` | 31 | 173 |
-| `recall_mcp.server_memory_admin` | 13 | 163 |
-| `recall_mcp.server_reasoning` | 24 | 199 |
-| `recall_mcp.server_search` | 17 | 167 |
+| `recall_mcp.server_memory_admin` | 14 | 164 |
+| `recall_mcp.server_reasoning` | 25 | 200 |
+| `recall_mcp.server_search` | 18 | 168 |
 | `recall_mcp.service` | 59 | 191 |
 | `recall_mcp.settings` | 12 | 149 |
 | `recall_mcp.stale_reports_api` | 5 | 157 |

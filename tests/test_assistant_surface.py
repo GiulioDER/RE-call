@@ -552,6 +552,79 @@ def test_keyed_assistant_replay_skips_filesystem_alias_resolution(
     _serve_both(envs, body)
 
 
+def test_folder_memo_skips_parent_resolution_for_non_memo_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    assistant = AssistantMemos(tmp_path / "assistant", index_root=tmp_path)
+    source = tmp_path / "ordinary" / "fixture.md"
+    original_resolve = Path.resolve
+
+    def resolve(path: Path, *args: Any, **kwargs: Any) -> Path:
+        assert path != source.parent, "a non-memo source reached assistant parent resolution"
+        return original_resolve(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "resolve", resolve)
+    assert assistant.folder_memo(source) is None
+
+
+def test_keyed_ordinary_erasure_receipt_replays_without_assistant(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from recall.lite import LiteStore
+    from recall_mcp import server_memory_admin
+    from recall_mcp.models import ForgetResult
+
+    effects: list[list[str]] = []
+
+    def fake_erasure(_store, sources, *_args, **_kwargs):
+        effects.append(sources)
+        return ForgetResult(chunks_removed=1, sources_removed=sources, message="fixture source")
+
+    def unexpected_lookup(*_args):
+        raise AssertionError("receipt replay resolved a filesystem alias")
+
+    async def inline(call):
+        return call()
+
+    monkeypatch.setattr(server_memory_admin, "forget_memory", fake_erasure)
+    monkeypatch.setattr(srv, "_to_thread", inline)
+    monkeypatch.setattr(server_memory_admin, "_to_thread", inline)
+    env = _env(tmp_path)
+    configured = {**env, "RECALL_ASSISTANT_MEMOS": str(tmp_path / "assistant")}
+    other_env = {**env, "RECALL_ASSISTANT_MEMOS": str(tmp_path / "mem")}
+
+    async def body(store: LiteStore) -> None:
+        state = {"store": store, "embedder": object()}
+        assistant, plain, other = [
+            _caller(srv.build_server(bootstrap_settings(settings)), state)
+            for settings in (configured, env, other_env)
+        ]
+        sources = ["mem/note-2244.md"]
+        args = {"sources": sources, "idempotency_key": "fixture-ordinary"}
+        first = await assistant("recall_forget", **args)
+        assert json.loads(first)["sources_removed"] == sources
+        monkeypatch.setattr(AssistantMemos, "folder_memo", unexpected_lookup)
+        assert await plain("recall_forget", **args) == first, (
+            "ordinary receipt conflicted without assistant"
+        )
+        assert await assistant("recall_forget", **args) == first
+        assert "idempotency_conflict" in await other("recall_forget", **args)
+        store.record_operation_receipt(
+            "fixture-legacy",
+            first,
+            operation="recall_forget",
+            request_fingerprint=srv._mutation_fingerprint("recall_forget", {"sources": sources}),
+        )
+        legacy = await assistant("recall_forget", sources=sources, idempotency_key="fixture-legacy")
+        assert "idempotency_conflict" in legacy
+        assert effects == [sources]
+
+    with LiteStore(tmp_path / "receipts.db", dim=2) as store:
+        # Dispatch is inline, so the tool calls can finish without a Windows event-loop socket.
+        with pytest.raises(StopIteration):
+            body(store).send(None)
+
+
 def test_a_half_configured_surface_refuses_to_start(
     envs: tuple[dict[str, str], dict[str, str]], tmp_path: Path
 ) -> None:

@@ -459,13 +459,16 @@ class AssistantMemos(MemoFolder):
         if not ref:
             return None
         path = Path(ref)
-        if len(path.parts) > 1:
+        qualified = len(path.parts) > 1
+        memo = path.name if qualified else ref
+        if self.path_of(memo) is None:
+            return None
+        if qualified:
             if not path.is_absolute():
                 path = self.index_root / path
             if path.parent.resolve() != self.folder.resolve():
                 return None
-            ref = path.name
-        return ref if self.path_of(ref) is not None else None
+        return memo
 
     def _indexed_successor(self, store: LiteStore, target: str, own: str | None = None) -> bool:
         """Whether an indexed document other than memo `own` claims to supersede memo `target` (a

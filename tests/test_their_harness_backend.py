@@ -26,6 +26,7 @@ from types import SimpleNamespace
 import psycopg
 import pytest
 
+import recall.store
 from recall_interop import RecallBackend
 from recall_interop.memory_benchmarks import (
     _created_at_of,
@@ -126,6 +127,40 @@ def test_close_retries_cleanup_after_cancellation_while_waiting(tmp_path):
     asyncio.run(exercise())
 
 
+def test_failed_benchmark_scope_closes_unpublished_store(tmp_path, monkeypatch):
+    """A failed scope setup closes the unregistered store before the user can retry.
+
+    Red against ced240de0: ``RecallBackend._scope`` raised after connecting and
+    ``events`` lacked the close attempt.
+    """
+    events = []
+    setup_error = RuntimeError("cannot initialize this scope")
+    cleanup_error = RuntimeError("cannot close this store")
+
+    class Store:
+        def __init__(self, *args, **kwargs):
+            events.append("connected")
+
+        def __enter__(self):
+            return self
+
+        def ensure_schema(self):
+            raise setup_error
+
+        def close(self):
+            events.append("closed")
+            raise cleanup_error
+
+    monkeypatch.setattr(recall.store, "PgVectorStore", Store)
+    subject = backend("benchmark", tmp_path)
+    with pytest.raises(RuntimeError) as exc:
+        subject._scope("user")
+    assert events == ["connected", "closed"]
+    assert exc.value is setup_error
+    assert exc.value.__cause__ is cleanup_error
+    assert subject.describe()["users"] == []
+
+
 class _FakeHit:
     def __init__(self, file_key):
         self.chunk = type("C", (), {"metadata": {"file": file_key}, "source": file_key})()
@@ -142,6 +177,16 @@ def test_negative_observation_time_keeps_its_original_date():
     epoch = _resolve_epoch(None, "1969-12-31")
     assert epoch == -86400
     assert _created_at_of(_FakeHit(f"m000001__ts{epoch}.md")) == "1969-12-31T00:00:00"
+
+
+@pytest.mark.parametrize("epoch", [-62135596801, 253402300800])
+def test_unrepresentable_epoch_omits_created_at(epoch):
+    """An indexed timestamp beyond datetime's range leaves the memory undated.
+
+    Red against ced240de0: ``_created_at_of`` propagated ``OverflowError`` for each
+    indexed timestamp instead of returning an absent date.
+    """
+    assert _created_at_of(_FakeHit(f"m000001__ts{epoch}.md")) is None
 
 
 def test_missing_timestamp_is_absent_not_epoch_zero():

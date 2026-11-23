@@ -604,7 +604,7 @@ def test_budget_enforced_with_slow_source(
         finally:
             completed.set()
 
-    monkeypatch.setattr(auditor_brief, "start_scope", lambda cwd: {})
+    monkeypatch.setattr(auditor_brief, "start_scope", lambda cwd, prompt: {})
     monkeypatch.setattr(
         auditor_brief, "finish_scope",
         lambda started, cwd, prompt, *, deadline: (
@@ -883,6 +883,34 @@ def test_named_scope_does_not_start_a_repository_diff(repo: Path, monkeypatch: p
     _, anchors = auditor_brief.scope(str(repo), f"Audit {FILE}", deadline=time.monotonic() + 15)
     assert any(anchor["file"] == FILE for anchor in anchors)
     assert not diff_attempts
+
+
+def test_empty_scope_starts_diff_before_waiting_for_git(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """FA-1-11 red at ced240de0: the first Git wait preceded the start of the diff."""
+    events: list[str] = []
+    responses = {
+        "rev-parse": str(tmp_path).encode(),
+        "config": f"https://github.com/{REPO}.git".encode(),
+        "merge-base": b"1" * 40,
+        "diff": f"diff --git a/{FILE} b/{FILE}\ndeleted file mode 100644\n".encode(),
+    }
+
+    def watch_start(_cwd: str, command: str, *_args: str) -> str:
+        events.append(f"start {command}")
+        return command
+
+    def watch_finish(command: str, _deadline: float) -> bytes:
+        events.append("wait for git")
+        return responses[command]
+
+    monkeypatch.setattr(auditor_brief, "_start_git", watch_start)
+    monkeypatch.setattr(auditor_brief, "_finish_git", watch_finish)
+    monkeypatch.setattr(auditor_brief, "_stop", lambda _processes: None)
+    _, anchors = auditor_brief.scope(str(tmp_path), "", deadline=time.monotonic() + 15)
+    assert any(anchor["file"] == FILE for anchor in anchors)
+    assert "start diff" in events[:events.index("wait for git")]
 
 
 def test_named_symlink_out_of_the_repository_is_refused(repo: Path, tmp_path: Path) -> None:
