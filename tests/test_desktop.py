@@ -2136,6 +2136,86 @@ def test_test_connection_runs_the_embedder_check_its_label_names(
         window.close()
 
 
+def test_changing_database_clears_wizard_server_settings(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Per-tenant trust and model choices belong to the database the wizard configured.
+
+    Red proof with the old MainWindow._persist_profile: it carried the entire mapping to
+    a different DSN and failed the assertion that the saved mapping was empty.
+    """
+    from dataclasses import replace
+
+    from recall.desktop.profiles import load_profile
+
+    path = tmp_path / "runtime.json"
+    profile = replace(
+        _LOCAL,
+        embedder="fastembed",
+        server_env_by_tenant={
+            "acme-docs": {
+                "RECALL_INDEX_MODE": "generation",
+                "RECALL_TRUST_MODE": "development",
+                "RECALL_EMBED_PROFILE": "qwen3-embedding-0.6b-384-v1",
+            },
+        },
+    )
+    window = _window(monkeypatch, profile, _InertUiRuntime(), profile_path=path)
+    try:
+        window._persist_profile(RuntimeMode.LOCAL_DATABASE, "postgresql://u:p@127.0.0.1/other", "fastembed")
+        saved = load_profile(path)
+        assert saved is not None
+        assert saved.server_env_by_tenant == {}
+    finally:
+        window.close()
+
+
+def test_settings_use_the_saved_embedding_profile_until_the_embedder_changes(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Probe with the installed model, then keep routing while applying an explicit model change.
+
+    Red proof: the old MainWindow._probe failed the first comparison with [None]. Restoring
+    the old _persist_profile separately failed the final comparison by keeping the old profile.
+    """
+    pytest.importorskip("PySide6")
+    from dataclasses import replace
+    from types import SimpleNamespace
+
+    from recall.desktop.profiles import load_profile
+
+    routes = {"RECALL_INDEX_MODE": "generation", "RECALL_TRUST_MODE": "strict"}
+    model = "qwen3-embedding-0.6b-384-v1"
+    profile = replace(
+        _LOCAL, embedder="fastembed",
+        server_env_by_tenant={"acme-docs": {**routes, "RECALL_EMBED_PROFILE": model}},
+    )
+    seen: list[str | None] = []
+
+    def dimension(embedder: str, *, env: dict[str, str] | None = None) -> int:
+        seen.append((env or {}).get("RECALL_EMBED_PROFILE"))
+        return 384
+
+    monkeypatch.setattr("recall.desktop.main_window._dimension_for", dimension)
+    monkeypatch.setattr(
+        "recall.desktop.main_window.probe_database",
+        lambda *args, **kwargs: SimpleNamespace(usable=True),
+    )
+    path = tmp_path / "runtime.json"
+    window = _window(monkeypatch, profile, _InertUiRuntime(), profile_path=path)
+    try:
+        window._save_database()
+        assert seen == [model]
+        window.embedder_edit.setText("hashing")
+        window._save_database()
+        assert seen == [model, ""]
+        saved = load_profile(path)
+        assert saved is not None
+        assert saved.server_env_by_tenant == {"acme-docs": {**routes, "RECALL_EMBED_PROFILE": ""}}
+    finally:
+        window.close()
+
+
 def test_add_project_names_the_runtime_in_use(monkeypatch: pytest.MonkeyPatch) -> None:
     """#1435: "+ Add project" said a remote server had to hold the scope, in local mode too.
 

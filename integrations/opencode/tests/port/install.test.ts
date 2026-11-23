@@ -4,7 +4,7 @@
 
 import { afterAll, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 import { INSTRUCTIONS, install } from "../../port/install";
 import { type IsolatedHome, isolatedHome } from "../isolated_home";
@@ -125,5 +125,51 @@ describe("install", () => {
       error = String(e);
     }
     expect({ written: files(xdg), refused: error.includes("does not exist; nothing was written") }).toEqual({ written: [], refused: true });
+  });
+
+  test("install stages every source before changing an existing config directory", () => {
+    const { sb, xdg } = sandbox();
+    const configDir = join(xdg, "opencode");
+    mkdirSync(configDir, { recursive: true });
+    writeFileSync(join(configDir, "owned-by-user.txt"), "keep");
+    const before = snapshot(configDir);
+    const agents = join(sb.home, ".claude", "agents");
+    rmSync(agents, { recursive: true });
+    writeFileSync(agents, "this is not a directory");
+
+    expect(() => install({ home: sb.home, xdgConfigHome: xdg })).toThrow();
+    expect(readdirSync(configDir)).toEqual(["owned-by-user.txt"]);
+    expect(snapshot(configDir)).toEqual(before);
+
+    rmSync(agents);
+    cpSync(join(FIXTURE, "agents"), agents, { recursive: true });
+    expect(install({ home: sb.home, xdgConfigHome: xdg }).written).toContain(join(configDir, "opencode.json"));
+    expect(readFileSync(join(configDir, "owned-by-user.txt"), "utf-8")).toBe("keep");
+  });
+
+  test("install exposes compatibility warnings from both porters", () => {
+    const { sb, xdg } = sandbox();
+    const badAgent = join(sb.home, ".claude", "agents", "broken.md");
+    const todoCommand = join(sb.home, ".claude", "commands", "plan.md");
+    writeFileSync(badAgent, "An agent with no front matter.");
+    const result = install({ home: sb.home, xdgConfigHome: xdg });
+    expect(result.unportable).toEqual(expect.arrayContaining([
+      { file: badAgent, reason: expect.stringContaining("no frontmatter") },
+      { file: todoCommand, reason: expect.stringContaining("claude-only-tool") },
+    ]));
+    expect(result.written).not.toContain(join(result.configDir, "agents", "broken.md"));
+  });
+
+  test("install falls back to the explicit home for a relative XDG config root", () => {
+    const { sb } = sandbox();
+    const cwd = process.cwd();
+    try {
+      process.chdir(sb.home);
+      const result = install({ home: sb.home, xdgConfigHome: "relative-config" });
+      expect(result.configDir).toBe(join(sb.home, ".config", "opencode"));
+      expect(existsSync(join(sb.home, "relative-config"))).toBe(false);
+    } finally {
+      process.chdir(cwd);
+    }
   });
 });

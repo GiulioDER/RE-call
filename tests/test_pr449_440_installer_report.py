@@ -78,7 +78,7 @@ def _completion_window() -> SimpleNamespace:
         close_button=SimpleNamespace(setEnabled=close.append),
         _append=log.append,
         # A managed install: the engine writes the desktop profile, so the handoff has nothing to say.
-        _hand_over_profile=lambda: "",
+        _hand_over_profile=lambda _report: "",
         heading=heading,
         progress=progress,
         log=log,

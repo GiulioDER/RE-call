@@ -357,7 +357,14 @@ file, never by a name pattern, so a second install on the same machine is untouc
 installer wrote into the data folder, the desktop app's handoff file at `%APPDATA%/RE-call/runtime.json`
 (outside the data folder, and only when it names *this* install), and the MCP registrations whose
 `cwd` marks them as written by this install.
-An entry you wrote by hand under a name the wizard also uses is left alone.
+The wizard also removes its matching Codex MCP registrations from the project's
+`.codex/config.toml`. Those entries must still match the installer's local ownership record
+and this install's database. Unrelated or edited Codex entries and shared client hooks and skills
+are kept.
+
+For an install that uses an existing PostgreSQL database, pass the directory containing its
+`wizard.json` as `--data-root`. This removes matching client registrations and keeps the database,
+the configuration, and the corpus folders. `--purge-data` applies only to a wizard-managed volume.
 
 Two things it leaves behind on purpose. It writes a timestamped backup of the MCP client config
 (`~/.claude.json.recall-backup-<stamp>`) before editing it, and never deletes it: that file holds

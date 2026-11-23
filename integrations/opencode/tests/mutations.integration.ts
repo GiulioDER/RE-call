@@ -16,9 +16,9 @@ export const ROWS: Row[] = [
   row("PRELOAD-ROOTS", "tests/preload.ts", "tests/unit/preload.test.ts", "OpenCode's global roots in a test process are outside the real home",
     "  process.env[name] = join(scratch, dir);\n", "", "expect(inside).toEqual([]);"),
   // -- the install script --------------------------------------------------------------------
-  row("INSTALL-XDG", INSTALL, INSTALL_TEST, WRITES, 'join(opts.xdgConfigHome || join(opts.home, ".config"), "opencode")', 'join(opts.home, ".config", "opencode")', "expect(configDir).toBe(join(xdg, \"opencode\"));"),
+  row("INSTALL-XDG", INSTALL, INSTALL_TEST, WRITES, 'join(configHome(opts.xdgConfigHome, opts.home), "opencode")', 'join(opts.home, ".config", "opencode")', "expect(configDir).toBe(join(xdg, \"opencode\"));"),
   row("INSTALL-INSTR", INSTALL, INSTALL_TEST, WRITES, 'export const INSTRUCTIONS = ["~/.claude/CLAUDE.md", "CLAUDE.md", "CLAUDE.local.md"];', 'export const INSTRUCTIONS = ["~/.claude/CLAUDE.md", "AGENTS.md", "CLAUDE.local.md"];', "expect(JSON.parse(readFileSync(join(configDir, \"opencode.json\"), \"utf8\"))).toEqual({"),
-  row("INSTALL-AGENTS", INSTALL, INSTALL_TEST, WRITES, '    ...portAgents(join(claude, "agents"), join(configDir, "agents")).written,\n', "", "}).toEqual({ commands: commands.sort(), agents, rest: [\"opencode.json\"], written: got });"),
+  row("INSTALL-AGENTS", INSTALL, INSTALL_TEST, WRITES, 'const agents = portAgents(join(claude, "agents"), join(stage, "agents"));', 'const agents = { written: [], unportable: [] };', "}).toEqual({ commands: commands.sort(), agents, rest: [\"opencode.json\"], written: got });"),
   row("INSTALL-RECALL", INSTALL, INSTALL_TEST, WRITES, "options: opts.recallCommand ? { recall_command: opts.recallCommand } : {} },", "options: {} },", "expect(JSON.parse(readFileSync(join(configDir, \"opencode.json\"), \"utf8\"))).toEqual({"),
   row("INSTALL-CLASH", INSTALL, INSTALL_TEST, CLASH, '  if (clash.length > 0) throw new Error(`install: refusing to overwrite ${clash.join(", ")}`);\n', "", "expect({ existing, refused: error.includes(\"refusing to overwrite\"), after: snapshot(xdg) }).toEqual({ existing, refused: true, after: before });"),
   row("INSTALL-CLASH-NAMES", INSTALL, INSTALL_TEST, CLASH,

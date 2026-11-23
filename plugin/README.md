@@ -61,9 +61,9 @@ Claude Code then asks for four things: the **DSN** of the database to read, the 
 `settings.json`, because it carries a password.
 
 **All four have to match whichever command built the store**, and the exact values are
-printed at the end of that command. Get the table or the tenant wrong and the server starts
-cleanly, answers, and finds nothing: there is no error to read, because an empty answer from the
-wrong table looks exactly like an empty corpus.
+printed at the end of that command. In legacy PostgreSQL mode, the wrong table or tenant can
+return an empty result. Lite, generation mode, and authenticated tenant routing require the
+default table setting, `chunks`. The server refuses a custom table at startup on those routes.
 
 ## Without a database server
 

@@ -197,12 +197,18 @@ def _cmd_refresh(args: argparse.Namespace) -> None:
     # --tenant must name that one (#1448). Typed is asked of the parser, since the flag's default
     # is `default` and a store of another tenant must refuse `--tenant default` too.
     info = inspect_lite_file(db)
+    if info.exists and getattr(args, "tenant_given", False):
+        if info.tenant is None:
+            raise SystemExit(
+                f"recall lite refresh: could not verify the recorded tenant for {db}; "
+                f"cannot honour --tenant {args.tenant!r}; nothing was refreshed"
+            )
+        if args.tenant != info.tenant:
+            raise SystemExit(
+                f"recall lite refresh: {db} holds tenant {info.tenant!r}; --tenant {args.tenant!r} does not "
+                f"match it. Pass --tenant {info.tenant} or omit it; nothing was refreshed"
+            )
     tenant = info.tenant or DEFAULT_TENANT
-    if info.tenant is not None and getattr(args, "tenant_given", False) and args.tenant != info.tenant:
-        raise SystemExit(
-            f"recall lite refresh: {db} holds tenant {info.tenant!r}; --tenant {args.tenant!r} does not "
-            f"match it. Pass --tenant {info.tenant} or omit it; nothing was refreshed"
-        )
     roots = _roots(args, db)
     budget = _budget()
     if args.check:
@@ -210,7 +216,7 @@ def _cmd_refresh(args: argparse.Namespace) -> None:
         report = check(db, roots, policy=policy_key(policy, context), budget=budget)
         _print_report(report.to_dict(), report.render(), info.tenant, as_json=args.json)
         raise SystemExit(EXIT_OK if report.current else EXIT_FAILED)
-    if not db.exists():
+    if not info.exists or not db.exists():
         raise SystemExit(f"no lite store at {db}; create one with `recall setup --lite`")
 
     from recall.cli_commands import _shared

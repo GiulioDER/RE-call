@@ -43,7 +43,7 @@
     "table": {
       "type": "string",
       "title": "Table",
-      "description": "The chunk table inside that database. `recall quickstart` indexes into `quickstart_chunks` so its sample corpus can never be retrieved beside your real memory; `recall setup` uses `chunks`. Getting this wrong returns no hits and no error, so it is asked rather than assumed.",
+      "description": "Legacy PostgreSQL chunk table. Use `quickstart_chunks` for `recall quickstart` and `chunks` for standard setup. Lite, generation mode, and authenticated tenant routing require the default `chunks` setting and refuse other values at startup.",
       "default": "chunks"
     },
     "tenant": {

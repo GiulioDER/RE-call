@@ -418,7 +418,7 @@ class LocalDatabaseRuntime(RuntimeManager):
                 close()
 
     def health(self) -> dict[str, Any]:
-        result = self._call_for(self.profile.default_tenant, "recall_stats", {})
+        result = self._call("recall_stats", {})
         return result if isinstance(result, dict) else {"status": "ready", "details": result}
 
     def _gateway_for(self, tenant: str) -> ToolGateway:
@@ -444,22 +444,18 @@ class LocalDatabaseRuntime(RuntimeManager):
         does not have this problem for the opposite reason: it overrides `list_tenants` to read the
         compose file and never reaches here.
         """
-        return self._call_for(self.profile.default_tenant, name, arguments)
+        # The default names a project scope, while the install settings are keyed by physical
+        # tenant (for example acme-docs). Use a configured server for untargeted calls.
+        configured = self.profile.server_env_by_tenant
+        tenant = self.profile.default_tenant
+        if configured and tenant not in configured:
+            tenant = next(iter(configured))
+        return self._call_for(tenant, name, arguments)
 
     def _env_for(self, tenant: str) -> dict[str, str]:
-        """What one server needs, and nothing this class has to guess.
-
-        `RECALL_ENV` and `RECALL_TRUST_MODE` are deliberately NOT set here. Whether a tenant is
-        served from a generation under strict trust is a property of what was calibrated and
-        promoted, decided at install time by `wiring.server_blocks`, and a runtime that asserted it
-        from a profile would either relax a gate the corpus has not earned or refuse one it has.
-
-        `RECALL_EMBEDDER` IS set when the profile names one, because it is a property of how the
-        database was built and the server cannot learn it: left unset, the server used its own
-        default whatever the index had been embedded with. Unnamed, it is left to the environment
-        the app was started from, as before.
-        """
+        """Use the wizard's settings for this tenant, when present in the profile."""
         env = {
+            **self.profile.server_env_by_tenant.get(tenant, {}),
             "RECALL_SERVING_DSN": self.profile.dsn or "",
             "RECALL_DSN": self.profile.dsn or "",
             "RECALL_TENANT": tenant,

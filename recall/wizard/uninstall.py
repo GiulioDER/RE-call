@@ -27,9 +27,8 @@ reproducible by re-indexing and expensive to rebuild, which makes them exactly t
 reinstalling next week wants kept and somebody reclaiming disk wants gone. Guessing either way is
 worse than asking.
 
-**An install onto an existing database has nothing here to take apart.** It created no stack and no
-data folder, so there is no stack file to identify it by and `plan_uninstall` refuses. Its MCP
-server registrations are removed by hand, from the project's entry in `~/.claude.json`.
+**An install onto an existing database has only client registrations to remove here.** Its
+`wizard.json` supplies the project and database identity. The database and config are kept.
 """
 
 from __future__ import annotations
@@ -42,14 +41,18 @@ from contextlib import suppress
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal
+from typing import Literal, get_args
+
+from recall.codex import ProjectServerRemoval, plan_project_server_removal
 
 from recall.wizard.stack import (
     COMPOSE_NAME,
     DB_VOLUME,
     DOCKERFILE_NAME,
     _no_current_directory_search,
+    existing_port,
     existing_tenants,
+    host_dsn,
     is_generated_dockerfile,
 )
 from recall.errors import RecallError
@@ -64,7 +67,7 @@ __all__ = [
     "plan_uninstall",
 ]
 
-RemovableKind = Literal["container", "volume", "image", "file", "registration"]
+RemovableKind = Literal["container", "volume", "image", "file", "registration", "codex-registration"]
 
 #: The files the installer writes into the data folder. Named individually, never globbed: a glob
 #: would grow to cover whatever a future version drops there, including things a user put there
@@ -122,6 +125,8 @@ class UninstallPlan:
     #: lists none, and inferring intent from that emptiness refused the whole uninstall.
     purge_data: bool = False
     compose_content: bytes | None = field(default=None, repr=False)
+    registration_dsn: str | None = field(default=None, repr=False)
+    codex_removal: ProjectServerRemoval | None = field(default=None, repr=False)
 
     def removing(self, kind: RemovableKind | None = None) -> tuple[Removable, ...]:
         return tuple(
@@ -141,7 +146,7 @@ class UninstallPlan:
             by_kind.setdefault(item.kind, []).append(item)
         if by_kind:
             lines.append("This will remove:")
-            for kind in ("container", "volume", "image", "file", "registration"):
+            for kind in ("container", "volume", "image", "file", "registration", "codex-registration"):
                 for item in by_kind.get(kind, ()):
                     suffix = f"  ({item.detail})" if item.detail else ""
                     lines.append(f"  {kind}: {item.name}{suffix}")
@@ -288,7 +293,7 @@ def _configured_project_root(document: dict[str, object]) -> Path | None:
 
 
 def _registrations(
-    project_root: Path, config_path: Path, owned: frozenset[str]
+    project_root: Path, config_path: Path, owned: frozenset[str], dsn: str | None
 ) -> tuple[Removable, ...]:
     """The MCP servers this project registered, and only those.
 
@@ -303,7 +308,7 @@ def _registrations(
     when its NAME is also one of `owned`, the tenants this install's stack file provisions, which
     are the names `server_blocks` registers. Everything else under that `cwd` is listed as kept.
     """
-    from recall.wizard.wiring import _written_by_this_project
+    from recall.wizard.wiring import _written_by_this_project, registered_server_dsn
 
     try:
         document = json.loads(config_path.read_text(encoding="utf-8"))
@@ -323,7 +328,10 @@ def _registrations(
         if not isinstance(servers, dict):
             continue
         for name, definition in servers.items():
-            if str(name) in owned and _written_by_this_project(definition, project_root):
+            if (
+                name in owned and _written_by_this_project(definition, project_root)
+                and (dsn is None or registered_server_dsn(definition) == dsn)
+            ):
                 found.append(
                     Removable("registration", str(name), f"in {key}")
                 )
@@ -390,6 +398,25 @@ def _profile_for(data_root: Path, profile_path: Path | None = None) -> Path | No
         return None
 
 
+def _plan_client_removal(
+    items: list[Removable], *, project_root: Path | None, tenants: frozenset[str],
+    dsn: str | None, claude_config_path: Path | None,
+) -> ProjectServerRemoval | None:
+    if project_root is None:
+        return None
+    items.extend(_registrations(project_root, claude_config_path or _default_claude_config(), tenants, dsn))
+    if dsn is None or not tenants:
+        return None
+    try:
+        removal = plan_project_server_removal(project_root, tenants, dsn)
+    except (OSError, ValueError, RuntimeError) as exc:
+        raise UninstallRefusal(f"cannot plan Codex MCP cleanup: {exc}") from exc
+    if removal is not None:
+        items.extend(Removable("codex-registration", name, f"Codex MCP server in {removal.path}")
+                     for name in removal.names)
+    return removal
+
+
 def plan_uninstall(
     *,
     data_root: Path,
@@ -409,15 +436,10 @@ def plan_uninstall(
     asks the real one which of the stack's containers exist.
     """
     run = runner or (lambda command: _run(command))
+    wizard = _wizard_config(data_root)
     compose_path = data_root / COMPOSE_NAME
     if not compose_path.exists():
-        raise UninstallRefusal(
-            f"no recall stack at {data_root}: {COMPOSE_NAME} is not there. Point the uninstaller at "
-            "the data folder chosen during installation; it is recorded in that install's "
-            "wizard.json. An install onto an existing database has no stack or data folder to "
-            "remove: delete its MCP server registrations by hand from the project's entry in "
-            "~/.claude.json."
-        )
+        return _plan_existing_database(data_root, wizard, purge_data, claude_config_path)
     try:
         compose_content = compose_path.read_bytes()
     except OSError as exc:
@@ -532,12 +554,12 @@ def plan_uninstall(
     if profile is not None:
         items.append(Removable("file", str(profile), _PROFILE_DETAIL))
 
-    wizard = _wizard_config(data_root)
     project_root = _configured_project_root(wizard)
-    if project_root is not None:
-        config = claude_config_path or _default_claude_config()
-        owned = frozenset(existing_tenants(data_root / COMPOSE_NAME))
-        items.extend(_registrations(project_root, config, owned))
+    owned = frozenset(existing_tenants(compose_path))
+    port = existing_port(compose_path)
+    dsn = host_dsn(port) if port is not None else None
+    codex_removal = _plan_client_removal(items, project_root=project_root, tenants=owned,
+                                        dsn=dsn, claude_config_path=claude_config_path)
 
     # ⛔ Listed as KEPT, loudly. These are the user's own files, and on a default install they sit
     # inside `data_root`, which is the directory somebody would otherwise expect to be deleted.
@@ -553,7 +575,38 @@ def plan_uninstall(
         project_root=project_root,
         purge_data=purge_data,
         compose_content=compose_content,
+        registration_dsn=dsn,
+        codex_removal=codex_removal,
     )
+
+
+def _plan_existing_database(
+    data_root: Path, wizard: dict[str, object], purge_data: bool, claude_config_path: Path | None,
+) -> UninstallPlan:
+    from recall.wizard.corpora import CorpusKind, tenant_for
+    from recall.wizard.headless import ConfigRefusal, load_config
+
+    if not wizard.get("dsn") or wizard.get("data_root"):
+        raise UninstallRefusal(
+            f"no recall stack at {data_root}: {COMPOSE_NAME} is missing. Point the uninstaller at "
+            "the managed data folder or at the folder containing the existing database's wizard.json."
+        )
+    if purge_data:
+        raise UninstallRefusal("--purge-data requires a wizard-managed database volume")
+    path = data_root / "wizard.json"
+    try:
+        config = load_config(path)
+    except ConfigRefusal as exc:
+        raise UninstallRefusal(str(exc)) from exc
+    dsn = config.resolved_dsn
+    tenants = frozenset(tenant_for(config.project, kind) for kind in get_args(CorpusKind))
+    items = [Removable("file", str(path), "configuration for your existing database", removing=False)]
+    items.extend(Removable("file", str(root), f"{key}: your own content, never removed", removing=False)
+                 for key, root in _corpus_roots(wizard))
+    codex_removal = _plan_client_removal(items, project_root=config.project_root, tenants=tenants,
+                                        dsn=dsn, claude_config_path=claude_config_path)
+    return UninstallPlan(data_root, config.project, tuple(items), project_root=config.project_root,
+                         registration_dsn=dsn, codex_removal=codex_removal)
 
 
 def execute(
@@ -679,13 +732,23 @@ def execute(
         names = tuple(item.name for item in plan.removing("registration"))
         if names:
             failure = _unregister(
-                names, plan.project_root, claude_config_path or _default_claude_config()
+                names, plan.project_root, claude_config_path or _default_claude_config(),
+                dsn=plan.registration_dsn,
             )
             for item in plan.removing("registration"):
                 if failure is None:
                     report.removed.append(item)
                 else:
                     report.failed.append((item, failure))
+
+    if plan.codex_removal is not None:
+        codex_items = plan.removing("codex-registration")
+        try:
+            plan.codex_removal.apply()
+        except (OSError, ValueError, RuntimeError) as exc:
+            report.failed.extend((item, str(exc)) for item in codex_items)
+        else:
+            report.removed.extend(codex_items)
 
     # ⛔ **Two files are kept, and each for its own reason.** The stack file is the only thing that
     # identifies this install's containers and volumes, and `plan_uninstall` refuses without it —
@@ -741,7 +804,9 @@ def execute(
     return report
 
 
-def _unregister(names: Sequence[str], project_root: Path, config_path: Path) -> str | None:
+def _unregister(
+    names: Sequence[str], project_root: Path, config_path: Path, *, dsn: str | None = None,
+) -> str | None:
     """Remove the named servers from every project entry that this install wrote them into.
 
     Returns a reason on failure and `None` on success, rather than raising: the caller is midway
@@ -754,13 +819,15 @@ def _unregister(names: Sequence[str], project_root: Path, config_path: Path) -> 
     config_path = config_path.resolve()
     try:
         with configuration_lock(config_path):
-            return _unregister_locked(names, project_root, config_path)
+            return _unregister_locked(names, project_root, config_path, dsn)
     except OSError as exc:
         return f"cannot lock {config_path}: {exc}"
 
 
-def _unregister_locked(names: Sequence[str], project_root: Path, config_path: Path) -> str | None:
-    from recall.wizard.wiring import _write_private_configuration, _written_by_this_project
+def _unregister_locked(
+    names: Sequence[str], project_root: Path, config_path: Path, dsn: str | None = None,
+) -> str | None:
+    from recall.wizard.wiring import _write_private_configuration, _written_by_this_project, registered_server_dsn
 
     try:
         original = config_path.read_text(encoding="utf-8")
@@ -781,7 +848,10 @@ def _unregister_locked(names: Sequence[str], project_root: Path, config_path: Pa
         if not isinstance(servers, dict):
             continue
         for name in list(servers):
-            if name in wanted and _written_by_this_project(servers[name], project_root):
+            if (
+                name in wanted and _written_by_this_project(servers[name], project_root)
+                and (dsn is None or registered_server_dsn(servers[name]) == dsn)
+            ):
                 del servers[name]
 
     try:

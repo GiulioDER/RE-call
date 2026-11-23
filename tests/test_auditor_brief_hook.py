@@ -870,6 +870,21 @@ def test_named_uncommitted_file_is_anchored_by_symbol(
     assert f"BUG {_bug(1)['id']} [exact] {FILE} Pool._lease:" in block
 
 
+def test_named_scope_does_not_start_a_repository_diff(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    start = auditor_brief._start_git
+    diff_attempts = []
+
+    def watch_diff(cwd, *args, **kwargs):
+        if args[0] == "diff":
+            diff_attempts.append(args)
+        return start(cwd, *args, **kwargs)
+
+    monkeypatch.setattr(auditor_brief, "_start_git", watch_diff)
+    _, anchors = auditor_brief.scope(str(repo), f"Audit {FILE}", deadline=time.monotonic() + 15)
+    assert any(anchor["file"] == FILE for anchor in anchors)
+    assert not diff_attempts
+
+
 def test_named_symlink_out_of_the_repository_is_refused(repo: Path, tmp_path: Path) -> None:
     """H23: a named in-repository symlink whose target is outside the repository is not in scope."""
     outside = tmp_path / "outside.py"

@@ -32,7 +32,7 @@ from .config import (
     read_json,
     save_settings,
 )
-from .mcp_client import McpError, NotSent, StdioMcpClient, ToolError
+from .mcp_client import LiteWriterBusy, McpError, NotSent, StdioMcpClient, ToolError
 from .render import render_search, render_unavailable
 from .surface import READ_TOOLS, TOOLS
 
@@ -220,10 +220,14 @@ def _mirror_state(raw: dict[str, Any]) -> dict[str, Any]:
     unconfirmed = raw.get("unconfirmed")
     unconfirmed = {k: v for k, v in (unconfirmed if isinstance(unconfirmed, dict) else {}).items()
                    if isinstance(v, str)}
-    # Mappings of entries removed or replaced while their memo was not yet readable here; each memo
-    # is forgotten once it is read holding its entry's text (`_retire_when_read`).
+    # One pair per memo removed or replaced while unreadable. A later move can leave another
+    # unread memo for the same entry. Older journals recorded just one memo per entry.
     retire = raw.get("retire_when_read")
-    retire = {k: v for k, v in (retire if isinstance(retire, dict) else {}).items() if isinstance(v, str)}
+    retire = list(retire.items()) if isinstance(retire, dict) else retire
+    retire = list(dict.fromkeys(
+        tuple(pair) for pair in (retire if isinstance(retire, list) else [])
+        if isinstance(pair, (list, tuple)) and len(pair) == 2 and all(isinstance(part, str) for part in pair)
+    ))
     previous = raw.get("previous")
     previous = [p for p in (previous if isinstance(previous, list) else []) if isinstance(p, dict)]
     return {"memos": {k: v for k, v in memos.items() if isinstance(v, str)}, "pending": pending,
@@ -340,29 +344,51 @@ class ReCallMemoryProvider(MemoryProvider):
                 writer.start()
                 self._writer = writer
 
-    def _launch(self, name: str) -> threading.Thread | None:
+    def _launch(self, name: str, *, restart: bool = False) -> threading.Thread | None:
         # The check and the claim are one critical section, so two callers cannot both start a child.
+        retired = None
         with self._client_lock:
             if self._closed or self._starting:
                 return None
+            if restart:
+                retired = self._client
+                if retired is not None and retired.healthy:
+                    return None
+                self._client = None
+                self._ready.clear()
+            now = time.monotonic()
+            should_start = not restart or now - self._last_start >= RESTART_INTERVAL_S
+            if not should_start and retired is None:
+                return None
             self._start_done.clear()  # before _starting, so a reader that sees a start sees it unfinished
             self._starting = True
-            self._last_start = time.monotonic()
-        starter = spawn_context_thread(self._start_client, name=name)
+            if should_start:
+                self._last_start = now
+        starter = spawn_context_thread(lambda: self._start_client(retired, should_start), name=name)
         starter.start()
         return starter
 
-    def _start_client(self) -> None:
+    def _start_client(self, retired: StdioMcpClient | None, should_start: bool) -> None:
         try:
-            self._start_client_once()
+            if retired is not None:
+                retired.close(timeout=1)
+            if should_start:
+                self._start_client_once()
         finally:
             with self._client_lock:
                 self._starting = False
                 self._start_done.set()  # in the lock, so it cannot mark a restart launched just after
 
     def _start_client_once(self) -> None:
+        with self._client_lock:
+            if self._closed:
+                return
         settings = self._settings
         assert settings is not None
+        problem = settings.problem()
+        if problem:
+            self._start_error = problem
+            return
         argv = settings.resolve_argv()
         if argv is None:
             self._start_error = settings.problem()
@@ -390,35 +416,30 @@ class ReCallMemoryProvider(MemoryProvider):
             logger.warning("re-call: %s (see %s)", self._start_error, settings.data_dir / "server.log")
             return
         with self._client_lock:
-            if self._closed:  # shutdown() ran while this child was starting
-                client.close()
+            if not self._closed:
+                self._client = client
+                self._start_error = ""
+                self._ready.set()
                 return
-            self._client = client
-        self._start_error = ""
-        self._ready.set()
+        client.close()
 
     def _call(self, tool: str, arguments: dict[str, Any], timeout: float) -> Any:
         with self._client_lock:
             client = self._client
-        if client is None or not client.alive:
+        if client is None or not client.healthy:
             self._maybe_restart()
             raise NotSent(self._start_error or "the RE-call server is starting")
-        return client.call_tool(tool, arguments, timeout)
+        try:
+            return client.call_tool(tool, arguments, timeout)
+        except McpError:
+            if client.stalled:
+                self._maybe_restart()
+            raise
 
     def _maybe_restart(self) -> None:
-        """Start the server again when it is not running, at most once per RESTART_INTERVAL_S."""
-        if self._settings is None or self._settings.problem():
-            return
-        with self._client_lock:
-            if self._closed or self._starting or (self._client is not None and self._client.alive):
-                return
-            if time.monotonic() - self._last_start < RESTART_INTERVAL_S:
-                return
-            if self._client is not None:
-                self._client.close()
-                self._client = None
-            self._ready.clear()
-        self._launch("re-call-restart")
+        """Retire an unusable transport and schedule a replacement when the cooldown permits."""
+        if self._settings is not None:
+            self._launch("re-call-restart", restart=True)
 
     # -- per-turn recall --------------------------------------------------------------------------
 
@@ -631,12 +652,12 @@ class ReCallMemoryProvider(MemoryProvider):
             state = self._bound_state(path)
             # A memo the journal maps now is a live entry (its id given again to a re-added text), never
             # one to retire.
-            live = {k: v for k, v in state["retire_when_read"].items() if v in state["memos"].values()}
-            if live:
-                state["retire_when_read"] = {k: v for k, v in state["retire_when_read"].items() if k not in live}
+            live = set(state["memos"].values())
+            retire = [pair for pair in state["retire_when_read"] if pair[1] not in live]
+            if len(retire) != len(state["retire_when_read"]):
+                state["retire_when_read"] = retire
                 atomic_json_write(path, state)
-            retire = dict(state["retire_when_read"])
-        for key, memo_id in retire.items():
+        for key, memo_id in retire:
             text = _memo_text(self._settings.assistant_folder, memo_id)
             if text is None:
                 continue  # not in place yet
@@ -652,8 +673,9 @@ class ReCallMemoryProvider(MemoryProvider):
                     continue
             with _locked(path):
                 state = self._bound_state(path)
-                if state["retire_when_read"].get(key) == memo_id:
-                    del state["retire_when_read"][key]
+                pending = state["retire_when_read"]
+                if (key, memo_id) in pending:
+                    pending.remove((key, memo_id))
                     atomic_json_write(path, state)
 
     def _drain_pending(self) -> None:
@@ -687,7 +709,9 @@ class ReCallMemoryProvider(MemoryProvider):
                 if text is None:
                     # Still unread, so this remove or replace cannot act on it now; its memo is
                     # forgotten once it is read holding the entry's text, or it would come back current.
-                    state["retire_when_read"][old_key] = candidate
+                    retirement = (old_key, candidate)
+                    if retirement not in state["retire_when_read"]:
+                        state["retire_when_read"].append(retirement)
                 elif _digest(target, text) == old_key:
                     memos[old_key] = candidate  # confirmed: the entry's own memo
             retired = memos.get(old_key) if old_key else None
@@ -704,9 +728,8 @@ class ReCallMemoryProvider(MemoryProvider):
         except ToolError:
             self._settle(path, request_id)  # refused for good: replaying it later would be wrong
             raise
-        except NotSent:
-            # It never reached the server, so its outcome is known: it stays pending, unclaimed, and
-            # replays with its own request id once the server is back.
+        except (NotSent, LiteWriterBusy):
+            # The request cannot have mutated the store. Release the claim for the next drain.
             with _locked(path):
                 state = self._bound_state(path)
                 state["submitted"] = [item for item in state["submitted"] if item != request_id]

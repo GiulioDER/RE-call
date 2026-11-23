@@ -40,7 +40,7 @@ export type McpClientOptions = {
   /** The child's stderr is appended here; without it, it is discarded. */
   stderrPath?: string;
   restartIntervalMs?: number;
-  /** The clock the restart interval is measured on. */
+  /** A monotonic clock for elapsed time, overridable by tests. */
   now?: () => number;
 };
 
@@ -74,7 +74,7 @@ export class McpClient {
 
   constructor(opts: McpClientOptions) {
     this.opts = opts;
-    this.now = opts.now ?? Date.now;
+    this.now = opts.now ?? (() => performance.now());
   }
 
   /** Launch the child and send the handshake; `ready()` waits for its answer. */
@@ -147,7 +147,7 @@ export class McpClient {
   async listTools(timeoutMs: number = CALL_TIMEOUT_MS): Promise<ToolDef[]> {
     return this.locked(async () => {
       const deadline = this.now() + timeoutMs;
-      await this.ensureRunning(timeoutMs);
+      await this.ensureRunning(deadline);
       const tools: ToolDef[] = [];
       let cursor: string | undefined;
       do {
@@ -165,7 +165,7 @@ export class McpClient {
    * `ok: false`. The budget covers the wait behind other calls too, so a prefetch never waits out another
    * call's budget: a call whose budget runs out, or whose `signal` aborts, before it is sent is never sent. */
   async call(name: string, args: object, timeoutMs: number = CALL_TIMEOUT_MS, signal?: AbortSignal): Promise<CallResult> {
-    const started = this.now();
+    const deadline = this.now() + timeoutMs;
     let sent = false;
     let unsent: CallResult | undefined;
     let settle: (result: CallResult) => void = () => {};
@@ -182,9 +182,9 @@ export class McpClient {
     const run = this.locked(async (): Promise<CallResult> => {
       try {
         if (unsent) return unsent;
-        await this.ensureRunning(timeoutMs);
+        await this.ensureRunning(deadline);
         if (unsent) return unsent;
-        const left = timeoutMs - (this.now() - started);
+        const left = deadline - this.now();
         if (left < SEND_FLOOR_MS) return { ok: false, error: `${name} was not sent: ${Math.max(0, left)} ms of its budget left` };
         sent = true;
         clearTimeout(timer);
@@ -257,7 +257,7 @@ export class McpClient {
   }
 
   /** A dead child starts again here, at most once per restart interval. */
-  private async ensureRunning(timeoutMs: number): Promise<void> {
+  private async ensureRunning(deadline: number): Promise<void> {
     if (!this.alive) {
       const interval = this.opts.restartIntervalMs ?? RESTART_INTERVAL_MS;
       if (this.now() - this.lastStart < interval) throw new McpError("the RE-call server is not running");
@@ -265,7 +265,7 @@ export class McpClient {
       await this.start();
     }
     // A caller's own budget may be shorter than a cold start: waiting here kills nothing.
-    await this.handshakeWithin(timeoutMs);
+    await this.handshakeWithin(Math.max(0, deadline - this.now()));
   }
 
   private send(message: object): void {

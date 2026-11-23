@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import tomllib
 from pathlib import Path
 from typing import Any
 
@@ -81,6 +82,130 @@ def _docker(containers: tuple[str, ...] = ("recall-acme-1234abcd-db-1",)) -> Any
 
     _run.calls = calls  # type: ignore[attr-defined]
     return _run
+
+
+@pytest.mark.parametrize("existing_database", [False, True], ids=["managed", "existing-db"])
+def test_uninstall_cleans_up_only_its_client_entries(tmp_path: Path, existing_database: bool) -> None:
+    """Red on 78b37b76c: managed left acme-docs in Codex, existing PostgreSQL refused the plan."""
+    from recall.codex import codex_hook_config_path, register_project_servers
+    from recall.wizard.stack import host_dsn
+    from recall.wizard.wiring import ServerBlock, mcp_config
+
+    project = tmp_path / "project"
+    project.mkdir()
+    data_root = _install(tmp_path, project_root=project)
+    wizard_file = data_root / "wizard.json"
+    compose_file = data_root / COMPOSE_NAME
+    dsn = host_dsn(5487)
+    if existing_database:
+        wizard = json.loads(wizard_file.read_bytes())
+        del wizard["data_root"]
+        wizard["dsn"] = dsn
+        wizard_file.write_text(json.dumps(wizard), encoding="utf-8")
+        compose_file.unlink()
+    else:
+        compose = json.loads(compose_file.read_bytes())
+        compose["services"]["db"]["ports"] = ["127.0.0.1:5487:5432"]
+        compose["services"]["recall-acme-memory"] = {}
+        compose_file.write_text(json.dumps(compose), encoding="utf-8")
+
+    servers = mcp_config((
+        ServerBlock("acme-docs", "acme-docs", {"RECALL_DSN": dsn}, "installed here"),
+        ServerBlock("acme-code", "acme-code", {"RECALL_DSN": host_dsn(5490)}, "another database"),
+        ServerBlock("acme-memory", "acme-memory", {"RECALL_DSN": dsn}, "edited later"),
+    ), project_root=project)["mcpServers"]
+    codex = project / ".codex" / "config.toml"
+    codex.parent.mkdir()
+    user_config = b'# My own settings\r\n[mcp_servers.manual]\r\ncommand = "manual"\r\n'
+    codex.write_bytes(user_config)
+    assert register_project_servers(servers, project_root=project).registered == tuple(servers)
+    raw = codex.read_bytes()
+    start = raw.index(b'[mcp_servers."acme-memory"]')
+    edited = raw[:start] + raw[start:].replace(b"startup_timeout_sec = 60", b"startup_timeout_sec = 90")
+    codex.write_bytes(edited)
+
+    claude = tmp_path / "claude.json"
+    claude.write_text(
+        json.dumps({"projects": {str(project): {"mcpServers": {**servers, "manual": {"command": "manual"}}}}}),
+        encoding="utf-8",
+    )
+    hook_config = codex_hook_config_path()
+    hook_config.write_bytes(b'{"operator_setting": true}')
+    skill = Path.home() / ".agents" / "skills" / "session-open" / "SKILL.md"
+    skill.parent.mkdir(parents=True)
+    skill.write_bytes(b"shared skill")
+
+    docker = _docker()
+    try:
+        plan = plan_uninstall(data_root=data_root, claude_config_path=claude, runner=docker)
+    except UninstallRefusal as exc:
+        pytest.fail(f"the wizard's install record should be sufficient to plan client cleanup: {exc}")
+    assert codex.read_bytes() == edited, "planning must not change the configuration"
+    report = execute(plan, claude_config_path=claude, runner=docker)
+
+    assert not report.failed
+    after = codex.read_bytes()
+    assert after.startswith(user_config)
+    remaining = tomllib.loads(after.decode())["mcp_servers"]
+    assert set(remaining) == {"manual", "acme-code", "acme-memory"}
+    assert "Codex MCP server" in plan.render()
+    assert remaining["acme-memory"]["startup_timeout_sec"] == 90
+    claude_servers = json.loads(claude.read_bytes())["projects"][str(project)]["mcpServers"]
+    assert set(claude_servers) == {"manual", "acme-code"}
+    assert hook_config.read_bytes() == b'{"operator_setting": true}'
+    assert skill.read_bytes() == b"shared skill"
+    assert (data_root / "memory" / "mine.md").is_file()
+    if existing_database:
+        assert not docker.calls
+        assert wizard_file.is_file(), "the external database configuration is user input"
+        with pytest.raises(UninstallRefusal, match="wizard-managed database volume"):
+            plan_uninstall(data_root=data_root, purge_data=True, runner=docker)
+
+
+def test_codex_edit_during_confirmation_keeps_the_install_retryable(tmp_path: Path) -> None:
+    """An edit after planning must survive, along with the files needed for a retry.
+
+    Red proof: replacing ProjectServerRemoval.apply with an unchecked write of the planned
+    bytes failed the comparison with the edited file.
+    """
+    from recall.codex import register_project_servers
+    from recall.desktop.main import uninstall_main
+    from recall.wizard.stack import host_dsn
+    from recall.wizard.wiring import ServerBlock, mcp_config
+
+    project = tmp_path / "project"
+    project.mkdir()
+    data_root = _install(tmp_path, project_root=project)
+    compose_path = data_root / COMPOSE_NAME
+    compose = json.loads(compose_path.read_bytes())
+    compose["services"]["db"]["ports"] = ["127.0.0.1:5487:5432"]
+    compose_path.write_text(json.dumps(compose), encoding="utf-8")
+    blocks = (ServerBlock("acme-docs", "acme-docs", {"RECALL_DSN": host_dsn(5487)}, "fixture"),)
+    registration = register_project_servers(mcp_config(blocks, project_root=project)["mcpServers"],
+                                            project_root=project)
+    target = registration.config_path
+    changed = target.read_bytes() + b"# edited after planning\n"
+    messages: list[str] = []
+
+    def confirm(_title: str, _question: str, plan: str) -> bool:
+        assert "Codex MCP server" in plan
+        target.write_bytes(changed)
+        return True
+
+    status = uninstall_main(
+        ["--data-root", str(data_root)], confirm=confirm,
+        notify=lambda _title, message: messages.append(message), runner=_docker(),
+    )
+    assert target.read_bytes() == changed
+    assert status == 1 and "review a new uninstall plan" in messages[-1]
+    assert compose_path.is_file() and (data_root / "wizard.json").is_file()
+    assert uninstall_main(
+        ["--data-root", str(data_root)], confirm=lambda *_: True,
+        notify=lambda _title, message: messages.append(message), runner=_docker(),
+    ) == 0
+    assert target.read_bytes().endswith(b"# edited after planning\n")
+    assert "acme-docs" not in tomllib.loads(target.read_text(encoding="utf-8")).get("mcp_servers", {})
+    assert not compose_path.exists()
 
 
 def test_the_plan_never_lists_a_corpus_root_for_removal(tmp_path: Path) -> None:

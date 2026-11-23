@@ -1,9 +1,10 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
 import { loadConfig, sharedStoreDir } from "../../src/config";
+import { defaultDataDir } from "../../src/plugin";
 import { tempDir } from "./fake";
 
 const roots: string[] = [];
@@ -125,6 +126,17 @@ describe("the default store", () => {
     expect(sharedStoreDir({})).toBe(join(homedir(), ".config", "re-call"));
   });
 
+  test("the private data directory ignores relative XDG_CONFIG_HOME", () => {
+    const fallback = join(homedir(), ".config", "opencode", "re-call");
+    expect(defaultDataDir({ XDG_CONFIG_HOME: "relative/config" })).toBe(fallback);
+    if (process.platform === "win32") {
+      expect(defaultDataDir({ XDG_CONFIG_HOME: "\\rooted" })).toBe(fallback);
+      expect(defaultDataDir({ XDG_CONFIG_HOME: "C:relative" })).toBe(fallback);
+    }
+    const absolute = join(process.platform === "win32" ? "C:\\" : "/", "xdg home");
+    expect(defaultDataDir({ XDG_CONFIG_HOME: absolute })).toBe(join(absolute, "opencode", "re-call"));
+  });
+
   /** Invariant: with no `dsn`, a store in the shared folder is used, with its memos, even when an older
    * store is still in OpenCode's folder, and nothing is logged.
    *
@@ -202,5 +214,51 @@ describe("the default store", () => {
       memoFolder: join(own, "memos"),
       notice: undefined,
     });
+  });
+
+  test("an explicit shared Lite DSN takes its shared memo root", () => {
+    const { own, shared } = folders(["own", "shared"]);
+    const config = loadConfig({ dsn: lite(join(shared, "memory.db")) }, own, shared);
+    expect(config.memoFolder).toBe(join(shared, "memos"));
+  });
+
+  test("a memo override selects the matching default Lite store", () => {
+    const { own, shared } = folders(["own", "shared"]);
+    const config = loadConfig({ memo_folder: "private-memos" }, own, shared);
+    expect([config.dsn, config.memoFolder]).toEqual([lite(join(own, "memory.db")), join(own, "private-memos")]);
+    const { own: old, shared: empty } = folders(["own"]);
+    expect(loadConfig({ memo_folder: join(empty, "memos") }, old, empty).dsn).toBe(lite(join(empty, "memory.db")));
+  });
+
+  test("an aliased shared memo path keeps the same Lite store before and after creation", () => {
+    const root = tempDir("recall-oc-config-");
+    roots.push(root);
+    const actual = join(root, "actual");
+    const alias = join(root, "alias");
+    mkdirSync(actual);
+    symlinkSync(actual, alias, process.platform === "win32" ? "junction" : "dir");
+    const own = join(root, "opencode", "re-call");
+    const shared = join(actual, "re-call");
+    const options = { memo_folder: join(alias, "re-call", "memos") };
+    const before = loadConfig(options, own, shared).dsn;
+    mkdirSync(join(shared, "memos"), { recursive: true });
+    const after = loadConfig(options, own, shared).dsn;
+    const expected = lite(join(shared, "memory.db"));
+    expect([before, after]).toEqual([expected, expected]);
+  });
+
+  test("explicit Lite pairs cannot mix shared and private paths", () => {
+    const { own, shared } = folders(["own", "shared"]);
+    const sharedDsn = lite(join(shared, "memory.db"));
+    const privateDsn = lite(join(own, "memory.db"));
+    const sharedMemo = join(shared, "memos");
+    for (const options of [
+      { dsn: sharedDsn, memo_folder: "private-memos" },
+      { dsn: privateDsn, memo_folder: sharedMemo },
+    ]) {
+      expect(() => loadConfig(options, own, shared)).toThrow("the shared Lite store and its memo folder must be used together");
+    }
+    expect(loadConfig({ dsn: privateDsn, memo_folder: "private-memos" }, own, shared).memoFolder).toBe(join(own, "private-memos"));
+    expect(loadConfig({ dsn: "postgresql://localhost/recall", memo_folder: sharedMemo }, own, shared).memoFolder).toBe(sharedMemo);
   });
 });

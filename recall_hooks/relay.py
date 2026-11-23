@@ -130,7 +130,7 @@ def _state_lock(path: Path, deadline: float | None = None) -> Iterator[None]:
                     continue
             except OSError:
                 pass
-            time.sleep(0.02)
+            time.sleep(max(0, min(0.02, wait_deadline - time.monotonic())))
             continue
         else:
             try:
@@ -571,14 +571,21 @@ def _max_query_chars() -> int:
     return MAX_QUERY_CHARS
 
 
-def stop(session_id: str) -> None:
+def stop(session_id: str, *, deadline: float | None = None) -> None:
     """Ask one session's helper to exit and remove its state, best effort."""
 
     if not session_id:
         return
     path = state_path(session_id)
     try:
-        _stop_state(path)
+        if deadline is None:
+            _stop_state(path)
+        else:
+            # The helper checks its tokenized stop marker in its event loop. Signal it under
+            # the state lock without waiting for a socket exchange or process exit.
+            with _state_lock(path, deadline):
+                if state := _read(path):
+                    _retire_state_locked(path, state)
     except Exception:  # BROAD-CATCH: cleanup-only
         # SessionEnd is best effort.  If another hook owns the lock, its own lifecycle call will
         # reconcile the state; never race it by deleting a newly-created relay state.

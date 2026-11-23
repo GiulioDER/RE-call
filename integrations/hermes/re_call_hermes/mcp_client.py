@@ -11,10 +11,10 @@ from __future__ import annotations
 import itertools
 import json
 import logging
-import queue
 import subprocess
 import threading
 import time
+from collections import deque
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -23,6 +23,10 @@ logger = logging.getLogger(__name__)
 
 PROTOCOL_VERSION = "2025-06-18"
 CLIENT_INFO = {"name": "re-call-hermes", "version": "0.1.0"}
+MAX_PENDING = 16
+MAX_REQUEST_BYTES = 8 * 1024 * 1024
+MAX_QUEUED_REQUEST_BYTES = 2 * MAX_REQUEST_BYTES
+TIMEOUTS_BEFORE_RESTART = 2
 
 ThreadFactory = Callable[..., threading.Thread]
 
@@ -32,11 +36,15 @@ class McpError(RuntimeError):
 
 
 class ToolError(McpError):
-    """The tool ran and reported an error (`isError`), with the server's text."""
+    """The call was explicitly refused by the server or failed local input validation."""
+
+
+class LiteWriterBusy(McpError):
+    """The forget tool could not acquire its write lane and made no mutation."""
 
 
 class NotSent(McpError):
-    """The request never left this process because the server was not running, so its outcome is known."""
+    """The request never left this process and can be attempted again."""
 
 
 def _close_quietly(stream: Any) -> None:
@@ -70,17 +78,31 @@ class StdioMcpClient:
         self._ids = itertools.count(1)
         # Lines reach the child through one writer thread, so a child that stops reading its input
         # blocks that thread and never a caller: callers only wait, and only until their deadline.
-        self._outbox: queue.Queue[bytes | None] = queue.Queue()
-        self._pending: dict[int, dict[str, Any]] = {}
-        # Ids whose caller gave up: their late answers are dropped rather than kept forever.
-        self._abandoned: dict[int, None] = {}
+        self._outbox: deque[tuple[int | None, bytes]] = deque()
+        self._pending: dict[int, dict[str, Any] | None] = {}
+        self._dispatched: set[int] = set()
+        self._timed_out: dict[int, None] = {}  # bounded ids of dispatched requests that expired
         self._cond = threading.Condition()
+        self._handshaken = False
+        self._broken = False
+        self._consecutive_timeouts = 0
         self._proc: subprocess.Popen[bytes] | None = None
         self._stderr_file: Any = None
 
     @property
     def alive(self) -> bool:
-        return self._proc is not None and self._proc.poll() is None
+        proc = self._proc
+        return proc is not None and proc.poll() is None
+
+    @property
+    def stalled(self) -> bool:
+        with self._cond:
+            return self._consecutive_timeouts >= TIMEOUTS_BEFORE_RESTART
+
+    @property
+    def healthy(self) -> bool:
+        with self._cond:
+            return self.alive and not self._broken
 
     def start(self, timeout: float) -> None:
         """Launch the child and complete the MCP handshake within `timeout` seconds."""
@@ -101,7 +123,9 @@ class StdioMcpClient:
             {"protocolVersion": PROTOCOL_VERSION, "capabilities": {}, "clientInfo": CLIENT_INFO},
             timeout,
         )
-        self._send({"jsonrpc": "2.0", "method": "notifications/initialized"})
+        with self._cond:
+            self._send({"jsonrpc": "2.0", "method": "notifications/initialized"})
+            self._handshaken = True
 
     def call_tool(self, name: str, arguments: Mapping[str, Any], timeout: float) -> Any:
         """The tool's answer, parsed from its JSON text. Raises ToolError when `isError` is set."""
@@ -111,7 +135,16 @@ class StdioMcpClient:
         text = "".join(
             str(part.get("text", "")) for part in parts if isinstance(part, dict) and part.get("type") == "text"
         )
-        if result.get("isError"):  # a refusal stays a refusal, content or not, so it is never retried
+        if result.get("isError"):  # a refusal stays a refusal, content or not, unless explicitly pre-write
+            if name == "recall_forget_memo" and result["isError"] is True:
+                # The MCP SDK prefixes a tool's error text with its name.
+                try:
+                    refusal = json.loads(text.removeprefix(f"Error executing tool {name}: "))
+                except ValueError:
+                    refusal = None
+                if (isinstance(refusal, dict) and refusal.keys() == {"error", "message"}
+                        and refusal["error"] == "lite_writer_busy" and isinstance(refusal["message"], str)):
+                    raise LiteWriterBusy(refusal["message"])
             raise ToolError(text or f"{name} failed")
         try:  # no content list leaves "" here, which is not JSON either
             return json.loads(text)
@@ -119,8 +152,10 @@ class StdioMcpClient:
             raise McpError(f"{name} answered with text that is not JSON: {text[:200]!r}") from exc
 
     def close(self, timeout: float = 5.0) -> None:
-        proc, self._proc = self._proc, None
-        self._outbox.put(None)
+        with self._cond:
+            proc, self._proc = self._proc, None
+            stderr_file, self._stderr_file = self._stderr_file, None
+            self._break_transport()
         if proc is not None:
             stdin = proc.stdin
             if stdin is not None:
@@ -137,47 +172,83 @@ class StdioMcpClient:
                     logger.warning("re-call: the server did not exit after kill (pid %s)", proc.pid)
             # stdout is left to the reader thread, which ends at EOF: closing it here would wait on
             # the lock that thread's blocked read holds.
-        if self._stderr_file is not None:
-            self._stderr_file.close()
-            self._stderr_file = None
-        with self._cond:
-            self._cond.notify_all()
+        if stderr_file is not None:
+            stderr_file.close()
 
     # -- internals -----------------------------------------------------------------------------
 
-    def _send(self, message: Mapping[str, Any]) -> None:
+    def _break_transport(self) -> None:
+        # Call with the condition held so no further frame can enter a broken transport.
+        self._broken = True
+        self._outbox.clear()
+        self._timed_out.clear()
+        self._cond.notify_all()
+
+    def _send(self, message: Mapping[str, Any], request_id: int | None = None) -> None:
+        # The caller holds the condition across registration and queueing.
         proc = self._proc
-        if proc is None or proc.stdin is None or proc.poll() is not None:
+        if self._broken or proc is None or proc.stdin is None or proc.poll() is not None:
             raise NotSent("the RE-call server is not running")
-        self._outbox.put((json.dumps(message, separators=(",", ":")) + "\n").encode("utf-8"))
+        if len(self._outbox) >= MAX_PENDING:
+            raise NotSent("too many outstanding RE-call requests")
+        line = (json.dumps(message, separators=(",", ":")) + "\n").encode("utf-8")
+        if len(line) > MAX_REQUEST_BYTES:
+            raise ToolError("the RE-call request is too large")
+        if len(line) + sum(len(frame) for _, frame in self._outbox) > MAX_QUEUED_REQUEST_BYTES:
+            raise NotSent("the RE-call outgoing queue is full")
+        self._outbox.append((request_id, line))
+        self._cond.notify_all()
 
     def _write_loop(self) -> None:
         proc = self._proc
         while proc is not None and proc.stdin is not None:
-            line = self._outbox.get()
-            if line is None:
-                return
+            with self._cond:
+                self._cond.wait_for(lambda: self._broken or self._outbox)
+                if self._broken:
+                    return
+                request_id, line = self._outbox.popleft()
+                if request_id is not None:
+                    if request_id not in self._pending:
+                        continue  # a caller timed out while its frame was still queued
+                    self._dispatched.add(request_id)
             try:
                 proc.stdin.write(line)
                 proc.stdin.flush()
             except (OSError, ValueError):  # the child closed its input, or close() closed ours
+                with self._cond:
+                    self._break_transport()
                 return
 
     def _request(self, method: str, params: Mapping[str, Any], timeout: float) -> dict[str, Any]:
         request_id = next(self._ids)
         deadline = time.monotonic() + timeout
-        self._send({"jsonrpc": "2.0", "id": request_id, "method": method, "params": dict(params)})
         with self._cond:
-            while request_id not in self._pending:
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    self._abandon(request_id)
-                    raise McpError(f"{method} got no answer within {timeout:.1f}s")
-                if not self.alive:
-                    self._abandon(request_id)
-                    raise McpError("the RE-call server exited")
-                self._cond.wait(min(remaining, 0.5))
-            message = self._pending.pop(request_id)
+            if len(self._pending) >= MAX_PENDING:
+                raise NotSent("too many outstanding RE-call requests")
+            self._pending[request_id] = None
+            try:
+                self._send({"jsonrpc": "2.0", "id": request_id, "method": method, "params": dict(params)},
+                           request_id)
+                while (message := self._pending[request_id]) is None:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        if self._handshaken and not self._broken:
+                            if request_id in self._dispatched:
+                                if len(self._timed_out) >= MAX_PENDING:
+                                    del self._timed_out[next(iter(self._timed_out))]
+                                self._timed_out[request_id] = None
+                            self._consecutive_timeouts += 1
+                            if self._consecutive_timeouts >= TIMEOUTS_BEFORE_RESTART:
+                                self._break_transport()
+                        error = McpError if request_id in self._dispatched else NotSent
+                        raise error(f"{method} got no answer within {timeout:.1f}s")
+                    if self._broken or not self.alive:
+                        error = McpError if request_id in self._dispatched else NotSent
+                        raise error("the RE-call server disconnected")
+                    self._cond.wait(min(remaining, 0.5))
+            finally:
+                del self._pending[request_id]
+                self._dispatched.discard(request_id)
         if "error" in message:
             error = message["error"]
             detail = error.get("message", error) if isinstance(error, dict) else error
@@ -186,11 +257,6 @@ class StdioMcpClient:
         if not isinstance(result, dict):
             raise McpError(f"{method} answered with a result that is not an object")
         return result
-
-    def _abandon(self, request_id: int) -> None:
-        # Called with self._cond held. One int per answer that never comes; a capped set would let an
-        # evicted id's late answer sit in _pending forever instead.
-        self._abandoned[request_id] = None
 
     def _read_loop(self) -> None:
         proc = self._proc
@@ -203,12 +269,24 @@ class StdioMcpClient:
                 logger.debug("re-call: ignoring a line that is not JSON-RPC")
                 continue
             # Notifications and server requests carry no answer to us; only answers have our ids.
-            if isinstance(message, dict) and isinstance(message.get("id"), int) and "method" not in message:
+            if isinstance(message, dict) and type(message.get("id")) is int and "method" not in message:
                 with self._cond:
-                    if message["id"] in self._abandoned:
-                        del self._abandoned[message["id"]]
+                    request_id = message["id"]
+                    if self._broken or request_id not in self._pending or self._pending[request_id] is not None:
+                        if not self._broken and request_id in self._timed_out:
+                            error = message.get("error")
+                            if (message.get("jsonrpc") == "2.0"
+                                    and ("result" in message) != ("error" in message)
+                                    and (isinstance(message.get("result"), dict) or (
+                                        isinstance(error, dict) and type(error.get("code")) is int
+                                        and isinstance(error.get("message"), str)
+                                    ))):
+                                del self._timed_out[request_id]
+                                self._consecutive_timeouts = 0  # health only, no waiter to answer
                         continue
-                    self._pending[message["id"]] = message
+                    self._pending[request_id] = message
+                    self._consecutive_timeouts = 0
                     self._cond.notify_all()
+        _close_quietly(proc.stdout)
         with self._cond:
-            self._cond.notify_all()
+            self._break_transport()
