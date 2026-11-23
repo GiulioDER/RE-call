@@ -8,6 +8,42 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ## [Unreleased]
 
+## [0.16.1] (2026-11-23)
+
+### Upgrade notes
+
+* A previous RE-call binary can refuse a retry that uses a new Lite erasure receipt until the
+  receipt expires. Use the same version when retrying the operation. (#1480)
+* New wizard images use the host's FastEmbed, ONNX Runtime, and tokenizers versions when those
+  packages are installed. Existing image recipes keep their runtime when a tenant is added.
+  Desktop startup and pinned restart report known lineage mismatches in the default docs session.
+  (#1478, #1481)
+
+### Fixed
+
+* Bind Codex SessionEnd cleanup to the hook deadline. Setup writes project credentials only
+  when Git confirms that the project configuration is ignored. Uninstall removes registrations
+  it still owns and reports any it could not remove. (#1477, #1479)
+* Preserve the wizard's tenant, trust mode, and embedding profile when the desktop app restarts
+  a local MCP server. Lite refresh refuses an explicit tenant if it cannot verify the match.
+  (#1477)
+* Make keyed Lite assistant erasure safe to retry, including concurrent requests. Retries
+  preserve the original operation scope. (#1479)
+* Fix recovery and configuration handling in the Hermes provider and OpenCode plugin,
+  including Hermes write approval and pending memo removal. (#1472, #1474, #1475, #1477, #1479)
+
+* Keep Hermes writers and removal journals bound to their original profiles, keep OpenCode store
+  selection stable across memo aliases, and preserve the result of a completed installation if
+  staging cleanup fails. (#1480)
+* Correct desktop calibration and gateway cleanup, generated Compose recipe publication,
+  wizard environment handling, and Lite dashboard reads. Expand the Windows installer build
+  triggers and exercise the repaired setup and desktop paths in CI. (#1478, #1481)
+
+### Added
+
+* Bring the Hermes provider and OpenCode plugin into the main repository. A separate skills-only
+  setup plugin is available for the Claude Code directory. (#1468, #1471, #1473)
+
 ### Changed
 
 * The auditor brief hook scopes a launch whose prompt has text by the files that prompt names only.

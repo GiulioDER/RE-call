@@ -881,6 +881,41 @@ def test_image_version_reads_back_only_tags_this_module_writes() -> None:
         assert _image_version(foreign) is None, f"{foreign!r} must not yield a version to pin to"
 
 
+def test_generated_stack_pins_host_fastembed_and_retains_the_inherited_recipe(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A matching RE-call version alone cannot identify the runtime that built the index."""
+    from importlib import metadata
+
+    from recall.wizard import stack
+
+    installed = {"fastembed": "0.9.1", "onnxruntime": "1.31.1", "tokenizers": "0.23.3"}
+    with monkeypatch.context() as patch:
+        patch.setattr(metadata, "version", installed.__getitem__)
+        image = stack._default_image()
+
+    path = tmp_path / "docker-compose.recall.yml"
+    write_compose(path, compose_document(_spec(tmp_path, recall_image=image)))
+    service = json.loads(path.read_text(encoding="utf-8"))["services"]["recall-myapp-docs"]
+    recipe = tmp_path / service["build"]["dockerfile"]
+    command = next(line for line in recipe.read_text(encoding="utf-8").splitlines() if "pip install" in line)
+    for name, version in installed.items():
+        assert f'"{name}=={version}"' in command, f"{name} must match the host's runtime"
+
+    with monkeypatch.context() as patch:
+        patch.setattr(metadata, "version", {**installed, "onnxruntime": "1.32.0"}.__getitem__)
+        newer_image = stack._default_image()
+    assert newer_image != image, "Compose could reuse the older runtime under the same tag"
+
+    add_tenant_services(path, {"other-docs": {"RECALL_TENANT": "other-docs"}}, image=newer_image)
+    services = json.loads(path.read_text(encoding="utf-8"))["services"]
+    assert services["recall-myapp-docs"] == service
+    added = services["recall-other-docs"]
+    assert added["image"] == image
+    assert (tmp_path / added["build"]["dockerfile"]).read_bytes() == recipe.read_bytes()
+    assert recipe.read_text(encoding="utf-8").count('"onnxruntime==1.31.1"') == 1
+
+
 def test_the_dockerfile_extras_follow_the_pinned_version() -> None:
     """⛔ Making the Dockerfile follow the inherited tag made it UNBUILDABLE on old stacks.
 

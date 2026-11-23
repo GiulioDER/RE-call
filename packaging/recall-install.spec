@@ -16,7 +16,7 @@
 # The same applies to the data files of `fastembed` and `tokenizers`, which load model
 # configuration from package resources rather than from code.
 
-from PyInstaller.utils.hooks import collect_data_files, collect_submodules
+from PyInstaller.utils.hooks import collect_data_files, collect_submodules, copy_metadata
 
 hiddenimports = (
     collect_submodules("recall")
@@ -26,7 +26,14 @@ hiddenimports = (
     + ["psycopg_binary", "psycopg_pool"]
 )
 
-datas = collect_data_files("recall") + collect_data_files("fastembed")
+datas = (
+    collect_data_files("recall")
+    + collect_data_files("fastembed")
+    # The generated Docker recipe must see the versions the frozen host actually uses.
+    + copy_metadata("fastembed")
+    + copy_metadata("onnxruntime")
+    + copy_metadata("tokenizers")
+)
 
 # ⚠️ Excluded deliberately, and MEASURED rather than guessed. `collect_submodules("recall")` above
 # sweeps in the evaluation and benchmark modules, which drag sklearn, pyarrow, narwhals and friends
