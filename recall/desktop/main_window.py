@@ -47,7 +47,9 @@ from PySide6.QtWidgets import (
 )
 
 from recall.desktop.install_ui import _dimension_for
-from recall.desktop.models import RuntimeMode, RuntimeProfile, SourceCategory, SourceSelection
+from recall.desktop.models import (
+    EMBEDDING_PROFILE_ENV_KEYS, RuntimeMode, RuntimeProfile, SourceCategory, SourceSelection,
+)
 from recall.desktop.profiles import save_profile
 from recall.desktop.runtime import (
     _CORPUS_SUFFIXES,
@@ -941,15 +943,20 @@ class MainWindow(QMainWindow):
             return None
         return mode, dsn, embedder
 
-    @staticmethod
-    def _probe(dsn: str, embedder: str) -> Any:
+    def _probe(self, dsn: str, embedder: str) -> Any:
         """The checks the status label names, including the embedder one.
 
         The dimension was never passed, so "whether an existing index matches this embedder" was
         promised and skipped. Resolving the embedder can load a model, which is why this runs on
         the pool and never on the GUI thread.
         """
-        dimension = _dimension_for(embedder)
+        settings = self.profile.server_env_by_tenant
+        if dsn == self.profile.dsn and settings:
+            # The wizard built all its corpora with the same embedding profile.
+            env = next(iter(settings.values())) if embedder == self.profile.embedder else {"RECALL_EMBED_PROFILE": ""}
+            dimension = _dimension_for(embedder, env={**os.environ, **env})
+        else:
+            dimension = _dimension_for(embedder)
         if dimension is None:
             raise RuntimeErrorBase(
                 f"the embedder {embedder!r} could not be resolved, so the index cannot be compared "
@@ -1010,8 +1017,21 @@ class MainWindow(QMainWindow):
         self._persist_profile(mode, dsn, embedder)
 
     def _persist_profile(self, mode: RuntimeMode, dsn: str | None, embedder: str | None) -> None:
+        server_env = self.profile.server_env_by_tenant
+        if mode is not RuntimeMode.LOCAL_DATABASE or dsn != self.profile.dsn:
+            server_env = {}
+        elif embedder != self.profile.embedder:
+            server_env = {
+                tenant: {
+                    "RECALL_EMBED_PROFILE": "",
+                    **{key: value for key, value in env.items() if key not in EMBEDDING_PROFILE_ENV_KEYS},
+                }
+                for tenant, env in server_env.items()
+            }
         try:
-            updated = replace(self.profile, mode=mode, dsn=dsn, embedder=embedder)
+            updated = replace(
+                self.profile, mode=mode, dsn=dsn, embedder=embedder, server_env_by_tenant=server_env,
+            )
             save_profile(updated, self._profile_path)
         except (OSError, ValueError) as exc:
             self.save_database_button.setEnabled(True)

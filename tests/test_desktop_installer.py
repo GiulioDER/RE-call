@@ -994,3 +994,75 @@ def test_the_install_handoff_keeps_the_settings_it_does_not_decide(
     assert (written.token_key, written.shared_profile, written.compose_file) == (
         "desktop-token", "team", "stack.yml"
     )
+
+
+@pytest.mark.parametrize("register_client", [True, False])
+def test_the_install_handoff_uses_each_tenants_wizard_settings(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, register_client: bool
+) -> None:
+    """The saved profile must reproduce the wizard's route, trust and model for each tenant.
+
+    Red proof on 78b37b76c: both cases failed at the environment comparison because the
+    installer omitted these settings and LocalDatabaseRuntime supplied none of them.
+    """
+    from recall.desktop.profiles import load_profile, profile_path
+    from recall.desktop.runtime import LocalDatabaseRuntime
+    from recall.wizard.corpora import default_plan
+    from recall.wizard.headless import HeadlessReport, run_headless
+    from recall.wizard.wiring import server_blocks
+    from tests.test_wizard_state import _CountingSpy, _config
+
+    config = _config(tmp_path, project="acme", embedder="fastembed")
+    embedding_env = {
+        "RECALL_EMBED_PROFILE": "qwen3-embedding-0.6b-384-v1",
+        "RECALL_QWEN_MODEL_PATH": str(tmp_path / "artifact"),
+        "RECALL_MODEL_SHA256": "1" * 64,
+        "VOYAGE_API_KEY": "synthetic-credential",
+    }
+    services = _CountingSpy()
+    monkeypatch.setattr(services, "server_embedding_env", lambda: embedding_env)
+    dsn = config.resolved_dsn
+    plan = default_plan(
+        project="acme", embedder="fastembed", docs_root=tmp_path / "docs",
+        code_root=tmp_path / "repo", memory_root=tmp_path / "memory",
+    )
+    blocks, _ = server_blocks(
+        plan, dsn=dsn, promoted=frozenset({"acme-docs"}),
+        serving=frozenset({"acme-docs", "acme-code"}),
+        embedding_env=embedding_env,
+    )
+    window = _installer(monkeypatch, tmp_path)
+    try:
+        window.config = {"project": "acme", "embedder": "fastembed", "dsn": dsn}
+        if register_client:
+            report = HeadlessReport(servers=blocks)
+        else:
+            report = run_headless(config, services=services)
+            assert report.servers == () and report.registration is None
+        window._finished(report)
+    finally:
+        window.close()
+
+    written = load_profile()
+    assert written is not None
+    runtime = LocalDatabaseRuntime(written)
+    keys = (
+        "RECALL_ENV", "RECALL_INDEX_MODE", "RECALL_TRUST_MODE",
+        "RECALL_EMBED_PROFILE", "RECALL_QWEN_MODEL_PATH", "RECALL_MODEL_SHA256",
+    )
+    if not register_client:
+        # The real headless flow uses the spy, which promotes both read-only corpora.
+        blocks, _ = server_blocks(
+            plan, dsn=dsn, promoted=frozenset({"acme-docs", "acme-code"}),
+            serving=frozenset(), embedding_env=embedding_env,
+        )
+    expected = {block.tenant: {key: block.env[key] for key in keys} for block in blocks}
+    actual = {tenant: {key: runtime._env_for(tenant).get(key) for key in keys} for tenant in expected}
+    assert actual == expected
+    assert not set(keys).intersection(runtime._env_for("unconfigured"))
+    assert "synthetic-credential" not in profile_path().read_text(encoding="utf-8")
+
+    calls = []
+    monkeypatch.setattr(runtime, "_call_for", lambda tenant, name, args: calls.append((tenant, name)))
+    runtime.health()
+    assert calls == [("acme-docs", "recall_stats")]

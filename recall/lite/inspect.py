@@ -12,7 +12,7 @@ dashboard report the calibration search actually serves.
 from __future__ import annotations
 
 import sqlite3
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import cached_property
 from pathlib import Path
 from typing import Any
@@ -166,24 +166,34 @@ def inspect_lite_file(path: str | Path) -> LiteFileReport:
         conn = sqlite3.connect(f"{target.resolve().as_uri()}?mode=ro", uri=True)
     except sqlite3.Error as exc:
         return LiteFileReport(target, exists=True, error=f"{type(exc).__name__}: {exc}")
+    report = LiteFileReport(target, exists=True)
     try:
         # One read transaction for every read below, the stand-in's included: separate statements
         # would each see their own snapshot, and a write between them would have the calibration
         # judged against a corpus that never existed.
         conn.execute("BEGIN")
         meta = dict(conn.execute("SELECT key, value FROM meta").fetchall())
+        # Corpus and calibration errors do not invalidate identity already read from meta.
+        tenant = meta.get("tenant")
+        report = replace(
+            report,
+            tenant=tenant if isinstance(tenant, str) and tenant else None,
+            embedder_model=meta.get("embedder_model"),
+            embedder_spec=meta.get("embedder_spec"),
+            embedder_profile=meta.get("embedder_profile"),
+        )
         rows = conn.execute("SELECT id, text, source, embedding FROM chunks").fetchall()
         latest = conn.execute(f"SELECT payload FROM calibrations {LATEST_CALIBRATION_ORDER} LIMIT 1").fetchone()  # noqa: S608  # a module constant
     except sqlite3.Error as exc:
         conn.close()
-        return LiteFileReport(target, exists=True, error=f"not a lite store ({type(exc).__name__}: {exc})")
+        return replace(report, error=f"not a lite store ({type(exc).__name__}: {exc})")
     try:
         dim = int(meta["dim"])
         if dim < 1:
             raise ValueError("embedding width must be positive")
     except (KeyError, TypeError, ValueError) as exc:
         conn.close()
-        return LiteFileReport(target, exists=True, error=f"invalid embedding width metadata: {exc}")
+        return replace(report, error=f"invalid embedding width metadata: {exc}")
     status, threshold, separability, calibrated_at, carried_delta = CalibrationStatus.MISSING, None, None, None, None
     stale_for_model: str | None = None
     uncertified_waiting = False
@@ -196,7 +206,7 @@ def inspect_lite_file(path: str | Path) -> LiteFileReport:
             try:
                 artifact = artifact_from_json(str(latest[0]))
             except Exception as exc:  # BROAD-CATCH: fail-open  # a tampered artifact is reported, not raised
-                return LiteFileReport(target, exists=True, error=f"the stored calibration does not verify: {exc}")
+                return replace(report, error=f"the stored calibration does not verify: {exc}")
             threshold, separability, calibrated_at = artifact.threshold, artifact.separability, artifact.created_at
             bound = bound_from_meta(meta)
             if fitted_for_another_model(bound, artifact):
@@ -220,13 +230,11 @@ def inspect_lite_file(path: str | Path) -> LiteFileReport:
             else:
                 status = CalibrationStatus.CERTIFIED
     except sqlite3.Error as exc:
-        return LiteFileReport(target, exists=True, error=f"not a lite store ({type(exc).__name__}: {exc})")
+        return replace(report, error=f"not a lite store ({type(exc).__name__}: {exc})")
     finally:
         conn.close()
-    return LiteFileReport(
-        target,
-        exists=True,
-        tenant=meta.get("tenant"),
+    return replace(
+        report,
         dim=dim,
         chunks=len(rows),
         sources=len({r[2] for r in rows}),
@@ -234,9 +242,6 @@ def inspect_lite_file(path: str | Path) -> LiteFileReport:
         threshold=threshold,
         separability=separability,
         fingerprint=fingerprint,
-        embedder_model=meta.get("embedder_model"),
-        embedder_spec=meta.get("embedder_spec"),
-        embedder_profile=meta.get("embedder_profile"),
         calibrated_at=calibrated_at,
         carried_delta=carried_delta,
         stale_for_model=stale_for_model,

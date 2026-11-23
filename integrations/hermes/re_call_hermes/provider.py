@@ -220,10 +220,14 @@ def _mirror_state(raw: dict[str, Any]) -> dict[str, Any]:
     unconfirmed = raw.get("unconfirmed")
     unconfirmed = {k: v for k, v in (unconfirmed if isinstance(unconfirmed, dict) else {}).items()
                    if isinstance(v, str)}
-    # Mappings of entries removed or replaced while their memo was not yet readable here; each memo
-    # is forgotten once it is read holding its entry's text (`_retire_when_read`).
+    # One pair per memo removed or replaced while unreadable. A later move can leave another
+    # unread memo for the same entry. Older journals recorded just one memo per entry.
     retire = raw.get("retire_when_read")
-    retire = {k: v for k, v in (retire if isinstance(retire, dict) else {}).items() if isinstance(v, str)}
+    retire = list(retire.items()) if isinstance(retire, dict) else retire
+    retire = list(dict.fromkeys(
+        tuple(pair) for pair in (retire if isinstance(retire, list) else [])
+        if isinstance(pair, (list, tuple)) and len(pair) == 2 and all(isinstance(part, str) for part in pair)
+    ))
     previous = raw.get("previous")
     previous = [p for p in (previous if isinstance(previous, list) else []) if isinstance(p, dict)]
     return {"memos": {k: v for k, v in memos.items() if isinstance(v, str)}, "pending": pending,
@@ -631,12 +635,12 @@ class ReCallMemoryProvider(MemoryProvider):
             state = self._bound_state(path)
             # A memo the journal maps now is a live entry (its id given again to a re-added text), never
             # one to retire.
-            live = {k: v for k, v in state["retire_when_read"].items() if v in state["memos"].values()}
-            if live:
-                state["retire_when_read"] = {k: v for k, v in state["retire_when_read"].items() if k not in live}
+            live = set(state["memos"].values())
+            retire = [pair for pair in state["retire_when_read"] if pair[1] not in live]
+            if len(retire) != len(state["retire_when_read"]):
+                state["retire_when_read"] = retire
                 atomic_json_write(path, state)
-            retire = dict(state["retire_when_read"])
-        for key, memo_id in retire.items():
+        for key, memo_id in retire:
             text = _memo_text(self._settings.assistant_folder, memo_id)
             if text is None:
                 continue  # not in place yet
@@ -652,8 +656,9 @@ class ReCallMemoryProvider(MemoryProvider):
                     continue
             with _locked(path):
                 state = self._bound_state(path)
-                if state["retire_when_read"].get(key) == memo_id:
-                    del state["retire_when_read"][key]
+                pending = state["retire_when_read"]
+                if (key, memo_id) in pending:
+                    pending.remove((key, memo_id))
                     atomic_json_write(path, state)
 
     def _drain_pending(self) -> None:
@@ -687,7 +692,9 @@ class ReCallMemoryProvider(MemoryProvider):
                 if text is None:
                     # Still unread, so this remove or replace cannot act on it now; its memo is
                     # forgotten once it is read holding the entry's text, or it would come back current.
-                    state["retire_when_read"][old_key] = candidate
+                    retirement = (old_key, candidate)
+                    if retirement not in state["retire_when_read"]:
+                        state["retire_when_read"].append(retirement)
                 elif _digest(target, text) == old_key:
                     memos[old_key] = candidate  # confirmed: the entry's own memo
             retired = memos.get(old_key) if old_key else None

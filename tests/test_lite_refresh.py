@@ -75,9 +75,11 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 import subprocess
 import time
 from collections.abc import Iterator
+from contextlib import closing
 from pathlib import Path
 
 import pytest
@@ -1456,3 +1458,69 @@ def test_a_tenant_flag_the_store_does_not_hold_is_refused_naming_both(
     assert not read_state(db), f"--tenant {typed} refreshed the store"
     assert isinstance(message, str), f"--tenant {typed} was not refused (exit {message!r})"
     assert f"--tenant {typed!r}" in message and "'team'" in message, f"does not name both: {message}"
+
+
+@pytest.fixture
+def tenant_refresh_fixture_vectors(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("RECALL_EMBEDDER", raising=False)
+    monkeypatch.setenv("RECALL_EMBED_PROFILE", "")
+    monkeypatch.setenv("RECALL_ATOMIC_RESCUE_MODE", "off")
+    monkeypatch.setattr(
+        "recall.embedding_core.HashingEmbedder.embed",
+        lambda self, texts: [[1.0] + [0.0] * (self.dim - 1) for _ in texts],
+    )
+
+
+@pytest.mark.usefixtures("tenant_refresh_fixture_vectors")
+@pytest.mark.parametrize("check_only", [False, True], ids=["write", "check"])
+@pytest.mark.parametrize("recorded", [True, False], ids=["malformed-calibration", "unrecorded-tenant"])
+def test_refresh_requires_evidence_for_an_explicit_tenant(
+    project: Path, check_only: bool, recorded: bool,
+) -> None:
+    """A bad calibration cannot hide a mismatch, and no tenant metadata cannot confirm a match.
+
+    Red on 78b37b76c: _cmd_refresh wrote refresh state in both write cases. Both --check
+    cases returned status 1 without ever refusing the tenant flag.
+    """
+    db = project / "memory.db"
+    LiteStore(db, dim=64).close()
+    with closing(sqlite3.connect(db)) as conn, conn:
+        if recorded:
+            conn.execute("INSERT INTO calibrations(created_at, payload) VALUES (?, ?)",
+                         ("2026-11-23T00:00:00Z", "{}"))
+        else:
+            conn.execute("DELETE FROM meta WHERE key = 'tenant'")
+    original = db.read_bytes()
+    typed = "team" if recorded else "default"
+    flags = ("--check",) if check_only else ()
+    message: object = None
+    try:
+        cli_main(["--tenant", typed, *_refresh_argv(db, project, *flags)])
+    except SystemExit as exc:
+        message = exc.code
+
+    assert not read_state(db), "refresh wrote state without confirming the requested tenant"
+    assert isinstance(message, str) and f"--tenant {typed!r}" in message, message
+    assert ("holds tenant 'default'" if recorded else "could not verify the recorded tenant") in message
+    assert db.read_bytes() == original
+
+
+@pytest.mark.usefixtures("tenant_refresh_fixture_vectors")
+def test_refresh_keeps_the_recorded_tenant_and_embedder_after_bad_calibration(project: Path) -> None:
+    """A damaged calibration leaves independent tenant and embedder metadata usable.
+
+    Red on 78b37b76c: inspect_lite_file discarded that metadata and the CLI refused the
+    otherwise valid refresh because it could not identify the embedder.
+    """
+    db = _team_store(project)
+    with LiteStore(db, dim=64, tenant="team") as store:
+        store.record_embedder_spec("hashing", profile="")
+    with closing(sqlite3.connect(db)) as conn, conn:
+        conn.execute("INSERT INTO calibrations(created_at, payload) VALUES (?, ?)",
+                     ("2026-11-23T00:00:00Z", "{}"))
+
+    argv = ["--tenant", "team", "lite", "refresh", "--store", str(db),
+            "--memory", str(project / "memory")]
+    assert _cli(*argv) == 0, "the damaged calibration hid the recorded tenant or embedder"
+    with LiteStore(db, dim=64, tenant="team") as store:
+        assert store.count() == 3
