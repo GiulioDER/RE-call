@@ -9,15 +9,15 @@ design violation.
 
 Packages: `recall`, `recall_mcp`, `recall_agent`, `recall_hooks`, `recall_interop`, `recall_consistency`
 Modules: 376
-Cross package edges: 463
+Cross package edges: 464
 
 ## Highest fan in modules
 
 | Upstream modules | Module |
 |---:|---|
 | 225 | `recall.cli_commands.calibration_cmd` |
-| 220 | `recall_mcp.codex_server` |
-| 219 | `recall_mcp.server` |
+| 221 | `recall_mcp.codex_server` |
+| 220 | `recall_mcp.server` |
 | 212 | `recall.cli_commands.dashboard_cmd` |
 | 211 | `recall.dashboard.server` |
 | 203 | `recall.cli_commands.setup_wizard` |
@@ -64,8 +64,8 @@ Cross package edges: 463
 | 31 | `recall_mcp.server_lifespan` |
 | 30 | `recall.cli_commands.index_search` |
 | 27 | `recall.generations` |
+| 27 | `recall_mcp.server` |
 | 26 | `recall_mcp.lifecycle` |
-| 26 | `recall_mcp.server` |
 | 25 | `recall_mcp.server_reasoning` |
 | 23 | `recall.index` |
 | 23 | `recall_mcp.indexing` |
@@ -429,6 +429,7 @@ They are observations, not automatic failures.
 | `recall_mcp.server` | `recall.ops.health` |
 | `recall_mcp.server` | `recall.security_policy` |
 | `recall_mcp.server` | `recall.store` |
+| `recall_mcp.server` | `recall.version` |
 | `recall_mcp.server_assistant` | `recall.declared_keys` |
 | `recall_mcp.server_assistant` | `recall.lite` |
 | `recall_mcp.server_assistant` | `recall.lite.refresh` |
@@ -904,7 +905,7 @@ They are observations, not automatic failures.
 | `recall_mcp.access_log` | 1 | 1 |
 | `recall_mcp.assistant` | 14 | 157 |
 | `recall_mcp.auth` | 4 | 41 |
-| `recall_mcp.codex_server` | 2 | 220 |
+| `recall_mcp.codex_server` | 2 | 221 |
 | `recall_mcp.compat` | 0 | 0 |
 | `recall_mcp.config_report` | 2 | 150 |
 | `recall_mcp.desktop_ingest` | 15 | 154 |
@@ -932,7 +933,7 @@ They are observations, not automatic failures.
 | `recall_mcp.rescue_builder` | 5 | 141 |
 | `recall_mcp.retrieval` | 23 | 154 |
 | `recall_mcp.semantic_graph_cache` | 17 | 145 |
-| `recall_mcp.server` | 26 | 219 |
+| `recall_mcp.server` | 27 | 220 |
 | `recall_mcp.server_assistant` | 11 | 164 |
 | `recall_mcp.server_auth` | 5 | 153 |
 | `recall_mcp.server_calibration` | 6 | 170 |

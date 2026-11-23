@@ -32,6 +32,7 @@ from recall_mcp.assistant import (
     assistant_memos_from_env,
 )
 from recall.store import PgVectorStore
+from recall.version import __version__
 from recall_mcp.access_log import caller_identity, record_access
 from recall_mcp.auth import (
     CLEARANCE_LEVELS,
@@ -297,6 +298,7 @@ def build_server(settings: Settings | None = None) -> MCPServer:
     health = HealthController()
     mcp = MCPServer(
         "recall_mcp",
+        version=__version__,
         lifespan=_make_lifespan(
             token_registry,
             health,

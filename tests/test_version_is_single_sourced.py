@@ -18,13 +18,18 @@ the suite would have said so.
 
 from __future__ import annotations
 
+import asyncio
 import pathlib
 import subprocess
 import sys
 import tomllib
 
+from mcp.client import Client
+
 import recall
 from recall.version import version_tuple
+from recall_mcp.server import build_server
+from recall_mcp.settings import Settings
 
 # `scripts/` on the path so the version SITES can be imported from the bumper rather than restated
 # here. See `test_the_known_set_is_the_bumpers_own_list`.
@@ -50,6 +55,22 @@ def test_the_package_and_the_project_declare_the_same_version() -> None:
         "wheel is built from pyproject, and the installer pins recall.__version__ into the "
         "Dockerfile it writes, so this drift ships a stack that installs the wrong recall or none."
     )
+
+
+def test_the_mcp_handshake_reports_the_package_version(tmp_path: pathlib.Path) -> None:
+    """Before the fix, build_server left the SDK default and initialize returned an empty version."""
+    settings = Settings.from_env({
+        "RECALL_SERVING_DSN": f"sqlite:///{(tmp_path / 'memory.db').as_posix()}",
+        "RECALL_EMBEDDER": "hashing",
+        "RECALL_TRANSPORT": "stdio",
+    })
+
+    async def handshake() -> None:
+        async with Client(build_server(settings), mode="legacy") as client:
+            assert client.server_info is not None
+            assert client.server_info.version == _declared()
+
+    asyncio.run(handshake())
 
 
 def test_every_hand_maintained_copy_of_the_version_is_accounted_for() -> None:
