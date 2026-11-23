@@ -21,6 +21,9 @@ from recall.idempotency_receipts import (
 if TYPE_CHECKING:
     from recall.lite.store import LiteStore
 
+_ERASURE_OPERATIONS = frozenset({"recall_forget", "recall_withdraw"})
+_ORDINARY_ERASURE_PREFIX = "ordinary-erasure-v1:"
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS recall_idempotency_receipts (
     tenant_id TEXT NOT NULL,
@@ -65,6 +68,16 @@ def get_receipt(
     if not rows or rows[0][0] is None:
         return None
     result, stored_operation, stored_fingerprint = rows[0]
+    if (
+        operation in _ERASURE_OPERATIONS
+        and stored_operation == operation
+        and isinstance(stored_fingerprint, str)
+        and stored_fingerprint.startswith(_ORDINARY_ERASURE_PREFIX)
+    ):
+        pair = stored_fingerprint.removeprefix(_ORDINARY_ERASURE_PREFIX)
+        scoped, _, ordinary = pair.partition(":")
+        if scoped and ordinary:
+            stored_fingerprint = ordinary if request_fingerprint == ordinary else scoped
     check_receipt_matches(
         stored_operation, stored_fingerprint, operation=operation, request_fingerprint=request_fingerprint
     )
@@ -78,9 +91,20 @@ def record_receipt(
     *,
     operation: str = ANY_OPERATION,
     request_fingerprint: str | None = None,
+    ordinary_erasure_fingerprint: str | None = None,
     now: datetime | None = None,
 ) -> None:
     """Persist a completed response; the first writer of a key wins until it expires."""
+    if ordinary_erasure_fingerprint is not None:
+        if (
+            operation not in _ERASURE_OPERATIONS
+            or not request_fingerprint
+            or not ordinary_erasure_fingerprint
+        ):
+            raise ValueError("ordinary erasure compatibility requires a scoped erasure fingerprint")
+        request_fingerprint = (
+            f"{_ORDINARY_ERASURE_PREFIX}{request_fingerprint}:{ordinary_erasure_fingerprint}"
+        )
     if request_fingerprint is None:
         request_fingerprint = ""
     check_result_size(result)

@@ -10,7 +10,6 @@ import json
 from collections.abc import Callable
 from pathlib import PurePath
 
-from mcp.server import MCPServer
 from mcp.server.mcpserver import Context
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
@@ -38,10 +37,11 @@ from recall_mcp.lifecycle import (
 from recall_mcp.models import ForgetResult, WithdrawResult
 from recall_mcp.stores import StoreRegistry
 from recall_mcp.threads import _to_thread
+from recall_mcp.tool_surface import ToolRegistrar
 from recall_mcp.server_common import _ToolDeps, _mutation_fingerprint, _release_mutation_reservation
 
 
-def _register_memory_admin_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
+def _register_memory_admin_tools(mcp: ToolRegistrar, deps: _ToolDeps) -> None:
     _require = deps.require
     _require_mutation = deps.require_mutation
     _record_mutation_result = deps.record_mutation_result
@@ -64,8 +64,8 @@ def _register_memory_admin_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         arguments: dict[str, object] = {"sources": sources}
         if assistant is not None and idempotency_key:
             # Bind the scope for possible assistant aliases using syntax only. A receipt replay
-            # must not resolve caller-selected filesystem paths. Ordinary source names keep
-            # their plain receipt identity.
+            # must not resolve caller-selected filesystem paths. Names that cannot be aliases
+            # keep their plain receipt identity.
             for source in sources:
                 ref = memo_ref(source)
                 if not ref:
@@ -206,7 +206,16 @@ def _register_memory_admin_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
                             "message": "the erasure result exceeds the replay limit; inspect the requested sources",
                         }, sort_keys=True)
                 lite_store.record_operation_receipt(
-                    key, result, operation=operation, request_fingerprint=fingerprint
+                    key,
+                    result,
+                    operation=operation,
+                    request_fingerprint=fingerprint,
+                    # Only the confirmed ordinary route may also replay on a server with no
+                    # assistant. A different assistant scope still presents its own scoped hash.
+                    ordinary_erasure_fingerprint=(
+                        _mutation_fingerprint(operation, {"sources": sources})
+                        if not memos and "assistant_folder" in arguments else None
+                    ),
                 )
                 return result
 

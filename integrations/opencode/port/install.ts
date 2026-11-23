@@ -61,7 +61,11 @@ export function install(opts: InstallOptions): Pick<PortReport, "written" | "unp
     const written = publish(stage, configDir, staged);
     return { configDir, written, unportable: [...commands.unportable, ...agents.unportable] };
   } finally {
-    rmSync(stage, { recursive: true, force: true, maxRetries: 3 });
+    try {
+      rmSync(stage, { recursive: true, force: true, maxRetries: 3 });
+    } catch (error) {
+      console.warn(`install: could not remove staging directory ${stage}`, error);
+    }
   }
 }
 

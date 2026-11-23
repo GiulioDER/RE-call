@@ -19,7 +19,6 @@ from typing import Any, cast
 
 import anyio.to_thread
 from anyio import CapacityLimiter
-from mcp.server import MCPServer
 from mcp.server.mcpserver import Context
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
@@ -55,6 +54,7 @@ from recall_mcp.use_reports_api import (
 from recall_mcp.service import query_construction_challenge
 from recall_mcp.reasoning_api import reasoning_audit, reasoning_query
 from recall_mcp.threads import _to_thread
+from recall_mcp.tool_surface import ToolRegistrar
 from recall_mcp.server_common import (
     _T,
     _ToolDeps,
@@ -135,7 +135,7 @@ def _paths_named(
     return {n: hits[0] for n, hits in matches.items() if len(hits) == 1}
 
 
-def _register_reasoning_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
+def _register_reasoning_tools(mcp: ToolRegistrar, deps: _ToolDeps) -> None:
     _require = deps.require
     _require_mutation = deps.require_mutation
     _record_mutation_result = deps.record_mutation_result

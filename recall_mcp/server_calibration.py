@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import json
 
-from mcp.server import MCPServer
 from mcp.server.mcpserver import Context
 from mcp.types import ToolAnnotations
 
@@ -16,6 +15,7 @@ from recall_mcp.auth import SCOPE_ADMIN, SCOPE_READ, SCOPE_WRITE
 from recall_mcp.status import calibration_status
 from recall_mcp.generation_admin import publish_calibration, run_calibration
 from recall_mcp.threads import _to_thread
+from recall_mcp.tool_surface import ToolRegistrar
 from recall_mcp.server_common import (
     _META_REQUIRED_SCOPE,
     _ToolDeps,
@@ -24,7 +24,7 @@ from recall_mcp.server_common import (
 )
 
 
-def _register_calibration_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
+def _register_calibration_tools(mcp: ToolRegistrar, deps: _ToolDeps) -> None:
     _require = deps.require
     _require_mutation = deps.require_mutation
     _record_mutation_result = deps.record_mutation_result

@@ -9,7 +9,6 @@ from __future__ import annotations
 import json
 
 from mcp.server.auth.middleware.auth_context import get_access_token
-from mcp.server import MCPServer
 from mcp.server.mcpserver import Context
 from mcp.types import ToolAnnotations
 
@@ -17,6 +16,7 @@ from recall.declared_keys import subject_view
 from recall_mcp.auth import SCOPE_FACT_WRITE, SCOPE_READ
 from recall_mcp.provenance import apply_fact_memory, current_facts_memory
 from recall_mcp.threads import _to_thread
+from recall_mcp.tool_surface import ToolRegistrar
 from recall_mcp.server_common import (
     _META_REQUIRED_SCOPE,
     _ToolDeps,
@@ -27,7 +27,7 @@ from recall_mcp.server_common import (
 )
 
 
-def _register_fact_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
+def _register_fact_tools(mcp: ToolRegistrar, deps: _ToolDeps) -> None:
     _require = deps.require
     _require_mutation = deps.require_mutation
     _record_mutation_result = deps.record_mutation_result

@@ -236,7 +236,7 @@ MUTATIONS = [
      "tests/test_shared_store.py::test_a_rebound_journal_drops_mappings_whose_memo_is_absent"),
     # 2026-11-20 review of the shared store commits (tests/test_move_review_fixes.py).
     ("SWITCH-FRESH-MAPPING", P,
-     "if found is None and self._switched_to_shared(recorded):", "if False:",
+     "if found is None and self._switched_to_shared(recorded, settings):", "if False:",
      "tests/test_move_review_fixes.py::test_a_switch_to_the_shared_store_keeps_mirroring"),
     ("RETIRE-WHEN-READ", P, 'state["retire_when_read"].append(retirement)',
      'state["unconfirmed"][old_key] = candidate',
@@ -252,8 +252,8 @@ MUTATIONS = [
      "tests/test_move_review_fixes.py::test_a_failed_retire_keeps_its_entry_and_the_drain_goes_on"),
     ("NO-HOME-REASON", C, "    except RuntimeError:\n        return None", "    except ValueError:\n        return None",
      "tests/test_move_review_fixes.py::test_no_home_directory_is_a_reason_not_an_exception"),
-    ("CLOSED-NO-WRITER", P, "                if self._closed:\n                    return\n                writer = ",
-     "                writer = ",
+    ("CLOSED-NO-WRITER", P, "                if self._closed or self._writer is not None or self._stop_writer is not stop_writer:",
+     "                if self._writer is not None or self._stop_writer is not stop_writer:",
      "tests/test_move_review_fixes.py::test_a_shutdown_while_the_server_starts_leaves_no_writer"),
     ("RETIRE-SKIPS-LIVE", P, "if pair[1] not in live]", "if True]",
      "tests/test_move_review_fixes.py::test_a_memo_the_journal_maps_now_is_never_retired"),
@@ -309,8 +309,8 @@ CONTRACT_MUTATIONS = [
      "tests/test_contract.py::test_the_provider_is_a_concrete_subclass_of_the_real_abc"),
     ("CONTRACT-LOADER", "__init__.py", "    from .re_call_hermes import ReCallMemoryProvider, register\n",
      "    pass\n", "tests/test_contract.py::test_hermes_loads_the_directory_install_by_name"),
-    ("CONTRACT-MANAGER", P, "        if self._writer is None:\n            return\n        # One id per write",
-     "        return\n        # One id per write",
+    ("CONTRACT-MANAGER", P, "            if self._writer is None:\n                return\n            # One id per write",
+     "            if True:\n                return\n            # One id per write",
      "tests/test_contract.py::test_memory_manager_routes_prefetch_tools_and_writes"),
 ]
 

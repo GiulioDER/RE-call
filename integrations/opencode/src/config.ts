@@ -1,6 +1,6 @@
 /** The plugin's options from `opencode.json`, validated once, with Hermes's defaults. */
 
-import { existsSync, realpathSync } from "node:fs";
+import { existsSync, readlinkSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 
@@ -57,14 +57,28 @@ function pathIdentity(path: string): string {
   const absolutePath = resolve(path);
   let ancestor = absolutePath;
   const suffix: string[] = [];
-  // A junction or symlink above a missing memo directory still identifies the same store.
+  let links = 0;
+  let resolved = absolutePath;
+  // Resolve the existing prefix and any dangling links before appending missing components.
   while (!existsSync(ancestor)) {
     const parent = dirname(ancestor);
     if (parent === ancestor) break;
+    let target: string | undefined;
+    try {
+      target = readlinkSync(ancestor);
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== "ENOENT" && code !== "ENOTDIR" && code !== "EINVAL" && code !== "ELOOP") throw error;
+    }
+    if (target !== undefined) {
+      if (++links > 40) throw new Error(`re-call: too many symbolic links resolving ${absolutePath}`);
+      ancestor = isAbsolute(target) ? target : resolve(realpathSync(parent), target);
+      continue;
+    }
     suffix.push(basename(ancestor));
     ancestor = parent;
   }
-  const resolved = existsSync(ancestor) ? join(realpathSync(ancestor), ...suffix.reverse()) : absolutePath;
+  if (existsSync(ancestor)) resolved = join(realpathSync(ancestor), ...suffix.reverse());
   return process.platform === "win32" ? resolved.toLowerCase() : resolved;
 }
 
