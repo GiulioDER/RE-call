@@ -9,7 +9,7 @@ design violation.
 
 Packages: `recall`, `recall_mcp`, `recall_agent`, `recall_hooks`, `recall_interop`, `recall_consistency`
 Modules: 376
-Cross package edges: 456
+Cross package edges: 457
 
 ## Highest fan in modules
 
@@ -37,6 +37,7 @@ Cross package edges: 456
 | 180 | `recall.dashboard.config` |
 | 180 | `recall.lite.setup` |
 | 180 | `recall.wizard.llm` |
+| 180 | `recall_hooks.__main__` |
 | 180 | `recall_hooks.codex` |
 | 179 | `recall.claude_code` |
 | 179 | `recall.codex` |
@@ -44,17 +45,16 @@ Cross package edges: 456
 | 179 | `recall.wizard.probe` |
 | 179 | `recall.wizard.uninstall` |
 | 179 | `recall.wizard.wiring` |
+| 179 | `recall_hooks` |
+| 179 | `recall_hooks.auditor_brief` |
+| 179 | `recall_hooks.credentials` |
+| 179 | `recall_hooks.general_knowledge` |
+| 179 | `recall_hooks.hosted` |
+| 179 | `recall_hooks.memory_refresh` |
+| 179 | `recall_hooks.prompt_time` |
+| 179 | `recall_hooks.relay` |
+| 179 | `recall_hooks.write_time` |
 | 177 | `recall.cli_commands.reasoning_cmd` |
-| 174 | `recall_mcp.reasoning_api` |
-| 172 | `recall_mcp.server_lifespan` |
-| 169 | `recall_mcp.server_calibration` |
-| 166 | `recall_mcp.server_search` |
-| 163 | `recall.dashboard.activity` |
-| 163 | `recall_agent` |
-| 163 | `recall_mcp.server_assistant` |
-| 163 | `recall_mcp.server_facts` |
-| 163 | `recall_mcp.server_memory_admin` |
-| 162 | `recall.dashboard.corpus` |
 
 ## Modules with the most direct imports
 
@@ -141,6 +141,7 @@ They are observations, not automatic failures.
 | `recall_consistency.stale_probe` | `recall.store` |
 | `recall_consistency.stale_probe` | `recall.trust` |
 | `recall_consistency.stale_probe` | `recall.types` |
+| `recall_hooks` | `recall.codex` |
 | `recall_hooks` | `recall.confinement` |
 | `recall_hooks.auditor_brief` | `recall.anchors` |
 | `recall_hooks.auditor_brief` | `recall.records` |
@@ -878,19 +879,19 @@ They are observations, not automatic failures.
 | `recall_consistency.history_corpus` | 1 | 2 |
 | `recall_consistency.report` | 1 | 1 |
 | `recall_consistency.stale_probe` | 5 | 142 |
-| `recall_hooks` | 10 | 152 |
-| `recall_hooks.__main__` | 1 | 153 |
-| `recall_hooks.auditor_brief` | 5 | 152 |
+| `recall_hooks` | 11 | 179 |
+| `recall_hooks.__main__` | 1 | 180 |
+| `recall_hooks.auditor_brief` | 5 | 179 |
 | `recall_hooks.codex` | 4 | 180 |
-| `recall_hooks.credentials` | 2 | 152 |
-| `recall_hooks.general_knowledge` | 2 | 152 |
-| `recall_hooks.hosted` | 4 | 152 |
+| `recall_hooks.credentials` | 2 | 179 |
+| `recall_hooks.general_knowledge` | 2 | 179 |
+| `recall_hooks.hosted` | 4 | 179 |
 | `recall_hooks.mcp_cleanup` | 0 | 0 |
-| `recall_hooks.memory_refresh` | 4 | 152 |
-| `recall_hooks.prompt_time` | 2 | 152 |
-| `recall_hooks.relay` | 2 | 152 |
+| `recall_hooks.memory_refresh` | 4 | 179 |
+| `recall_hooks.prompt_time` | 2 | 179 |
+| `recall_hooks.relay` | 2 | 179 |
 | `recall_hooks.screening` | 0 | 0 |
-| `recall_hooks.write_time` | 2 | 152 |
+| `recall_hooks.write_time` | 2 | 179 |
 | `recall_interop` | 1 | 143 |
 | `recall_interop.memory_benchmarks` | 7 | 142 |
 | `recall_mcp` | 0 | 0 |

@@ -51,6 +51,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -209,6 +210,109 @@ class _Popen:
         self.launched.append((argv, kwargs))
         if self.refuse_flag and kwargs.get("creationflags", 0) & self.refuse_flag:
             raise PermissionError("the job does not allow breakaway")
+
+
+@pytest.mark.parametrize("slow_cleanup", ["windows-mcp", "relay", "relay-lock"])
+def test_codex_session_end_launches_index_within_client_budget(
+    tmp_path: Path, monkeypatch: Any, slow_cleanup: str
+) -> None:
+    """The real Codex adapter must reach detached indexing before its 3 s cap.
+
+    Red proof on 78b37b76c: the snapshot and taskkill waits take 4.9 s, or the relay
+    request or lock wait takes 4 s.
+    Advance a logical clock instead of waiting or terminating real processes.
+    """
+    from recall.codex import SESSION_END_TIMEOUT_SECONDS
+    from recall_hooks import codex, mcp_cleanup, relay
+
+    _project(tmp_path, monkeypatch)
+    elapsed = 0.0
+    started = 10.0
+    attempts: list[str] = []
+    launches: list[float] = []
+    relay_requests: list[str] = []
+    for name in ("RECALL_MCP_PS_FILE", "RECALL_MCP_KILL_FILE", "RECALL_MCP_SESSION_ID"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(time, "monotonic", lambda: started + elapsed)
+    monkeypatch.setattr(codex, "os", SimpleNamespace(environ=os.environ, getppid=lambda: 800))
+    monkeypatch.setattr(relay, "claude_config_home", lambda: tmp_path)
+
+    def snapshot(*args: Any, **kwargs: Any) -> list[tuple[str, str, str]]:
+        nonlocal elapsed
+        elapsed += 0.4
+        return [
+            ("800", "1", "codex app-server"),
+            ("804", "800", "recall-codex-mcp RECALL_MCP_SESSION_ID=another-session"),
+            ("805", "799", "recall-codex-mcp"),
+            ("801", "800", "recall-codex-mcp"),
+            ("802", "800", "recall-codex-mcp"),
+            ("803", "800", "recall-codex-mcp"),
+        ]
+
+    def taskkill(argv: list[str], *, timeout: float, **kwargs: Any) -> Any:
+        nonlocal elapsed
+        attempts.append(argv[2])
+        elapsed += timeout
+        raise subprocess.TimeoutExpired(argv, timeout)
+
+    def relay_request(state: Any, message: Any) -> Any:
+        nonlocal elapsed
+        relay_requests.append(message["op"])
+        elapsed += relay.REQUEST_TIMEOUT_SECONDS
+        raise TimeoutError
+
+    def sleep(seconds: float) -> None:
+        nonlocal elapsed
+        elapsed += seconds
+
+    path = relay.state_path("ending-session")
+    peer = relay.state_path("another-session")
+    state = {"host": "127.0.0.1", "port": 1234, "pid": 42, "token": "ending-token"}
+    relay._atomic_write(peer, {**state, "token": "peer-token"})
+    relay._atomic_write(path, state)
+    if slow_cleanup == "relay-lock":
+        relay._lock_path(path).write_text("42", encoding="ascii")
+        monkeypatch.setattr(time, "sleep", sleep)
+    monkeypatch.setattr(relay, "_endpoint_request", relay_request)
+    monkeypatch.setattr(relay, "_pid_alive", lambda pid: bool(pid))
+    monkeypatch.setattr(relay, "_wait_for_exit", lambda pid: True)
+
+    if slow_cleanup == "windows-mcp":
+        monkeypatch.setattr(mcp_cleanup, "os", SimpleNamespace(environ=os.environ, name="nt", getpid=os.getpid))
+        monkeypatch.setattr(mcp_cleanup, "_process_table", snapshot)
+        monkeypatch.setattr(mcp_cleanup, "subprocess", SimpleNamespace(
+            run=taskkill, DEVNULL=subprocess.DEVNULL, SubprocessError=subprocess.SubprocessError,
+        ))
+        # No slow socket in this case, so a budget failure can only come from taskkill.
+        monkeypatch.setattr(relay, "_endpoint_request", lambda *args, **kwargs: {"status": "ok"})
+
+    popen = _Popen()
+
+    def launch(argv: list[str], **kwargs: Any) -> None:
+        launches.append(elapsed)
+        popen(argv, **kwargs)
+
+    monkeypatch.setattr(memory_refresh, "start_background_index", REAL_START)
+    monkeypatch.setattr(memory_refresh.subprocess, "Popen", launch)
+    payload = {"cwd": str(tmp_path), "session_id": "ending-session",
+               "reason": "exit" if slow_cleanup == "windows-mcp" else "clear"}
+    monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(payload)))
+
+    assert codex.main(["session-end"]) == 0
+    assert len(launches) == 1 and launches[0] < SESSION_END_TIMEOUT_SECONDS
+    assert popen.launched[0][0][-2:] == ["index-memory", str(tmp_path)]
+    if slow_cleanup == "windows-mcp":
+        assert attempts and set(attempts) <= {"801", "802", "803"}
+    assert not relay_requests
+    if slow_cleanup == "relay-lock":
+        assert relay._read(path) == state
+        assert relay._lock_path(path).exists()
+    else:
+        assert not path.exists()
+        # A repeated stop must preserve the signal until the original helper observes it.
+        relay.stop("ending-session", deadline=time.monotonic() + 1.0)
+        assert relay._read(relay._stop_marker_path(path)) == {"token": "ending-token"}
+    assert relay._read(peer)["token"] == "peer-token"
 
 
 def test_the_hook_starts_a_detached_child_and_does_not_index_itself(
