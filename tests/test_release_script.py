@@ -24,6 +24,15 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "scripts
 import release  # noqa: E402
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
+LITE_INSTALL_EXAMPLES = {
+    "README.md": 1,
+    "docs/LITE.md": 2,
+    "directory-plugin/README.md": 1,
+    "directory-plugin/skills/install-re-call/SKILL.md": 2,
+    "context7.json": 1,
+    "site/llms.txt": 1,
+    "site/start.html": 3,
+}
 
 
 @pytest.fixture
@@ -34,9 +43,9 @@ def sandbox(tmp_path, monkeypatch) -> pathlib.Path:
     syntax these files use, and a hand-written stand-in would let a pattern rot while the test kept
     passing against the shape it was written for.
     """
-    for site in release.SITES:
-        source = REPO / site.path
-        target = tmp_path / site.path
+    for relative in {site.path for site in release.SITES} | LITE_INSTALL_EXAMPLES.keys():
+        source = REPO / relative
+        target = tmp_path / relative
         target.parent.mkdir(parents=True, exist_ok=True)
         if not target.exists():
             target.write_text(source.read_text(encoding="utf-8"), encoding="utf-8", newline="\n")
@@ -268,6 +277,9 @@ def test_the_cli_prints_its_closing_advice_on_a_cp1252_console(sandbox, tmp_path
     ⛔ **The script is COPIED into the sandbox and run from there**, because `release.py` resolves
     `REPO` from its own `__file__`. Running the repository's copy with `cwd=sandbox` would have
     bumped this checkout's real version files the moment `--apply` was added.
+
+    Red proof for the Lite examples: against release.SITES at e79ef9dea, the CLI updated
+    pyproject.toml but the README.md command still held the old floor, failing the count assertion.
     """
     import os
     import shutil
@@ -291,6 +303,9 @@ def test_the_cli_prints_its_closing_advice_on_a_cp1252_console(sandbox, tmp_path
     assert "permanent" in result.stdout
     # And it really did apply, so the crash path was genuinely exercised.
     assert 'version = "999.0.0"' in (sandbox / "pyproject.toml").read_text(encoding="utf-8")
+    for relative, count in LITE_INSTALL_EXAMPLES.items():
+        example = (sandbox / relative).read_text(encoding="utf-8").replace("&gt;", ">")
+        assert example.count("recall-rag[fastembed,mcp]>=999.0.0") == count, relative
     # ...in the sandbox ONLY. This assertion is the one that would have caught the copy running
     # against the real checkout, which is a failure a passing test would otherwise have hidden.
     assert 'version = "999.0.0"' not in (REPO / "pyproject.toml").read_text(encoding="utf-8")

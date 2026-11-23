@@ -23,7 +23,7 @@ Both can also be invoked directly, as `/recall-rag-setup:when-memory-helps` and
 The plugin itself sends nothing anywhere. The install the second skill walks you through does
 the following, and the skill tells you so before it starts:
 
-- `python -m pip install "recall-rag[fastembed,mcp]>=0.16.0"` downloads the package from PyPI.
+- `python -m pip install "recall-rag[fastembed,mcp]>=0.16.1"` downloads the package from PyPI.
 - `recall setup --lite --memory ./notes` indexes that folder into `.recall/memory.db` in your
   project, registers a `recall-memory` MCP server for the project, adds hooks to
   `~/.claude/settings.json`, and copies five skills into `~/.claude/skills/`.

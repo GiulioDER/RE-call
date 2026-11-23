@@ -1,7 +1,7 @@
 """Bump the version everywhere it is written, and stop before anything irreversible.
 
-**What this exists to fix.** The version is hand-maintained in seven places. Post-tag automation is
-already good: `release.yml` builds, smoke-tests, publishes to PyPI behind a reviewer and creates the
+**What this exists to fix.** The release version is repeated in package metadata, manifests and
+Lite install examples. After the tag, `release.yml` builds, smoke-tests, publishes to PyPI behind a reviewer and creates the
 GitHub Release from the CHANGELOG. Everything BEFORE the tag was a person editing seven files from
 memory, and the record shows what that costs. Releasing 0.9.7 bumped `pyproject.toml` and left
 `recall/__init__.py` at 0.9.6, which is not a cosmetic mismatch: the wizard pins
@@ -72,6 +72,9 @@ class Site:
     occurrences: int
 
 
+LITE_INSTALL_VERSION = r"recall-rag\[fastembed,mcp\](?:>|&gt;)=([0-9]+\.[0-9]+\.[0-9]+)(?![\w.])"
+
+
 #: Every hand-maintained copy. Keep in step with `known` in `tests/test_version_is_single_sourced.py`,
 #: which imports this tuple rather than restating it.
 #:
@@ -100,6 +103,13 @@ SITES: tuple[Site, ...] = (
     Site("plugin/.claude-plugin/plugin.json", r'"version": "([0-9][^"]*)"', 1),
     Site(".claude-plugin/marketplace.json", r'"version": "([0-9][^"]*)"', 1),
     Site("codex-plugin/.codex-plugin/plugin.json", r'"version": "([0-9][^"]*)"', 1),
+    Site("README.md", LITE_INSTALL_VERSION, 1),
+    Site("docs/LITE.md", LITE_INSTALL_VERSION, 2),
+    Site("directory-plugin/README.md", LITE_INSTALL_VERSION, 1),
+    Site("directory-plugin/skills/install-re-call/SKILL.md", LITE_INSTALL_VERSION, 2),
+    Site("context7.json", LITE_INSTALL_VERSION, 1),
+    Site("site/llms.txt", LITE_INSTALL_VERSION, 1),
+    Site("site/start.html", LITE_INSTALL_VERSION, 3),
 )
 
 #: Regenerated rather than edited. See the note on `SITES`.
