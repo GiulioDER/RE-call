@@ -8,6 +8,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ## [Unreleased]
 
+### Fixed
+
+* The MCP handshake reports the installed RE-call version in `serverInfo.version`.
+
 ## [0.16.1] (2026-11-23)
 
 ### Upgrade notes
