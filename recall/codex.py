@@ -14,6 +14,7 @@ import json
 import importlib
 import os
 import shutil
+import stat
 import subprocess
 import sys
 import tomllib
@@ -538,6 +539,62 @@ def _git(project_root: Path, *args: str) -> int | None:
         return None
 
 
+def _git_routing_refusal() -> str | None:
+    """Require checks to use the project's usual Git paths and configuration."""
+    for name in (
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_COMMON_DIR",
+        "GIT_INDEX_FILE",
+        "GIT_IMPLICIT_WORK_TREE",
+        "GIT_CONFIG_COUNT",
+        "GIT_CONFIG_PARAMETERS",
+        "GIT_CONFIG_GLOBAL",
+        "GIT_CONFIG_SYSTEM",
+        "GIT_CONFIG_NOSYSTEM",
+    ):
+        value = os.environ.get(name)
+        # Git reads no runtime key/value pairs for an empty or zero count.
+        if name == "GIT_CONFIG_COUNT" and value in {"", "0"}:
+            continue
+        if value is not None:
+            return f"Unset {name} before editing the Codex project configuration."
+    return None
+
+
+def _in_git_work_tree(root: Path) -> bool:
+    return any(os.path.lexists(folder / ".git") for folder in (root, *root.parents))
+
+
+def _git_exclusion(root: Path, path: Path) -> int | None:
+    return _git(root, "check-ignore", "-q", "--", path.relative_to(root).as_posix())
+
+
+def _append_gitignore_rule(path: Path) -> None:
+    try:
+        original = path.lstat()
+    except FileNotFoundError:
+        original = None
+    if original is not None and (not stat.S_ISREG(original.st_mode) or original.st_nlink > 1):
+        raise ValueError(f"{path} is linked or is not a regular file. Left untouched.")
+
+    def opener(name: str, flags: int) -> int:
+        flags |= getattr(os, "O_NOFOLLOW", 0)
+        flags = flags | os.O_EXCL if original is None else flags & ~os.O_CREAT
+        return os.open(name, flags, 0o666)
+
+    with open(path, "a+b", opener=opener) as handle:
+        opened = os.fstat(handle.fileno())
+        if opened.st_nlink > 1 or (original is not None and not os.path.samestat(original, opened)):
+            raise ValueError(f"{path} changed before it could be edited. Left untouched.")
+        separator = b""
+        if handle.seek(0, os.SEEK_END):
+            handle.seek(-1, os.SEEK_END)
+            if handle.read(1) != b"\n":
+                separator = b"\n"
+        handle.write(separator + b".codex/config.toml*\n")
+
+
 def _project_trusted(project_root: Path) -> bool:
     """Whether `CODEX_HOME/config.toml` marks this project, or a folder above it, `trusted`."""
     try:
@@ -573,13 +630,25 @@ class ProjectServerRemoval:
     def apply(self) -> None:
         from recall.wizard.wiring import _write_private_configuration
 
+        if (refusal := _git_routing_refusal()) is not None:
+            raise ValueError(refusal)
         target = self.path
         if target.resolve() != target:
             raise ValueError("the Codex config path changed; review a new uninstall plan")
         with configuration_lock(target):
             if target.resolve() != target or target.read_bytes() != self.original:
                 raise ValueError("the Codex config changed; review a new uninstall plan")
-            _write_private_configuration(target, self.updated)
+            root = target.parent.parent
+            if not _in_git_work_tree(root):
+                _write_private_configuration(target, self.updated)
+                return
+
+            def check_staging(staging: Path) -> None:
+                for path in (target, staging):
+                    if _git_exclusion(root, path) != 0:
+                        raise ValueError(f"Could not confirm effective Git exclusion for {path}. Left untouched.")
+
+            _write_private_configuration(target, self.updated, prepare_staging=check_staging)
 
 
 def plan_project_server_removal(
@@ -645,8 +714,8 @@ def register_project_servers(
     Codex reads project config only for a trusted project, and the result says whether this one
     is. A server name the user already defines outside RE-call's block is reported and left alone,
     and a file git tracks is refused, since it would commit this machine's store settings (the
-    env holds a DSN and may hold a provider key). Inside a git work tree it is also refused when
-    git cannot say whether it tracks the file, and otherwise added to the project's `.gitignore`.
+    env holds a DSN and may hold a provider key). Inside a Git work tree the config and backup
+    must be untracked and effectively ignored, along with any staging file that holds content.
     The file is written 0600, and a `.codex` that leads outside the project is refused.
 
     A later run keeps only the servers in RE-call's block that `CODEX_HOME/re-call/project-servers.json`
@@ -656,35 +725,17 @@ def register_project_servers(
     target = root / ".codex" / "config.toml"
     if not servers:
         return ProjectServerRegistration(target, skipped_reason="no servers to register")
+    if (refusal := _git_routing_refusal()) is not None:
+        return ProjectServerRegistration(target, skipped_reason=refusal)
     # A linked `.codex` (or config.toml) would land the credentials outside this project, where
     # neither the tracked-file check below nor the `.gitignore` entry applies.
     if os.path.normcase(os.path.realpath(target)) != os.path.normcase(str(target)):
         return ProjectServerRegistration(
             target, skipped_reason=f"{target} leads outside this project through a link; left untouched"
         )
-    in_work_tree = any((folder / ".git").exists() for folder in (root, *root.parents))
-    tracked = _git(root, "ls-files", "--error-unmatch", "--", ".codex/config.toml")
-    if tracked == 0:
-        return ProjectServerRegistration(
-            target,
-            skipped_reason=(
-                f"{target} is tracked by git, and RE-call will not write this machine's store "
-                "settings into a committed file"
-            ),
-        )
-    # 1 is git's answer for "not tracked"; anything else (no git, a timeout, a refused
-    # repository) is no answer, and inside a work tree that must not read as "not tracked".
-    if in_work_tree and tracked != 1:
-        return ProjectServerRegistration(
-            target,
-            skipped_reason=(
-                f"git could not say whether it tracks {target} (git missing, or the repository "
-                "refused), so RE-call will not write this machine's store settings there"
-            ),
-        )
     target.parent.mkdir(parents=True, exist_ok=True)
     with configuration_lock(target):
-        return _register_project_servers_locked(servers, root, target, in_work_tree)
+        return _register_project_servers_locked(servers, root, target, _in_git_work_tree(root))
 
 
 def _register_project_servers_locked(
@@ -694,6 +745,22 @@ def _register_project_servers_locked(
 
     if target.resolve() != target:
         return ProjectServerRegistration(target, skipped_reason=f"{target} is linked; left untouched")
+    backup_path = target.with_name(target.name + ".recall-backup")
+    for path in (target, backup_path):
+        tracked = _git(root, "ls-files", "--error-unmatch", "--", path.relative_to(root).as_posix())
+        if tracked == 0:
+            return ProjectServerRegistration(
+                target,
+                skipped_reason=(
+                    f"{path} is tracked by git, and RE-call will not write this machine's store "
+                    "settings into a committed file"
+                ),
+            )
+        if in_work_tree and tracked != 1:
+            return ProjectServerRegistration(
+                target,
+                skipped_reason=f"git could not say whether it tracks {path}. Left untouched.",
+            )
     try:
         raw = target.read_bytes() if target.exists() else b""
         # `utf-8-sig`: a BOM a Windows editor wrote is not the user's content, and tomllib refuses it.
@@ -727,28 +794,47 @@ def _register_project_servers_locked(
     )
     written = tomllib.loads(text)["mcp_servers"]  # never write a file Codex would refuse to parse
     gitignore = None
-    # Each path asked on its own: with several, check-ignore succeeds when any one is ignored, and
-    # the backup can hold the credentials of an earlier RE-call block.
-    covered = (".codex/config.toml", ".codex/config.toml.recall-backup")
-    if in_work_tree and any(_git(root, "check-ignore", "-q", "--", path) != 0 for path in covered):
-        # As `recall.wizard.wiring.write_project_files` does for `.env`: a `git add .` in the
-        # project must not commit the credentials.
-        gitignore = root / ".gitignore"
-        existing = gitignore.read_text(encoding="utf-8", errors="replace") if gitignore.exists() else ""
-        separator = "" if not existing or existing.endswith("\n") else "\n"
-        with gitignore.open("a", encoding="utf-8", newline="\n") as handle:
-            handle.write(f"{separator}.codex/config.toml*\n")
-    backup_path = target.with_name(target.name + ".recall-backup")
+
+    def ensure_git_exclusion(*paths: Path) -> None:
+        nonlocal gitignore
+        if not in_work_tree:
+            return
+        # Query one path at a time: Git's status for multiple paths would attest only one.
+        statuses = [_git_exclusion(root, path) for path in paths]
+        if 1 in statuses and all(status in {0, 1} for status in statuses) and gitignore is None:
+            ignore = root / ".gitignore"
+            _append_gitignore_rule(ignore)
+            gitignore = ignore
+            statuses = [_git_exclusion(root, path) for path in paths]
+        for path, status in zip(paths, statuses, strict=True):
+            if status != 0:
+                raise ValueError(f"Could not confirm effective Git exclusion for {path}. Left untouched.")
+
+    def record_registration(staging: Path) -> None:
+        ensure_git_exclusion(staging)
+        # Publish the ownership record before replacing the config, after staging is protected.
+        # An entry absent from the config can never be kept from the record alone.
+        ledger = _written_servers_path()
+        ledger.parent.mkdir(parents=True, exist_ok=True)
+        with configuration_lock(ledger):
+            record = _written_servers()
+            record[_project_key(root)] = {name: _server_digest(written[name]) for name in (*kept, *mine)}
+            _write_private_configuration(ledger, json.dumps(record, indent=2, sort_keys=True) + "\n")
+
     backup = None
-    if raw and not backup_path.exists():
-        _write_private_configuration(backup_path, original)
-        backup = backup_path
-    # Recorded before the file is written: a record naming a server the file lacks keeps nothing.
-    record = _written_servers()
-    record[_project_key(root)] = {name: _server_digest(written[name]) for name in (*kept, *mine)}
-    _written_servers_path().parent.mkdir(parents=True, exist_ok=True)
-    _write_private_configuration(_written_servers_path(), json.dumps(record, indent=2, sort_keys=True) + "\n")
-    _write_private_configuration(target, text.replace("\n", "\r\n") if b"\r\n" in raw else text)
+    try:
+        ensure_git_exclusion(target, backup_path)
+        if raw and not backup_path.exists():
+            _write_private_configuration(backup_path, original, prepare_staging=ensure_git_exclusion)
+            backup = backup_path
+        _write_private_configuration(
+            target, text.replace("\n", "\r\n") if b"\r\n" in raw else text,
+            prepare_staging=record_registration,
+        )
+    except (OSError, ValueError) as exc:
+        return ProjectServerRegistration(
+            target, conflicts=conflicts, skipped_reason=str(exc), gitignore=gitignore, backup=backup,
+        )
     return ProjectServerRegistration(
         target,
         registered=tuple(mine),

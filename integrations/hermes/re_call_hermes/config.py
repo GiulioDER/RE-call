@@ -114,7 +114,8 @@ def shared_dir() -> Path:
     """The per-user store directory every agent uses by default. A relative XDG_CONFIG_HOME is
     ignored, as the XDG specification says."""
     xdg = os.environ.get("XDG_CONFIG_HOME", "")
-    return (Path(xdg) if os.path.isabs(xdg) else Path.home() / ".config") / DATA_DIR
+    path = Path(xdg)
+    return (path if path.is_absolute() else Path.home() / ".config") / DATA_DIR
 
 
 def _shared_dir_or_none() -> Path | None:

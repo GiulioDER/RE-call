@@ -27,6 +27,7 @@ from recall.store import PgVectorStore
 from recall.trust_policy import TrustRefusal
 from recall_mcp.access_log import caller_identity, record_access
 from recall_mcp.auth import SCOPE_FEDERATE, SCOPE_READ
+from recall_mcp.compat import serving_json as _serving_json
 from recall_mcp.models import EvidenceResult, SearchResult
 from recall_mcp.retrieval import _retrieve_trusted, evidence_memory, search_memory
 from recall_mcp.federation_adapter import federation_diagnostics, prepare_federated_execution
@@ -47,19 +48,6 @@ from recall_mcp.server_common import (
     _tool_error_for_trust_refusal,
     _trust_policy_for,
 )
-
-
-def _serving_json(result: object) -> str:
-    """Serialize additive retrieval fields only when a caller opted into them."""
-    dump = cast(Callable[..., str], getattr(result, "model_dump_json"))
-    exclude: set[str] = set()
-    if getattr(result, "explanation", None) is None:
-        exclude.add("explanation")
-    if not getattr(result, "related_items", ()):
-        exclude.add("related_items")
-    if not getattr(result, "related_diagnostics", ()):
-        exclude.add("related_diagnostics")
-    return dump(indent=2, exclude=exclude)
 
 
 _RetrievalResultT = TypeVar("_RetrievalResultT", "SearchResult", "EvidenceResult")

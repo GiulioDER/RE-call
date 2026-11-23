@@ -275,6 +275,184 @@ def test_git_that_cannot_answer_in_a_work_tree_refuses_the_write(
     assert any("git could not say" in text for _client, text in report.clients), report.render()
 
 
+def test_codex_refuses_when_git_cannot_confirm_the_configuration_is_ignored(
+    tmp_path: Path, clients: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SEC-001: registration requires Git's effective exclusion before any private write."""
+    from recall.codex import register_project_servers
+
+    project = tmp_path / "project"
+    (project / ".git").mkdir(parents=True)
+    writes: list[Path] = []
+    monkeypatch.setattr("recall.codex._git", lambda *_args: 1)
+    monkeypatch.setattr("recall.wizard.wiring._write_private_configuration", lambda path, _text: writes.append(path))
+
+    result = register_project_servers(_server(project), project_root=project)
+
+    assert not writes, "registration attempted a private write without confirmed Git exclusion"
+    assert not result.registered and result.skipped_reason
+
+
+@pytest.mark.parametrize("uninstall", [False, True], ids=["install", "uninstall"])
+@pytest.mark.parametrize("has_git_marker", [False, True], ids=["no-marker", "worktree"])
+@pytest.mark.parametrize(
+    ("variable", "value"),
+    [
+        pytest.param("GIT_INDEX_FILE", "mock-routing-marker", id="direct-index"),
+        pytest.param("GIT_CONFIG_COUNT", "1", id="runtime-count"),
+        pytest.param("GIT_CONFIG_PARAMETERS", "mock-parameter", id="runtime-parameters"),
+        pytest.param("GIT_CONFIG_GLOBAL", "mock-global-marker", id="runtime-global"),
+        pytest.param("GIT_CONFIG_SYSTEM", "mock-system-marker", id="runtime-system"),
+        pytest.param("GIT_CONFIG_NOSYSTEM", "1", id="runtime-nosystem"),
+    ],
+)
+def test_codex_refuses_repository_routing_environment(
+    tmp_path: Path,
+    clients: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    uninstall: bool,
+    has_git_marker: bool,
+    variable: str,
+    value: str,
+) -> None:
+    """FA-1-9 and FA-2-8: Git overrides refuse before Git queries or private writes."""
+    from recall.codex import ProjectServerRemoval, register_project_servers
+
+    project = (tmp_path / "project").resolve()
+    project.mkdir()
+    if has_git_marker:
+        (project / ".git").mkdir()
+    calls: list[str] = []
+
+    def git_spy(_root: Path, command: str, *_args: str) -> int:
+        calls.append(command)
+        return 0 if command == "check-ignore" else 1
+
+    monkeypatch.setenv(variable, value)
+    monkeypatch.setattr("recall.codex._git", git_spy)
+    monkeypatch.setattr(
+        "recall.wizard.wiring._write_private_configuration",
+        lambda *_args, **_kwargs: calls.append("private write"),
+    )
+
+    reason = ""
+    if uninstall:
+        target = project / ".codex" / "config.toml"
+        target.parent.mkdir()
+        original = b'model = "example"\n'
+        target.write_bytes(original)
+        try:
+            ProjectServerRemoval(target, ("example",), original, "").apply()
+        except ValueError as exc:
+            reason = str(exc)
+    else:
+        reason = register_project_servers(_server(project), project_root=project).skipped_reason
+
+    assert not calls, "Codex used Git or reached a private write with a repository routing override"
+    assert variable in reason
+
+
+def test_codex_refuses_an_edit_to_a_linked_gitignore(
+    tmp_path: Path, clients: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SEC-002: a link reported by lstat precludes opening the ignore file to append."""
+    from recall.codex import register_project_servers
+
+    project = (tmp_path / "project").resolve()
+    (project / ".git").mkdir(parents=True)
+    ignore = project / ".gitignore"
+    ignore.write_bytes(b"# user comments\n")
+    lstat = Path.lstat
+
+    def linked(path: Path) -> os.stat_result:
+        if path == ignore:
+            return os.stat_result((stat.S_IFLNK, *lstat(path)[1:]))
+        return lstat(path)
+
+    monkeypatch.setattr(Path, "lstat", linked)
+    monkeypatch.setattr("recall.codex._git", lambda *_args: 1)
+
+    result = register_project_servers(_server(project), project_root=project)
+
+    assert ignore.read_bytes() == b"# user comments\n", "registration attempted to edit the linked ignore file"
+    assert not result.registered and result.skipped_reason
+
+
+@pytest.mark.parametrize("uninstall", [False, True], ids=["install", "uninstall"])
+def test_codex_stages_no_bytes_without_effective_git_exclusion(
+    tmp_path: Path, clients: Path, monkeypatch: pytest.MonkeyPatch, uninstall: bool
+) -> None:
+    """SEC-003: both writers stop before opening an unprotected staging file for content."""
+    from recall.codex import ProjectServerRemoval, register_project_servers
+    from recall.wizard import wiring
+
+    project = (tmp_path / "project").resolve()
+    (project / ".git").mkdir(parents=True)
+    target = project / ".codex" / "config.toml"
+    protected = {".codex/config.toml", ".codex/config.toml.recall-backup"}
+    staging: dict[int, Path] = {}
+    mkstemp, fdopen = wiring.tempfile.mkstemp, wiring.os.fdopen
+
+    def observe_staging(*args: object, **kwargs: object) -> tuple[int, str]:
+        descriptor, name = mkstemp(*args, **kwargs)
+        path = Path(name)
+        if path.parent == target.parent:
+            staging[descriptor] = path
+        return descriptor, name
+
+    def refuse_content(descriptor: int, *args: object, **kwargs: object):
+        assert descriptor not in staging, "writer opened the unprotected staging file for content"
+        return fdopen(descriptor, *args, **kwargs)
+
+    monkeypatch.setattr("recall.codex._git", lambda _root, cmd, *args: 0 if cmd == "check-ignore" and args[-1] in protected else 1)
+    monkeypatch.setattr(wiring.tempfile, "mkstemp", observe_staging)
+    monkeypatch.setattr(wiring.os, "fdopen", refuse_content)
+
+    if uninstall:
+        target.parent.mkdir()
+        original = b'model = "example"\n'
+        target.write_bytes(original)
+        removal = ProjectServerRemoval(target, ("example",), original, "")
+        with pytest.raises(ValueError, match="effective Git exclusion"):
+            removal.apply()
+        assert target.read_bytes() == original
+    else:
+        result = register_project_servers(_server(project), project_root=project)
+        assert not result.registered and "effective Git exclusion" in result.skipped_reason
+        assert not target.exists()
+    assert staging and all(not path.exists() for path in staging.values())
+
+
+def test_codex_merges_the_current_ownership_ledger_under_its_lock(
+    tmp_path: Path, clients: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """DAT-001: a different project's update published while waiting for the lock survives."""
+    from collections.abc import Iterator
+    from contextlib import contextmanager
+
+    from recall import codex
+
+    project = (tmp_path / "project").resolve()
+    project.mkdir()
+    ledger = codex._written_servers_path()
+    other = str((tmp_path / "other-project").resolve())
+    other_servers = {"other": "recorded-digest"}
+    lock = codex.configuration_lock
+
+    @contextmanager
+    def competing_write(path: Path) -> Iterator[None]:
+        with lock(path):
+            if path == ledger:
+                ledger.write_text(json.dumps({other: other_servers}), encoding="utf-8")
+            yield
+
+    monkeypatch.setattr(codex, "configuration_lock", competing_write)
+    result = codex.register_project_servers(_server(project), project_root=project)
+    records = json.loads(ledger.read_text(encoding="utf-8"))
+    assert records.get(other) == other_servers, "registration lost another project's ownership record"
+    assert result.registered and records[codex._project_key(project)]
+
+
 def test_an_untracked_codex_config_is_added_to_gitignore(tmp_path: Path, clients: Path) -> None:
     """STAKES-004: in a git work tree, `.codex/config.toml` is ignored before it is written."""
     project = tmp_path / "project"
@@ -350,6 +528,32 @@ def test_the_claude_plugin_counts_only_when_it_runs_here(tmp_path: Path, clients
     assert plugin({"scope": "user"}, enabled=False) is False, "a disabled plugin counted"
     assert plugin({"scope": "user"}) is True
     assert plugin({"scope": "local", "projectPath": str(project)}) is True
+
+
+def test_claude_plugin_enablement_uses_the_project_precedence(
+    tmp_path: Path, clients: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from recall.claude_code import PLUGIN_ID, claude_plugin_installed
+
+    project = tmp_path / "project"
+    project_config = project / ".claude"
+    profile = clients / ".claude"
+    project_config.mkdir(parents=True)
+    (profile / "plugins").mkdir(parents=True)
+    (profile / "plugins" / "installed_plugins.json").write_text(
+        json.dumps({"plugins": {PLUGIN_ID: [{"scope": "user"}]}}), encoding="utf-8"
+    )
+    monkeypatch.setattr("recall.claude_code.shutil.which", lambda name: f"/bin/{name}")
+    shared = project_config / "settings.json"
+    local = project_config / "settings.local.json"
+    shared.write_text(json.dumps({"enabledPlugins": {PLUGIN_ID: False}}), encoding="utf-8")
+    assert not claude_plugin_installed(project)
+
+    local.write_text(json.dumps({"enabledPlugins": {PLUGIN_ID: True}}), encoding="utf-8")
+    assert claude_plugin_installed(project)
+
+    local.write_text("{broken", encoding="utf-8")
+    assert not claude_plugin_installed(project)
 
 
 def test_session_end_indexes_the_configured_memo_folder(

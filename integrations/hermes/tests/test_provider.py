@@ -494,3 +494,21 @@ def test_initialize_returns_only_once_the_server_is_ready(harness):
     harness.provider = provider
     provider.initialize("s1", hermes_home=str(harness.home), platform="cli", agent_context="primary")
     assert provider._ready.is_set()
+
+
+def test_a_live_unresponsive_server_is_replaced(harness, monkeypatch):
+    """Two consecutive deadlines retire a post-handshake child and recall resumes."""
+    monkeypatch.setattr(provider_module, "RESTART_INTERVAL_S", 0.0)
+    monkeypatch.setattr(provider_module, "PREFETCH_DEADLINE_S", 0.15)
+    harness.scenario({"recall_search": [SEARCH_OK]}, no_answer_text=["None"])
+    provider = harness.start()
+    old_client = provider._client
+    old_process = old_client._proc
+    assert provider.prefetch("where do I work?") == ""
+    assert old_client.alive
+    harness.scenario({"recall_search": [SEARCH_OK]})
+    assert provider.prefetch("where do I work?") == ""
+    assert wait_for(lambda: provider._ready.is_set() and provider._client is not old_client, timeout=5)
+    assert old_process.poll() is not None
+    monkeypatch.setattr(provider_module, "PREFETCH_DEADLINE_S", 2.0)
+    assert "Works at Acme" in provider.prefetch("where do I work?")

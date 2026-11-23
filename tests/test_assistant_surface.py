@@ -369,6 +369,189 @@ def test_forget_takes_a_memo_by_id_or_file_and_it_stays_forgotten(
     _serve_both(envs, body)
 
 
+
+@pytest.mark.parametrize(
+    ("tool", "method", "result_field"),
+    [
+        ("recall_forget", "forget_result", "sources_removed"),
+        ("recall_withdraw", "withdraw", "sources_withdrawn"),
+    ],
+)
+def test_keyed_assistant_erasure_replays_without_repeating_the_effect(
+    envs: tuple[dict[str, str], dict[str, str]],
+    monkeypatch: pytest.MonkeyPatch,
+    tool: str,
+    method: str,
+    result_field: str,
+) -> None:
+    from recall_mcp.models import ForgetResult, WithdrawResult
+
+    effects: list[str] = []
+    model = ForgetResult if method == "forget_result" else WithdrawResult
+
+    def fake_erasure(_assistant, _store, _embedder, memo, **_policy):
+        effects.append(memo)
+        return model(chunks_removed=1, message="fixture result", **{result_field: [memo]})
+
+    monkeypatch.setattr(AssistantMemos, method, fake_erasure)
+
+    async def body(assistant: Call, _plain: Call, _state: dict[str, Any]) -> None:
+        args = {"sources": ["note-2244"], "idempotency_key": "fixture-retry"}
+        first = await assistant(tool, **args)
+        assert json.loads(first)[result_field] == ["note-2244"]
+        assert await assistant(tool, **args) == first
+        assert effects == ["note-2244"]
+
+    _serve_both(envs, body)
+
+
+def test_concurrent_keyed_lite_erasure_admits_one_effect(
+    envs: tuple[dict[str, str], dict[str, str]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from recall_mcp import server_memory_admin
+    from recall_mcp.models import ForgetResult
+
+    effects: list[list[str]] = []
+
+    def fake_erasure(_store, sources, *_args, **_kwargs):
+        effects.append(sources)
+        return ForgetResult(chunks_removed=1, sources_removed=sources, message="fixture result")
+
+    monkeypatch.setattr(server_memory_admin, "forget_memory", fake_erasure)
+    durable_replay = srv._durable_replay
+
+    async def body(assistant: Call, plain: Call, _state: dict[str, Any]) -> None:
+        admitted = 0
+        both = asyncio.Event()
+
+        async def admit_both(*args, **kwargs):
+            nonlocal admitted
+            receipt = await durable_replay(*args, **kwargs)
+            admitted += 1
+            if admitted == 2:
+                both.set()
+            await asyncio.wait_for(both.wait(), 5)
+            return receipt
+
+        monkeypatch.setattr(srv, "_durable_replay", admit_both)
+        kwargs = {"sources": ["fixture.md"], "idempotency_key": "fixture-concurrency"}
+        first, second = await asyncio.gather(
+            assistant("recall_forget", **kwargs), plain("recall_forget", **kwargs)
+        )
+        assert json.loads(first)["sources_removed"] == ["fixture.md"]
+        assert second == first
+        assert effects == [["fixture.md"]]
+
+    _serve_both(envs, body)
+
+
+def test_keyed_assistant_erasure_receipt_is_bound_to_its_folder(
+    envs: tuple[dict[str, str], dict[str, str]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from recall_mcp.models import ForgetResult
+
+    effects: list[Path] = []
+
+    def fake_erasure(assistant, _store, _embedder, memo, **_policy):
+        effects.append(assistant.folder)
+        return ForgetResult(chunks_removed=1, sources_removed=[memo], message="fixture result")
+
+    monkeypatch.setattr(AssistantMemos, "forget_result", fake_erasure)
+    first = Path(envs[0]["RECALL_ASSISTANT_MEMOS"]).resolve()
+    second_env = {**envs[0], "RECALL_ASSISTANT_MEMOS": str(first.with_name("other-memos"))}
+
+    async def body(assistant: Call, other: Call, _state: dict[str, Any]) -> None:
+        args = {"sources": ["note-2244"], "idempotency_key": "fixture-alias"}
+        assert json.loads(await assistant("recall_forget", **args))["sources_removed"] == ["note-2244"]
+        assert "idempotency_conflict" in await other("recall_forget", **args)
+        assert effects == [first]
+
+    _serve_both((envs[0], second_env), body)
+
+
+def test_oversized_keyed_assistant_result_is_replay_safe(
+    envs: tuple[dict[str, str], dict[str, str]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from recall.constants import MAX_IDEMPOTENCY_RESULT_BYTES
+    from recall_mcp.models import ForgetResult
+
+    effects: list[str] = []
+
+    def fake_erasure(_assistant, _store, _embedder, memo, **_policy):
+        effects.append(memo)
+        return ForgetResult(
+            chunks_removed=1, sources_removed=[memo], message="x" * (MAX_IDEMPOTENCY_RESULT_BYTES + 1)
+        )
+
+    monkeypatch.setattr(AssistantMemos, "forget_result", fake_erasure)
+
+    async def body(assistant: Call, _plain: Call, _state: dict[str, Any]) -> None:
+        args = {"sources": ["note-2244"], "idempotency_key": "fixture-size-limit"}
+        result = await assistant("recall_forget", **args)
+        assert "reconciliation_required" in result
+        assert await assistant("recall_forget", **args) == result
+        assert effects == ["note-2244"]
+
+    _serve_both(envs, body)
+
+
+def test_keyed_assistant_relative_aliases_bind_the_index_root(
+    envs: tuple[dict[str, str], dict[str, str]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from recall_mcp import server_memory_admin
+    from recall_mcp.models import ForgetResult
+
+    effects: list[str] = []
+
+    def fake_memo(_assistant, _store, _embedder, memo, **_policy):
+        effects.append(memo)
+        return ForgetResult(chunks_removed=1, sources_removed=[memo], message="fixture memo")
+
+    def fake_plain(_store, sources, *_args, **_policy):
+        return ForgetResult(chunks_removed=1, sources_removed=sources, message="fixture source")
+
+    monkeypatch.setattr(AssistantMemos, "forget_result", fake_memo)
+    monkeypatch.setattr(server_memory_admin, "forget_memory", fake_plain)
+    root = Path(envs[0]["RECALL_INDEX_ROOT"])
+    nested = root / "nested"
+    nested.mkdir()
+    _write_memos(nested / "mem", 48)
+    first = {**envs[0], "RECALL_ASSISTANT_MEMOS": str(nested / "assistant")}
+    other = {**first, "RECALL_INDEX_ROOT": str(nested)}
+
+    async def body(assistant: Call, second: Call, _state: dict[str, Any]) -> None:
+        sources = ["note-2244", "assistant/note-2245"]
+        args = {"sources": sources, "idempotency_key": "fixture-index-root"}
+        assert json.loads(await assistant("recall_forget", **args))["sources_removed"] == sources
+        assert "idempotency_conflict" in await second("recall_forget", **args)
+        assert effects == ["note-2244"]
+
+    _serve_both((first, other), body)
+
+
+def test_keyed_assistant_replay_skips_filesystem_alias_resolution(
+    envs: tuple[dict[str, str], dict[str, str]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from recall_mcp.models import ForgetResult
+
+    def fake_erasure(_assistant, _store, _embedder, memo, **_policy):
+        return ForgetResult(chunks_removed=1, sources_removed=[memo], message="fixture result")
+
+    def unexpected_lookup(*_args):
+        raise AssertionError("receipt replay resolved a filesystem alias")
+
+    monkeypatch.setattr(AssistantMemos, "forget_result", fake_erasure)
+
+    async def body(assistant: Call, _plain: Call, _state: dict[str, Any]) -> None:
+        args = {"sources": ["memos/note-2244"], "idempotency_key": "fixture-replay"}
+        first = await assistant("recall_forget", **args)
+        assert json.loads(first)["sources_removed"] == ["memos/note-2244"]
+        monkeypatch.setattr(AssistantMemos, "folder_memo", unexpected_lookup)
+        assert await assistant("recall_forget", **args) == first
+
+    _serve_both(envs, body)
+
+
 def test_a_half_configured_surface_refuses_to_start(
     envs: tuple[dict[str, str], dict[str, str]], tmp_path: Path
 ) -> None:

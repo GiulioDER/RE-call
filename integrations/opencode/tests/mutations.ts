@@ -201,7 +201,7 @@ export const ROWS: Row[] = [
     ["CONFIG-SHARED-DEFAULT", "if (!sharedHasStore && existsSync(join(dataDir, \"memory.db\"))) {", "if (!sharedHasStore) {", "the shared default applies when neither store exists"],
     ["CONFIG-DSN-WINS", "if (!dsn && sharedDir !== undefined) {", "if (sharedDir !== undefined) {", "an explicit dsn wins"],
     // The memo root follows the chosen store: a split would index one folder and write to another.
-    ["CONFIG-MEMOS-FOLLOW-STORE", ': join(storeDir, "memos"),', ': join(dataDir, "memos"),', "the shared store is chosen when present"],
+    ["CONFIG-MEMOS-FOLLOW-STORE", 'memo ?? join(storeDir, "memos"),', 'memo ?? join(dataDir, "memos"),', "the shared store is chosen when present"],
   ].map(([id, find, replace, name]) => ({
     id: id!,
     file: "src/config.ts",
@@ -214,8 +214,8 @@ export const ROWS: Row[] = [
   {
     id: "CONFIG-SHARED-DIR",
     file: "src/config.ts",
-    find: "\".config\"), \"re-call\");",
-    replace: "\".config\"), \"opencode\", \"re-call\");",
+    find: 'return join(configHome(env.XDG_CONFIG_HOME), "re-call");',
+    replace: 'return join(configHome(env.XDG_CONFIG_HOME), "opencode", "re-call");',
     test: "tests/unit/config.test.ts",
     name: "the shared folder is re-call under XDG_CONFIG_HOME",
     assertion: "expect(sharedStoreDir({ XDG_CONFIG_HOME: xdg })).toBe(join(xdg, \"re-call\"));",
@@ -223,7 +223,7 @@ export const ROWS: Row[] = [
   // XDG_CONFIG_HOME read as recall-hermes `shared_dir` reads it (recall-claw audit DAT-003, ENV-002), 2026-11-15.
   // The ROOTED and UNC rows are red on Windows only, where `pythonIsAbs` has those branches.
   ...[
-    ["CONFIG-XDG-ANY", "return join(pythonIsAbs(xdg) ? xdg :", "return join(xdg ? xdg :"],
+    ["CONFIG-XDG-ANY", "return pythonIsAbs(xdg) ? xdg :", "return xdg ? xdg :"],
     ["CONFIG-XDG-ROOTED", String.raw`return head.startsWith(":\\", 1) || head.startsWith("\\\\");`, String.raw`return head.startsWith(":\\", 1) || head.startsWith("\\");`],
     ["CONFIG-XDG-UNC", String.raw`return head.startsWith(":\\", 1) || head.startsWith("\\\\");`, String.raw`return head.startsWith(":\\", 1);`],
   ].map(([id, find, replace]) => ({
@@ -433,7 +433,7 @@ export const ROWS: Row[] = [
       "two consecutive call timeouts kill a child that stopped reading, one does not", "expect(running(first)).toBe(true); // one timeout left the child alone"],
     ["MCP-WEDGED-KILL", "if (this.timeouts >= WEDGED_AFTER_TIMEOUTS && proc && this.proc === proc) proc.kill();", "void proc;",
       "two consecutive call timeouts kill a child that stopped reading, one does not", "expect(starts()).toBe(2); // the second timeout killed it, so this call started a new one"],
-    ["MCP-FLOOR", "if (left < SEND_FLOOR_MS) return", "if (false) return", "a call is not sent with its budget almost spent", "expect(await client.call(\"recall_search\", { query: \"x\" }, 500)).toEqual({"],
+    ["MCP-FLOOR", "if (left < SEND_FLOOR_MS) return", "if (false) return", "a call is not sent with its budget almost spent", "expect(await request).toEqual({"],
     ["MCP-CANCEL", 'this.send({ jsonrpc: "2.0", method: "notifications/cancelled", params: { requestId: id, reason } });', "void reason;",
       "a call that times out is cancelled on the server", "expect(events).toEqual([\"call\", \"cancelled\", \"call\"]);"],
     ["MCP-INIT-ERROR", 'const init = this.requestResult("initialize", {', 'const init = this.request("initialize", {',
@@ -454,7 +454,7 @@ export const ROWS: Row[] = [
   ...[
     ["MCP-QUEUE-BUDGET", "return await Promise.race([run, gaveUp]);", "return await run;",
       "a call queued behind a slow one comes back at its own budget, unsent", "expect(elapsed).toBeLessThan(2_000);"],
-    ["MCP-QUEUE-LEFT", "const left = timeoutMs - (this.now() - started);", "const left = timeoutMs;",
+    ["MCP-QUEUE-LEFT", "const left = deadline - this.now();", "const left = timeoutMs;",
       "a call that waited for its turn is bounded by what is left of its budget", "expect(queued.ok).toBe(false);"],
     ["MCP-LATE-ANSWER", "else this.timeouts = 0;", "", "late answers do not get a slow child killed as wedged", "expect(await client.call(\"recall_search\", { query: \"x\" }, 5_000)).toEqual({ ok: true, json: SEARCH_ANSWER });"],
     ["MCP-START-BOUND", "      if (this.proc === proc) proc.kill();\n    });", "      void proc;\n    });",

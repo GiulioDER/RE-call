@@ -18,6 +18,7 @@ from urllib.parse import urlencode, urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 from recall.errors import RecallError
 from recall._env import truthy
+from recall_mcp.compat import serving_json
 
 if TYPE_CHECKING:
     from recall_mcp.models import EvidenceResult, SearchResult
@@ -268,7 +269,7 @@ def render_search_response(
 
     normalized = normalize_locale(locale)
     if normalized is None:
-        return result.model_dump_json(indent=2)
+        return serving_json(result)
     texts = [hit.text for hit in result.hits]
     if result.advice:
         texts.append(result.advice)
@@ -297,7 +298,7 @@ def render_evidence_response(
 
     normalized = normalize_locale(locale)
     if normalized is None:
-        return result.model_dump_json(indent=2)
+        return serving_json(result)
     texts = [item.text for item in result.items]
     if result.advice:
         texts.append(result.advice)

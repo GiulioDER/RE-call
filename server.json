@@ -63,7 +63,7 @@
         },
         {
           "name": "RECALL_TABLE",
-          "description": "The chunk table inside that database. `recall quickstart` indexes into quickstart_chunks so its sample corpus can never be retrieved beside real memory; `recall setup` uses chunks. The wrong value returns no hits and no error.",
+          "description": "Legacy PostgreSQL chunk table. Use quickstart_chunks for `recall quickstart` and chunks for standard setup. Lite, generation mode, and authenticated tenant routing require the default chunks setting and refuse other values at startup.",
           "format": "string",
           "isRequired": false,
           "isSecret": false,

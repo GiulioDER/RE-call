@@ -198,15 +198,27 @@ def claude_plugin_installed(project_root: Path) -> bool:
     home = claude_config_home()
     try:
         document = json.loads((home / "plugins" / "installed_plugins.json").read_text(encoding="utf-8"))
-        settings = json.loads(settings_path().read_text(encoding="utf-8")) if settings_path().exists() else {}
     except (OSError, ValueError):
         return False
     plugins = document.get("plugins") if isinstance(document, dict) else None
     entries = plugins.get(PLUGIN_ID) if isinstance(plugins, dict) else None
-    enabled = settings.get("enabledPlugins") if isinstance(settings, dict) else None
-    if not isinstance(entries, list) or (isinstance(enabled, dict) and enabled.get(PLUGIN_ID) is False):
+    if not isinstance(entries, list):
         return False
     root = project_root.resolve()
+
+    for path in (root / ".claude" / "settings.local.json", root / ".claude" / "settings.json", settings_path()):
+        try:
+            settings = json.loads(path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            continue
+        except (OSError, ValueError):
+            return False
+        enabled = settings.get("enabledPlugins") if isinstance(settings, dict) else None
+        value = enabled.get(PLUGIN_ID) if isinstance(enabled, dict) else None
+        if isinstance(value, bool):
+            if not value:
+                return False
+            break
 
     def covers(entry: object) -> bool:
         if not isinstance(entry, dict):
