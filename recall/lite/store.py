@@ -1456,13 +1456,15 @@ class LiteStore:
         *,
         operation: str = ANY_OPERATION,
         request_fingerprint: str | None = None,
+        ordinary_erasure_fingerprint: str | None = None,
         now: datetime | None = None,
     ) -> None:
         """Keep a completed mutation's response, as `PgVectorStore.record_operation_receipt`."""
         from recall.lite.receipts import record_receipt
 
         record_receipt(
-            self, idempotency_key, result, operation=operation, request_fingerprint=request_fingerprint, now=now
+            self, idempotency_key, result, operation=operation, request_fingerprint=request_fingerprint,
+            ordinary_erasure_fingerprint=ordinary_erasure_fingerprint, now=now,
         )
 
     # ------------------------------------------------------------------ retrieval

@@ -11,7 +11,6 @@ from collections.abc import Callable
 from typing import Annotated, Any, cast
 
 from mcp.server.auth.middleware.auth_context import get_access_token
-from mcp.server import MCPServer
 from mcp.server.mcpserver import Context
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
@@ -33,6 +32,7 @@ from recall.declared_keys import subject_view
 from recall_mcp.auth import SCOPE_FORGET, SCOPE_READ, SCOPE_WRITE, authorize
 from recall_mcp.provenance import current_facts_memory
 from recall_mcp.threads import _to_thread
+from recall_mcp.tool_surface import ToolRegistrar
 from recall_mcp.server_common import _ToolDeps, _parse_as_of
 
 
@@ -45,7 +45,7 @@ class _HeldTools:
     declaration's annotations and description, so only the parameters and the answer change.
     """
 
-    def __init__(self, mcp: MCPServer, names: frozenset[str]) -> None:
+    def __init__(self, mcp: ToolRegistrar, names: frozenset[str]) -> None:
         self._mcp = mcp
         self._names = names
         self.held: dict[str, tuple[dict[str, Any], Callable[..., Any]]] = {}
@@ -61,10 +61,10 @@ class _HeldTools:
 
         return hold
 
-    def register(self, name: str, fn: Callable[..., Any]) -> Callable[..., Any]:
+    def register(self, name: str, fn: Callable[..., Any]) -> None:
         kwargs, declared = self.held[name]
         description = kwargs.get("description") or declared.__doc__
-        return self._mcp.tool(**{**kwargs, "description": description})(fn)
+        self._mcp.tool(**{**kwargs, "description": description})(fn)
 
     def __getattr__(self, item: str) -> Any:
         if item == "_mcp":
@@ -91,7 +91,7 @@ def _caller_may_read(state: dict) -> bool:
     return True
 
 
-def _register_assistant_tools(mcp: MCPServer, deps: _ToolDeps, held: _HeldTools) -> None:
+def _register_assistant_tools(mcp: ToolRegistrar, deps: _ToolDeps, held: _HeldTools) -> None:
     """The assistant surface: `recall_remember`, `recall_forget_memo`, and the compact forms.
 
     Registered only when RECALL_ASSISTANT_MEMOS names a memo folder on a lite store

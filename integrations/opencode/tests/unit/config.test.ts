@@ -247,6 +247,23 @@ describe("the default store", () => {
     expect([before, after]).toEqual([expected, expected]);
   });
 
+  // FA-2-9 red at ced240de0: loadConfig chose the private DSN only before target creation.
+  test("a dangling memo alias keeps the shared Lite store before and after its target exists", () => {
+    const root = tempDir("recall-oc-config-");
+    roots.push(root);
+    const actual = join(root, "actual");
+    const alias = join(root, "alias");
+    symlinkSync(actual, alias, process.platform === "win32" ? "junction" : "dir");
+    const own = join(root, "opencode", "re-call");
+    const shared = join(actual, "re-call");
+    const options = { memo_folder: join(alias, "re-call", "memos") };
+    const before = loadConfig(options, own, shared).dsn;
+    mkdirSync(join(shared, "memos"), { recursive: true });
+    const after = loadConfig(options, own, shared).dsn;
+    const expected = lite(join(shared, "memory.db"));
+    expect([before, after]).toEqual([expected, expected]);
+  });
+
   test("explicit Lite pairs cannot mix shared and private paths", () => {
     const { own, shared } = folders(["own", "shared"]);
     const sharedDsn = lite(join(shared, "memory.db"));

@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
-from typing import cast
 from urllib.parse import urlsplit
 
 from mcp.server.auth.middleware.auth_context import get_access_token
@@ -542,17 +541,16 @@ def build_server(settings: Settings | None = None) -> MCPServer:
         surface = surface - LITE_UNSERVED_TOOLS
     if assistant is None:
         surface = surface - ASSISTANT_TOOLS
-    registrar = cast(MCPServer, FilteredToolRegistrar(mcp, surface))
+    registrar = FilteredToolRegistrar(mcp, surface)
     # With the assistant surface on, four tools are registered in another form by
     # `_register_assistant_tools`, which reuses the held declarations' annotations and descriptions.
     held = _HeldTools(registrar, _ASSISTANT_HELD if assistant is not None else frozenset())
-    tools = cast(MCPServer, held)
-    _register_search_tools(tools, deps)
-    _register_fact_tools(tools, deps)
-    _register_reasoning_tools(tools, deps)
-    _register_ingest_tools(tools, deps)
-    _register_calibration_tools(tools, deps)
-    _register_memory_admin_tools(tools, deps)
+    _register_search_tools(held, deps)
+    _register_fact_tools(held, deps)
+    _register_reasoning_tools(held, deps)
+    _register_ingest_tools(held, deps)
+    _register_calibration_tools(held, deps)
+    _register_memory_admin_tools(held, deps)
     _register_assistant_tools(registrar, deps, held)
     return mcp
 

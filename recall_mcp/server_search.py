@@ -14,7 +14,6 @@ from typing import Any, Literal, TypeVar, cast
 import anyio.to_thread
 from anyio import CapacityLimiter
 from mcp.server.auth.middleware.auth_context import get_access_token
-from mcp.server import MCPServer
 from mcp.server.mcpserver import Context
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
@@ -39,6 +38,7 @@ from recall_mcp.translation import (
     render_search_response,
 )
 from recall_mcp.threads import _to_thread
+from recall_mcp.tool_surface import ToolRegistrar
 from recall_mcp.server_common import (
     _T,
     _ToolDeps,
@@ -163,7 +163,7 @@ def _retrieval_plan_for(
     return plan
 
 
-def _register_search_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
+def _register_search_tools(mcp: ToolRegistrar, deps: _ToolDeps) -> None:
     _require = deps.require
     _state = deps.state
     _access_context = deps.access_context
