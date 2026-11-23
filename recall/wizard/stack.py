@@ -472,28 +472,14 @@ def _publishes_documents(version: str) -> bool:
     # docstring. A leading `v` is an ordinary Docker tag spelling, and PEP 440 says local metadata
     # sorts ABOVE its base release while `.post` is a POST-release, not a pre-release.
     normalised = version.strip().lstrip("vV").split("+", 1)[0]
-    parts: list[int] = []
-    prerelease = False
-    for piece in normalised.split(".")[:3]:
-        match = re.match(r"(\d+)(.*)", piece.strip())
-        if match is None:
-            # ⚠️ **Unparseable means NOTHING parsed, not "this component did not".** Bailing on the
-            # first non-numeric component made `0.9.post1` return True and pin an extra that 0.9.6
-            # introduced, because `post1` fell through to the default. A version that has already
-            # yielded a numeric release is compared on what it yielded: `0.9.post1` is a post
-            # release of 0.9, which sorts above 0.9 and well below 0.9.6.
-            if parts:
-                break
-            # Genuinely unparseable, which is the documented default: a local or branch build
-            # carries the CURRENT extras, because dropping document extraction from an image that
-            # should have it is the quieter of the two failures.
-            return True
-        parts.append(int(match.group(1)))
-        # Only an alphabetic pre-release marker demotes the version. `post` and `rev` sort ABOVE
-        # the release they follow, so folding every suffix into "pre-release" was wrong in the
-        # direction that loses the extra.
-        suffix = match.group(2).lstrip(".-_").lower()
-        prerelease = prerelease or suffix.startswith(("a", "b", "c", "rc", "dev", "pre"))
+    match = re.match(r"(\d+(?:\.\d+)*)(.*)", normalised)
+    if match is None:
+        return True  # A branch build carries the current extras.
+    parts = [int(piece) for piece in match.group(1).split(".")]
+    while len(parts) > len(_DOCUMENTS_EXTRA_SINCE) and parts[-1] == 0:
+        parts.pop()
+    suffix = match.group(2).lstrip(".-_").lower()
+    prerelease = suffix.startswith(("a", "b", "c", "rc", "dev", "pre"))
     exact = tuple(parts) == _DOCUMENTS_EXTRA_SINCE
     return tuple(parts) > _DOCUMENTS_EXTRA_SINCE or (exact and not prerelease)
 
@@ -634,6 +620,28 @@ def _versioned_dockerfile_name(image: str) -> str:
 
     digest = hashlib.sha256(image.encode("utf-8")).hexdigest()[:12]
     return f"{DOCKERFILE_NAME}.recall-{digest}"
+
+
+def _publish_recipe(directory: Path, version: str | None, name: str) -> str:
+    """Keep existing recipe bytes available to readers of the previous Compose file."""
+    from hashlib import sha256
+
+    target = directory / name
+    if not target.exists():
+        return write_dockerfile(directory, version, name=name).name
+    if not is_generated_dockerfile(target):
+        # Preserve the writer's refusal and diagnostic for a user-managed recipe.
+        return write_dockerfile(directory, version, name=name).name
+    desired = dockerfile_text(version).encode("utf-8")
+    if target.read_bytes() == desired:
+        return name
+    name = f"{DOCKERFILE_NAME}.recall-{sha256(desired).hexdigest()}"
+    target = directory / name
+    if target.exists():
+        if target.read_bytes() != desired:
+            raise RuntimeError(f"{target} contains different bytes from the requested recipe")
+        return name
+    return write_dockerfile(directory, version, name=name).name
 
 
 def _stack_image(services: dict[str, object]) -> str | None:
@@ -856,21 +864,24 @@ def write_compose(
     the recipe still used by preserved services. Such a recipe is written before
     publishing the Compose reference to it.
     """
+    from recall.wizard.config_lock import configuration_lock
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    # Compose paths in this directory can share a generated recipe.
+    with configuration_lock(path.parent / COMPOSE_NAME):
+        _write_compose_locked(path, document, dockerfile_version, dockerfile_name)
+
+
+def _write_compose_locked(
+    path: Path, document: dict[str, object], dockerfile_version: str | None, dockerfile_name: str,
+) -> None:
     from recall.atomic_write import atomic_write_bytes
     from copy import deepcopy
 
     from recall import __version__
 
-    recipe = path.parent / dockerfile_name
-    if recipe.exists() and not is_generated_dockerfile(recipe):
-        # Checked before the compose file is written, so a refusal leaves nothing half-written.
-        raise RuntimeError(
-            f"{recipe} already exists and was not written by the recall wizard; choose an empty "
-            "data folder, or move that file away first"
-        )
-    path.parent.mkdir(parents=True, exist_ok=True)
-    # Add project can revisit a stack whose projects now run different releases.
-    # Move references away before replacing a shared recipe for another release.
+    # Publish recipes first without changing the bytes read by the existing stack.
+    recipe = _publish_recipe(path.parent, dockerfile_version, dockerfile_name)
     document = deepcopy(document)
     services = document.get("services")
     recipe_version = dockerfile_version or __version__
@@ -880,21 +891,24 @@ def write_compose(
                 continue
             image = service.get("image")
             build = service.get("build")
-            if not isinstance(image, str) or not isinstance(build, dict):
+            if build in (".", "./") and dockerfile_name == DOCKERFILE_NAME:
+                build = {"context": build}
+            if not isinstance(build, dict) or build.get("context", ".") not in (".", "./"):
                 continue
-            pinned = _image_version(image)
-            if (
-                pinned and pinned != recipe_version and build.get("context") == "."
-                and build.get("dockerfile", DOCKERFILE_NAME) == dockerfile_name
-            ):
-                alternate = _versioned_dockerfile_name(image)
-                write_dockerfile(path.parent, pinned, name=alternate)
-                build["dockerfile"] = alternate
-    if dockerfile_name != DOCKERFILE_NAME:
-        write_dockerfile(path.parent, dockerfile_version, name=dockerfile_name)
-    atomic_write_bytes(path, (json.dumps(document, indent=2) + "\n").encode("utf-8"))
-    if dockerfile_name == DOCKERFILE_NAME:
-        write_dockerfile(path.parent, dockerfile_version)
+            referenced = build.get("dockerfile", DOCKERFILE_NAME)
+            if not isinstance(referenced, str) or Path(referenced) != Path(dockerfile_name):
+                continue
+            replacement = recipe
+            if isinstance(image, str):
+                pinned = _image_version(image)
+                if pinned and pinned != recipe_version:
+                    alternate = _versioned_dockerfile_name(image)
+                    replacement = _publish_recipe(path.parent, pinned, alternate)
+            if replacement != dockerfile_name:
+                build["dockerfile"] = replacement
+                service["build"] = build
+    payload = (json.dumps(document, indent=2) + "\n").encode("utf-8")
+    atomic_write_bytes(path, payload)
 
 
 def wait_for_database(dsn: str, *, timeout: float = 120.0, interval: float = 2.0) -> None:

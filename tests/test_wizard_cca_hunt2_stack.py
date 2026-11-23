@@ -333,7 +333,8 @@ def test_the_project_env_is_added_to_gitignore_inside_a_work_tree(tmp_path: Path
     from recall.wizard.wiring import write_project_files
 
     project = tmp_path / "project"
-    (project / ".git").mkdir(parents=True)
+    project.mkdir()
+    subprocess.run(["git", "-C", str(project), "init", "-q"], check=True, capture_output=True)
     (project / ".gitignore").write_text("node_modules/", encoding="utf-8")
 
     write_project_files(
@@ -350,6 +351,54 @@ def test_the_project_env_is_added_to_gitignore_inside_a_work_tree(tmp_path: Path
         embedder="hashing", memory_dir=tmp_path / "memory",
     )
     assert (project / ".gitignore").read_text(encoding="utf-8").splitlines() == lines
+
+
+def test_project_env_writer_refuses_tracked_file(tmp_path: Path) -> None:
+    """SEC-001: a managed environment update must preserve an existing tracked file."""
+    from recall.wizard.wiring import write_project_files
+
+    project = tmp_path / "project"
+    project.mkdir()
+    subprocess.run(["git", "-C", str(project), "init", "-q"], check=True, capture_output=True)
+    env_path = project / ".env"
+    original = b"EXAMPLE_SETTING=yes\n"
+    env_path.write_bytes(original)
+    subprocess.run(
+        ["git", "-C", str(project), "add", "--", ".env"], check=True, capture_output=True,
+    )
+
+    with pytest.raises(ValueError, match="tracked by Git"):
+        write_project_files(
+            project_root=project, dsn="postgresql://example@localhost/app",
+            embedder="hashing", memory_dir=tmp_path / "memory",
+        )
+    assert env_path.read_bytes() == original
+
+
+def test_project_env_is_not_written_when_gitignore_append_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from recall.wizard.wiring import write_project_files
+
+    project = tmp_path / "project"
+    project.mkdir()
+    subprocess.run(["git", "-C", str(project), "init", "-q"], check=True, capture_output=True)
+    ignore = project / ".gitignore"
+    open_path = Path.open
+
+    def deny_gitignore(path: Path, mode: str = "r", *args, **kwargs):
+        if path == ignore and "a" in mode:
+            raise PermissionError("fixture cannot append to .gitignore")
+        return open_path(path, mode, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", deny_gitignore)
+    with pytest.raises(PermissionError, match="fixture cannot append"):
+        write_project_files(
+            project_root=project, dsn="postgresql://example@localhost/app",
+            embedder="hashing", memory_dir=tmp_path / "memory",
+        )
+
+    assert not (project / ".env").exists()
 
 
 def test_no_gitignore_is_written_outside_a_work_tree(tmp_path: Path) -> None:

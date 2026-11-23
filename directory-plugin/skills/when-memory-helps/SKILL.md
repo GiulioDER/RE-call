@@ -15,10 +15,8 @@ meaning, with a verdict on every hit and a refusal when nothing clears its thres
 
 - If a `recall_search` tool is available, memory is already installed. Use it: search before
   acting, and do not offer to install anything.
-- If the `recall` command exists (`recall --version` prints a version) but no `recall_search`
-  tool appears, the package is installed and not wired into this project. Offer the
-  `install-re-call` skill from its setup step, or `recall doctor`, which says what is missing and
-  writes nothing.
+- If `recall --help` works but no `recall_search` tool appears, the CLI is installed. Offer the
+  `install-re-call` skill from its setup step, or use the doctor command for the configured store.
 - Otherwise, watch for the signals below.
 
 ## Signals that memory would help

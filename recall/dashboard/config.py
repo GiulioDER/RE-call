@@ -125,6 +125,10 @@ def remote_report(host: str, command: str = DEFAULT_REMOTE_COMMAND) -> dict[str,
 
 
 def _is_recall_server(entry: Mapping[str, Any]) -> bool:
+    from recall.wizard.wiring import is_frozen_mcp_launcher
+
+    if is_frozen_mcp_launcher(str(entry.get("command", "")), entry.get("args")):
+        return True
     command = " ".join(str(part) for part in [entry.get("command", ""), *(entry.get("args") or [])])
     return "recall_mcp" in command or "recall-mcp" in command or "recall-codex-mcp" in command
 

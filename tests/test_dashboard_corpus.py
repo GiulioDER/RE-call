@@ -60,6 +60,7 @@ import sys
 import threading
 import time
 import uuid
+from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import date
 from io import BytesIO
@@ -630,6 +631,11 @@ class _RecordingDB(DashboardDB):
                 return []
 
         class _Connection:
+            @contextmanager
+            def transaction(self) -> Iterator[None]:
+                recorded.append(("BEGIN", None))
+                yield
+
             def execute(self, sql: str, params: Any = None) -> _Cursor:
                 recorded.append((sql, params))
                 return _Cursor()
@@ -643,14 +649,26 @@ def test_every_corpus_query_runs_under_the_tenant_setting() -> None:
     claude/cca-pr910-descending: deleting the `set_config` call in `corpus._tenant` failed at "a
     corpus query ran before the tenant was set". Restored, passes. Since the second dashboard hunt
     (CODE-004) the setting is `DashboardDB.connect(tenant=...)`'s, so the stub records it when a
-    read asks for its tenant, and a read that connected without one fails the same assertion."""
-    for read in (lambda db: corpus.corpus_graph(db, "acme"), lambda db: corpus.source_detail(db, "acme", "a.md")):
+    read asks for its tenant, and a read that connected without one fails the same assertion.
+
+    DAT-003: source detail starts a read-only, repeatable-read transaction before selecting its
+    generation, so a concurrent change cannot split its reads across snapshots.
+    """
+    for read, needs_snapshot in (
+        (lambda db: corpus.corpus_graph(db, "acme"), False),
+        (lambda db: corpus.source_detail(db, "acme", "a.md"), True),
+    ):
         db = _RecordingDB("postgresql://fake")
         object.__setattr__(db, "statements", [])
         read(db)
         assert db.statements and db.statements[0] == ("select set_config(%s, %s, false)", (TENANT_GUC, "acme")), (
             "a corpus query ran before the tenant was set"
         )
+        if needs_snapshot:
+            assert db.statements[1:3] == [
+                ("BEGIN", None),
+                ("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY", None),
+            ], "source detail queried the corpus before setting its snapshot"
 
 
 def test_lite_graph_does_not_return_a_forgotten_source(tmp_path: Path) -> None:

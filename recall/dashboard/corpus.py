@@ -434,7 +434,9 @@ def source_detail(db: DashboardDB, tenant: str, file: str, *, today: date | None
 
         return lite_db.source_detail(db.dsn, tenant, file, today=today)
     now = (today or datetime.now(UTC).date()).isoformat()
-    with db.connect(tenant=tenant) as c:
+    with db.connect(tenant=tenant) as c, c.transaction():
+        # A concurrent corpus change must not split the sampled chunks and total across snapshots.
+        c.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
         generation = _generation(c, tenant)
         if generation is None:
             return None

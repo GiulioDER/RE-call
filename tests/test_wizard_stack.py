@@ -814,7 +814,8 @@ def test_the_dockerfile_follows_the_inherited_tag_not_the_running_version(tmp_pa
 
     services = json.loads(compose.read_text(encoding="utf-8"))["services"]
     tag = services["recall-newproj"]["image"]
-    dockerfile = (tmp_path / DOCKERFILE_NAME).read_text(encoding="utf-8")
+    build = services["recall-newproj"]["build"]
+    dockerfile = (tmp_path / build.get("dockerfile", DOCKERFILE_NAME)).read_text(encoding="utf-8")
 
     assert tag == f"recall-wizard:{old}", "the new service must join its siblings' image"
     assert "recall-rag[" in dockerfile
@@ -975,7 +976,10 @@ def test_a_prerelease_never_claims_an_extra_its_release_introduced() -> None:
     """
     from recall.wizard.stack import _publishes_documents
 
-    for older in ("0.9.5rc1", "0.9.2b3", "0.9.1rc1", "0.9.6rc1", "0.9.5", "0.9"):
+    for older in (
+        "0.9.5rc1", "0.9.2b3", "0.9.1rc1", "0.9.6rc1", "0.9.6.rc1",
+        "0.9.6.dev1", "0.9.6.0a1", "0.9.6a.post1", "0.9.6b.dev1", "0.9.5", "0.9",
+    ):
         assert not _publishes_documents(older), f"{older} predates the documents extra"
 
     for current in ("0.9.6", "0.9.7", "0.9.10", "0.10.0", "1.0", "v0.9.6"):
@@ -984,6 +988,76 @@ def test_a_prerelease_never_claims_an_extra_its_release_introduced() -> None:
     # An unparseable version keeps the CURRENT extras: dropping extraction from an image that should
     # have it is the quieter failure, so it is the wrong default.
     assert _publishes_documents("someones-branch-build")
+
+
+def test_recipe_failure_preserves_compose(tmp_path, monkeypatch) -> None:
+    from recall.wizard import stack
+
+    path = tmp_path / "compose.json"
+    old = b'{"services": {}}'
+    path.write_bytes(old)
+
+    def refuse_recipe(*args, **kwargs):
+        raise OSError("fixture recipe write failed")
+
+    monkeypatch.setattr(stack, "write_dockerfile", refuse_recipe)
+    with pytest.raises(OSError, match="fixture recipe write failed"):
+        stack.write_compose(path, {"services": {"new": {}}})
+    assert path.read_bytes() == old
+
+
+def test_publication_failure_preserves_compose_and_recipe(tmp_path, monkeypatch) -> None:
+    from recall import atomic_write
+    from recall.wizard import stack
+
+    path = tmp_path / "compose.json"
+    recipe = tmp_path / stack.DOCKERFILE_NAME
+    def document(version):
+        return {"services": {
+            "docs": stack.tenant_service({}, image=f"recall-wizard:{version}"),
+            "build-only": {"build": {"dockerfile": "./Dockerfile"}},
+            "short-form": {"build": "."},
+        }}
+
+    stack.write_compose(path, document("0.9.5"), dockerfile_version="0.9.5")
+    old_compose = path.read_bytes()
+    old_recipe = recipe.read_bytes()
+    write = atomic_write.atomic_write_bytes
+
+    def refuse_compose(target, payload, **kwargs):
+        if target == path:
+            builds = [service["build"] for service in json.loads(payload)["services"].values()]
+            new_recipe = tmp_path / builds[0]["dockerfile"]
+            assert all(tmp_path / build["dockerfile"] == new_recipe for build in builds)
+            assert new_recipe != recipe
+            assert "==0.9.6" in new_recipe.read_text(encoding="utf-8")
+            assert recipe.read_bytes() == old_recipe
+            raise OSError("fixture publication failed")
+        return write(target, payload, **kwargs)
+
+    monkeypatch.setattr(atomic_write, "atomic_write_bytes", refuse_compose)
+    with pytest.raises(OSError, match="fixture publication failed"):
+        stack.write_compose(path, document("0.9.6"), dockerfile_version="0.9.6")
+    assert path.read_bytes() == old_compose
+    assert recipe.read_bytes() == old_recipe
+
+
+def test_lock_failure_preserves_compose(tmp_path, monkeypatch) -> None:
+    from recall.wizard import config_lock, stack
+
+    path = tmp_path / "compose.json"
+    old = b'{"services": {}}'
+    path.write_bytes(old)
+
+    def refuse_lock(target):
+        assert target == tmp_path / stack.COMPOSE_NAME
+        raise OSError("fixture lock unavailable")
+
+    monkeypatch.setattr(config_lock, "configuration_lock", refuse_lock)
+    with pytest.raises(OSError, match="fixture lock unavailable"):
+        stack.write_compose(path, {"services": {"new": {}}})
+    assert path.read_bytes() == old
+    assert not (tmp_path / stack.DOCKERFILE_NAME).exists()
 
 
 def test_a_docker_tag_spelling_never_pins_an_extra_the_release_lacks() -> None:

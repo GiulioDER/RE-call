@@ -113,7 +113,8 @@ def test_rerun_keeps_build_recipes_consistent_with_preserved_images(
             service["image"] = "recall-wizard:0.9.6"
             service["build"] = {"context": ".", "dockerfile": DOCKERFILE_NAME}
     H.write_compose(compose, document, dockerfile_version="0.9.6")
-    recipe = compose.parent / DOCKERFILE_NAME
+    installed_services = json.loads(compose.read_text())["services"]
+    recipe = compose.parent / installed_services["recall-default-docs"]["build"]["dockerfile"]
     before = recipe.read_bytes()
     assert b"==0.9.6" in before, "the installed recipe must match the installed image"
     assert __version__ != "0.9.6", "the fixture must exercise two different image versions"

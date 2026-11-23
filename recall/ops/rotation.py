@@ -7,6 +7,8 @@ from typing import Any
 
 from recall.ops.secrets import SECRET_VERSION_TAG_PREFIX, RotationReceipt, rotation_receipt
 
+_DESCRIBE_TASKS_LIMIT = 100
+
 
 @dataclass(frozen=True)
 class TaskSecretCheck:
@@ -45,13 +47,49 @@ class EcsSecretRotator:
 
     def verify_tasks(self, cluster: str, service: str, expected_versions: dict[str, str]) -> list[TaskSecretCheck]:
         ecs, _ = self._clients()
-        task_arns = ecs.list_tasks(cluster=cluster, serviceName=service, desiredStatus="RUNNING").get("taskArns", [])
-        tasks = ecs.describe_tasks(cluster=cluster, tasks=task_arns).get("tasks", [])
+        params = {"cluster": cluster, "serviceName": service, "desiredStatus": "RUNNING"}
+        task_arns: list[str] = []
+        seen_tokens: set[str] = set()
+        while True:
+            page = ecs.list_tasks(**params)
+            arns = page.get("taskArns")
+            if not isinstance(arns, list) or any(not isinstance(arn, str) or not arn for arn in arns):
+                return []
+            task_arns.extend(arns)
+            token = page.get("nextToken")
+            if token is None:
+                break
+            if not isinstance(token, str) or not token or token in seen_tokens:
+                return []
+            seen_tokens.add(token)
+            params["nextToken"] = token
+
+        task_arns = list(dict.fromkeys(task_arns))
+        descriptions: dict[str, dict[str, Any]] = {}
+        for start in range(0, len(task_arns), _DESCRIBE_TASKS_LIMIT):
+            batch = task_arns[start : start + _DESCRIBE_TASKS_LIMIT]
+            response = ecs.describe_tasks(cluster=cluster, tasks=batch)
+            tasks = response.get("tasks", [])
+            if (
+                response.get("failures")
+                or len(tasks) != len(batch)
+                or {task.get("taskArn") for task in tasks} != set(batch)
+            ):
+                # A partial DescribeTasks response cannot establish the status of the whole batch.
+                continue
+            descriptions.update((task["taskArn"], task) for task in tasks)
+
         checks: list[TaskSecretCheck] = []
-        for task in tasks:
+        for arn in task_arns:
+            task = descriptions.get(arn)
+            if task is None:
+                checks.append(
+                    TaskSecretCheck(arn, healthy=False, version_ids={}, missing=tuple(expected_versions))
+                )
+                continue
             # ECS propagates the identifiers from the version-pinned task definition at creation.
             # Matching tags alone therefore do not prove that the replacement is running healthy.
-            tags = ecs.list_tags_for_resource(resourceArn=task["taskArn"]).get("tags", [])
+            tags = ecs.list_tags_for_resource(resourceArn=arn).get("tags", [])
             observed = {
                 str(tag["key"]).removeprefix(SECRET_VERSION_TAG_PREFIX): str(tag["value"])
                 for tag in tags
@@ -63,7 +101,7 @@ class EcsSecretRotator:
                 and task.get("lastStatus") == "RUNNING"
                 and task.get("healthStatus") == "HEALTHY"
             )
-            checks.append(TaskSecretCheck(task_arn=task["taskArn"], healthy=healthy, version_ids=observed, missing=missing))
+            checks.append(TaskSecretCheck(task_arn=arn, healthy=healthy, version_ids=observed, missing=missing))
         return checks
 
     def require_all_tasks_healthy(self, checks: list[TaskSecretCheck]) -> None:

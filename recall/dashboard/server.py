@@ -264,7 +264,7 @@ class DashboardApp:
         self._reviewer_cookie = f"{REVIEWER_COOKIE}_{port}"
         # Per request, so concurrent requests on the threading server never share a tenant.
         self._request = threading.local()
-        self._tenant_cache: tuple[float, list[dict[str, Any]]] | None = None
+        self._tenant_cache: tuple[float, list[dict[str, Any]], object] | None = None
         self._tenant_failure: tuple[float, dbq.DatabaseUnavailable] | None = None
         self._tenant_lock = threading.Lock()
         self._corpus_graphs: dict[str, tuple[float, bytes]] = {}
@@ -305,7 +305,17 @@ class DashboardApp:
         if self.db is None:
             return []
         with self._tenant_lock:
-            if self._tenant_cache and time.monotonic() - self._tenant_cache[0] < TENANT_CACHE_SECONDS:
+            lite_path = None
+            stamp = None
+            if self.db.lite:
+                from recall.dashboard.lite_db import _corpus_stamp, store_path
+
+                lite_path = store_path(self.db.dsn).resolve()
+                stamp = _corpus_stamp(lite_path)
+            if (
+                self._tenant_cache and time.monotonic() - self._tenant_cache[0] < TENANT_CACHE_SECONDS
+                and (lite_path is None or (stamp is not None and stamp == self._tenant_cache[2]))
+            ):
                 return self._tenant_cache[1]
             if self._tenant_failure and time.monotonic() - self._tenant_failure[0] < TENANT_FAILURE_CACHE_SECONDS:
                 # A fresh exception each time: re-raising one instance grows its traceback per request.
@@ -316,7 +326,10 @@ class DashboardApp:
                 self._tenant_failure = (time.monotonic(), exc)
                 raise
             self._tenant_failure = None
-            self._tenant_cache = (time.monotonic(), found)
+            if lite_path is None or (stamp is not None and stamp == _corpus_stamp(lite_path)):
+                self._tenant_cache = (time.monotonic(), found, stamp)
+            else:
+                self._tenant_cache = None
             return found
 
     def _label(self, tenant: str) -> str:
@@ -396,13 +409,17 @@ class DashboardApp:
 
     # ------------------------------------------------------------------ entry point
 
-    def handle(self, method: str, target: str, headers: Mapping[str, str], body: bytes = b"") -> Response:
+    def _authorize_request(
+        self, method: str, target: str, headers: Mapping[str, str],
+    ) -> Response | tuple[str, dict[str, str], bool]:
         host = headers.get("Host") or headers.get("host") or ""
         if host not in self._hosts:
             return _bare_error(HTTPStatus.FORBIDDEN, "This page only answers on this machine's own address.")
-        url = urlsplit(target)
+        try:
+            url = urlsplit(target)
+        except ValueError:
+            return _bare_error(HTTPStatus.BAD_REQUEST, "Invalid request URL.")
         query = {k: v[0] for k, v in parse_qs(url.query).items()}
-        cookies = parse_cookies(headers.get("Cookie") or headers.get("cookie") or "")
 
         if method == "GET" and url.path == "/" and "token" in query:
             if not self._same_token(query["token"]):
@@ -419,7 +436,14 @@ class DashboardApp:
         if not browser_session and not (scheme.lower() == "bearer" and self._same_token(bearer)):
             return _bare_error(HTTPStatus.FORBIDDEN, "Open the link `recall dashboard` printed to start a session.")
         path = url.path.removeprefix(self._session_path) if browser_session else url.path
+        return path, query, browser_session
 
+    def handle(self, method: str, target: str, headers: Mapping[str, str], body: bytes = b"") -> Response:
+        request = self._authorize_request(method, target, headers)
+        if isinstance(request, Response):
+            return request
+        path, query, browser_session = request
+        cookies = parse_cookies(headers.get("Cookie") or headers.get("cookie") or "")
         self._resolve_pending_lite_tenant()
         chosen = query.get("tenant", "")
         chosen = chosen if TENANT_NAME.fullmatch(chosen) else ""
@@ -671,8 +695,7 @@ class DashboardApp:
             return self._not_connected("RE-call · one memory", "control", "One memory")
         tenant = self._current_tenant()
         try:
-            data = dbq.control(self.db, tenant, source=source)
-            reports = dbq.use_reports(self.db, tenant, limit=100, source=source)
+            data, reports = dbq.control_for_memo(self.db, tenant, source, report_limit=100)
         except dbq.DatabaseUnavailable as exc:
             return self._not_connected("RE-call · one memory", "control", "One memory", detail=str(exc))
         found = next((m for m in data["memos"] if m["source"] == source), None)
@@ -1404,10 +1427,15 @@ class DashboardApp:
             every = self._tenants()
             tenant = self._current_tenant()
             chosen = next((t for t in every if t["tenant"] == tenant), None)
-            history = dbq.generations(self.db, tenant) if chosen else []
+            history = []
+            if chosen:
+                if self.db.lite:
+                    history = dbq.generations(self.db, tenant, inspected_tenant=chosen)
+                else:
+                    history = dbq.generations(self.db, tenant)
             events = dbq.lifecycle_events(self.db, tenant, limit=12) if chosen else []
             # One past the cap tells a full page from a total: past it the tile says "500+".
-            recorded_rows = len(dbq.searches(self.db, tenant, limit=MAX_COUNTED_SEARCHES + 1)) if chosen else 0
+            recorded_rows = dbq.search_count(self.db, tenant, limit=MAX_COUNTED_SEARCHES + 1) if chosen else 0
             recorded = f"{MAX_COUNTED_SEARCHES}+" if recorded_rows > MAX_COUNTED_SEARCHES else str(recorded_rows)
         except dbq.DatabaseUnavailable as exc:
             return self._not_connected("RE-call · overview", "overview", "Overview", detail=str(exc))
@@ -1890,23 +1918,69 @@ def security_headers() -> tuple[tuple[str, str], ...]:
 
 
 MAX_REQUEST_BODY_BYTES = 1_000_000
+REQUEST_IO_TIMEOUT_SECONDS = 10.0
+MAX_CONCURRENT_REQUESTS = 16
 
 
 def serve(app: DashboardApp) -> ThreadingHTTPServer:
     """A server bound to 127.0.0.1 that hands every request to `app`."""
 
     class Handler(BaseHTTPRequestHandler):
-        def _respond(self, method: str) -> None:
+        timeout = REQUEST_IO_TIMEOUT_SECONDS
+        _read_deadline: threading.Timer | None = None
+        _read_expired = False
+
+        def handle_one_request(self) -> None:
+            self._read_expired = False
+            deadline = threading.Timer(REQUEST_IO_TIMEOUT_SECONDS, self._expire_request_read)
+            self._read_deadline = deadline
+            deadline.start()
             try:
-                length = int(self.headers.get("Content-Length") or 0)
+                super().handle_one_request()
+            finally:
+                deadline.cancel()
+                self._read_deadline = None
+
+        def _expire_request_read(self) -> None:
+            self._read_expired = True
+            try:
+                self.connection.shutdown(socket.SHUT_RD)
+            except OSError:
+                pass  # Already closed by the handler.
+
+        def _body_length(self) -> int:
+            try:
+                return int(self.headers.get("Content-Length") or 0)
             except ValueError:
-                length = -1
+                return -1
+
+        def parse_request(self) -> bool:
+            if not super().parse_request():
+                return False
+            if self._read_expired:
+                self.close_connection = True
+                return False
+            if self.command in ("GET", "POST") and 0 < self._body_length() <= MAX_REQUEST_BODY_BYTES:
+                request = app._authorize_request(self.command, self.path, dict(self.headers.items()))
+                if isinstance(request, Response):
+                    self.close_connection = True
+                    self._send(request)
+                    return False
+            return True
+
+        def _respond(self, method: str) -> None:
+            length = self._body_length()
             if length < 0 or length > MAX_REQUEST_BODY_BYTES:
                 self.close_connection = True
                 status = HTTPStatus.BAD_REQUEST if length < 0 else HTTPStatus.REQUEST_ENTITY_TOO_LARGE
                 response = Response(status, b"Invalid request body length.", ())
             else:
                 body = self.rfile.read(length) if length else b""
+                if self._read_deadline is not None:
+                    self._read_deadline.cancel()
+                if self._read_expired or len(body) != length:
+                    self.close_connection = True
+                    return
                 try:
                     response = app.handle(method, self.path, dict(self.headers.items()), body)
                 except Exception as exc:  # noqa: BLE001  # BROAD-CATCH: error-translation; a page that raises must still answer
@@ -1918,6 +1992,9 @@ def serve(app: DashboardApp) -> ThreadingHTTPServer:
                         HTTPStatus.INTERNAL_SERVER_ERROR,
                         f"The dashboard could not build this page: {type(exc).__name__}: {first}",
                     )
+            self._send(response)
+
+        def _send(self, response: Response) -> None:
             self.send_response(response.status)
             for name, value in response.headers + security_headers():
                 self.send_header(name, value)
@@ -1948,6 +2025,33 @@ class _ExclusiveServer(ThreadingHTTPServer):
     """
 
     allow_reuse_address = os.name != "nt"
+
+    def __init__(
+        self, server_address: tuple[str, int], request_handler: type[BaseHTTPRequestHandler],
+        bind_and_activate: bool = True,
+    ) -> None:
+        self._request_slots = threading.BoundedSemaphore(MAX_CONCURRENT_REQUESTS)
+        super().__init__(server_address, request_handler, bind_and_activate)
+
+    def process_request(
+        self, request: socket.socket | tuple[bytes, socket.socket], client_address: tuple[str, int],
+    ) -> None:
+        if not self._request_slots.acquire(blocking=False):
+            self.shutdown_request(request)
+            return
+        try:
+            super().process_request(request, client_address)
+        except BaseException:
+            self._request_slots.release()
+            raise
+
+    def process_request_thread(
+        self, request: socket.socket | tuple[bytes, socket.socket], client_address: tuple[str, int],
+    ) -> None:
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self._request_slots.release()
 
     def server_bind(self) -> None:
         if os.name == "nt" and hasattr(socket, "SO_EXCLUSIVEADDRUSE"):

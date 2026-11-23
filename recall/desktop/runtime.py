@@ -41,6 +41,21 @@ class ToolGateway(Protocol):
     def close(self) -> None: ...
 
 
+def _close_gateways(gateways: tuple[ToolGateway | None, ...]) -> None:
+    """Attempt every close before propagating the first failure."""
+    first_error: Exception | None = None
+    for gateway in gateways:
+        try:
+            close = getattr(gateway, "close", None)
+            if callable(close):
+                close()
+        except Exception as exc:  # noqa: BLE001  # BROAD-CATCH: cleanup-only; close remaining gateways before re-raising
+            if first_error is None:
+                first_error = exc
+    if first_error is not None:
+        raise first_error
+
+
 class SdkMcpGateway:
     """Synchronous facade over the MCP Python SDK, suitable for worker threads."""
 
@@ -65,6 +80,11 @@ class SdkMcpGateway:
         self._wake: asyncio.Event | None = None
         self._pending: set[Future[Any]] = set()
         self._failure: BaseException | None = None
+
+    @property
+    def failed(self) -> bool:
+        with self._lock:
+            return self._failure is not None
 
     def call(self, name: str, arguments: dict[str, Any]) -> Any:
         with self._lock:
@@ -366,6 +386,7 @@ class LocalDatabaseRuntime(RuntimeManager):
     def __init__(self, profile: RuntimeProfile, gateway: ToolGateway | None = None) -> None:
         super().__init__(profile, gateway)
         self._gateways: dict[str, ToolGateway] = {}
+        self._gateway_lock = threading.Lock()
 
     def start(self) -> None:
         """Check the database first, then reach a server, and name whatever went wrong.
@@ -393,35 +414,37 @@ class LocalDatabaseRuntime(RuntimeManager):
             )
 
         try:
+            with self._gateway_lock:
+                for tenant, gateway in tuple(self._gateways.items()):
+                    if isinstance(gateway, SdkMcpGateway) and gateway.failed:
+                        gateway.close()
+                        del self._gateways[tenant]
             self.health()
         except Exception as exc:  # noqa: BLE001 - re-raised below, with the cause made legible.  # BROAD-CATCH: error-translation
             raise RuntimeErrorBase(_legible(exc)) from exc
 
     def stop(self) -> None:
-        for gateway in self._gateways.values():
-            close = getattr(gateway, "close", None)
-            if callable(close):
-                close()
-        self._gateways.clear()
-        if self.gateway is not None:
-            close = getattr(self.gateway, "close", None)
-            if callable(close):
-                close()
+        with self._gateway_lock:
+            try:
+                _close_gateways((*self._gateways.values(), self.gateway))
+            finally:
+                self._gateways.clear()
 
     def health(self) -> dict[str, Any]:
         result = self._call("recall_stats", {})
         return result if isinstance(result, dict) else {"status": "ready", "details": result}
 
     def _gateway_for(self, tenant: str) -> ToolGateway:
-        if self.gateway is not None:
-            return self.gateway
-        if tenant not in self._gateways:
-            self._gateways[tenant] = SdkMcpGateway(
-                self.profile,
-                command=[sys.executable, "-P", "-m", "recall_mcp.server"],
-                env=self._env_for(tenant),
-            )
-        return self._gateways[tenant]
+        with self._gateway_lock:
+            if self.gateway is not None:
+                return self.gateway
+            if tenant not in self._gateways:
+                self._gateways[tenant] = SdkMcpGateway(
+                    self.profile,
+                    command=[sys.executable, "-P", "-m", "recall_mcp.server"],
+                    env=self._env_for(tenant),
+                )
+            return self._gateways[tenant]
 
     def _call(self, name: str, arguments: dict[str, Any]) -> Any:
         """Route an untargeted call to the default project's server.
@@ -450,6 +473,7 @@ class LocalDatabaseRuntime(RuntimeManager):
             "RECALL_SERVING_DSN": self.profile.dsn or "",
             "RECALL_DSN": self.profile.dsn or "",
             "RECALL_TENANT": tenant,
+            "RECALL_TRANSPORT": "stdio",
         }
         if self.profile.embedder:
             env["RECALL_EMBEDDER"] = self.profile.embedder
@@ -471,10 +495,10 @@ keep an existing install working."""
 
 _SERVICE_TENANTS = {service: tenant for tenant, service in _LEGACY_SERVICES.items()}
 
-_STACK_MUTATING_VERBS = frozenset({"up", "down", "pull"})
+_STACK_MUTATING_VERBS = frozenset({"up", "down", "pull", "restart"})
 """Compose verbs after which the running stack may no longer match what the caches describe."""
 
-_SLOW_VERBS = frozenset({"up", "pull", "build"})
+_SLOW_VERBS = frozenset({"up", "pull", "build", "restart"})
 """Verbs that can legitimately take minutes, so they must not share the quick budget.
 
 ⚠️ **One 120s timeout governed every verb, and it could not cover the work this stack now does.**
@@ -536,7 +560,9 @@ class DockerRuntime(RuntimeManager):
         super().__init__(profile, gateway)
         self._process: subprocess.Popen[str] | None = None
         self._gateways: dict[str, ToolGateway] = {}
+        self._gateway_lock = threading.Lock()
         self._services: frozenset[str] | None = None
+        self._serving_lineage = "unverified"
 
     def _service_names(self) -> frozenset[str]:
         """The services this compose file actually defines, asked of Compose itself.
@@ -582,22 +608,23 @@ class DockerRuntime(RuntimeManager):
         )
 
     def _gateway_for(self, tenant: str) -> ToolGateway:
-        if self.gateway is not None:
-            return self.gateway
-        if tenant in self._gateways:
-            return self._gateways[tenant]
-        compose = self.profile.compose_file
-        if not compose:
-            raise RuntimeErrorBase("Docker compose file is not configured")
-        command = ["docker", "compose", "-f", compose]
-        if self.profile.compose_project:
-            command.extend(["-p", self.profile.compose_project])
-        # Inside the container, whose working directory is the image's own, not a user's checkout.
-        # ast-grep-ignore: python-module-run-with-safe-path
-        command.extend(["exec", "-T", self._service_for_tenant(tenant), "python", "-m", "recall_mcp.server"])
-        gateway = SdkMcpGateway(self.profile, command=command)
-        self._gateways[tenant] = gateway
-        return gateway
+        with self._gateway_lock:
+            if self.gateway is not None:
+                return self.gateway
+            if tenant in self._gateways:
+                return self._gateways[tenant]
+            compose = self.profile.compose_file
+            if not compose:
+                raise RuntimeErrorBase("Docker compose file is not configured")
+            command = ["docker", "compose", "-f", compose]
+            if self.profile.compose_project:
+                command.extend(["-p", self.profile.compose_project])
+            # Inside the container, whose working directory is the image's own, not a user's checkout.
+            # ast-grep-ignore: python-module-run-with-safe-path
+            command.extend(["exec", "-T", self._service_for_tenant(tenant), "python", "-m", "recall_mcp.server"])
+            gateway = SdkMcpGateway(self.profile, command=command)
+            self._gateways[tenant] = gateway
+            return gateway
 
     def _compose(self, *args: str) -> subprocess.CompletedProcess[str]:
         compose = self.profile.compose_file
@@ -648,7 +675,7 @@ class DockerRuntime(RuntimeManager):
         except (OSError, subprocess.SubprocessError) as exc:
             raise RuntimeErrorBase(f"Docker runtime failed: {exc}") from exc
 
-    def _invalidate_topology(self) -> None:
+    def _invalidate_topology(self, *, close_injected: bool = False) -> None:
         """Forget both caches, because the stack may no longer be the one they describe.
 
         ⚠️ **`_gateways` has to go too, and the first version of this change forgot it.** A gateway
@@ -662,10 +689,16 @@ class DockerRuntime(RuntimeManager):
         restarts the stack too and was missed for exactly that reason. A third restart path should
         not be able to repeat it.
         """
-        self._services = None
-        for gateway in self._gateways.values():
-            gateway.close()
-        self._gateways.clear()
+        with self._gateway_lock:
+            self._services = None
+            self._serving_lineage = "unverified"
+            injected = self.gateway if close_injected else None
+            try:
+                _close_gateways((injected, *self._gateways.values()))
+            finally:
+                self._gateways.clear()
+                if close_injected:
+                    self.gateway = None
 
     def start(self) -> None:
         self._compose("up", "-d", "--wait")  # also invalidates the topology caches
@@ -687,23 +720,35 @@ class DockerRuntime(RuntimeManager):
             )
         first = self._service_for_tenant(migrated[0])
         self._compose("exec", "-T", first, "recall", "schema", "apply")
+        self._check_serving_lineage()
+        self.health()
+
+    def _check_serving_lineage(self) -> None:
         default_scope = self.profile.default_tenant
         if not default_scope.endswith(_CORPUS_SUFFIXES):
             default_scope = f"{default_scope}-docs"
-        self._call_for(default_scope, "recall_stats", {})
-        self.health()
+        stats = self._call_for(default_scope, "recall_stats", {})
+        lineage = stats.get("serving_lineage") if isinstance(stats, dict) else None
+        if lineage == "LINEAGE_MISMATCH":
+            self._serving_lineage = "LINEAGE_MISMATCH"
+            raise RuntimeErrorBase(
+                f"LINEAGE_MISMATCH for {default_scope}: the desktop embedding runtime differs "
+                "from the active generation. Restore the matching runtime or rebuild and "
+                "certify the generation with the runtime that will serve it."
+            )
+        self._serving_lineage = "match" if lineage == "match" else "unverified"
 
     def stop(self) -> None:
-        if self.gateway:
-            self.gateway.close()
-        for gateway in self._gateways.values():
-            gateway.close()
-        self._gateways.clear()
-        self.gateway = None
+        self._invalidate_topology(close_injected=True)
 
     def health(self) -> dict[str, Any]:
         result = self._compose("ps", "--format", "json")
-        return {"status": "ready", "compose": result.stdout, "mcp": "ready" if self._gateways or self.gateway else "starting"}
+        return {
+            "status": "failed" if self._serving_lineage == "LINEAGE_MISMATCH" else "ready",
+            "compose": result.stdout,
+            "mcp": "ready" if self._gateways or self.gateway else "starting",
+            "serving_lineage": self._serving_lineage,
+        }
 
     def list_tenants(self) -> list[str]:
         """The projects the managed local stack can actually serve.
@@ -762,7 +807,9 @@ class DockerRuntime(RuntimeManager):
         `up` still pulls an image that is missing, which is all `stack.bring_up` asks for too
         (`--policy missing`).
         """
-        self._compose("up", "-d", "--wait")
+        self._compose("restart")
+        self._compose("up", "-d", "--wait", "--no-recreate")
+        self._check_serving_lineage()
         return self.health()
 
 

@@ -169,26 +169,56 @@ def verify_against(report: dict[str, Any], harness_path: Path) -> list[str]:
     Returns the list of mismatches; empty means the reimplementation agrees cell for cell.
     """
     harness = json.loads(Path(harness_path).read_text(encoding="utf-8"))
-    curve = harness.get("depth_curve") or {}
+    curve = harness.get("depth_curve") if isinstance(harness, dict) else None
+    if not isinstance(curve, dict) or not curve:
+        return ["harness report has no depth curve"]
+    depths = report.get("depths")
+    actual = report.get("any_evidence")
+    if not isinstance(depths, list) or not depths or not isinstance(actual, dict):
+        return ["candidate report has no requested depths or any-evidence curve"]
+
     problems: list[str] = []
-    for depth_key, row in report["any_evidence"].items():
-        harness_row = curve.get(depth_key) or curve.get(int(depth_key))
-        if harness_row is None:
-            problems.append(f"depth {depth_key}: absent from the harness report")
+    for depth in depths:
+        depth_key = str(depth)
+        row = actual.get(depth_key)
+        if not isinstance(row, dict):
+            problems.append(f"depth {depth_key}: candidate row missing or invalid")
             continue
-        for name, cell in row.items():
-            expected = harness_row.get(name)
-            if expected is None:
+        harness_row = curve.get(depth_key)
+        if (
+            not isinstance(harness_row, dict)
+            or not isinstance(categories := harness_row.get("by_category"), dict)
+            or not categories
+        ):
+            problems.append(f"depth {depth_key}: harness row has no category rates")
+            continue
+        expected = {**categories, "OVERALL": harness_row.get("overall")}
+        for name in sorted(row.keys() | expected.keys()):
+            got = _verification_rate(row.get(name))
+            want = _verification_rate(expected.get(name))
+            if got is None or want is None:
+                problems.append(f"depth {depth_key} {name}: missing or invalid rate cell")
                 continue
-            got = cell["rate"] if isinstance(cell, dict) else cell
-            expected_rate = expected.get("rate") if isinstance(expected, dict) else expected
-            if expected_rate is None:
-                continue
-            if abs(float(got) - float(expected_rate)) > 5e-4:
+            if got[0] != want[0] or abs(got[1] - want[1]) > 5e-4:
                 problems.append(
-                    f"depth {depth_key} {name}: this module {got} vs harness {expected_rate}"
+                    f"depth {depth_key} {name}: candidate rate {got[1]} (n={got[0]}) "
+                    f"vs harness {want[1]} (n={want[0]})"
                 )
     return problems
+
+
+def _verification_rate(cell: Any) -> tuple[int, float] | None:
+    if not isinstance(cell, dict):
+        return None
+    n, rate = cell.get("n"), cell.get("rate")
+    if (
+        type(n) is not int
+        or n <= 0
+        or (type(rate) is not int and type(rate) is not float)
+        or not 0 <= rate <= 1
+    ):
+        return None
+    return n, float(rate)
 
 
 def main(argv: list[str] | None = None) -> int:

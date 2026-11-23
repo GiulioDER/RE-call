@@ -138,6 +138,114 @@ def test_one_search_counts_once_per_memo_at_its_best_rank(tmp_path: Path) -> Non
     assert (memos["b.md"]["retrieved"], memos["b.md"]["first"]) == (1, 0)
 
 
+def test_control_reads_one_snapshot(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from recall.dashboard import lite_db
+    from recall.lite import LiteStore
+
+    path = tmp_path / "memory.db"
+    with LiteStore(path, dim=4) as store:
+        tenant = store.tenant
+        store.append_audit_event("search_decision", {"query": "first"})
+
+    events = lite_db._events
+    wrote = False
+
+    def publish_after_searches(connection, owner, types, **kwargs):
+        nonlocal wrote
+        yield from events(connection, owner, types, **kwargs)
+        if "search_decision" in types and not wrote:
+            wrote = True
+            with LiteStore(path, dim=4) as writer:
+                writer.append_audit_event("search_decision", {"query": "later"})
+                writer.append_audit_event("use_report", {"task": "later", "effect": "helped"})
+
+    monkeypatch.setattr(lite_db, "_events", publish_after_searches)
+    dsn = "sqlite:///" + path.as_posix()
+    assert lite_db.control(dsn, tenant)["summary"]["reports"] == 0
+    latest = lite_db.control(dsn, tenant)["summary"]
+    assert (latest["searches"], latest["reports"]) == (2, 1)
+
+
+def test_one_memory_counts_all_reports_and_lists_the_newest_from_one_scan(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from recall.dashboard import lite_db
+    from recall.lite import LiteStore
+
+    path = tmp_path / "memory.db"
+    with LiteStore(path, dim=4) as store:
+        for i in range(101):
+            store.append_audit_event(
+                "use_report", {"task": f"matching task {i:03d}", "effect": "helped", "used": ["memo.md"]},
+            )
+        store.append_audit_event("use_report", {"task": "unrelated task", "used": ["other.md"]})
+
+    events = lite_db._events
+    report_scans = 0
+
+    def track_events(connection: sqlite3.Connection, tenant: str, types: tuple[str, ...], **kwargs: Any) -> Any:
+        nonlocal report_scans
+        report_scans += "use_report" in types
+        return events(connection, tenant, types, **kwargs)
+
+    monkeypatch.setattr(lite_db, "_events", track_events)
+    dsn = "sqlite:///" + path.as_posix()
+    page = _page(_app(tmp_path, dsn), "/control/memo?source=memo.md")
+    assert report_scans == 1
+    assert "used 101" in page and "What agents reported · 100" in page
+    assert "matching task 000" not in page and "unrelated task" not in page
+    assert page.index("matching task 100") < page.index("matching task 001")
+
+
+def test_lite_overview_counts_searches_without_reading_payloads(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from recall.dashboard import lite_db
+    from recall.lite import LiteStore
+
+    path = tmp_path / "memory.db"
+    with LiteStore(path, dim=4):
+        pass
+    with sqlite3.connect(path) as raw:
+        raw.executemany(
+            "INSERT INTO audit_events (event_id, event_type, actor, payload, created_at) "
+            "VALUES (?, ?, 'test', 'not-json', '2026-01-01T00:00:00+00:00')",
+            [(f"event-{i}", "search_decision") for i in range(499)]
+            + [("refusal", "search_refusal"), ("report", "use_report")],
+        )
+
+    def refuse_projection(*args: Any) -> None:
+        pytest.fail("The Overview count does not need search payloads")
+
+    monkeypatch.setattr(lite_db, "_search_row", refuse_projection)
+    dsn = "sqlite:///" + path.as_posix()
+    app = _app(tmp_path, dsn)
+    assert "<b>500</b>" in _page(app, "/overview")
+    assert lite_db.search_count(dsn, "other", limit=501) == 0
+    with LiteStore(path, dim=4) as store:
+        store.append_audit_event("search_refusal", {})
+    assert "<b>500+</b>" in _page(app, "/overview")
+
+
+def test_lite_overview_keeps_generation_times_from_the_inspected_snapshot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from datetime import UTC, datetime
+
+    from recall.dashboard import lite_db
+
+    first = datetime(2026, 1, 1, tzinfo=UTC)
+    newest = datetime(2026, 1, 2, tzinfo=UTC)
+    inventory = {"tenant": "project", "generation": "lite-1", "created_at": first, "activated_at": newest}
+
+    def no_second_read(dsn: str):
+        pytest.fail("Generation display must not mix an inspected snapshot with a new connection")
+
+    monkeypatch.setattr(lite_db, "connect", no_second_read)
+    generation, = lite_db.generations(f"sqlite:///{tmp_path.as_posix()}/memory.db", "project", inspected_tenant=inventory)
+    assert (generation["created_at"], generation["activated_at"]) == (first, newest)
+
+
 def test_page_views_leave_the_file_unchanged(lite_store: tuple[str, Path], tmp_path: Path) -> None:
     """W4."""
     dsn, path = lite_store

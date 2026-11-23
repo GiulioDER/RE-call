@@ -95,8 +95,7 @@ def _installation_lock(path: Path) -> Iterator[None]:
     """Serialize installer merges without adding a platform-specific dependency."""
     lock_path = path.with_name(f"{path.name}.lock")
     lock_path.parent.mkdir(parents=True, exist_ok=True)
-    handle = lock_path.open("a+b")
-    try:
+    with lock_path.open("a+b") as handle:
         if os.name == "nt":
             msvcrt = importlib.import_module("msvcrt")
 
@@ -108,17 +107,14 @@ def _installation_lock(path: Path) -> Iterator[None]:
         else:
             fcntl = importlib.import_module("fcntl")
             fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
-        yield
-    finally:
-        if os.name == "nt":
-            msvcrt = importlib.import_module("msvcrt")
-
-            handle.seek(0)
-            msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
-        else:
-            fcntl = importlib.import_module("fcntl")
-            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-        handle.close()
+        try:
+            yield
+        finally:
+            if os.name == "nt":
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
 def _marketplace_document(path: Path) -> dict[str, Any]:
@@ -539,6 +535,11 @@ def _git(project_root: Path, *args: str) -> int | None:
         return None
 
 
+def _git_tracked(project_root: Path, relative_path: str) -> int | None:
+    pathspec = f":(icase,literal){relative_path}" if os.name == "nt" else relative_path
+    return _git(project_root, "ls-files", "--error-unmatch", "--", pathspec)
+
+
 def _git_routing_refusal() -> str | None:
     """Require checks to use the project's usual Git paths and configuration."""
     for name in (
@@ -747,7 +748,7 @@ def _register_project_servers_locked(
         return ProjectServerRegistration(target, skipped_reason=f"{target} is linked; left untouched")
     backup_path = target.with_name(target.name + ".recall-backup")
     for path in (target, backup_path):
-        tracked = _git(root, "ls-files", "--error-unmatch", "--", path.relative_to(root).as_posix())
+        tracked = _git_tracked(root, path.relative_to(root).as_posix())
         if tracked == 0:
             return ProjectServerRegistration(
                 target,

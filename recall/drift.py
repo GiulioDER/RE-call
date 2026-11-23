@@ -392,6 +392,8 @@ def evaluate_drift(
     """
     if (generation_id is None) == (corpus_objects is None):
         raise ValueError("name exactly one of generation_id or corpus_objects")
+    if not 0 <= screen_delta <= 1:
+        raise ValueError("screen_delta must be a finite fraction between 0 and 1")
 
     tenant = repository.tenant_id
     candidate = candidate_label or generation_id or "<directory>"

@@ -92,6 +92,7 @@ import hashlib
 import json
 import sqlite3
 from collections.abc import Callable, Iterator
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import urlencode
@@ -430,6 +431,39 @@ def test_g13_a_file_page_keeps_the_graph_until_the_corpus_moves(numbered: LiteSt
     numbered.upsert([Chunk("u0", "u.md", "new", {"file": "u.md", "ord": 0})], [[1.0, 0.0, 0.0, 0.0]])
     assert lite_db.source_detail(dsn, numbered.tenant, "s.md") is not None
     assert len(calls) == 2, "a graph was kept past a corpus write"
+
+
+def test_source_projection_reuses_the_graph_lookups_for_one_read_view(
+    numbered: LiteStore, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from recall.dashboard import lite_db
+    from recall.semantic_graph import SemanticMention
+
+    dsn = "sqlite:///" + numbered.path.as_posix()
+    with lite_db.connect(dsn) as conn:
+        rows, graph, semantic = lite_db._corpus(conn, numbered.tenant)
+
+    walks = 0
+
+    class CountedMentions(tuple[SemanticMention, ...]):
+        def __iter__(self) -> Iterator[SemanticMention]:
+            nonlocal walks
+            walks += 1
+            return super().__iter__()
+
+    semantic = replace(semantic, mentions=CountedMentions(semantic.mentions))
+    view = rows, graph, semantic
+    monkeypatch.setattr(lite_db, "_corpus", lambda _conn, _tenant: view)
+    for name in ("s.md", "t.md", "s.md"):
+        detail = lite_db.source_detail(dsn, numbered.tenant, name)
+        assert detail is not None and detail["source_uri"] == name
+
+    assert walks == 1, "source detail scanned the full graph on a warm read view"
+
+    view = rows, graph, replace(semantic, generation_id="fixture-next-view")
+    detail = lite_db.source_detail(dsn, numbered.tenant, "s.md")
+    assert detail is not None and detail["generation"] == "fixture-next-view"
+    assert walks == 2, "source detail kept the old view's index"
 
 
 @pytest.mark.parametrize("frozen", [False, True])

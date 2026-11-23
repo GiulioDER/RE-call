@@ -266,6 +266,7 @@ def server_env(
         "RECALL_TENANT": tenant,
         "RECALL_TRUST_MODE": trust_mode,
         "RECALL_TABLE": table or DEFAULT_TABLE,
+        "RECALL_TRANSPORT": "stdio",
     }
     # ⚠️ **Emitted because three writers of this one server's env disagreed, and none was a
     # superset.** `recall/wizard/wiring.py` wrote DSN/EMBEDDER/TENANT, this function wrote

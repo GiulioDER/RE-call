@@ -126,6 +126,12 @@ def _host_of(base_url: str) -> str:
             continue
         if parts.hostname is None:
             continue
+        # Python 3.11.5 accepts stray text around a bracketed host and silently drops it.
+        authority = parts.netloc.rsplit("@", 1)[-1]
+        prefix, bracket, rest = authority.partition("[")
+        suffix = rest.partition("]")[2]
+        if bracket and (prefix or (suffix and not suffix.startswith(":"))):
+            continue
         host = parts.hostname
         try:
             port = parts.port

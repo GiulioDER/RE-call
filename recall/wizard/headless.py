@@ -577,14 +577,15 @@ class _RealServices:
     def server_embedding_env(self) -> dict[str, str]:
         """The settings a server needs to resolve the embedder this run builds with.
 
-        Empty unless `RECALL_EMBED_PROFILE` is set: then the profile, and what it needs (a hosted
+        Clear an inherited profile unless `RECALL_EMBED_PROFILE` is set. Otherwise send the profile
+        and what it needs (a hosted
         profile's key, a local profile's model path and `RECALL_MODEL_SHA256`), exactly as
         `recall setup --lite` writes them, refusing when they cannot be reproduced. Without it
         the registered servers resolved the plain `RECALL_EMBEDDER` while the corpora were built
         under the profile.
         """
         if not os.environ.get("RECALL_EMBED_PROFILE", "").strip():
-            return {}
+            return {"RECALL_EMBED_PROFILE": ""}
         from recall.lite.setup import _embedding_environment
 
         values = _embedding_environment(
@@ -752,13 +753,12 @@ class _RealServices:
         return row is not None
 
     def smoke(self, block: ServerBlock) -> SmokeResult:
-        """Put one real query through one configured server, exactly as that server would.
+        """Run a host-side smoke search for one configured tenant.
 
         The store is chosen from the BLOCK's own `RECALL_ENV`, mirroring the `generation_mode`
         branch in `recall_mcp.server` that selects `GenerationStore`, because the point is to
-        exercise the configuration that was just written rather than a second guess at it. If
-        `server_blocks` is ever wrong about which tenants can be served, this is where it
-        surfaces: as an exception, from the same code path the client will take.
+        exercise the configured store and trust settings. This search uses the wizard's embedder.
+        It does not start the configured MCP process or establish container runtime compatibility.
 
         The query is drawn from the tenant's OWN indexed text. A fixed question would abstain on
         every corpus and prove only that nothing raised; a phrase the corpus actually contains can

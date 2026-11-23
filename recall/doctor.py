@@ -855,9 +855,12 @@ def _is_recall_server(block: object) -> bool:
     """
     if not isinstance(block, dict):
         return False
+    from recall.wizard.wiring import is_frozen_mcp_launcher
+
     command = str(block.get("command", ""))
-    args = " ".join(str(a) for a in block.get("args", []) or [])
-    return "recall-mcp" in command or "recall_mcp" in args
+    argv = block.get("args", []) or []
+    args = " ".join(str(a) for a in argv)
+    return "recall-mcp" in command or "recall_mcp" in args or is_frozen_mcp_launcher(command, argv)
 
 
 def run_checks(

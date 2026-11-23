@@ -195,6 +195,7 @@ def run_lite_setup(
         "RECALL_INDEX_ROOT": str(memory), "RECALL_TENANT": "default",
         "RECALL_ENV": "development", "RECALL_INDEX_MODE": "legacy",
         "RECALL_TRANSPORT": "stdio", "RECALL_TRUST_MODE": "strict",
+        MODE_BY_TENANT_ENV: "",
     }
     # Setup indexes under the embedding cache settings of this shell; the server's refreshes must
     # too, or a cache the user switched off or moved here comes back at the default there.
@@ -209,7 +210,7 @@ def run_lite_setup(
             "RECALL_ENV", "RECALL_INDEX_MODE", "RECALL_TRANSPORT",
             "RECALL_TRUST_MODE", "RECALL_EMBEDDER", "RECALL_EMBED_PROFILE", "RECALL_MODEL_CACHE",
             "RECALL_MODEL_SHA256", "RECALL_QWEN_MODEL_PATH", "RECALL_EMBED_CACHE", "RECALL_EMBED_CACHE_MAX_MB",
-            MODE_ENV, ROOT_ENV,
+            MODE_ENV, MODE_BY_TENANT_ENV, ROOT_ENV,
         }
         report.followup_env = {key: value for key, value in local_env.items() if key in safe_keys}
     with LiteStore(path, dim=embedder.dim) as store:
@@ -233,12 +234,13 @@ def run_lite_setup(
                 background_calibration=False, allow_prune=False,
                 security_policy=policy, security_context=context, budget=None, key_root=memory,
                 # The settings the registered server will search under, so the artifact its first
-                # search needs exists when setup returns. Without this shell's per-tenant mode,
-                # which is not registered: a `default:off` here would skip the build for a server
+                # search needs exists when setup returns. Clear inherited tenant overrides:
+                # a `default:off` would skip the build for a server
                 # registered `active` (as the wizard does, CCA ENV-003).
                 rescue_env={
-                    **{key: value for key, value in os.environ.items() if key != MODE_BY_TENANT_ENV},
+                    **os.environ,
                     **atomic_env,
+                    MODE_BY_TENANT_ENV: "",
                 },
             )
             if refreshed.outcome is not Outcome.REFRESHED:

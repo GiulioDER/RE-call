@@ -15,7 +15,10 @@ from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
 
 from recall.backends import write_session
+from recall.embedding_core import profile_lineage_mismatch
+from recall.embeddings import FastEmbedEmbedder
 from recall.errors import IdempotencyConflict
+from recall.generation_store import GenerationStore
 from recall.idempotency_receipts import check_result_size
 from recall.lite import LiteStore, LiteWriterBusy
 from recall.lite.refresh import client_reason, refresh_access_context
@@ -86,12 +89,19 @@ def _register_memory_admin_tools(mcp: ToolRegistrar, deps: _ToolDeps) -> None:
         assert store is not None
         registry: StoreRegistry | None = state.get("stores")
         tenant = _current_tenant(state)
-        shadow = (
-            # get_shadow holds the registry lock across a control-plane read (PERF-002).
-            await _to_thread(lambda: registry.get_shadow(tenant))
-            if registry is not None and tenant is not None
-            else None
-        )
+        try:
+            shadow = (
+                # get_shadow holds the registry lock across a control-plane read (PERF-002).
+                await _to_thread(lambda: registry.get_shadow(tenant))
+                if registry is not None and tenant is not None
+                else None
+            )
+        except Exception as exc:  # noqa: BLE001  # BROAD-CATCH: cleanup-only; release the unused reservation
+            try:
+                await _release_mutation_reservation(state, store.tenant, idempotency_key)
+            except Exception as cleanup_error:  # noqa: BLE001  # BROAD-CATCH: cleanup-only; preserve the preflight error
+                exc.add_note(f"could not release the erasure reservation ({type(cleanup_error).__name__})")
+            raise
         control = registry.control_plane if registry is not None else None
         try:
             security_context = _access_context(state, store, purpose="erasure")
@@ -388,10 +398,37 @@ def _register_memory_admin_tools(mcp: ToolRegistrar, deps: _ToolDeps) -> None:
 
         Returns:
             JSON of {chunks, newest_indexed_at, stale, metrics, refresh}.
+            Stdio FastEmbed generation stores also report `serving_lineage` as
+            `match`, `unverified`, or `LINEAGE_MISMATCH`.
         """
         store = await _require(SCOPE_READ, ctx)
+        state = _state(ctx)
+        embedder = state["embedder"]
 
         def stats() -> str:
+            if (
+                isinstance(store, GenerationStore)
+                and isinstance(embedder, FastEmbedEmbedder)
+                and state.get("stores") is None
+            ):
+                with store.snapshot():
+                    binding = store.generation_binding()
+                    payload = memory_stats(store).model_dump(mode="json")
+                expected_model = binding.get("embedder_model")
+                expected_dim = binding.get("embedder_dimension")
+                profile_id = binding.get("embedder_profile_id")
+                fingerprint = binding.get("embedder_profile_fingerprint")
+                if (
+                    (expected_model is not None and embedder.name != expected_model)
+                    or (expected_dim is not None and str(embedder.dim) != expected_dim)
+                    or profile_lineage_mismatch(embedder, profile_id, fingerprint) is not None
+                ):
+                    payload["serving_lineage"] = "LINEAGE_MISMATCH"
+                elif profile_id and fingerprint:
+                    payload["serving_lineage"] = "match"
+                else:
+                    payload["serving_lineage"] = "unverified"
+                return json.dumps(payload, indent=2)
             result = memory_stats(store)
             if isinstance(store, LiteStore):
                 # The last automatic refresh, so an agent can see why a memo it just wrote is not

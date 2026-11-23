@@ -103,14 +103,14 @@ Start it with:
 docker compose up -d --wait
 ```
 
-If PostgreSQL with pgvector already exists, provide its DSN to `recall setup` when prompted. The
-wizard applies the schema itself after the embedder is chosen, because the vector dimension belongs
-to the selected embedder.
+If PostgreSQL with pgvector already exists, set `RECALL_SERVING_DSN` or pass `recall --dsn "$DSN"
+setup`, with `DSN` set to its connection string. Setup applies the schema after you choose the
+embedder, which determines the vector dimension.
 
 ## Guided PostgreSQL setup
 
 ```bash
-pip install "recall-rag[fastembed]"
+pip install "recall-rag[fastembed,mcp]"
 recall setup
 ```
 
@@ -118,12 +118,12 @@ The interview chooses the embedder, so `recall setup` refuses the global `--embe
 the `default` tenant and refuses `--tenant` with any other value; `--table` is applied. The Lite
 options `--memory`, `--store` and `--no-register` are refused without `--lite`.
 
-The wizard can:
+Plain setup can:
 
 1. select the embedder, reranker, and retrieval profile
 2. apply pending PostgreSQL migrations
-3. build an indexed corpus and its immutable generation
-4. point you at `recall wizard` for calibration: setup itself does not calibrate
+3. index the selected corpus in the legacy chunk table
+4. point you to `recall wizard` to build and publish an immutable generation and its calibration
 5. register MCP servers and offer memory scaffolding for the selected agent
 
 The provider API keys you enter are also written into the Claude Code registration's environment

@@ -56,7 +56,7 @@ from collections.abc import Callable, Mapping
 from contextlib import ExitStack
 from dataclasses import dataclass
 from typing import Any
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 from recall.wizard.corpora import CorpusPlan, CorpusSpec
 from recall.wizard.config_lock import configuration_lock
@@ -350,7 +350,8 @@ def mcp_config(
     The OS passthrough from `server_os_env` is added HERE, the one place that renders a host
     launch, and not to `ServerBlock.env`: that dict also becomes the environment of the Docker
     stack's Linux containers (`headless.py` hands it to `StackSpec`), where a Windows APPDATA means
-    nothing, and the install report prints it. A block's own value wins a collision.
+    nothing, and the install report prints it. A block's own value wins a collision, except that
+    the host launch pins the transport to match its declared stdio type.
     """
     # PYTHONSAFEPATH=1 in `server_os_env()` keeps the session's directory off sys.path.
     # ast-grep-ignore: python-module-run-with-safe-path
@@ -364,7 +365,7 @@ def mcp_config(
                 "command": interpreter or sys.executable,
                 "args": args.copy(),
                 "cwd": str(project_root),
-                "env": {**server_os_env(), **block.env},
+                "env": {**server_os_env(), **block.env, "RECALL_TRANSPORT": "stdio"},
             }
             for block in blocks
         }
@@ -393,6 +394,61 @@ def _managed_env_values(path: Path) -> dict[str, str]:
     return values
 
 
+def is_frozen_mcp_launcher(command: str, args: object) -> bool:
+    """Recognize the stdio command emitted by the first-party Windows bundle."""
+    name = PureWindowsPath(command.strip('"')).stem.casefold()
+    return name == "recall-install" and isinstance(args, (list, tuple)) and tuple(args) == ("--mcp-stdio",)
+
+
+def _protect_project_env(path: Path) -> Path | None:
+    """Refuse unsafe Git destinations before writing machine-local settings."""
+    from recall._env import refuse_current_directory_executables
+    from recall.codex import _git, _git_tracked
+
+    root = path.parent.resolve()
+    if not any((folder / ".git").exists() for folder in (root, *root.parents)):
+        return None
+
+    refuse_current_directory_executables()
+    tracked = _git_tracked(root, path.name)
+    if tracked == 0:
+        raise ValueError(f"{path} is tracked by Git; project settings were not written")
+    if tracked != 1:
+        raise ValueError(f"Git could not verify the tracking status of {path}")
+
+    ignored = _git(root, "check-ignore", "-q", "--", path.name)
+    if ignored == 0:
+        return None
+    if ignored != 1:
+        raise ValueError(f"Git could not verify the ignore status of {path}")
+
+    ignore = root / ".gitignore"
+    if ignore.is_symlink():
+        raise ValueError(f"{ignore} is a symbolic link; project settings were not written")
+    existing = ignore.read_bytes() if ignore.exists() else b""
+    separator = b"" if not existing or existing.endswith(b"\n") else b"\n"
+    with ignore.open("ab") as handle:
+        handle.write(separator + path.name.encode("utf-8") + b"\n")
+    if _git(root, "check-ignore", "-q", "--", path.name) != 0:
+        raise ValueError(f"{path} is still visible to Git; project settings were not written")
+    return ignore
+
+
+def _private_client_config_problem(target: Path, backup: Path) -> str | None:
+    """Check user-selected Claude configuration paths that resolve inside a worktree."""
+    from recall._env import refuse_current_directory_executables
+    from recall.codex import _git, _git_tracked
+
+    root = target.parent.resolve()
+    if not any((folder / ".git").exists() for folder in (root, *root.parents)):
+        return None
+    refuse_current_directory_executables()
+    for path in (target, backup):
+        if _git_tracked(root, path.name) != 1 or _git(root, "check-ignore", "-q", "--", path.name) != 0:
+            return f"Git could not confirm that {path} is untracked and ignored; left Claude Code config untouched"
+    return None
+
+
 def write_project_files(
     *,
     project_root: Path,
@@ -410,9 +466,8 @@ def write_project_files(
     `MEMORY.md` has no markers: it is created in `memory_dir`, the memory folder, only when it is
     absent, and an existing one is never rewritten.
 
-    `.env` can carry a DSN with its password and the provider keys `recall setup` keeps there, so
-    inside a git work tree `.env` is added to `project_root/.gitignore` when that file does not
-    already ignore it; otherwise a `git add .` in the user's project commits the credentials.
+    `.env` can hold credentials. Inside a Git work tree the shared writer checks its tracked
+    and effective ignore status before updating it.
 
     `.env` carries the serving DSN and embedder for the CLI, not for the MCP servers. The servers get
     their variables in their own `env` blocks, because the client's environment is not the shell
@@ -454,24 +509,13 @@ def write_project_files(
     managed = _managed_env_values(env_path)
     for key in CLI_RESCUE_KEYS:
         managed.pop(key, None)
-    _update_env_block(
+    ignore = _update_env_block(
         env_path,
         {**managed, **(rescue_env or {}), "RECALL_DSN": dsn, "RECALL_EMBEDDER": embedder},
     )
     written.append(env_path)
-
-    # Read the way `recall.lite.setup` reads it for its store: the project's own `.gitignore`
-    # lines, not git, so a parent or global ignore rule is not seen and `.env` is added anyway,
-    # which is harmless.
-    if any((folder / ".git").exists() for folder in (project_root, *project_root.resolve().parents)):
-        ignore = project_root / ".gitignore"
-        existing = ignore.read_text(encoding="utf-8", errors="replace") if ignore.exists() else ""
-        patterns = {".env", "/.env", ".env*", "/.env*", "*.env"}
-        if not {line.strip() for line in existing.splitlines()} & patterns:
-            separator = "" if not existing or existing.endswith("\n") else "\n"
-            with ignore.open("a", encoding="utf-8", newline="\n") as handle:
-                handle.write(f"{separator}.env\n")
-            written.append(ignore)
+    if ignore is not None:
+        written.append(ignore)
 
     claude_md = project_root / "CLAUDE.md"
     scaffold_claude_md(claude_md)
@@ -512,14 +556,16 @@ def write_runtime_profile(
     would make the install order matter for no reason.
     """
     from recall.desktop.models import RuntimeMode, RuntimeProfile
-    from recall.desktop.profiles import save_profile
+    from recall.desktop.profiles import load_profile, save_profile
 
+    previous = load_profile(path)
     profile = RuntimeProfile(
         mode=RuntimeMode.DOCKER,
         compose_file=str(compose_path),
         compose_project=compose_project,
         default_tenant=project,
         shared_profile=shared_profile,
+        update_enabled=previous.update_enabled if previous is not None else True,
     )
     return save_profile(profile, path)
 
@@ -822,6 +868,8 @@ def _register_local_scope_locked(
         from recall.wizard.uninstall import _backup_path
 
         backup = _backup_path(target)
+    if problem := _private_client_config_problem(target, backup):
+        return LocalScopeRegistration(config_path=target, skipped_reason=problem)
     # Preserve the protected body's I/O exception contract; only lock acquisition
     # failures and the explicit unsafe-backup refusal produce skip results.
     _write_private_configuration(backup, raw)

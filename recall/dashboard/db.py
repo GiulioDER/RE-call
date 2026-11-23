@@ -151,11 +151,13 @@ def tenants(db: DashboardDB) -> list[dict[str, Any]]:
     return out
 
 
-def generations(db: DashboardDB, tenant: str, limit: int = 15) -> list[dict[str, Any]]:
+def generations(
+    db: DashboardDB, tenant: str, limit: int = 15, *, inspected_tenant: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
     if db.lite:
         from recall.dashboard import lite_db
 
-        return lite_db.generations(db.dsn, tenant, limit)
+        return lite_db.generations(db.dsn, tenant, limit, inspected_tenant=inspected_tenant)
     with db.connect(tenant) as c:
         rows = c.execute(
             "select generation_id, state, created_at, activated_at, retired_at, failure_reason, created_by "
@@ -182,12 +184,16 @@ def lifecycle_events(db: DashboardDB, tenant: str, limit: int = 100) -> list[dic
     return [dict(zip(keys, row, strict=True)) for row in rows]
 
 
+def _search_outcome(payload: dict[str, Any], event_type: str) -> Any:
+    return payload.get("outcome") or (
+        "refused" if event_type == "search_refusal" else "abstained" if payload.get("abstained") else "answered"
+    )
+
+
 def _summarise(payload: Any, event_type: str = "search_decision") -> dict[str, Any]:
     payload = payload if isinstance(payload, dict) else {}
     hits = payload.get("hits") if isinstance(payload.get("hits"), list) else []
-    outcome = payload.get("outcome") or (
-        "refused" if event_type == "search_refusal" else "abstained" if payload.get("abstained") else "answered"
-    )
+    outcome = _search_outcome(payload, event_type)
     return {
         "query": str(payload.get("query", "")),
         "outcome": outcome,
@@ -231,6 +237,15 @@ def searches(db: DashboardDB, tenant: str, limit: int = 100, contains: str = "")
         out.append({"event_id": event_id, "event": event_type, "actor": actor, "generation": generation,
                     "created_at": created, **_summarise(payload, event_type)})
     return out
+
+
+def search_count(db: DashboardDB, tenant: str, *, limit: int) -> int:
+    """Count recorded searches up to the overview's display limit."""
+    if db.lite:
+        from recall.dashboard import lite_db
+
+        return lite_db.search_count(db.dsn, tenant, limit=limit)
+    return len(searches(db, tenant, limit=limit))
 
 
 def search(db: DashboardDB, tenant: str, event_id: str) -> dict[str, Any] | None:
@@ -348,6 +363,17 @@ def control(db: DashboardDB, tenant: str, *, retrievals: bool = True, source: st
     }
     ordered = sorted(memos.values(), key=lambda m: (-m["retrieved"], -m["used"], m["source"]))
     return {"summary": summary, "memos": ordered}
+
+
+def control_for_memo(
+    db: DashboardDB, tenant: str, source: str, *, report_limit: int,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Read one memo's Control data and its newest reports."""
+    if db.lite:
+        from recall.dashboard import lite_db
+
+        return lite_db.control_for_memo(db.dsn, tenant, source, report_limit=report_limit)
+    return control(db, tenant, source=source), use_reports(db, tenant, limit=report_limit, source=source)
 
 
 def use_reports(db: DashboardDB, tenant: str, limit: int = 50, source: str = "") -> list[dict[str, Any]]:
