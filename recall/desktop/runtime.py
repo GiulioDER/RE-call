@@ -49,7 +49,7 @@ def _close_gateways(gateways: tuple[ToolGateway | None, ...]) -> None:
             close = getattr(gateway, "close", None)
             if callable(close):
                 close()
-        except Exception as exc:  # noqa: BLE001  # BROAD-CATCH: preserve cleanup for the remaining gateways
+        except Exception as exc:  # noqa: BLE001  # BROAD-CATCH: cleanup-only; close remaining gateways before re-raising
             if first_error is None:
                 first_error = exc
     if first_error is not None:

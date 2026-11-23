@@ -149,7 +149,7 @@ def _setup_install(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, registration
     note.write_text("A harmless project fact.\n", encoding="utf-8")
     probe = setup.HardwareProbe(2, None, False, 10**10, False, False, False)
     monkeypatch.setattr(setup, "probe_hardware", lambda: probe)
-    monkeypatch.setattr(setup, "_module_available", lambda name: False)
+    monkeypatch.setattr(setup, "_module_available", lambda name: name == "mcp")
     monkeypatch.setattr(setup, "_prepare_schema_for_embedder", lambda **kw: None)
     monkeypatch.setattr(setup, "_reasoning_interview", lambda *a, **kw: {})
     monkeypatch.setattr(setup, "claude_code_detected", lambda: True)

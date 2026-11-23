@@ -75,10 +75,10 @@ def _register_memory_admin_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
                 if registry is not None and tenant is not None
                 else None
             )
-        except Exception as exc:  # noqa: BLE001  # BROAD-CATCH: no erasure has started
+        except Exception as exc:  # noqa: BLE001  # BROAD-CATCH: cleanup-only; release the unused reservation
             try:
                 await _release_mutation_reservation(state, store.tenant, idempotency_key)
-            except Exception as cleanup_error:  # noqa: BLE001  # BROAD-CATCH: preserve the preflight error
+            except Exception as cleanup_error:  # noqa: BLE001  # BROAD-CATCH: cleanup-only; preserve the preflight error
                 exc.add_note(f"could not release the erasure reservation ({type(cleanup_error).__name__})")
             raise
         control = registry.control_plane if registry is not None else None

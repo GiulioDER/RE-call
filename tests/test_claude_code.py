@@ -546,7 +546,10 @@ def test_server_env_carries_the_embedder_and_a_non_default_table() -> None:
     )
     assert plain.get("RECALL_TABLE") == DEFAULT_TABLE
     assert "RECALL_EMBEDDER" not in plain
-    assert set(plain) == {"RECALL_SERVING_DSN", "RECALL_TENANT", "RECALL_TRUST_MODE", "RECALL_TABLE"}
+    assert plain["RECALL_TRANSPORT"] == "stdio"
+    assert set(plain) == {
+        "RECALL_SERVING_DSN", "RECALL_TENANT", "RECALL_TRUST_MODE", "RECALL_TABLE", "RECALL_TRANSPORT",
+    }
     assert DEFAULT_TABLE == "chunks"
 
 

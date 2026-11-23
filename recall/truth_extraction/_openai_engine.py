@@ -126,6 +126,11 @@ def _host_of(base_url: str) -> str:
             continue
         if parts.hostname is None:
             continue
+        authority = parts.netloc.rsplit("@", 1)[-1]
+        if authority.startswith("["):
+            suffix = authority.partition("]")[2]
+            if suffix and not suffix.startswith(":"):
+                continue
         host = parts.hostname
         try:
             port = parts.port

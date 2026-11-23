@@ -236,11 +236,12 @@ def search_count(dsn: str, tenant: str, *, limit: int) -> int:
     with connect(dsn) as c:
         if tenant != _tenant(c):
             return 0
-        return c.execute(
+        count = c.execute(
             "SELECT count(*) FROM (SELECT 1 FROM audit_events "
             "WHERE event_type IN (SELECT value FROM json_each(?)) LIMIT ?)",
             (json.dumps(list(SEARCH_EVENTS)), limit),
         ).fetchone()[0]
+        return int(count)
 
 
 def search(dsn: str, tenant: str, event_id: str) -> dict[str, Any] | None:

@@ -1494,8 +1494,9 @@ def test_every_tenant_gets_its_own_server_with_its_own_tenant_variable() -> None
 
     assert docs is not code, "two scopes must not share one server"
     assert docs is runtime._gateway_for("myproject-docs"), "and the same scope must be cached"
-    assert docs.env == {"RECALL_SERVING_DSN": dsn, "RECALL_DSN": dsn, "RECALL_TENANT": "myproject-docs"}
-    assert code.env == {"RECALL_SERVING_DSN": dsn, "RECALL_DSN": dsn, "RECALL_TENANT": "myproject-code"}
+    common = {"RECALL_SERVING_DSN": dsn, "RECALL_DSN": dsn, "RECALL_TRANSPORT": "stdio"}
+    assert docs.env == {**common, "RECALL_TENANT": "myproject-docs"}
+    assert code.env == {**common, "RECALL_TENANT": "myproject-code"}
 
 
 def test_the_server_is_launched_with_an_absolute_interpreter() -> None:
