@@ -197,8 +197,14 @@ def _selftest() -> int:
         print(f"selftest: building the window failed: {type(exc).__name__}: {exc}", file=sys.stderr)
         return 1
 
-    # A source install can run the GUI self-test with no MCP extra installed. The bundle ships it.
     if getattr(sys, "frozen", False):
+        from recall.wizard.stack import _FASTEMBED_RUNTIME_PACKAGES, dockerfile_text
+
+        recipe = dockerfile_text()
+        if any(f'"{name}==' not in recipe for name in _FASTEMBED_RUNTIME_PACKAGES):
+            failures.append("the wizard Docker recipe is missing the bundled FastEmbed runtime versions")
+
+        # A source install can omit the MCP extra. The frozen bundle ships it.
         try:
             with tempfile.TemporaryDirectory(prefix="recall installer ") as raw:
                 asyncio.run(_selftest_mcp(Path(raw)))

@@ -93,13 +93,13 @@ Cross package edges: 463
 | 15 | `recall_mcp.query_construction_api` |
 | 15 | `recall_mcp.reasoning_diagnostics` |
 | 14 | `recall.calibration_v2` |
+| 14 | `recall.desktop.main` |
 | 14 | `recall.eval.promotion.__main__` |
 | 14 | `recall.generation_rescue` |
 | 14 | `recall.lite.refresh` |
 | 14 | `recall.setup` |
 | 14 | `recall_mcp.assistant` |
 | 14 | `recall_mcp.reasoning_api` |
-| 13 | `recall.cli_commands._shared` |
 
 ## Cross package edges
 
@@ -647,7 +647,7 @@ They are observations, not automatic failures.
 | `recall.desktop.github` | 3 | 7 |
 | `recall.desktop.install_ui` | 10 | 190 |
 | `recall.desktop.jobs` | 0 | 0 |
-| `recall.desktop.main` | 13 | 199 |
+| `recall.desktop.main` | 14 | 199 |
 | `recall.desktop.main_window` | 13 | 197 |
 | `recall.desktop.models` | 1 | 1 |
 | `recall.desktop.profiles` | 2 | 3 |

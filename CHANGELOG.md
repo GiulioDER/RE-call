@@ -14,9 +14,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 * A previous RE-call binary can refuse a retry that uses a new Lite erasure receipt until the
   receipt expires. Use the same version when retrying the operation. (#1480)
-* Desktop startup and pinned restart report known embedding lineage mismatches between the host
-  and the managed Docker stack for the default docs session. Verify that the host and the image
-  use compatible embedding runtimes before switching traffic. (#1478, #1481)
+* New wizard images use the host's FastEmbed, ONNX Runtime, and tokenizers versions when those
+  packages are installed. Existing image recipes keep their runtime when a tenant is added.
+  Desktop startup and pinned restart report known lineage mismatches in the default docs session.
+  (#1478, #1481)
 
 ### Fixed
 

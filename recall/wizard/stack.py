@@ -97,8 +97,14 @@ def _no_current_directory_search() -> None:
     os.environ["NoDefaultCurrentDirectoryInExePath"] = "1"
 
 
+# These package versions feed the FastEmbed profile and must match across the host and image.
+_FASTEMBED_RUNTIME_PACKAGES = ("fastembed", "onnxruntime", "tokenizers")
+_RUNTIME_TAG_SEPARATOR = "-runtime-"
+_RUNTIME_VERSION = re.compile(r"[0-9][0-9A-Za-z.]*")
+
+
 def _default_image() -> str:
-    """The tag the generated stack builds and runs, scoped to the recall version.
+    """The tag the generated stack builds and runs, scoped to RE-call and the FastEmbed runtime.
 
     ⚠️ **It used to be the fixed tag `recall-desktop-recall:local`, and that silently ran the wrong
     image.** `image:` alongside `build:` makes Compose REUSE an existing tag rather than build it,
@@ -107,15 +113,26 @@ def _default_image() -> str:
     days earlier, on Python 3.14 where this Dockerfile pins 3.13, with no `documents` extra and
     with the post-install assertion never executed. Nothing errored.
 
-    Scoping the tag to the version fixes both halves: a machine carrying the legacy tag no longer
-    matches, and an upgrade rebuilds instead of silently serving the previous version's image.
+    A host dependency change must also select a new image. Keep the versions in the tag so an
+    added tenant can reconstruct the runtime of the inherited image, even on an upgraded host.
     """
+    from importlib.metadata import PackageNotFoundError, version
+
     from recall import __version__
 
-    return f"recall-wizard:{__version__}"
+    base = f"recall-wizard:{__version__}"
+    try:
+        versions = tuple(version(package) for package in _FASTEMBED_RUNTIME_PACKAGES)
+    except PackageNotFoundError:
+        return base
+    tag = f"{base}{_RUNTIME_TAG_SEPARATOR}{'_'.join(versions)}"
+    if len(tag.partition(":")[2]) <= 128 and all(_RUNTIME_VERSION.fullmatch(v) for v in versions):
+        return tag
+    return base
 
 
 _DEFAULT_IMAGE = _default_image()
+_DEFAULT_RECIPE = _DEFAULT_IMAGE.partition(":")[2]
 
 #: The generated stack's file name, under the user's chosen `data_root`.
 #:
@@ -497,10 +514,19 @@ def dockerfile_text(version: str | None = None) -> str:
     version has not been published yet produces a stack whose build fails, saying so plainly; that
     is better than silently serving a different version than the one the user is running.
     """
-    if version is None:
-        from recall import __version__
-
-        version = __version__
+    recipe = _DEFAULT_RECIPE if version is None else version
+    version, separator, runtime = recipe.partition(_RUNTIME_TAG_SEPARATOR)
+    pins = ""
+    if separator:
+        versions = runtime.split("_")
+        if len(versions) != len(_FASTEMBED_RUNTIME_PACKAGES) or not all(
+            _RUNTIME_VERSION.fullmatch(value) for value in versions
+        ):
+            raise RuntimeError("invalid FastEmbed runtime versions in the wizard image tag")
+        pins = "".join(
+            f' "{package}=={value}"'
+            for package, value in zip(_FASTEMBED_RUNTIME_PACKAGES, versions, strict=True)
+        )
     # The extras follow the PINNED version, not the running one. See `_DOCUMENTS_EXTRA_SINCE`.
     extras = _IMAGE_EXTRAS if _publishes_documents(version) else _LEGACY_IMAGE_EXTRAS
     # LibreOffice is a large layer and a slow build. It is here for parity with
@@ -518,7 +544,7 @@ def dockerfile_text(version: str | None = None) -> str:
         "        libreoffice-impress \\\n"
         "        libreoffice-writer \\\n"
         "    && rm -rf /var/lib/apt/lists/*\n"
-        f'RUN pip install --no-cache-dir "recall-rag[{extras}]=={version}"\n'
+        f'RUN pip install --no-cache-dir "recall-rag[{extras}]=={version}"{pins}\n'
         "\n"
         "# ⚠️ **pip only WARNS about an extra a release does not provide.** So a pin whose version\n"
         "# predates an extra installs cleanly, the image builds, the container runs, and the\n"
@@ -602,7 +628,7 @@ def write_dockerfile(
 
 
 def _image_version(image: str) -> str | None:
-    """The recall version a `recall-wizard:<version>` tag names, or `None` for any other tag.
+    """The recipe key a `recall-wizard:<version>` tag names, including optional runtime pins.
 
     Deliberately narrow. It recognises only tags this module itself writes, because the value is
     used to PIN what a Dockerfile installs, and guessing a version out of somebody's own
@@ -878,13 +904,11 @@ def _write_compose_locked(
     from recall.atomic_write import atomic_write_bytes
     from copy import deepcopy
 
-    from recall import __version__
-
     # Publish recipes first without changing the bytes read by the existing stack.
     recipe = _publish_recipe(path.parent, dockerfile_version, dockerfile_name)
     document = deepcopy(document)
     services = document.get("services")
-    recipe_version = dockerfile_version or __version__
+    recipe_version = dockerfile_version or _DEFAULT_RECIPE
     if isinstance(services, dict):
         for service in services.values():
             if not isinstance(service, dict):
