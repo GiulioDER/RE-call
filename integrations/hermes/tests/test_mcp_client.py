@@ -138,25 +138,31 @@ def test_pending_requests_are_bounded(tmp_path, monkeypatch):
 
     from re_call_hermes import mcp_client
 
-    monkeypatch.setattr(mcp_client, "MAX_PENDING", 2, raising=False)
-    client = _client(tmp_path, no_answer_text=["None"])
+    client = _client(tmp_path, tools={"ready": [{"ok": True}]}, no_answer_text=["None"])
     client.start(20)
     log = tmp_path / "log.jsonl"
 
     def call():
         with pytest.raises(McpError):
-            client.call_tool("recall_search", {}, timeout=3)
+            client.call_tool("recall_search", {}, timeout=12)
 
     try:
+        # A reply proves the initialization notification has left the FIFO before lowering its limit.
+        assert client.call_tool("ready", {"text": "probe"}, timeout=10) == {"ok": True}
+        monkeypatch.setattr(mcp_client, "MAX_PENDING", 2, raising=False)
         with ThreadPoolExecutor(max_workers=2) as pool:
             futures = [pool.submit(call) for _ in range(2)]
-            assert wait_for(lambda: log.read_text(encoding="utf-8").count('"event": "call"') == 2, timeout=2)
-            with pytest.raises(mcp_client.NotSent, match="too many outstanding"):
-                client.call_tool("recall_search", {}, timeout=0.1)
-            assert log.read_text(encoding="utf-8").count('"event": "call"') == 2
-            client.close()
-            for future in futures:
-                future.result()
+            try:
+                assert wait_for(
+                    lambda: log.read_text(encoding="utf-8").count('"tool": "recall_search"') == 2, timeout=5
+                )
+                with pytest.raises(mcp_client.NotSent, match="too many outstanding"):
+                    client.call_tool("recall_search", {}, timeout=0.1)
+            finally:
+                client.close()
+                for future in futures:
+                    future.result()
+            assert log.read_text(encoding="utf-8").count('"tool": "recall_search"') == 2
     finally:
         client.close()
 
