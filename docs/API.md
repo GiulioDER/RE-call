@@ -94,7 +94,7 @@ removal.
 | `recall backup` | Inspect, create, verify, and restore encrypted Aurora backups through the explicit `status`, `create`, `verify`, and `restore` workflows. |
 | `recall secret` | `verify`: verify that every running ECS task reports the intended nonsecret secret version identifiers. |
 | `recall idempotency` | `reconcile`: record an operator verified mutation result after a replay result was lost. |
-| `recall records` | Look up audit records by exact key, with no embedder: `--anchors FILE` (a JSON list of `{file, symbol, code_sha}`, with `--repo`), `--id`, or `--all` for a complete dump of the tenant's records. `--repo` is required with `--anchors`; with `--id` or `--all`, only records of this repository. `--kind` filters, `--json` prints the envelope the `recall_records` MCP tool returns. Each record carries its `recall_record` exactly as authored, its anchor match (`exact`, `symbol_changed`, `file_only`), and its supersession and `caused` edges; superseded and expired records are listed and marked (`superseded_by`, `expired`), never hidden. Applies the source policy (`RECALL_SOURCE_POLICY_FILE`) as `recall search` does: a record in a denied file is left out, and a denied successor reads `<withheld>` (so does one whose file cannot be placed for the policy, a path two roots hold). A record a `supersedes:` reference names among several files reads `<ambiguous>`. Served on a lite store. |
+| `recall records` | Look up audit records by exact key, with no embedder: `--anchors FILE` (a JSON list of `{file, symbol, code_sha}`, with `--repo`), `--id`, or `--all` for a complete dump of the tenant's records. `--repo` is required with `--anchors`; with `--id` or `--all`, only records of this repository. `--kind` filters, `--json` prints the envelope the `recall_records` MCP tool returns. Each record carries its `recall_record` exactly as authored, its anchor match (`exact`, `symbol_changed`, `file_only`), and its supersession and `caused` edges; superseded and expired records are listed and marked (`superseded_by`, `expired`), never hidden. Applies the source policy (`RECALL_SOURCE_POLICY_FILE`) as `recall search` does: a record in a denied file is left out, and a denied successor reads `<withheld>` (so does one whose file cannot be placed for the policy, a path two roots hold). A record a `supersedes:` reference names among several files reads `<ambiguous>`. Served on a lite store. A fourth form, `--select-fix FILE`, selects one fix (see [Verified fix selection](#verified-fix-selection)): it requires `--repo`, refuses `--kind`, always prints its own JSON decision (so `--json` changes nothing), and exits non-zero on a request over 4 MiB or one that fails validation. |
 | `recall-enterprise` | Manage generation routing and readiness for production deployments. |
 
 ### Verified fix selection
@@ -109,14 +109,21 @@ configured source policy. It excludes an exact record ID when that record has an
 supersession, including when the successor is outside the request, withheld by policy,
 or the relationship is marked ambiguous. Any successor must qualify as a candidate in
 its own right. The selector ranks current proved bugs within the exact pre-fix revision.
-Positive lexical matches use the bug summary, test node and assertion text. A file match moves
-ahead of other positive matches. At most three test nodes are returned for verification.
+A candidate is excluded before ranking unless its record is a current, unexpired bug of
+tier `proved` whose stored `fix_commit` equals the candidate's `fix_commit`, and the
+candidate's `pre_fix_revision` equals the request's `revision`. Positive lexical matches use the bug summary, test node and assertion text. A file match moves
+ahead of other positive matches; `file_hints` are repository-relative paths, and `./` or
+backslash separators are normalised before the comparison. At most three test nodes are
+returned for verification.
 
 The request contains `report`, a full 40-character Git `revision`, optional `file_hints`,
 and `candidates`. Each candidate has `id`, `fix_commit`, `pre_fix_revision`, `test_node`,
 optional `assertion_text`, `symptom_groups`, `failure_marker`, and `repair`. A symptom group
-lists alternative literal phrases. Every group must match the report to establish the
-symptom. For example, `[["duplicate", "repeated"], ["question row", "question rows"]]`.
+lists 1 to 8 alternative phrases, and a candidate has 2 to 8 groups. Every group must match
+the report to establish the symptom. Phrases are compared as lowercased alphanumeric
+tokens, so case and punctuation are ignored. For example,
+`[["duplicate", "repeated"], ["question row", "question rows"]]`. The request is strict:
+unknown keys are refused and candidate IDs must be unique.
 Candidate metadata is supplied alongside retrieved IDs. The command does not infer that
 metadata for existing memories.
 
@@ -131,12 +138,28 @@ second one, even a pass, abstains as `ambiguous_observation`. That observation m
 responsible for measuring the clean checkout revision and supplying the actual diagnostic.
 The command neither runs tests nor applies fixes.
 
-The JSON response contains `decision`, `reason`, and `shortlist`. Only `serve` adds one
-`fix` with its repair text, source, commit, and verification node. Ambiguous, stale, and
-unverified results abstain. If the shortlist is empty and a requested record was excluded
-by supersession, the reason is `superseded_fix`. A missing store or a backend without
-snapshot support returns `unavailable`. The ordinary records forms continue to return
-audit records. This pilot supports lite and generation-backed stores.
+The JSON response contains `decision`, `reason`, `shortlist` (entries of `id` and
+`test_node`), and the `tenant_id` and `generation_id` of the snapshot it was read from
+(`generation_id` is null when no snapshot was read). Only `serve` adds one `fix`, with keys
+`id`, `source`, `source_commit`, `verification` (the test node), and `repair`.
+
+| `decision` | `reason` | When |
+| --- | --- | --- |
+| `serve` | `observed_symptom` | every condition above holds |
+| `abstain` | `ambiguous_records` | a requested ID matches more than one visible record |
+| `abstain` | `superseded_fix` | the shortlist is empty and a requested record was excluded by supersession |
+| `abstain` | `no_relevant_candidates` | the shortlist is empty otherwise |
+| `abstain` | `ambiguous_symptom` | more than one eligible candidate matches the symptom |
+| `abstain` | `symptom_not_correlated` | no eligible candidate matches, or the match is not shortlisted |
+| `abstain` | `ambiguous_test_node` | another eligible candidate shares the match's test node |
+| `abstain` | `missing_observation` | no observation for that test node and revision |
+| `abstain` | `ambiguous_observation` | more than one observation for that test node and revision |
+| `abstain` | `failure_not_matched` | the observation is not a `fail` with the candidate's marker |
+| `unavailable` | `store_missing` | the lite store file does not exist; it is not created |
+| `unavailable` | `snapshot_unavailable` | the backend has no single-snapshot read (a legacy PostgreSQL table) |
+
+The ordinary records forms continue to return audit records. This pilot supports lite and
+generation-backed stores.
 
 ## MCP
 

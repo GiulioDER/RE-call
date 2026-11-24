@@ -19,7 +19,7 @@ from pydantic import ValidationError
 
 from recall.backends import lite_route_refusal, open_legacy_store
 from recall.cli_commands._lite import lite_read_meta
-from recall.fix_selection import FixRequest, select_fix
+from recall.fix_selection import FixRequest, select_fix, unavailable
 from recall.lite import is_lite_dsn, lite_dsn_path
 from recall.records import AMBIGUOUS, MAX_QUERY_ANCHORS, RECORD_KINDS, RecordsQueryError, lookup_records
 from recall.runtime_route import RouteConfigurationError, RuntimeRoute, resolve_runtime_route
@@ -31,6 +31,8 @@ from recall.security_policy import (
 )
 from recall.store import PgVectorStore
 from recall.trust import terminal_safe
+
+MAX_FIX_REQUEST_BYTES = 4 * 2**20
 
 
 def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
@@ -126,19 +128,26 @@ def _lookup(
 
 
 def _read_fix_request(spec: str) -> FixRequest:
-    maximum = 4 * 1024 * 1024
     try:
         # Bytes, so standard input decodes as UTF-8 like a file does, whatever the console code page.
         if spec == "-":
-            raw = sys.stdin.buffer.read(maximum + 1)
+            raw = sys.stdin.buffer.read(MAX_FIX_REQUEST_BYTES + 1)
         else:
             with Path(spec).open("rb") as stream:
-                raw = stream.read(maximum + 1)
-        if len(raw) > maximum:
-            raise SystemExit("recall records: fix request exceeds 4 MiB")
+                raw = stream.read(MAX_FIX_REQUEST_BYTES + 1)
+        if len(raw) > MAX_FIX_REQUEST_BYTES:
+            raise SystemExit(f"recall records: fix request exceeds {MAX_FIX_REQUEST_BYTES // 2**20} MiB")
         return FixRequest.model_validate_json(raw.decode("utf-8-sig"))
-    except (OSError, UnicodeError, ValidationError) as exc:
-        raise SystemExit("recall records: cannot read a valid fix request JSON") from exc
+    except ValidationError as exc:
+        # Name the first failed field, never its input: a request can carry private repair text.
+        first = exc.errors(include_input=False, include_url=False)[0]
+        where = ".".join(str(part) for part in first["loc"]) or "request"
+        raise SystemExit(
+            f"recall records: cannot read a fix request from {spec!r}: {terminal_safe(where)}: "
+            f"{terminal_safe(first['msg'])} ({exc.error_count()} error(s))"
+        ) from exc
+    except (OSError, UnicodeError) as exc:
+        raise SystemExit(f"recall records: cannot read a fix request from {spec!r}: {exc}") from exc
 
 
 def _cmd_records(args: argparse.Namespace) -> None:
@@ -170,7 +179,7 @@ def _cmd_records(args: argparse.Namespace) -> None:
         meta = lite_read_meta("recall records", args)
         if meta is None:
             if request is not None:
-                print(json.dumps({"decision": "unavailable", "reason": "store_missing", "shortlist": []}))
+                _print_selection({"tenant_id": args.tenant, "generation_id": None, **unavailable("store_missing")})
                 return
             # A lookup must not create the file. `generation_id` is null because no store exists:
             # "legacy" names a PostgreSQL table without one, and a lite store reports `lite-...`
@@ -193,26 +202,45 @@ def _cmd_records(args: argparse.Namespace) -> None:
         try:
             if request is None:
                 result = _lookup(store, args, anchors, security_policy, access_context)
-            elif not callable(getattr(store, "snapshot", None)):
-                result = {"decision": "unavailable", "reason": "snapshot_unavailable", "shortlist": []}
             else:
-                now = datetime.now(UTC)
-                envelope = lookup_records(
-                    store,
-                    repo=args.repo,
-                    ids=[candidate.id for candidate in request.candidates],
-                    kinds=["bug"],
-                    security_policy=security_policy,
-                    access_context=access_context,
-                    now=now,
-                )
-                result = select_fix(envelope["records"], request, now=now)
+                result = _select(store, args, request, security_policy, access_context)
         except RecordsQueryError as exc:
             raise SystemExit(f"recall records: {exc}") from exc
     if request is not None:
-        print(json.dumps(result, ensure_ascii=True, sort_keys=True))
+        _print_selection(result)
     else:
         _print(result, args)
+
+
+def _select(
+    store: Any,
+    args: argparse.Namespace,
+    request: FixRequest,
+    security_policy: SourceSecurityPolicy | None,
+    access_context: AccessContext | None,
+) -> dict[str, Any]:
+    # The tenant and generation name the snapshot a decision came from, as every records envelope does.
+    if not callable(getattr(store, "snapshot", None)):
+        return {"tenant_id": args.tenant, "generation_id": None, **unavailable("snapshot_unavailable")}
+    now = datetime.now(UTC)
+    envelope = lookup_records(
+        store,
+        repo=args.repo,
+        ids=[candidate.id for candidate in request.candidates],
+        kinds=["bug"],
+        security_policy=security_policy,
+        access_context=access_context,
+        now=now,
+    )
+    return {
+        "tenant_id": envelope["tenant_id"],
+        "generation_id": envelope["generation_id"],
+        **select_fix(envelope["records"], request, now=now),
+    }
+
+
+def _print_selection(result: dict[str, Any]) -> None:
+    print(json.dumps(result, ensure_ascii=True, sort_keys=True))
 
 
 def _print(result: dict[str, Any], args: argparse.Namespace) -> None:
