@@ -61,7 +61,8 @@ class TrustFailureCode(StrEnum):
     #: No active generation, or its physical index is not usable.
     INDEX_NOT_READY = "INDEX_NOT_READY"
     #: The runtime embedder (model, dimension or profile) is not the one the active generation
-    #: was built with. A fingerprint that drifted from the artifact is `CALIBRATION_STALE`.
+    #: was built with, or the server's text search stemmer is not the one that stemmed its `tsv`.
+    #: A fingerprint that drifted from the artifact is `CALIBRATION_STALE`.
     LINEAGE_MISMATCH = "LINEAGE_MISMATCH"
     #: No calibration artifact exists for this tenant and generation.
     CALIBRATION_MISSING = "CALIBRATION_MISSING"
@@ -134,7 +135,9 @@ _ADVICE: dict[TrustFailureCode, str] = {
         "No trustworthy decision was possible: the runtime embedder (model, dimension or "
         "profile) is not the one the active generation was built with, so its cosines are not "
         "comparable to any threshold and the trust gate never ran. Serve with the generation's "
-        "embedder, or build and promote a generation for this one."
+        "embedder, or build and promote a generation for this one. The same code covers a "
+        "generation whose full-text lexemes another PostgreSQL stemmer wrote, as after an "
+        "upgrade to 19: build and promote a generation on this server."
     ),
     TrustFailureCode.CALIBRATION_MISSING: (
         "No trustworthy decision was possible: no calibration artifact is bound to this tenant "

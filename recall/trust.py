@@ -566,9 +566,22 @@ def _trusted_search(
         # path clears the first and degrades the second.
         calibration = None
         calibration_id = None
+    # The sparse leg's counterpart: the generation's `tsv` was stemmed by a server whose stemmer
+    # this one does not share (PostgreSQL 19 changed eight), so a query's lexemes can miss chunks
+    # the build indexed, and the calibrated threshold was fitted on the other stemmer's ranking.
+    # Both keys or neither: a generation built before the probe carries neither and compares equal.
+    stemmer_drift = binding.get("fts_stemmer_probe") != binding.get("fts_server_stemmer_probe")
+    if stemmer_drift:
+        _log.warning(
+            "generation %r stored its full-text lexemes under a different stemmer than this "
+            "PostgreSQL server uses; rebuild the generation on this server",
+            binding.get("generation_id"),
+        )
+        calibration = None
+        calibration_id = None
 
     failure_code = dependency_failure or code_for_status(calibration_status)
-    if model_mismatch:
+    if model_mismatch or stemmer_drift:
         failure_code = TrustFailureCode.LINEAGE_MISMATCH
     if failure_code is not None:
         # `binding` is the one hoisted above for the model check; it is the same expression this

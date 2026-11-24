@@ -16,6 +16,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   whose stem changed. A generation rebuild does not refresh them; recompute them with the statements
   in [DEPENDENCIES.md](docs/DEPENDENCIES.md).
 
+### Changed
+
+* A generation now records how its PostgreSQL server stems a fixed probe of words, and a server
+  that stems them differently (as PostgreSQL 19 does for some English words) gets
+  `LINEAGE_MISMATCH` for that generation until it is rebuilt there. `recall doctor` reports the
+  same check. Generations built before this record nothing and serve as before.
+
 ### Fixed
 
 * The MCP handshake reports the installed RE-call version in `serverInfo.version`.

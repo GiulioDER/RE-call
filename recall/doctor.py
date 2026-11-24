@@ -501,6 +501,34 @@ def _active_generation(conn: Any, tenant: str) -> tuple[str, int] | None:
     return str(row[0]), int(count)
 
 
+def _stemmer_check(conn: Any, tenant: str, generation_id: str) -> Check:
+    """Whether this server stems words the way the server that built the active generation did.
+
+    The trust gate refuses a drifted generation with LINEAGE_MISMATCH; this names the cause and
+    the repair before a search meets it.
+    """
+    from recall.generation_store import stemmer_probes
+
+    row = stemmer_probes(conn, tenant, generation_id)
+    if row is None or row[0] is None:
+        return Check(
+            "text stemmer",
+            "ok",
+            f"generation {generation_id} predates the stemmer record; rebuild it after any "
+            "PostgreSQL major upgrade",
+        )
+    if row[0] != row[1]:
+        return Check(
+            "text stemmer",
+            "fail",
+            f"generation {generation_id} was stemmed by a different PostgreSQL text search "
+            "stemmer than this server's, so strict search refuses it with LINEAGE_MISMATCH",
+            "build and promote a new generation on this server (`recall generation build`), "
+            "then calibrate and publish it",
+        )
+    return Check("text stemmer", "ok", f"this server stems as generation {generation_id} was built")
+
+
 def _corpus_checks(
     conn: Any, *, table: str, tenant: str, generation_route: bool = False
 ) -> Iterator[Check]:
@@ -983,6 +1011,8 @@ def run_checks(
                     report.add(check)
                 report.add(_migration_check_for(conn, dsn, table=table))
                 generation = _active_generation(conn, tenant) if uses_generation else None
+                if generation is not None:
+                    report.add(_stemmer_check(conn, tenant, generation[0]))
         except Exception as exc:  # BROAD-CATCH: fail-open
             report.add(
                 Check(
