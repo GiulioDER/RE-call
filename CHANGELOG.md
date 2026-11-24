@@ -11,9 +11,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 ### Added
 
 * PostgreSQL 19 is supported. CI runs schema migrations and the upgrade from 0.14.0 on 16 to 19,
-  and the complete suite on 19 as well as 18. The Docker default stays on 18. After moving a
-  database to 19, rebuild each tenant's generation: 19's English stemmer changed, so stored
-  `tsvector` values can miss queries for words whose stem changed.
+  and the complete suite on 19 as well as 18. The Docker default stays on 18. 19's English stemmer
+  changed, so after moving a database to 19 the stored `tsvector` values can miss queries for words
+  whose stem changed. A generation rebuild does not refresh them; recompute them with the statements
+  in [DEPENDENCIES.md](docs/DEPENDENCIES.md).
 
 ### Fixed
 

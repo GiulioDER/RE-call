@@ -24,9 +24,41 @@ PostgreSQL 16, 17, 18, and 19 are supported with pgvector. The local Docker defa
 supported majors and runs the complete suite on 19 as well as 18.
 
 PostgreSQL 19 updated eight Snowball stemmers, English among them, which now "produce different
-stems for some words" (19 release notes). A database moved to 19 with `pg_upgrade` keeps the `tsvector` values its
-generations stored under the old release, so rebuild each tenant's generation after the upgrade
-rather than searching the old one.
+stems for some words" (19 release notes). A database moved to 19, by `pg_upgrade` or by dump and
+restore, keeps the `tsvector` values its generations stored under the old release, so sparse search
+can miss words whose stem changed. Rebuilding a generation does not refresh them: a rebuild copies
+the stored values of every unchanged source. Recompute them in place once, after the move, with the
+servers and indexers stopped.
+
+Run the block below as the role that applied the migrations (the tables' owner) or as a superuser.
+These tables force row level security even on their owner, so if the owner runs the block without
+the `NO FORCE` lines, each `UPDATE` reports `UPDATE 0` and changes nothing. Each `UPDATE` should
+report its table's full row count, which a superuser can read with `SELECT count(*)`. If
+`RECALL_TABLE` is set to a name other than `chunks`, use that name in every `ALTER TABLE chunks`,
+in `UPDATE chunks` and in `VACUUM ANALYZE chunks`; `recall_chunks_v1` keeps its name.
+
+```sql
+BEGIN;
+ALTER TABLE recall_generations NO FORCE ROW LEVEL SECURITY;
+ALTER TABLE recall_chunks_v1 NO FORCE ROW LEVEL SECURITY;
+ALTER TABLE chunks NO FORCE ROW LEVEL SECURITY;
+UPDATE recall_chunks_v1 c
+   SET tsv = to_tsvector((g.pipeline_identity #>> '{fts_configuration,language}')::regconfig, c.text)
+  FROM recall_generations g
+ WHERE g.tenant_id = c.tenant_id AND g.generation_id = c.generation_id;
+UPDATE chunks SET text = text;
+ALTER TABLE recall_generations FORCE ROW LEVEL SECURITY;
+ALTER TABLE recall_chunks_v1 FORCE ROW LEVEL SECURITY;
+ALTER TABLE chunks FORCE ROW LEVEL SECURITY;
+COMMIT;
+```
+
+The `ALTER TABLE` lines lock the three tables until `COMMIT`. Each `UPDATE` writes a new version of
+every row and its index entries, so the tables and their indexes grow until vacuumed: afterwards,
+outside the transaction, run `VACUUM ANALYZE recall_chunks_v1;` and `VACUUM ANALYZE chunks;`. The
+`UPDATE chunks` statement recomputes the generated `tsv` column of the legacy table that
+`recall index` writes. It is needed after `pg_upgrade` only, since a restore recomputes generated
+columns itself.
 
 The Compose file declares a named `recall_pgdata` volume for new PostgreSQL 18 containers. Existing
 local data created by a PostgreSQL 16 Compose container is not upgraded in place by changing the
