@@ -11,11 +11,15 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from pydantic import ValidationError
+
 from recall.backends import lite_route_refusal, open_legacy_store
 from recall.cli_commands._lite import lite_read_meta
+from recall.fix_selection import FixRequest, select_fix
 from recall.lite import is_lite_dsn, lite_dsn_path
 from recall.records import AMBIGUOUS, MAX_QUERY_ANCHORS, RECORD_KINDS, RecordsQueryError, lookup_records
 from recall.runtime_route import RouteConfigurationError, RuntimeRoute, resolve_runtime_route
@@ -37,7 +41,8 @@ def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
             "Exact lookup of the `recall_record` objects memos carry, with no embedder and no "
             "query: by anchors (with --repo), by --id, or --all for a full dump. Each record is "
             "returned exactly as authored, with its match to the anchors asked for. Superseded "
-            "and expired records are listed and marked, never hidden."
+            "and expired records are listed and marked. Use --select-fix to opt in to "
+            "verified fix selection."
         ),
     )
     p_records.set_defaults(_opens_db=True, func=_cmd_records)
@@ -53,10 +58,13 @@ def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     form.add_argument(
         "--all", dest="all_records", action="store_true", help="every record in the tenant"
     )
+    form.add_argument(
+        "--select-fix", metavar="FILE", help="select one verified repair from a JSON request; `-` reads stdin",
+    )
     p_records.add_argument(
         "--repo",
         help=(
-            "the repository anchors are paths in (owner/name): required with --anchors; with --id "
+            "the repository (owner/name): required with --anchors or --select-fix; with --id "
             "or --all, only records of this repository"
         ),
     )
@@ -116,7 +124,25 @@ def _lookup(
     )
 
 
+def _read_fix_request(spec: str) -> FixRequest:
+    maximum = 4 * 1024 * 1024
+    try:
+        if spec == "-":
+            raw = sys.stdin.read(maximum + 1)
+        else:
+            with Path(spec).open(encoding="utf-8-sig") as stream:
+                raw = stream.read(maximum + 1)
+        if len(raw.encode("utf-8")) > maximum:
+            raise SystemExit("recall records: fix request exceeds 4 MiB")
+        return FixRequest.model_validate_json(raw)
+    except (OSError, UnicodeError, ValidationError) as exc:
+        raise SystemExit("recall records: cannot read a valid fix request JSON") from exc
+
+
 def _cmd_records(args: argparse.Namespace) -> None:
+    request = _read_fix_request(args.select_fix) if args.select_fix is not None else None
+    if request is not None and (not args.repo or args.kinds is not None):
+        raise SystemExit('recall records: --select-fix requires --repo and cannot be combined with --kind')
     anchors = _read_anchors(args.anchors) if args.anchors is not None else None
     try:
         route: RuntimeRoute = getattr(args, "_runtime_route", None) or resolve_runtime_route()
@@ -141,6 +167,9 @@ def _cmd_records(args: argparse.Namespace) -> None:
     if is_lite_dsn(args.dsn):
         meta = lite_read_meta("recall records", args)
         if meta is None:
+            if request is not None:
+                print(json.dumps({"decision": "unavailable", "reason": "store_missing", "shortlist": []}))
+                return
             # A lookup must not create the file. `generation_id` is null because no store exists:
             # "legacy" names a PostgreSQL table without one, and a lite store reports `lite-...`
             # (CCA CODE-008, left by the owner 2026-10-29).
@@ -160,10 +189,28 @@ def _cmd_records(args: argparse.Namespace) -> None:
         store_context = open_legacy_store(args.dsn, dim=dimension, table=args.table, tenant=args.tenant)
     with store_context as store:
         try:
-            result = _lookup(store, args, anchors, security_policy, access_context)
+            if request is None:
+                result = _lookup(store, args, anchors, security_policy, access_context)
+            elif not callable(getattr(store, "snapshot", None)):
+                result = {"decision": "unavailable", "reason": "snapshot_unavailable", "shortlist": []}
+            else:
+                now = datetime.now(UTC)
+                envelope = lookup_records(
+                    store,
+                    repo=args.repo,
+                    ids=[candidate.id for candidate in request.candidates],
+                    kinds=["bug"],
+                    security_policy=security_policy,
+                    access_context=access_context,
+                    now=now,
+                )
+                result = select_fix(envelope["records"], request, now=now)
         except RecordsQueryError as exc:
             raise SystemExit(f"recall records: {exc}") from exc
-    _print(result, args)
+    if request is not None:
+        print(json.dumps(result, ensure_ascii=True, sort_keys=True))
+    else:
+        _print(result, args)
 
 
 def _print(result: dict[str, Any], args: argparse.Namespace) -> None:
