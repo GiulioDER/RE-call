@@ -188,3 +188,41 @@ def test_cli_vetoes_an_explicitly_superseded_fix(
     assert len(history) == 1
     assert history[0]["superseded_by"] == ("<withheld>" if withhold_successor else new_name)
     assert json.loads(run_cli(call)) == {"decision": "abstain", "reason": "superseded_fix", "shortlist": []}
+
+
+@pytest.mark.parametrize("prefix", [b"", b"\xef\xbb\xbf"])
+def test_stdin_request_decodes_as_utf8_whatever_the_console_code_page(
+    monkeypatch: pytest.MonkeyPatch, prefix: bytes,
+) -> None:
+    """Standard input is read as UTF-8 bytes, as a request file is, not in the console code page.
+
+    Red proof (CCA BUG-001, run 20261124T214848Z): with the pre-fix `sys.stdin.read` in
+    `recall.cli_commands.records_cmd._read_fix_request`, a cp1252 stdin turned the arrow into
+    mojibake ([b""] fails the repair assertion) and a UTF-8 BOM was refused ([BOM] exits).
+    """
+    import io
+
+    from recall.cli_commands.records_cmd import _read_fix_request
+
+    payload = {"report": "row", "revision": REVISION,
+               "candidates": [candidate(repair="Reject → the second row.")]}
+    stream = io.TextIOWrapper(io.BytesIO(prefix + json.dumps(payload, ensure_ascii=False).encode("utf-8")),
+                              encoding="cp1252")
+    monkeypatch.setattr("sys.stdin", stream)
+    assert _read_fix_request("-").candidates[0].repair == "Reject → the second row."
+
+
+def test_stdin_anchors_decode_as_utf8_whatever_the_console_code_page(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`--anchors -` shares the request reader's decoding (CCA BUG-001 sibling, run 20261124T214848Z).
+
+    Red proof: with the pre-fix `sys.stdin.read()` in `_read_anchors`, a cp1252 stdin turned the
+    non-ASCII path into mojibake and the equality assertion failed.
+    """
+    import io
+
+    from recall.cli_commands.records_cmd import _read_anchors
+
+    anchors = [{"file": "docs/café.md", "symbol": None, "code_sha": None}]
+    data = json.dumps(anchors, ensure_ascii=False).encode("utf-8")
+    monkeypatch.setattr("sys.stdin", io.TextIOWrapper(io.BytesIO(data), encoding="cp1252"))
+    assert _read_anchors("-") == anchors

@@ -122,9 +122,12 @@ metadata for existing memories.
 
 Omit `observations` to obtain the shortlist. After a test run, submit observations with
 `revision`, `test_node`, `outcome` (`fail`, `pass`, `error`, or `skipped`), and
-`diagnostic`, the trusted runner's extracted failure diagnostic. Serving requires one
-unambiguous symptom match in the shortlist and exactly one failed observation for that
-test node and revision whose diagnostic equals the candidate's marker. The caller is
+`diagnostic`, the trusted runner's extracted failure diagnostic. Serving requires that
+exactly one eligible candidate, shortlisted or not, matches the symptom, that it is in the
+shortlist, and that no other eligible candidate shares its test node (`ambiguous_test_node`).
+It also requires exactly one observation of any outcome for that test node and revision: a
+second one, even a pass, abstains as `ambiguous_observation`. That observation must be a
+`fail` whose diagnostic equals the candidate's marker. The caller is
 responsible for measuring the clean checkout revision and supplying the actual diagnostic.
 The command neither runs tests nor applies fixes.
 

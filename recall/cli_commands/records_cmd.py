@@ -84,7 +84,8 @@ def _read_anchors(spec: str) -> Any:
     try:
         # utf-8-sig: an editor's byte order mark is not JSON, and a file that is not UTF-8 at all
         # (a UnicodeDecodeError, which is a ValueError) is refused here like any unreadable file.
-        text = sys.stdin.read() if spec == "-" else Path(spec).read_text(encoding="utf-8-sig")
+        raw = sys.stdin.buffer.read() if spec == "-" else Path(spec).read_bytes()
+        text = raw.decode("utf-8-sig")
         return json.loads(text)
     except (OSError, ValueError) as exc:
         raise SystemExit(f"recall records: cannot read anchors from {spec!r}: {exc}") from exc
@@ -127,14 +128,15 @@ def _lookup(
 def _read_fix_request(spec: str) -> FixRequest:
     maximum = 4 * 1024 * 1024
     try:
+        # Bytes, so standard input decodes as UTF-8 like a file does, whatever the console code page.
         if spec == "-":
-            raw = sys.stdin.read(maximum + 1)
+            raw = sys.stdin.buffer.read(maximum + 1)
         else:
-            with Path(spec).open(encoding="utf-8-sig") as stream:
+            with Path(spec).open("rb") as stream:
                 raw = stream.read(maximum + 1)
-        if len(raw.encode("utf-8")) > maximum:
+        if len(raw) > maximum:
             raise SystemExit("recall records: fix request exceeds 4 MiB")
-        return FixRequest.model_validate_json(raw)
+        return FixRequest.model_validate_json(raw.decode("utf-8-sig"))
     except (OSError, UnicodeError, ValidationError) as exc:
         raise SystemExit("recall records: cannot read a valid fix request JSON") from exc
 
