@@ -147,7 +147,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        postgres: [16, 17, 18]
+        postgres: [16, 17, 18, 19]
     services:
       db:
         image: pgvector/pgvector:pg${{ matrix.postgres }}
@@ -349,6 +349,50 @@ jobs:
         run: |
           bash .github/scripts/locked_install.sh dev documents
           python --version
+
+      - name: Test (pytest on real pgvector)
+        run: pytest -q -n auto
+
+  # The suite on PostgreSQL 19 (GA 2026-11-19), while `test` stays on 18, the Docker default.
+  # Python 3.12 and locked dependencies as in `test`, so a red here is about the server: 19
+  # updated the English stemmer, and the lite parity tests compare against Postgres text search.
+  test-pg19:
+    name: Test suite (PostgreSQL 19)
+    runs-on: ubuntu-latest
+    services:
+      db:
+        image: pgvector/pgvector:pg19
+        env:
+          POSTGRES_USER: recall
+          POSTGRES_PASSWORD: recall
+          POSTGRES_DB: recall
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U recall"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 30
+    env:
+      RECALL_TEST_DSN: postgresql://recall:recall@localhost:5432/recall
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
+
+      - name: Install
+        run: bash .github/scripts/locked_install.sh dev documents
+
+      - name: Server version
+        run: psql "$RECALL_TEST_DSN" -Atc "SELECT version(), (SELECT default_version FROM pg_available_extensions WHERE name = 'vector')"
 
       - name: Test (pytest on real pgvector)
         run: pytest -q -n auto
@@ -658,7 +702,7 @@ jobs:
   # The embedder is `hashing`, so no model download and no paid API. Same PostgreSQL matrix as
   # `schema-migrations`. Required by merge-gate.
   #
-  # The `roles: two` leg is the strict role split docs/MIGRATIONS.md describes: the serving DSN logs
+  # The `roles: two` legs (PostgreSQL 18 and 19) are the strict role split docs/MIGRATIONS.md describes: the serving DSN logs
   # in as an unprivileged `recall_server` (no superuser, no BYPASSRLS, no schema CREATE), fact
   # writes go through `RECALL_FACT_WRITE_DSN` as `recall_controller`, and the owner migrates. After
   # each release's `schema apply`, that release's `recall schema grants --role recall_server
@@ -670,10 +714,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        postgres: [16, 17, 18]
+        postgres: [16, 17, 18, 19]
         roles: [one]
         include:
           - postgres: 18
+            roles: two
+          - postgres: 19
             roles: two
     services:
       db:
@@ -1539,6 +1585,7 @@ jobs:
       - prior-art
       - workflow-security
       - test-py314
+      - test-pg19
       - hermes-provider
     runs-on: ubuntu-latest
     steps:
@@ -1570,6 +1617,7 @@ jobs:
             "${{ needs.prior-art.result }}" \
             "${{ needs.workflow-security.result }}" \
             "${{ needs.test-py314.result }}" \
+            "${{ needs.test-pg19.result }}" \
             "${{ needs.hermes-provider.result }}"; do
             if [[ "$result" != success ]]; then
               echo "::error::required CI job result was $result"

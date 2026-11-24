@@ -19,9 +19,14 @@ Lite uses SQLite on a local disk and needs no PostgreSQL, pgvector server, or Do
 `recall-rag[fastembed,mcp]` 0.16.0 or later for local embeddings and MCP; wheels before 0.15.0 do
 not contain Lite. See [LITE.md](LITE.md) for the installation and maintenance path.
 
-PostgreSQL 16, 17, and 18 are supported with pgvector. The local Docker default tracks PostgreSQL
+PostgreSQL 16, 17, 18, and 19 are supported with pgvector. The local Docker default tracks PostgreSQL
 18 through `pgvector/pgvector:pg18`, while CI keeps migration coverage for 16 and 17 as older
-supported majors.
+supported majors and runs the complete suite on 19 as well as 18.
+
+PostgreSQL 19 updated eight Snowball stemmers, English among them, which now "produce different
+stems for some words" (19 release notes). A database moved to 19 with `pg_upgrade` keeps the `tsvector` values its
+generations stored under the old release, so rebuild each tenant's generation after the upgrade
+rather than searching the old one.
 
 The Compose file declares a named `recall_pgdata` volume for new PostgreSQL 18 containers. Existing
 local data created by a PostgreSQL 16 Compose container is not upgraded in place by changing the
