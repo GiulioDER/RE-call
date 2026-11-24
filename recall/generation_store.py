@@ -107,6 +107,28 @@ LIVE_MANIFEST_STATES = ("building", "validating", "ready", "active", "retired")
 #: whether `retired` rows are readable could reach the pin and miss the reuse (CCA CODE-007).
 READABLE_GENERATION_STATES = ("ready", "active", "retired")
 
+#: Words whose English stems differ between PostgreSQL 18 and 19: 13 of the 9,553 distinct words
+#: in this repository's documentation, measured 2026-11-24 (19's notes: eight Snowball stemmers
+#: "produce different stems for some words"). A generation records the hash of their lexemes under
+#: its FTS configuration as `fts_stemmer_probe`, outside the fingerprint; a server that hashes them
+#: differently parses queries into lexemes the stored `tsv` may not hold, and the trust gate
+#: refuses with LINEAGE_MISMATCH until the generation is rebuilt there.
+FTS_STEMMER_PROBE = "emergency evening internal interval organization organizer paste universal"
+#: The probe hash for a regconfig SQL expression; `%s` takes `FTS_STEMMER_PROBE`.
+FTS_STEMMER_PROBE_SQL = "md5(to_tsvector({}, %s)::text)"
+_STORED_LANGUAGE_SQL = "(pipeline_identity #>> '{fts_configuration,language}')::regconfig"
+
+
+def stemmer_probes(conn: psycopg.Connection, tenant: str, generation_id: str) -> tuple[Any, Any] | None:
+    """(recorded, this server's) probe hash for a generation; recorded is None before the probe."""
+    return conn.execute(
+        f"SELECT pipeline_identity ->> 'fts_stemmer_probe', "
+        f"{FTS_STEMMER_PROBE_SQL.format(_STORED_LANGUAGE_SQL)} FROM recall_generations "
+        "WHERE tenant_id = %s AND generation_id = %s",
+        (FTS_STEMMER_PROBE, tenant, generation_id),
+    ).fetchone()
+
+
 #: How long a resolved calibration verdict may be served without re-reading the database, in
 #: seconds. The cache key already retires an entry when the active generation changes, so this
 #: bound only covers the rarer event of the SAME generation being recalibrated in place by an
@@ -419,11 +441,13 @@ class GenerationStore(PgVectorStore):
         cached = getattr(self, "_binding_cache", None)
         if pinned is not None and cached is not None and cached[0] == pinned:
             return dict(cached[1])
+        server_probe = FTS_STEMMER_PROBE_SQL.format(_STORED_LANGUAGE_SQL)
         row = self._with_retry(
             lambda conn: conn.execute(
-                "SELECT pipeline_fingerprint, corpus_fingerprint, pipeline_identity "
-                "FROM recall_generations WHERE tenant_id = %s AND generation_id = %s",
-                (self._tenant, generation_id),
+                "SELECT pipeline_fingerprint, corpus_fingerprint, pipeline_identity, "
+                f"{server_probe} FROM recall_generations "
+                "WHERE tenant_id = %s AND generation_id = %s",
+                (FTS_STEMMER_PROBE, self._tenant, generation_id),
             ).fetchone()
         )
         if row is None:
@@ -458,6 +482,11 @@ class GenerationStore(PgVectorStore):
             profile_fingerprint = str(embedder.get("profile_fingerprint") or "").strip()
             if profile_fingerprint:
                 binding["embedder_profile_fingerprint"] = profile_fingerprint
+        # Absent on generations built before the probe existed: those are compared as before.
+        recorded_probe = identity.get("fts_stemmer_probe")
+        if isinstance(recorded_probe, str):
+            binding["fts_stemmer_probe"] = recorded_probe
+            binding["fts_server_stemmer_probe"] = str(row[3])
         # Keyed on the fingerprint the ROW carries, not the pinned one: an erasure landing
         # between the snapshot and this read must not file the newer row under the older key.
         self._binding_cache = ((generation_id, binding["corpus_fingerprint"]), dict(binding))

@@ -38,7 +38,11 @@ from recall.embeddings import (
     embedding_profile,
     embedding_profile_id,
 )
-from recall.generation_store import READABLE_GENERATION_STATES
+from recall.generation_store import (
+    FTS_STEMMER_PROBE,
+    FTS_STEMMER_PROBE_SQL,
+    READABLE_GENERATION_STATES,
+)
 from recall.generation_types import (  # noqa: F401  # re-exported: public names of this module
     BuildStats,
     ConcurrentIngest,
@@ -586,11 +590,19 @@ class GenerationManager:
                     "FTS configuration requires a language string and schema_version=1"
                 )
             try:
-                conn.execute("SELECT %s::regconfig", (fts_language,)).fetchone()
+                stemmer_probe = conn.execute(
+                    f"SELECT {FTS_STEMMER_PROBE_SQL.format('%s::regconfig')}",
+                    (fts_language, FTS_STEMMER_PROBE),
+                ).fetchone()
             except psycopg.errors.UndefinedObject as exc:
                 raise GenerationError(
                     f"PostgreSQL text search configuration {fts_language!r} is absent"
                 ) from exc
+            assert stemmer_probe is not None  # a SELECT of one expression returns one row
+            stored_identity = pipeline.to_dict(for_storage=True)
+            # Stored beside the identity, not in it: the fingerprint names the configured
+            # pipeline, and this names the server's stemmer that the build will run under.
+            stored_identity["fts_stemmer_probe"] = str(stemmer_probe[0])
             state = conn.execute(
                 "SELECT active_generation_id FROM recall_tenant_state "
                 "WHERE tenant_id = %s FOR UPDATE",
@@ -620,7 +632,7 @@ class GenerationManager:
                 (
                     self.tenant_id,
                     generation_id,
-                    Jsonb(pipeline.to_dict(for_storage=True)),
+                    Jsonb(stored_identity),
                     pipeline.fingerprint,
                     corpus_fingerprint,
                     Jsonb(manifest.to_dict()),
