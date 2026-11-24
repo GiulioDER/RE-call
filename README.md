@@ -14,6 +14,8 @@
   <a href="https://www.youtube.com/@RE-call-y6k"><img src="docs/assets/youtube.svg" alt="RE-call YouTube channel" width="48" height="34" align="absmiddle"></a>
 </h3>
 
+<p align="center"><a href="https://glama.ai/mcp/servers/GiulioDER/RE-call"><img src="https://glama.ai/mcp/servers/GiulioDER/RE-call/badges/score.svg" alt="RE-call MCP server"></a></p>
+
 **RE-call is persistent memory for agents, built on hybrid retrieval with rank fusion.**
 On SQLite or PostgreSQL, it combines dense vectors and full-text search using reciprocal rank
 fusion (RRF).
