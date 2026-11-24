@@ -8,7 +8,7 @@ design violation.
 ## Scope
 
 Packages: `recall`, `recall_mcp`, `recall_agent`, `recall_hooks`, `recall_interop`, `recall_consistency`
-Modules: 376
+Modules: 377
 Cross package edges: 464
 
 ## Highest fan in modules
@@ -82,12 +82,12 @@ Cross package edges: 464
 | 18 | `recall.cli_commands.calibration_cmd` |
 | 18 | `recall_mcp.server_search` |
 | 17 | `recall.dashboard.server` |
+| 17 | `recall.doctor` |
 | 17 | `recall.generation_store` |
 | 17 | `recall_mcp.semantic_graph_cache` |
 | 17 | `recall_mcp.server_memory_admin` |
 | 16 | `recall.cli_commands.generation_cmd` |
 | 16 | `recall.cli_commands.provenance_cmd` |
-| 16 | `recall.doctor` |
 | 15 | `recall_mcp.desktop_ingest` |
 | 15 | `recall_mcp.graph_first_api` |
 | 15 | `recall_mcp.query_construction_api` |
@@ -617,7 +617,7 @@ They are observations, not automatic failures.
 | `recall.cli_commands.manifest_cmd` | 5 | 147 |
 | `recall.cli_commands.provenance_cmd` | 16 | 158 |
 | `recall.cli_commands.reasoning_cmd` | 11 | 177 |
-| `recall.cli_commands.records_cmd` | 9 | 142 |
+| `recall.cli_commands.records_cmd` | 10 | 144 |
 | `recall.cli_commands.schema_cmd` | 2 | 143 |
 | `recall.cli_commands.secret_cmd` | 1 | 4 |
 | `recall.cli_commands.setup_wizard` | 20 | 203 |
@@ -657,7 +657,7 @@ They are observations, not automatic failures.
 | `recall.desktop.ui` | 3 | 198 |
 | `recall.desktop.updates` | 2 | 3 |
 | `recall.desktop.uploads` | 4 | 18 |
-| `recall.doctor` | 16 | 189 |
+| `recall.doctor` | 17 | 189 |
 | `recall.document` | 2 | 15 |
 | `recall.drift` | 6 | 142 |
 | `recall.dsn_security` | 1 | 1 |
@@ -719,6 +719,7 @@ They are observations, not automatic failures.
 | `recall.fact_retraction` | 11 | 140 |
 | `recall.federation` | 4 | 140 |
 | `recall.fix` | 7 | 30 |
+| `recall.fix_selection` | 3 | 43 |
 | `recall.frontmatter` | 1 | 1 |
 | `recall.generation_build` | 8 | 141 |
 | `recall.generation_rescue` | 14 | 140 |

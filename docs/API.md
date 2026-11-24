@@ -97,6 +97,44 @@ removal.
 | `recall records` | Look up audit records by exact key, with no embedder: `--anchors FILE` (a JSON list of `{file, symbol, code_sha}`, with `--repo`), `--id`, or `--all` for a complete dump of the tenant's records. `--repo` is required with `--anchors`; with `--id` or `--all`, only records of this repository. `--kind` filters, `--json` prints the envelope the `recall_records` MCP tool returns. Each record carries its `recall_record` exactly as authored, its anchor match (`exact`, `symbol_changed`, `file_only`), and its supersession and `caused` edges; superseded and expired records are listed and marked (`superseded_by`, `expired`), never hidden. Applies the source policy (`RECALL_SOURCE_POLICY_FILE`) as `recall search` does: a record in a denied file is left out, and a denied successor reads `<withheld>` (so does one whose file cannot be placed for the policy, a path two roots hold). A record a `supersedes:` reference names among several files reads `<ambiguous>`. Served on a lite store. |
 | `recall-enterprise` | Manage generation routing and readiness for production deployments. |
 
+### Verified fix selection
+
+`recall records --repo owner/name --select-fix request.json` takes an explicit shortlist
+request from a trusted local agent or runner. Use `-` for standard input. The pilot is
+opt-in through this flag. Normal retrieval continues through `recall search` and the
+existing agent integrations.
+
+The command rechecks the requested IDs against one current record snapshot and the
+configured source policy. It excludes an exact record ID when that record has an active
+supersession, including when the successor is outside the request, withheld by policy,
+or the relationship is marked ambiguous. Any successor must qualify as a candidate in
+its own right. The selector ranks current proved bugs within the exact pre-fix revision.
+Positive lexical matches use the bug summary, test node and assertion text. A file match moves
+ahead of other positive matches. At most three test nodes are returned for verification.
+
+The request contains `report`, a full 40-character Git `revision`, optional `file_hints`,
+and `candidates`. Each candidate has `id`, `fix_commit`, `pre_fix_revision`, `test_node`,
+optional `assertion_text`, `symptom_groups`, `failure_marker`, and `repair`. A symptom group
+lists alternative literal phrases. Every group must match the report to establish the
+symptom. For example, `[["duplicate", "repeated"], ["question row", "question rows"]]`.
+Candidate metadata is supplied alongside retrieved IDs. The command does not infer that
+metadata for existing memories.
+
+Omit `observations` to obtain the shortlist. After a test run, submit observations with
+`revision`, `test_node`, `outcome` (`fail`, `pass`, `error`, or `skipped`), and
+`diagnostic`, the trusted runner's extracted failure diagnostic. Serving requires one
+unambiguous symptom match in the shortlist and exactly one failed observation for that
+test node and revision whose diagnostic equals the candidate's marker. The caller is
+responsible for measuring the clean checkout revision and supplying the actual diagnostic.
+The command neither runs tests nor applies fixes.
+
+The JSON response contains `decision`, `reason`, and `shortlist`. Only `serve` adds one
+`fix` with its repair text, source, commit, and verification node. Ambiguous, stale, and
+unverified results abstain. If the shortlist is empty and a requested record was excluded
+by supersession, the reason is `superseded_fix`. A missing store or a backend without
+snapshot support returns `unavailable`. The ordinary records forms continue to return
+audit records. This pilot supports lite and generation-backed stores.
+
 ## MCP
 
 ### Health endpoints
