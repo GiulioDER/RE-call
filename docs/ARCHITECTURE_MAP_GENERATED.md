@@ -8,7 +8,7 @@ design violation.
 ## Scope
 
 Packages: `recall`, `recall_mcp`, `recall_agent`, `recall_hooks`, `recall_interop`, `recall_consistency`
-Modules: 376
+Modules: 377
 Cross package edges: 464
 
 ## Highest fan in modules
@@ -617,7 +617,7 @@ They are observations, not automatic failures.
 | `recall.cli_commands.manifest_cmd` | 5 | 147 |
 | `recall.cli_commands.provenance_cmd` | 16 | 158 |
 | `recall.cli_commands.reasoning_cmd` | 11 | 177 |
-| `recall.cli_commands.records_cmd` | 9 | 142 |
+| `recall.cli_commands.records_cmd` | 10 | 144 |
 | `recall.cli_commands.schema_cmd` | 2 | 143 |
 | `recall.cli_commands.secret_cmd` | 1 | 4 |
 | `recall.cli_commands.setup_wizard` | 20 | 203 |
@@ -719,6 +719,7 @@ They are observations, not automatic failures.
 | `recall.fact_retraction` | 11 | 140 |
 | `recall.federation` | 4 | 140 |
 | `recall.fix` | 7 | 30 |
+| `recall.fix_selection` | 3 | 43 |
 | `recall.frontmatter` | 1 | 1 |
 | `recall.generation_build` | 8 | 141 |
 | `recall.generation_rescue` | 14 | 140 |
