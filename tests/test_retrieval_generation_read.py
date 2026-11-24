@@ -111,6 +111,8 @@ def test_no_active_generation_is_counted_as_a_failed_search() -> None:
     [
         ("Fix ops-42", True, None, "ok", ("exact",)),
         ("OPS-42 and OPS-42", True, None, "ok", ("exact",)),
+        ("Fix OPS-42", True, None, "file-export", ("exact",)),
+        ("Fix OPS-42", True, None, "s3-export", ("exact",)),
         ("Fix OPS-42", False, None, "ok", (None,)),
         ("Fix OPS-42 or OPS-43", True, None, "ok", (None,)),
         ("Fix OPS-42", True, "caller-selected", "ok", ("caller-selected",)),
@@ -133,7 +135,11 @@ def test_exact_jira_routing_keeps_the_trust_and_generation_boundary(
     access = AccessContext("member", "other" if outcome == "foreign-tenant" else store.tenant)
     policy = None if outcome == "no-policy" else SourceSecurityPolicy(())
     base = "https://jira.example.org/jira"
-    exact = f"{base}/browse/OPS-42"
+    prefix = {"file-export": "file:///index/jira", "s3-export": "s3://staging-bucket/jira"}.get(outcome)
+    exact = f"{prefix}/OPS-42.md" if prefix else f"{base}/browse/OPS-42"
+    env = {"RECALL_JIRA_EXACT_ID_BASE_URL": base} if configured else {}
+    if prefix:
+        env["RECALL_JIRA_EXACT_ID_SOURCE_PREFIX"] = prefix
     calls = []
 
     def guarded_search(_store, _embedder, _query, *, source, **kwargs):
@@ -142,7 +148,7 @@ def test_exact_jira_routing_keeps_the_trust_and_generation_boundary(
         assert kwargs["security_policy"] is policy
         calls.append("exact" if source == exact else source)
         if source != exact:
-            return SimpleNamespace(label="ordinary")
+            return SimpleNamespace(label="ordinary", abstained=True)
         return SimpleNamespace(
             label="exact",
             abstained=outcome == "missing",
@@ -156,7 +162,7 @@ def test_exact_jira_routing_keeps_the_trust_and_generation_boundary(
     result = _retrieve_trusted(
         store, object(), query, source, 5, None, None,
         security_policy=policy, access_context=access,
-        env={"RECALL_JIRA_EXACT_ID_BASE_URL": base} if configured else {},
+        env=env,
         reranker_builder=lambda *_args, **_kwargs: None,
         admission_factory=lambda _profile: nullcontext(),
         trusted_search_fn=guarded_search,

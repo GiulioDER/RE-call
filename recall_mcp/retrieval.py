@@ -60,7 +60,12 @@ from recall_mcp.factories import (
     _validate_quality_reranker_config,
     resolve_reranker,
 )
-from recall_mcp.settings import jira_exact_id_base, runtime_environment, tenant_retrieval_environment
+from recall_mcp.settings import (
+    jira_exact_id_base,
+    jira_exact_id_source_prefix,
+    runtime_environment,
+    tenant_retrieval_environment,
+)
 
 _log = get_logger("mcp.service")
 
@@ -317,7 +322,9 @@ def _retrieve_trusted(
                     if base:
                         keys = {key.upper() for key in _JIRA_ISSUE_KEY.findall(query)}
                         if len(keys) == 1:
-                            jira_source = f"{base}/browse/{next(iter(keys))}"
+                            key = next(iter(keys))
+                            prefix = jira_exact_id_source_prefix(values.get("RECALL_JIRA_EXACT_ID_SOURCE_PREFIX", ""))
+                            jira_source = f"{prefix}/{key}.md" if prefix else f"{base}/browse/{key}"
 
                 result = retrieve(jira_source if jira_source is not None else source)
                 if jira_source is not None and (
