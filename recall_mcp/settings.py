@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import re
 from collections.abc import Iterable, Mapping
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
@@ -262,6 +263,7 @@ ENVIRONMENT_SCHEMA: tuple[EnvironmentSpec, ...] = (
     EnvironmentSpec("RECALL_ATOMIC_RESCUE_WHEN_MISSING", "Retrieval", "refuse, or skip to answer without an active rescue whose artifact is missing, mismatched or damaged (the server then builds it)", "refuse"),
     EnvironmentSpec("RECALL_SEARCH_EVIDENCE", "Retrieval", "on, or off (also 0, false or no) to drop recall_search's evidence and historical fields and their citation advice", "on"),
     EnvironmentSpec("RECALL_PAGED_EVIDENCE", "Retrieval", "off, or on to return the profile's paged evidence depth for PDF and PPTX results when k is unset", "off"),
+    EnvironmentSpec("RECALL_JIRA_EXACT_ID_BASE_URL", "Retrieval", "Canonical HTTPS base of the Jira connector for opt-in exact issue routing"),
     EnvironmentSpec("RECALL_ATOMIC_RESCUE_ARTIFACT", "Retrieval", "generation bound atomic rescue artifact manifest"),
     EnvironmentSpec("RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT", "Retrieval", "active generation atomic rescue artifact registry"),
     EnvironmentSpec("RECALL_ATOMIC_RESCUE_PLACEMENT", "Retrieval", "dense rank six before fusion, or fused rank six after it", "dense"),
@@ -333,6 +335,17 @@ def unserved_atomic_rescue_tenants(values: Mapping[str, str], served: Iterable[s
     return sorted(set(atomic_rescue_modes_by_tenant(values)) - set(served))
 
 
+def jira_exact_id_base(value: str) -> str:
+    """Validate the single configured Jira connector base, without resolving it."""
+    base = value.strip().removesuffix("/")
+    if base and (
+        not re.fullmatch(r"https://[a-z0-9]+(?:[.-][a-z0-9]+)+(?::[0-9]{1,5})?(?:/[A-Za-z0-9_-]+)*", base)
+        or "browse" in base.removeprefix("https://").split("/")[1:]
+    ):
+        raise ValueError("RECALL_JIRA_EXACT_ID_BASE_URL must be a canonical HTTPS Jira connector base")
+    return base
+
+
 def _validate_runtime_options(source: Mapping[str, str]) -> None:
     """Validate scalar MCP options before any stores, providers, or listeners are created."""
     from recall.retrieval_plan import RetrievalPlanResolver
@@ -382,6 +395,7 @@ def _validate_runtime_options(source: Mapping[str, str]) -> None:
         )
     # The request path's own parser, so startup admits exactly what a request accepts.
     paged_evidence_mode(source.get("RECALL_PAGED_EVIDENCE"))
+    jira_exact_id_base(source.get("RECALL_JIRA_EXACT_ID_BASE_URL", ""))
     from recall_mcp.semantic_graph_cache import validate_graph_precision_environment
 
     validate_graph_precision_environment(source)

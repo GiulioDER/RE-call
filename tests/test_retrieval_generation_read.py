@@ -30,11 +30,13 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from contextlib import contextmanager, nullcontext
+from types import SimpleNamespace
 
 import pytest
 
 from recall.generation_types import NoActiveGeneration
 from recall.observability import METRICS
+from recall.security_policy import AccessContext, SourceSecurityPolicy
 from recall_mcp.retrieval import _retrieve_trusted
 
 
@@ -102,3 +104,63 @@ def test_no_active_generation_is_counted_as_a_failed_search() -> None:
         _run_search(_PromotingStore(has_active=False))
     counters = METRICS.snapshot()["counters"]
     assert counters.get("recall_retrieval_failed_total{profile=legacy}") == 1
+
+
+@pytest.mark.parametrize(
+    ("query", "configured", "source", "outcome", "expected"),
+    [
+        ("Fix ops-42", True, None, "ok", ("exact",)),
+        ("OPS-42 and OPS-42", True, None, "ok", ("exact",)),
+        ("Fix OPS-42", False, None, "ok", (None,)),
+        ("Fix OPS-42 or OPS-43", True, None, "ok", (None,)),
+        ("Fix OPS-42", True, "caller-selected", "ok", ("caller-selected",)),
+        ("Review https://elsewhere.example/OPS-42", True, None, "ok", (None,)),
+        ("Fix OPS-42", True, None, "missing", ("exact", None)),
+        ("Fix OPS-42", True, None, "stale", ("exact", None)),
+        ("Fix OPS-42", True, None, "uncertified", ("exact", None)),
+        ("Fix OPS-42", True, None, "wrong-source", ("exact", None)),
+        ("Fix OPS-42", True, None, "denied", ("exact", None)),
+        ("Fix OPS-42", True, None, "foreign-tenant", (None,)),
+        ("Fix OPS-42", True, None, "no-policy", (None,)),
+    ],
+)
+def test_exact_jira_routing_keeps_the_trust_and_generation_boundary(
+    query, configured, source, outcome, expected,
+) -> None:
+    """Removing the route in _retrieve_trusted fails the exact-source call assertions."""
+    store = _PromotingStore()
+    store.tenant = "jira"
+    access = AccessContext("member", "other" if outcome == "foreign-tenant" else store.tenant)
+    policy = None if outcome == "no-policy" else SourceSecurityPolicy(())
+    base = "https://jira.example.org/jira"
+    exact = f"{base}/browse/OPS-42"
+    calls = []
+
+    def guarded_search(_store, _embedder, _query, *, source, **kwargs):
+        assert kwargs["index_generation"] == store.generation_id == "gen-old"
+        assert kwargs["access_context"] is access
+        assert kwargs["security_policy"] is policy
+        calls.append("exact" if source == exact else source)
+        if source != exact:
+            return SimpleNamespace(label="ordinary")
+        return SimpleNamespace(
+            label="exact",
+            abstained=outcome == "missing",
+            calibrated=outcome != "uncertified",
+            staleness=SimpleNamespace(stale=outcome == "stale"),
+            hits=[] if outcome == "denied" else [SimpleNamespace(verdict="ok", chunk=SimpleNamespace(
+                source=exact if outcome != "wrong-source" else "other",
+            ))],
+        )
+
+    result = _retrieve_trusted(
+        store, object(), query, source, 5, None, None,
+        security_policy=policy, access_context=access,
+        env={"RECALL_JIRA_EXACT_ID_BASE_URL": base} if configured else {},
+        reranker_builder=lambda *_args, **_kwargs: None,
+        admission_factory=lambda _profile: nullcontext(),
+        trusted_search_fn=guarded_search,
+    )
+    assert tuple(calls) == expected
+    assert result.result.label == ("exact" if expected == ("exact",) else "ordinary")
+    assert store.lookups == 1

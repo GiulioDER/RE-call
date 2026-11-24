@@ -460,6 +460,13 @@ removes their citation advice.
 `RECALL_ATOMIC_RESCUE_WHEN_MISSING=skip` let an active rescue answer without its artifact; it then
 says why (missing, for another calibration, damaged, or uncalibrated: no calibration in force). See [ENVIRONMENT.md](ENVIRONMENT.md#atomic-rescue).
 
+For a dedicated Jira connector canary, set `RECALL_JIRA_EXACT_ID_BASE_URL` to its canonical HTTPS
+base. The index must store each issue at its full canonical browse URL. With a source policy and
+caller context, a query naming one unambiguous Jira key first searches within that exact source.
+Both attempts use the same pinned generation and existing authorization and trust checks. If the
+exact search cannot return a current, trusted hit, ordinary retrieval supplies the result. An
+explicit caller source filter takes precedence. Clear the setting to restore ordinary retrieval.
+
 `recall_search` and `recall_evidence` also accept an optional `locale` argument for presentation
 localization. When supplied, the response gains an additive `localized` object containing display
 text keyed by `chunk_id`. Canonical hit text, provenance, evidence items, `system_prompt`, and
