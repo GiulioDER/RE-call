@@ -127,6 +127,9 @@ when `find_spec("voyageai")` is None, even though it never imports the SDK. A sp
 - So are escape comments: `python scripts/check_comment_ratchet.py` refuses a new `TODO`, or a
   suppression without its code and a reason, in any file over `scripts/comment_ratchet_baseline.json`.
   Do the work or fix the cause; a justified rise is `--write-baseline`, argued for in the PR.
+- **To find where a feature lives, read `docs/FEATURE_MAP.md`** (or `python tools/feature_map.py
+  --which <path>` for a file). It is generated from `docs/feature_map.toml`, and CI refuses a new
+  command, MCP tool, console script or module that no feature claims: add it there and regenerate.
 - `docs/ARCHITECTURE_MAP_GENERATED.md` records the import graph only (module counts, cross package
   edges, fan in and fan out), and CI refuses a stale one. Only a change to the graph (an import, a
   module added, moved or removed) needs `python tools/architecture_map.py`; an edit that changes no
