@@ -70,6 +70,18 @@ FACT_CURRENT_TABLES = (
 #: whose validation would then demand it of a database checked at an earlier migration.
 FACT_REDACTION_TABLES = ("recall_fact_redactions",)
 SUPERSESSION_REVISION_TABLES = ("recall_supersession_revisions",)
+#: What `compact_tables` rewrites besides the legacy table: the tables `recall forget` deletes
+#: from or rewrites (migration 0029's `recall_redact_fact_values`, and the generation erase path).
+COMPACT_TABLES = (
+    "recall_chunks_v1",
+    *FACT_LEDGER_TABLES,
+    *EVIDENCE_CARD_TABLES,
+    *FACT_MATERIALIZATION_TABLES,
+    *IDEMPOTENCY_RECEIPT_TABLES,
+    *FACT_CURRENT_TABLES,
+)
+#: `REPACK` arrived in PostgreSQL 19, as `SHOW server_version_num` reports it.
+REPACK_MIN_SERVER_VERSION_NUM = 190000
 FACT_LEDGER_APPEND_FUNCTION = "recall_append_fact_ledger_event"
 FACT_MATERIALIZATION_APPEND_FUNCTION = "recall_append_fact_materialization"
 FACT_REDACTION_FUNCTION = "recall_redact_fact_values"
@@ -128,6 +140,10 @@ class InterruptedConcurrentIndex(SchemaError):
     """A concurrent index phase could not be validated or resumed."""
 
 
+class CompactionUnsupported(SchemaError):
+    """The server predates `REPACK`; its only rewrite, `VACUUM FULL`, blocks reads and writes."""
+
+
 class SchemaIncompatible(SchemaError, ValueError):
     """The selected table is not a compatible RE-call v0.8 table."""
 
@@ -165,13 +181,18 @@ class SchemaStatus:
         return tuple(m for m in self.migrations if m.state != "applied")
 
 
-def _validate_target(table: str, dim: int) -> str:
+def _table_identifier(table: str) -> str:
     if not table.isidentifier():
         raise ValueError("table must be a valid SQL identifier")
-    if not isinstance(dim, int) or dim <= 0:
-        raise ValueError("dim must be a positive int")
     # DDL uses unquoted identifiers; PostgreSQL folds ASCII capitals, not Unicode capitals.
     return table.translate(str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"))
+
+
+def _validate_target(table: str, dim: int) -> str:
+    table = _table_identifier(table)
+    if not isinstance(dim, int) or dim <= 0:
+        raise ValueError("dim must be a positive int")
+    return table
 
 
 def serving_grants(
@@ -934,6 +955,60 @@ def apply_migrations(
                     "SELECT pg_advisory_unlock(hashtextextended(%s, 0))", (MIGRATION_LOCK_NAME,)
                 )
     return tuple(applied_now)
+
+
+def compact_tables(migration_dsn: str, *, table: str = DEFAULT_TABLE) -> tuple[str, ...]:
+    """`REPACK (CONCURRENTLY)` the legacy table and every `COMPACT_TABLES` table that exists.
+
+    Moves the live rows into new files, so bytes `recall forget` erased leave the data files, and
+    returns one report line per table. Needs the tables' owner (the migration role) and holds the
+    migration lock, so it never overlaps `apply_migrations`.
+    """
+    table = _table_identifier(table)
+    lines: list[str] = []
+    with _connect(migration_dsn) as conn:
+
+        def scalar(query: str, *params: object) -> object:
+            row = conn.execute(query, params).fetchone()
+            return row[0] if row else None
+
+        version = int(str(scalar("SHOW server_version_num")))
+        if version < REPACK_MIN_SERVER_VERSION_NUM:
+            raise CompactionUnsupported(
+                f"schema compact needs PostgreSQL 19 or later for REPACK (CONCURRENTLY); this "
+                f"server reports {version}. Before 19 the only rewrite is VACUUM FULL, which locks "
+                "each table against reads and writes for its whole run: run it yourself, in a "
+                "maintenance window, if that is acceptable."
+            )
+        if not _take_migration_lock(conn):
+            raise ConcurrentMigrator(
+                "a RE-call schema migrator or compaction is already running (the lock stayed held "
+                f"for {MIGRATION_LOCK_WAIT_SECONDS:g}s)"
+            )
+        try:
+            # A repack of the chunk table rebuilds its HNSW index and takes minutes; waiting for
+            # its closing table lock is not progress and stays bounded.
+            conn.execute("SET statement_timeout = 0")
+            conn.execute(f"SET lock_timeout = {_schema_lock_timeout_ms()}")
+            for name in (table, *COMPACT_TABLES):
+                size = "SELECT pg_size_pretty(pg_total_relation_size(%s))"
+                if scalar("SELECT to_regclass(%s)", name) is None:
+                    lines.append(f"{name}: absent, skipped")
+                    continue
+                before = scalar(size, name)
+                started = time.monotonic()
+                conn.execute(f"REPACK (CONCURRENTLY) {name}")
+                after = scalar(size, name)
+                lines.append(f"{name}: {before} -> {after} in {time.monotonic() - started:.1f}s")
+        finally:
+            conn.execute(
+                "SELECT pg_advisory_unlock(hashtextextended(%s, 0))", (MIGRATION_LOCK_NAME,)
+            )
+    lines.append(
+        "Not reached by a rewrite: the WAL, replicas, backups, and filesystem blocks the old files "
+        "occupied."
+    )
+    return tuple(lines)
 
 
 def check_schema(conn: Connection, *, table: str = DEFAULT_TABLE, dim: int) -> None:

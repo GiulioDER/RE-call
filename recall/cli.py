@@ -149,7 +149,7 @@ def build_parser(command: str | None = None) -> argparse.ArgumentParser:
         "--migration-dsn",
         action=StoreGiven,
         default=DEFAULT_MIGRATION_DSN,
-        help="DDL-owner DSN used only by `schema apply` (env: RECALL_MIGRATION_DSN)",
+        help="DDL-owner DSN used only by `schema apply` and `schema compact` (env: RECALL_MIGRATION_DSN)",
     )
     parser.add_argument(
         "--embedder",

@@ -21,6 +21,11 @@ def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     schema_sub.add_parser("status", help="show installed and required schema versions")
     schema_sub.add_parser("plan", help="show pending migrations without changing the database")
     schema_sub.add_parser("apply", help="apply pending migrations with the migration role")
+    schema_sub.add_parser(
+        "compact",
+        help="rewrite the chunk and fact tables into new files with the migration role, so "
+        "erased bytes leave them (PostgreSQL 19 or later; run nightly after generation gc)",
+    )
     p_schema_grants = schema_sub.add_parser(
         "grants",
         help="print the GRANT statements a serving role needs (prints SQL, runs none)",
@@ -60,6 +65,17 @@ def _cmd_schema(args: argparse.Namespace) -> None:
         )
         for statement in statements:
             print(statement)
+        return
+    if args.schema_cmd == "compact":
+        from recall.schema import compact_tables
+
+        if not args.migration_dsn:
+            raise SystemExit(
+                "schema compact requires --migration-dsn or RECALL_MIGRATION_DSN; only the "
+                "tables' owner may rewrite them, and the serving role must not own them"
+            )
+        for line in compact_tables(args.migration_dsn, table=args.table):
+            print(line)
         return
     dim = args.dim if args.dim is not None else _make_embedder(args.embedder).dim
     inspect_dsn = args.migration_dsn or args.dsn

@@ -150,6 +150,96 @@ def test_fresh_apply_repeated_apply_and_plan_is_read_only():
             store.check_schema()
 
 
+#: The tables `recall forget` deletes from or rewrites, besides the legacy table `--table` names
+#: (migration 0029's `recall_redact_fact_values`, and the generation erase path).
+_COMPACTED = (
+    "recall_chunks_v1",
+    "recall_fact_ledger_events",
+    "recall_evidence_cards",
+    "recall_fact_materialization_outbox",
+    "recall_idempotency_receipts",
+    "recall_fact_current",
+    "recall_fact_current_events",
+    "recall_fact_current_state",
+)
+
+
+def _server_version_num() -> int:
+    with psycopg.connect(TEST_DSN) as conn:
+        return int(conn.execute("SHOW server_version_num").fetchone()[0])
+
+
+def _relfilenodes(tables: tuple[str, ...]) -> dict[str, int]:
+    with psycopg.connect(TEST_DSN) as conn:
+        return {
+            t: conn.execute("SELECT relfilenode FROM pg_class WHERE oid = to_regclass(%s)", (t,)).fetchone()[0]
+            for t in tables
+        }
+
+
+@requires_db
+def test_schema_compact_rewrites_the_chunk_and_fact_tables(capsys):
+    """`schema compact` moves every chunk and fact table into new files, so bytes `forget` erased
+    leave the live data files; a VACUUM only marks their space reusable.
+
+    Red proof: with `REPACK` removed from `recall.schema.compact_tables` (each table reported but
+    not rewritten), this fails on the `unchanged == []` assertion naming all nine tables; with the
+    fact tables dropped from `COMPACT_TABLES`, it fails naming those seven. Runs on PostgreSQL 19
+    only (CI job `test-pg19`); the refusal test below covers older servers.
+    """
+    if _server_version_num() < 190000:
+        pytest.skip("REPACK needs PostgreSQL 19; test_schema_compact_refuses_before_postgresql_19 covers this server")
+    with _target("cmp_") as table:
+        apply_migrations(TEST_DSN, table=table, dim=DIM)
+        tables = (table, *_COMPACTED)
+        before = _relfilenodes(tables)
+        cli_main(["--serving-dsn", TEST_DSN, "--table", table, "--migration-dsn", TEST_DSN, "schema", "compact"])
+        report = capsys.readouterr().out
+        after = _relfilenodes(tables)
+    unchanged = [t for t in tables if before[t] == after[t]]
+    assert unchanged == [], f"not rewritten: {unchanged}"
+    assert all(t in report for t in tables), report
+
+
+@requires_db
+def test_schema_compact_refuses_before_postgresql_19():
+    """Before 19 the only rewrite is `VACUUM FULL`, which blocks the table; the command must say so
+    instead of running it.
+
+    Red proof: on PostgreSQL 18 with the version gate in `recall.schema.compact_tables` removed, the
+    server is asked to run `REPACK` and this fails on the `VACUUM FULL` assertion.
+    """
+    if _server_version_num() >= 190000:
+        pytest.skip("this server has REPACK; test_schema_compact_rewrites_the_chunk_and_fact_tables covers it")
+    try:
+        cli_main(["--serving-dsn", TEST_DSN, "--migration-dsn", TEST_DSN, "schema", "compact"])
+        message = "no refusal"
+    except SystemExit as exc:
+        message = str(exc)
+    except psycopg.Error as exc:
+        message = f"the server was asked to run it: {exc}"
+    assert "VACUUM FULL" in message, message
+
+
+def test_schema_compact_needs_the_migration_dsn(monkeypatch):
+    """The serving role must not own the tables, so compaction never falls back to its DSN.
+
+    Red proof: with the check in `_cmd_schema` replaced by a fallback to the serving DSN (as
+    `status` and `plan` fall back), this fails on the `--migration-dsn` assertion with "it
+    connected: connection timeout expired"."""
+    import recall.cli as cli_mod
+
+    monkeypatch.setattr(cli_mod, "DEFAULT_MIGRATION_DSN", None)
+    try:
+        cli_main(["--serving-dsn", "postgresql://u:p@localhost:1/x", "schema", "compact"])
+        message = "no refusal"
+    except SystemExit as exc:
+        message = str(exc)
+    except psycopg.Error as exc:
+        message = f"it connected: {exc}"
+    assert "--migration-dsn" in message, message
+
+
 @requires_db
 def test_schema_cli_plan_apply_and_status_are_wired(capsys):
     with _target("cli_mig_") as table:

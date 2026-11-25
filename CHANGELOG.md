@@ -10,6 +10,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ### Added
 
+* `recall schema compact` rewrites the legacy table, `recall_chunks_v1` and the fact tables
+  `recall forget` rewrites with `REPACK (CONCURRENTLY)`, so erased rows leave the table files while
+  reads and writes continue. It needs PostgreSQL 19 and the migration DSN, holds the migration
+  lock, and refuses on older servers, where the only rewrite, `VACUUM FULL`, blocks each table. Run
+  it nightly after generation gc; see [GENERATIONS.md](docs/GENERATIONS.md#retention-and-erasure).
 * PostgreSQL 19 is supported. CI runs schema migrations and the upgrade from 0.14.0 on 16 to 19,
   and the complete suite on 19 as well as 18. The Docker default stays on 18. 19's English stemmer
   changed, so after moving a database to 19 the stored `tsvector` values can miss queries for words
