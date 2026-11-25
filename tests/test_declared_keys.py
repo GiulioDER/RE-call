@@ -203,3 +203,20 @@ def test_settle_declines_while_any_other_memo_holds_the_key() -> None:
         held = _listing([], [_contested((milk, "m/1.md"), (other, "m/2.md"))])
         assert settle_target(held, coffee, None) == (None, "other_memos_hold_key"), other
     assert settle_target(_listing([_standing(milk, "m/1.md")]), coffee, None) == ("m/1.md", None)
+
+
+def test_settle_reads_the_table_whatever_the_predicate_is_spelled() -> None:
+    """K9. `phone number`, `Email-Address` and `PHONE_NUMBER` are the table's set-valued
+    `phone_number` and `email_address`, so a settle of them is declined `not_single_in_table`: the
+    table spells predicates with underscores, and a writer that spells one with a space or a hyphen
+    would otherwise read as single-valued and retire the other value (owner's decision on CCA
+    STAKES-002, 2026-11-25). The ledger's own lookup is unchanged.
+
+    Red proof (CCA run 20261125T120125Z, STAKES-002), on the remote test host: against
+    `recall.declared_keys.settle_precondition` before this change (the predicate casefolded only),
+    `phone number` returned `('m/1.md', None)` and failed the first assertion.
+    """
+    for predicate in ("phone number", "Email-Address", "PHONE_NUMBER"):
+        older = AtomicFact("memory", "user", predicate, "1", valid_from=datetime(2026, 1, 1, tzinfo=UTC))
+        newer = AtomicFact("memory", "user", predicate, "2", valid_from=datetime(2026, 1, 2, tzinfo=UTC))
+        assert settle_target(_listing([_standing(older, "m/1.md")]), newer, None) == (None, "not_single_in_table"), predicate

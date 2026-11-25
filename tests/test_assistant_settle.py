@@ -265,3 +265,30 @@ def test_a_settle_the_listing_cannot_change_does_not_read_it(
         assert reads == [], f"the listing was read {len(reads)} time(s) for a settle it cannot change"
 
     _serve_both(settle_envs, body)
+
+
+def test_settle_is_declined_where_a_source_policy_filters_the_listing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """S9. With a source security policy configured, a settle is declined `unchecked` before any
+    listing is read: the listing the caller may read can miss a memo on the key that the policy
+    hides, so the count of earlier holders would be wrong, and counting over the whole store would
+    let the decline name a memo the caller may not read (owner's decision on CCA STAKES-001,
+    2026-11-25).
+
+    Red proof (CCA run 20261125T120125Z, STAKES-001), on the remote test host: against
+    `recall_mcp.assistant.AssistantMemos._settle` before this change, the listing was read once and
+    the answer was `{"settled": None}`, failing the first assertion.
+    """
+    reads: list[object] = []
+
+    def empty(*args: Any, **kwargs: Any) -> Any:
+        reads.append(kwargs)
+        return {"facts": [], "contested": [], "served_state": "ok", "served_lookups_failed": []}
+
+    monkeypatch.setattr(recall_mcp.provenance, "current_facts_memory", empty)
+    memos = AssistantMemos(tmp_path / "memos", index_root=tmp_path)
+    (tmp_path / "memos").mkdir()
+    answer = memos._settle(None, {**TEA, "object": "coffee"}, "2026-02-01", None, None, None, True, object())  # type: ignore[arg-type]  # the store is never reached
+    assert answer == (None, {"declined": "unchecked"}), answer
+    assert reads == [], "the listing was read under a source policy"

@@ -307,6 +307,10 @@ class AssistantMemos(MemoFolder):
             if isinstance(entry, dict):
                 replayed = entry.get("supersedes")
                 return replayed, {"settled": replayed}
+        if security_policy is not None:
+            # The listing a policy filters can miss a holder of the key, and counting over the whole
+            # store would let the answer reveal a memo the caller may not read (CCA STAKES-001).
+            return None, {"declined": "unchecked"}
         try:
             stated = AtomicFact.from_payload(fact)
             start = validity_bounds({"valid_from": valid_from})[0]

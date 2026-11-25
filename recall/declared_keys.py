@@ -298,7 +298,9 @@ def settle_target(
 def settle_precondition(fact: AtomicFact, valid_from: datetime | None) -> str | None:
     """Why `settle_target` declines `fact` before reading any listing, or None: a writer checks this
     first, so a write the listing cannot change does not pay for reading one."""
-    if DEFAULT_PREDICATE_CARDINALITY.get(fact.predicate.casefold(), "single") != "single":
+    # The table spells predicates with underscores; a writer's "phone number" is its `phone_number`.
+    spelled = "_".join(fact.predicate.casefold().replace("-", " ").split())
+    if DEFAULT_PREDICATE_CARDINALITY.get(spelled, "single") != "single":
         return "not_single_in_table"
     if fact_key(fact) is None:
         return "not_single_valued"
