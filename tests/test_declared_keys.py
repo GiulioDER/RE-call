@@ -15,6 +15,9 @@ Invariants and the failure each one catches:
   R(a') makes when an older dated memo holds another value, the proposal reversed for a backdated
   memo, a note instead of a proposal when the memos are undated, and `not_single_valued` or
   `unchecked` where no answer can be given.
+- K6 `settle_target` names the older memo of rule R(a') for a memo not yet written, nothing when
+  nothing is in force or the memo is backdated, and declines an undated memo, two older memos of
+  one start, an unserved listing, a declared `set`, and an `email` fact declared `single`.
 
 Red proof, 2026-10-23, on the remote test host, each mutation applied alone and its test run alone,
 then restored and the whole file green (recorded in the pull request):
@@ -36,6 +39,7 @@ from recall.declared_keys import (
     STATED_KEY_SUCCESSOR_RULE,
     KeyedMemo,
     key_receipt,
+    settle_target,
     subject_name,
     subject_view,
     successor_pairs,
@@ -142,3 +146,29 @@ def test_the_receipt_names_the_key_its_state_and_the_edge_to_settle() -> None:
     assert key_receipt(_listing([], served="degraded"), "m/1.md", tea)["state"] == "unchecked"
     hidden = key_receipt(_listing([_standing(coffee, "m/2.md")]), "m/1.md", tea)
     assert hidden["state"] == "not_in_force", hidden
+
+
+def test_the_settle_target_is_the_rules_older_memo_and_the_table_decides_cardinality() -> None:
+    """K6. `settle_target` names the memo rule R(a') gives a memo not yet written, and otherwise
+    why the pair stays a proposal. An `email` fact declared `single` is still declined: G1 reads
+    RE-call's table, not the declaration, which a capable writer got wrong for email, phone number
+    and nickname every time (the maintainer's private study CD-1, 2026-11-25).
+    """
+    tea, coffee = _fact("user", "drink", "tea", 1), _fact("user", "drink", "coffee", 2)
+    one = _listing([_standing(tea, "m/1.md")])
+    assert settle_target(one, coffee, None) == ("m/1.md", None)
+    assert settle_target(one, _fact("user", "drink", "coffee"), datetime(2026, 1, 2, tzinfo=UTC)) == ("m/1.md", None)
+    assert settle_target(_listing([]), coffee, None) == (None, None), "nothing in force, nothing to settle"
+    assert settle_target(one, _fact("user", "drink", "coffee"), None) == (None, "undated")
+    early = AtomicFact("memory", "user", "drink", "milk", valid_from=datetime(2025, 12, 1, tzinfo=UTC))
+    assert settle_target(one, early, None) == (None, None), "a backdated memo supersedes nothing"
+    declared = AtomicFact("memory", "user", "email", "b@example.org", valid_from=datetime(2026, 1, 2, tzinfo=UTC),
+                          cardinality="single")
+    email = AtomicFact("memory", "user", "email", "a@example.org", valid_from=datetime(2026, 1, 1, tzinfo=UTC),
+                       cardinality="single")
+    assert settle_target(_listing([_standing(email, "m/1.md")]), declared, None) == (None, "not_single_in_table")
+    as_set = AtomicFact("memory", "user", "drink", "milk", valid_from=datetime(2026, 1, 2, tzinfo=UTC), cardinality="set")
+    assert settle_target(one, as_set, None) == (None, "not_single_valued")
+    same_day = _listing([], [_contested((tea, "m/1.md"), (_fact("user", "drink", "milk", 1), "m/2.md"))])
+    assert settle_target(same_day, coffee, None) == (None, "several_older_memos")
+    assert settle_target(_listing([_standing(tea, "m/1.md")], served="degraded"), coffee, None) == (None, "unchecked")

@@ -19,7 +19,9 @@ So this module gives a writer what that writer used:
   (WK-1, 2026-10-23). The rule only proposes: `recall.reasoning_proposals` serves its pairs as
   `requires_review`, and nothing here writes an edge;
 - `key_receipt`: the part of a write receipt that says which key a new memo's fact went under, what
-  else is in force for it, and the edge rule R(a') proposes, if any.
+  else is in force for it, and the edge rule R(a') proposes, if any;
+- `settle_target`: the edge rule R(a') gives a memo not yet written, for a writer that asks to
+  settle it in the same write (`recall_remember(settle=true)`), or why it stays a proposal.
 
 Undated memos, and memos of one start, are never ordered against each other: a sort position would
 name the newer one (`recall.reasoning_proposals._deterministic._date_successors` has the same rule).
@@ -34,7 +36,7 @@ from datetime import UTC, datetime
 from itertools import groupby
 from typing import Any
 
-from recall.provenance_controller import canonical_json, predicate_cardinality
+from recall.provenance_controller import DEFAULT_PREDICATE_CARDINALITY, canonical_json, predicate_cardinality
 from recall.types import AtomicFact
 
 __all__ = [
@@ -42,6 +44,7 @@ __all__ = [
     "KeyedMemo",
     "fact_key",
     "key_receipt",
+    "settle_target",
     "subject_name",
     "subject_view",
     "successor_pairs",
@@ -230,12 +233,7 @@ def key_receipt(
     else:
         values = {canonical_json(payload.get("object")) for payload, _sources, _standing in statements}
         receipt["state"] = "current" if len(values) == 1 else "contested"
-    memos = []
-    for payload, sources, _standing in statements:
-        stated = AtomicFact.from_payload(payload)
-        for name in sources:
-            memos.append(KeyedMemo(name, stated, stated.valid_from))
-    for older, newer in successor_pairs(memos, incident_to=source):
+    for older, newer in successor_pairs(_keyed(statements), incident_to=source):
         receipt["proposals"].append({
             "rule_id": STATED_KEY_SUCCESSOR_RULE, "status": "requires_review", "relation": "supersedes",
             "superseded": name_of(older.name), "superseder": name_of(newer.name),
@@ -244,3 +242,46 @@ def key_receipt(
         receipt["note"] = ("another value is in force for this key and the memos cannot be ordered by "
                            "valid_from; write the correction with supersedes, or give the memos dates")
     return receipt
+
+
+def _keyed(statements: list[tuple[dict[str, Any], list[str], bool]]) -> list[KeyedMemo]:
+    memos = []
+    for payload, sources, _standing in statements:
+        stated = AtomicFact.from_payload(payload)
+        for name in sources:
+            memos.append(KeyedMemo(name, stated, stated.valid_from))
+    return memos
+
+
+#: The name a memo not yet written goes by in `settle_target`; no stored source can carry it.
+_UNWRITTEN = "\x00unwritten"
+
+
+def settle_target(
+    listing: Mapping[str, Any], fact: AtomicFact, valid_from: datetime | None
+) -> tuple[str | None, str | None]:
+    """The memo rule R(a') says a memo not yet written, stating `fact` from `valid_from`, supersedes:
+    `(source, None)`; `(None, None)` when it supersedes nothing; `(None, reason)` when the pair must
+    stay a proposal. A writer that settles at write time writes the source as its `supersedes`.
+
+    The predicate must be single-valued in RE-call's own table (`DEFAULT_PREDICATE_CARDINALITY`),
+    whatever the fact declares: `predicate_cardinality` would let a declared `single` override the
+    table, and a capable writer declared email, phone number and nickname `single` every time (the
+    maintainer's private study CD-1, 2026-11-25: 41 of 132 set-valued keys would have been settled).
+    A fact declared `set` or `event` has no key, so a declaration can only make this stricter.
+    """
+    if DEFAULT_PREDICATE_CARDINALITY.get(fact.predicate.casefold(), "single") != "single":
+        return None, "not_single_in_table"
+    key = fact_key(fact)
+    if key is None:
+        return None, "not_single_valued"
+    if listing.get("served_state") in {"degraded", "unchecked"}:
+        return None, "unchecked"
+    start = fact.valid_from or valid_from
+    if start is None:
+        return None, "undated"
+    memos = [KeyedMemo(_UNWRITTEN, fact, start), *_keyed(_statements(listing, key))]
+    olders = {older.name for older, newer in successor_pairs(memos, incident_to=_UNWRITTEN) if newer.name == _UNWRITTEN}
+    if len(olders) > 1:
+        return None, "several_older_memos"
+    return (olders.pop(), None) if olders else (None, None)

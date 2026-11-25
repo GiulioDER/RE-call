@@ -1,0 +1,172 @@
+"""`recall_remember(settle=true)`: the writer settles rule R(a')'s pair in the write that makes it.
+
+A receipt has long named the `supersedes` rule R(a') proposes for a new memo (`fact_key`), and left it
+to a second write that no measured writer makes: with the proposals unreviewed, a store of declared
+keys answered 23 of 100 FactConsolidation questions, and 95 when the writer settled each pair as it
+wrote (the maintainer's private study DK-1, 2026-11-25). `settle` makes that one write.
+
+Invariants and the failure each one catches:
+- S1 with the server's RECALL_ASSISTANT_SETTLE_SUCCESSORS on and `settle`, a later value of a key
+  is written with `supersedes` naming the earlier memo, the key reads current with the new value,
+  the authorship ledger's `settled` map names the rule, and `recall_withdraw` of the new memo gives
+  the old value back: the edge dropped, or settled without a record.
+- S2 `settle` on a server without the setting is refused and writes nothing: the operator's half
+  ignored.
+- S3 an `email` fact the writer declares `single` is declined, `not_single_in_table`, and both
+  values stay in force: G1 reading the declaration instead of RE-call's table.
+- S4 the other guards decline by name and write the memo without an edge: an undated memo, two
+  older memos of one start, a writer's own `supersedes` (which wins), and an older memo the
+  assistant did not write (which `write` would otherwise refuse, failing the whole write).
+- S5 a retry with the same `request_id` replays the settled write: the superseded memo is no
+  longer in force on the retry, so computing the pair again would find none and the journal, which
+  hashes `supersedes` into the request, would answer `request_mismatch`.
+
+Not covered: that the listing read and the write share one write lane. `remember` takes the lane
+once around both, and a test would need a second writer timed between them.
+
+Red proof, 2026-11-25, on the remote test host, in a copy of the branch tree: each mutation applied
+alone, its test run alone, failing with an AssertionError, then the file restored byte for byte
+(sha256 checked). `settle_target`'s pure test is K6 in `tests/test_declared_keys.py`.
+- M1 (S1) `remember` discarding `_settle`'s target: the memo carries no `supersedes:`.
+- M2 (S1) `write_memo` not recording `settled`: the ledger holds `authors` only.
+- M3 (S2) the server-setting refusal disabled: the write settled `pref-0001`.
+- M4 (S3, K6) G1 reading `predicate_cardinality(fact)`: the email fact settled `fact-0001`, and
+  `settle_target` returned `('m/1.md', None)`.
+- M5 (S4) the assistant-author check in `_settle` dropped: the whole write refused, "memos/fact-0006
+  was not written by the assistant; it cannot be superseded".
+- M6 (S5) the journal replay in `_settle` disabled: the retry answered `request_mismatch`.
+- M7 (S4) `settle_target` without the two-older-memos guard: `pref-0004` settled `pref-0001`.
+- M8 (S4) `settle_target` without the undated guard: `{"settled": None}` in place of `undated`.
+- M9 (S4) `_settle` without the writer's-own-supersedes check: `pref-0005` settled `pref-0004`.
+"""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+from recall.declared_keys import STATED_KEY_SUCCESSOR_RULE
+from recall.lite.assistant_memos import LEDGER_NAME
+from recall_mcp.assistant import SETTLE_ENV, AssistantMemos
+from tests.test_assistant_surface import TEA, Call, _serve_both
+from tests.test_assistant_surface import envs as envs  # noqa: F401  # the fixture, reused
+
+
+@pytest.fixture
+def settle_envs(envs: tuple[dict[str, str], dict[str, str]]) -> tuple[dict[str, str], dict[str, str]]:
+    """The assistant server with the operator's half of `settle` on."""
+    assistant, plain = envs
+    return {**assistant, SETTLE_ENV: "1"}, plain
+
+
+def _remember(a: Call, obj: str, day: str | None, **kwargs: Any) -> Any:
+    return a("recall_remember", text=f"The user drink {obj} now.", kind="pref", fact={**TEA, "object": obj},
+             **({"valid_from": day} if day else {}), **kwargs)
+
+
+def _values(answer: str) -> list[str]:
+    facts = json.loads(answer)
+    held = [f["fact"]["object"] for f in facts["facts"]]
+    held += [v["fact"]["object"] for g in facts["contested"] for v in g["values"]]
+    return sorted(held)
+
+
+def test_a_settled_write_supersedes_the_earlier_memo_and_records_it(
+    settle_envs: tuple[dict[str, str], dict[str, str]], tmp_path: Path
+) -> None:
+    """S1."""
+
+    async def body(a: Call, p: Call, state: dict[str, Any]) -> None:
+        first = json.loads(await _remember(a, "tea", "2026-01-01", settle=True))
+        assert first == {"memo_id": "pref-0001", "settle": {"settled": None}}, first
+        second = json.loads(await _remember(a, "coffee", "2026-02-01", settle=True))
+        assert second == {"memo_id": "pref-0002", "settle": {"settled": "pref-0001"}}, second
+        memo = (tmp_path / "memos" / "pref-0002.md").read_text(encoding="utf-8")
+        assert "supersedes: memos/pref-0001.md" in memo, memo
+        current = json.loads(await a("recall_current_facts", subject="user"))
+        assert [f["fact"]["object"] for f in current["facts"]] == ["coffee"] and not current["contested"], current
+        ledger = json.loads((tmp_path / "memos" / LEDGER_NAME).read_text(encoding="utf-8"))
+        assert ledger.get("settled") == {"pref-0002": STATED_KEY_SUCCESSOR_RULE}, ledger
+        await a("recall_withdraw", sources=["pref-0002"])
+        assert _values(await a("recall_current_facts", subject="user")) == ["tea"], "withdraw did not give tea back"
+
+    _serve_both(settle_envs, body)
+
+
+def test_settle_is_refused_where_the_operator_has_not_turned_it_on(
+    envs: tuple[dict[str, str], dict[str, str]], tmp_path: Path
+) -> None:
+    """S2."""
+
+    async def body(a: Call, p: Call, state: dict[str, Any]) -> None:
+        await _remember(a, "tea", "2026-01-01")
+        refused = json.loads(await _remember(a, "coffee", "2026-02-01", settle=True))
+        assert refused == {"refused": f"settle is off on this server; the operator turns it on with {SETTLE_ENV}"}, refused
+        assert not (tmp_path / "memos" / "pref-0002.md").exists(), "a refused settle wrote a memo"
+
+    _serve_both(envs, body)
+
+
+def test_a_set_valued_predicate_is_never_settled_whatever_the_writer_declares(
+    settle_envs: tuple[dict[str, str], dict[str, str]], tmp_path: Path
+) -> None:
+    """S3."""
+
+    async def body(a: Call, p: Call, state: dict[str, Any]) -> None:
+        for n, (address, day) in enumerate((("a@example.org", "2026-01-01"), ("b@example.org", "2026-02-01")), 1):
+            answer = json.loads(await a(
+                "recall_remember", text=f"The user's email address is {address}.", kind="fact", valid_from=day,
+                fact={"subject": "user", "predicate": "email", "object": address, "cardinality": "single"},
+                settle=True))
+            assert answer["memo_id"] == f"fact-000{n}", answer
+        assert answer.get("settle") == {"declined": "not_single_in_table"}, answer
+        assert "supersedes" not in (tmp_path / "memos" / "fact-0002.md").read_text(encoding="utf-8")
+        assert _values(await a("recall_current_facts", subject="user")) == ["a@example.org", "b@example.org"]
+
+    _serve_both(settle_envs, body)
+
+
+def test_the_other_guards_decline_by_name_and_still_write_the_memo(
+    settle_envs: tuple[dict[str, str], dict[str, str]], tmp_path: Path
+) -> None:
+    """S4."""
+    memos = AssistantMemos(tmp_path / "memos", index_root=tmp_path)
+
+    async def body(a: Call, p: Call, state: dict[str, Any]) -> None:
+        await _remember(a, "tea", "2026-01-01")
+        undated = json.loads(await _remember(a, "coffee", None, settle=True))
+        assert undated.get("settle") == {"declined": "undated"}, undated
+        await _remember(a, "milk", "2026-01-01")  # a second memo of the first one's start
+        several = json.loads(await _remember(a, "water", "2026-02-01", settle=True))
+        assert several.get("settle") == {"declined": "several_older_memos"}, several
+        own = json.loads(await _remember(a, "juice", "2026-03-01", settle=True, supersedes="pref-0004"))
+        assert own.get("settle") == {"declined": "writer_named_supersedes"}, own
+        assert "supersedes: memos/pref-0004.md" in (tmp_path / "memos" / f"{own['memo_id']}.md").read_text(encoding="utf-8")
+        seeded = memos.write("The user's sister lives in Lyon.", kind="fact", valid_from="2026-01-01",
+                             fact={"subject": "sister", "predicate": "city", "object": "Lyon"}, author="seed")
+        await _remember(a, "soda", "2026-04-01")  # its refresh indexes the seeded memo
+        moved = json.loads(await a(
+            "recall_remember", text="The user's sister lives in Turin.", kind="fact", valid_from="2026-02-01",
+            fact={"subject": "sister", "predicate": "city", "object": "Turin"}, settle=True))
+        assert moved.get("settle") == {"declined": "not_assistant_memo"}, moved
+        assert "supersedes" not in (tmp_path / "memos" / f"{moved['memo_id']}.md").read_text(encoding="utf-8")
+        assert seeded["memo_id"] != moved["memo_id"], (seeded, moved)
+
+    _serve_both(settle_envs, body)
+
+
+def test_a_retry_replays_the_settled_write(settle_envs: tuple[dict[str, str], dict[str, str]]) -> None:
+    """S5."""
+
+    async def body(a: Call, p: Call, state: dict[str, Any]) -> None:
+        await _remember(a, "tea", "2026-01-01")
+        first = json.loads(await _remember(a, "coffee", "2026-02-01", settle=True, request_id="r-1"))
+        again = json.loads(await _remember(a, "coffee", "2026-02-01", settle=True, request_id="r-1"))
+        assert first.get("settle") == {"settled": "pref-0001"}, first
+        assert "refused" not in again and again["memo_id"] == first["memo_id"], again
+        assert again.get("receipt", {}).get("replayed") is True and again.get("settle") == {"settled": "pref-0001"}, again
+
+    _serve_both(settle_envs, body)

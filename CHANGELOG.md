@@ -15,6 +15,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   changed, so after moving a database to 19 the stored `tsvector` values can miss queries for words
   whose stem changed. A generation rebuild does not refresh them; recompute them with the statements
   in [DEPENDENCIES.md](docs/DEPENDENCIES.md).
+* `recall_remember(settle=true)` on the assistant surface writes the `supersedes` that rule
+  `deterministic.stated_key_successor` would propose for the new memo into the memo itself, so a
+  later value of a declared key replaces the earlier one without a second write or a review. It
+  needs the operator's `RECALL_ASSISTANT_SETTLE_SUCCESSORS=1` as well (off by default; a call
+  without it is refused). It settles only when the older memo is the assistant's, one older memo
+  holds the key, the new memo is dated, the writer named no `supersedes` of its own, and RE-call's
+  predicate table (not the fact's own declaration) calls the predicate single-valued. Otherwise the
+  memo is written without the edge and the answer's `settle` names the reason. Settled edges are
+  listed in the memo folder's authorship ledger under `settled`.
 
 ### Changed
 

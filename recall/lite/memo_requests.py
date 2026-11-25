@@ -412,10 +412,13 @@ def write_memo(
     supersedes: str | None, request_id: str | None, expected_revision: str | None,
     include_receipt: bool, has_successor: Callable[[str, str | None], bool] | None = None,
     target: tuple[Path, str] | None = None, successor_folders: Sequence[Path] = (),
+    settled_by: str | None = None,
 ) -> dict[str, Any]:
     """Write `body` as a memo. Call while holding the store's write lane.
 
     `target` locates `supersedes` (`_target_conflict`); a correction without it is `target_missing`.
+    `settled_by` names the rule whose pair `supersedes` is, recorded in the ledger's `settled` map
+    beside the memo's author, so every edge settled at write time can be listed later.
 
     Replies `{memo_id}` (legacy calls), `{memo_id, receipt}` when a receipt is asked for or a
     `request_id` or `expected_revision` is given, `{refused}` for a malformed `request_id` or
@@ -523,6 +526,8 @@ def write_memo(
         memo_id = _publish(folder, ledger_path, ledger, data, kind=kind, number=_next_number(folder, ledger), entry=entry)
     if changed:
         authors[memo_id] = author
+        if settled_by is not None:
+            ledger.setdefault("settled", {})[memo_id] = settled_by
         if entry is not None:
             entry["state"] = _WRITTEN
             entry["at"] = time.time()

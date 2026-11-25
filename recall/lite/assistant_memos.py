@@ -198,6 +198,7 @@ class MemoFolder:
         expected_revision: str | None = None,
         include_receipt: bool = False,
         has_successor: Callable[[str, str | None], bool] | None = None,
+        settled_by: str | None = None,
     ) -> dict[str, Any]:
         """Write one memo file without indexing it. Returns what `write_memo` returns: {memo_id},
         with a receipt for a guarded call, {refused: reason}, or {refused, conflict}.
@@ -274,6 +275,7 @@ class MemoFolder:
             has_successor=has_successor, target=target,
             successor_folders=tuple(ledger.parent for ledger in _journal_ledgers(self.index_root))
             if target is not None else (),
+            settled_by=settled_by,
         )
 
     def target_of(self, ref: str) -> tuple[Path, str] | None:
