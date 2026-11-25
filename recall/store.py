@@ -2545,14 +2545,16 @@ class PgVectorStore(SourceMutationMixin, SupersessionMixin, ReceiptsAuditMixin):
         first entered the index through, which `Indexer._flush` keeps across the re-index."""
         if not sources:
             return {}
+        scope, scope_args = self._row_scope_args()
         rows = self._with_retry(
             lambda conn: conn.execute(
-                f"SELECT DISTINCT source, metadata->>'indexed_via' FROM {self._table} "
-                f"WHERE tenant_id = %s AND source = ANY(%s) AND metadata->>'indexed_via' IS NOT NULL",
-                (self._tenant, list(sources)),
+                f"SELECT DISTINCT {self._SOURCE_COL}, metadata->>'indexed_via' FROM {self._table} "
+                f"WHERE tenant_id = %s{scope} AND {self._SOURCE_COL} = ANY(%s) "
+                f"AND metadata->>'indexed_via' IS NOT NULL",
+                (self._tenant, *scope_args, list(sources)),
             ).fetchall()
         )
-        return {source: via for source, via in rows}
+        return {str(source): str(via) for source, via in rows}
 
     def source_raw_hashes(self) -> dict[str, str]:
         """Raw content hashes by source, independent of embedding profile or context mode."""

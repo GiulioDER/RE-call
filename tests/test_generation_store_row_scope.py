@@ -119,6 +119,7 @@ CALLS: dict[str, Callable[[GenerationStore], object]] = {
     "chunks_by_ids": lambda s: s.chunks_by_ids(["c1"]),
     "count": lambda s: s.count(),
     "count_up_to": lambda s: s.count_up_to(6),
+    "indexed_via_for": lambda s: s.indexed_via_for(["a.md"]),
     "iter_chunks": lambda s: list(s.iter_chunks(10)),
     "iter_scoped_chunks": lambda s: list(s.iter_scoped_chunks(
         Scope(source_prefixes=("docs",), security_policy_digest="policy"),
