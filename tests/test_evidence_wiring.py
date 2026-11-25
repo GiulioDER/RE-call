@@ -376,6 +376,16 @@ def test_sqlite_snapshot_pads_integer_compact_dates(tmp_path, capsys) -> None:
     assert statuses == {"ids": "format_verified"}
 
 
+def test_sqlite_snapshot_does_not_pad_mmdd_shaped_integers(tmp_path, capsys) -> None:
+    """FA-1-4 (owner decision 2026-11-25: pad only five-digit integers). Red proof: against the
+    pad-every-integer `printf('%06d')`, 101 and 1231 become 2000-01-01 and 2000-12-31, so the
+    column reads format_verified."""
+    database = _snapshot(tmp_path, [("250701", "235959", 101, "2025-07-01"),
+                                    ("250701", "235959", 1231, "2025-07-01")])
+    statuses, _ = _snapshot_statuses(database, [("ids", "t.ids\nFormat: YYMMDD")], capsys)
+    assert statuses == {"ids": "unverified_format"}
+
+
 def test_sqlite_snapshot_scans_each_column_once(tmp_path, capsys, monkeypatch) -> None:
     """PERF-002 (deferred pass). Red proof: without the per-column memo in `_check`, two notes on
     one column scan it twice."""

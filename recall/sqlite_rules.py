@@ -78,8 +78,12 @@ def _date_format(conn: sqlite3.Connection, table: str, column: str, deadline: fl
     field = _identifier(column)
     digits = "[0-9]"
     iso = f"{digits * 4}-{digits * 2}-{digits * 2}"
-    # An INTEGER loses a leading zero (050701 is stored as 50701), so it is padded back to six.
-    compact = f"CASE typeof({field}) WHEN 'integer' THEN printf('%06d', {field}) ELSE {field} END"
+    # An INTEGER loses a leading zero (050701 is stored as 50701), so a five-digit one is padded
+    # back to six. Shorter ones are not: 000101 cannot be told from an MMDD value 101.
+    compact = (
+        f"CASE WHEN typeof({field})='integer' AND {field} BETWEEN 10000 AND 99999 "
+        f"THEN printf('%06d', {field}) ELSE CAST({field} AS TEXT) END"
+    )
     as_iso = f"'20'||substr({compact},1,2)||'-'||substr({compact},3,2)||'-'||substr({compact},5,2)"
     expired: list[bool] = []
 
