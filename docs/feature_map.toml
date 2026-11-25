@@ -130,7 +130,7 @@ modules = [
     "recall/paged_evidence.py", "recall/explanations.py", "recall/support.py", "recall/unknown_terms.py",
     "recall/scope.py", "recall/scope_prior.py", "recall/retrieval_plan.py", "recall/query_class.py",
     "recall/query_anchor_admission.py", "recall/profiles.py", "recall/retrieval_slo.py",
-    "recall/federation.py", "recall/sqlite_rules.py", "recall/cli_commands/index_search.py",
+    "recall/federation.py", "recall/sqlite_rules.py", "recall/sqlite_planning.py", "recall/cli_commands/index_search.py",
     "recall_mcp/retrieval.py", "recall_mcp/server_search.py", "recall_mcp/federation_adapter.py",
 ]
 tests = ["tests/test_trust*.py", "tests/test_retrieval*.py", "tests/test_evidence*.py", "tests/test_query*.py"]

@@ -6,7 +6,8 @@ import re
 import sqlite3
 import string
 import unicodedata
-from contextlib import closing
+from collections.abc import Iterator
+from contextlib import closing, contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path
 from time import monotonic
@@ -155,6 +156,47 @@ def _check(
     return corrected, SnapshotRuleCheck(item.chunk_id, "format_corrected", observed)
 
 
+@contextmanager
+def _open_snapshot(snapshot: Path) -> Iterator[sqlite3.Connection]:
+    uri = snapshot.resolve().as_uri() + "?mode=ro"
+    with closing(sqlite3.connect(uri, uri=True, timeout=_BUSY_TIMEOUT_SECONDS)) as conn:
+        conn.execute("PRAGMA trusted_schema=OFF")
+        conn.execute("PRAGMA query_only=ON")
+        conn.execute("BEGIN")
+        yield conn
+
+
+@contextmanager
+def _snapshot_deadline(conn: sqlite3.Connection) -> Iterator[None]:
+    deadline = monotonic() + _BUDGET_SECONDS
+    conn.set_progress_handler(lambda: int(monotonic() >= deadline), _PROGRESS_STEPS)
+    try:
+        yield
+    finally:
+        conn.set_progress_handler(None, 0)
+
+
+def _verify_rules(
+    conn: sqlite3.Connection, bundle: EvidenceBundle
+) -> tuple[EvidenceBundle, tuple[SnapshotRuleCheck, ...]]:
+    items: list[EvidenceItem] = []
+    checks: list[SnapshotRuleCheck] = []
+    observed_formats: dict[tuple[str, str], str | None] = {}
+    deadline = monotonic() + _BUDGET_SECONDS
+    for item in bundle.items:
+        checked, audit = _check(conn, item, deadline, observed_formats)
+        checks.append(audit)
+        if checked is not None:
+            items.append(checked)
+    prepared = replace(bundle, items=tuple(items), cards=())
+    if not items:
+        prepared = replace(
+            prepared, decision="abstain", reason_code="no_verified_database_rules",
+            decision_state="no_supporting_evidence",
+        )
+    return prepared, tuple(checks)
+
+
 def verify_sqlite_rules(
     bundle: EvidenceBundle, snapshot: Path
 ) -> tuple[EvidenceBundle, tuple[SnapshotRuleCheck, ...]]:
@@ -172,23 +214,5 @@ def verify_sqlite_rules(
     """
     if bundle.decision != "answer":
         return bundle, ()
-    items: list[EvidenceItem] = []
-    checks: list[SnapshotRuleCheck] = []
-    observed_formats: dict[tuple[str, str], str | None] = {}
-    deadline = monotonic() + _BUDGET_SECONDS
-    uri = snapshot.resolve().as_uri() + "?mode=ro"
-    with closing(sqlite3.connect(uri, uri=True, timeout=_BUSY_TIMEOUT_SECONDS)) as conn:
-        conn.execute("PRAGMA trusted_schema=OFF")
-        conn.execute("BEGIN")
-        for item in bundle.items:
-            checked, audit = _check(conn, item, deadline, observed_formats)
-            checks.append(audit)
-            if checked is not None:
-                items.append(checked)
-    prepared = replace(bundle, items=tuple(items), cards=())
-    if not items:
-        prepared = replace(
-            prepared, decision="abstain", reason_code="no_verified_database_rules",
-            decision_state="no_supporting_evidence",
-        )
-    return prepared, tuple(checks)
+    with _open_snapshot(snapshot) as conn:
+        return _verify_rules(conn, bundle)

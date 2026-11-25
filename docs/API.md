@@ -160,6 +160,45 @@ CLI and
 `recall.sqlite_rules.verify_sqlite_rules(bundle, snapshot)`. The CLI output
 uses the canonical text and cannot be combined with `--locale`.
 
+### Snapshot-checked SQL planning
+
+Python applications can opt in to a two-call workflow with one model callback.
+The callback takes a system prompt and a user message and returns text.
+
+```python
+from pathlib import Path
+
+from recall.evidence import build_evidence_bundle
+from recall.sqlite_planning import generate_sql_from_evidence
+
+result = generate_sql_from_evidence(
+    build_evidence_bundle(trusted_result),
+    Path("analytics.sqlite"),
+    generator,
+    code_fields={"account.frequency", "loan.status"},
+)
+```
+
+The first call proposes fields, joins, filters, and a measure. RE-call checks
+the plan in the SQLite snapshot before the second call writes SQL. The same
+question, schema, and up to three eligible field notes appear in both calls.
+The optional `code_fields` allowlist uses exact `table.column` names. The
+second call can receive short lists of observed values for those fields.
+Membership and join overlap checks establish facts about the stored data.
+The writer decides how those facts apply to the question.
+
+A malformed plan or failed plan check sends the original inputs to the second
+call. `used_checked_plan` indicates whether that call received a checked plan.
+When evidence is unavailable or the snapshot cannot supply the schema and notes,
+the workflow returns a `reason_code` before calling the model. Callback
+exceptions propagate to the caller. Successful calls return either `sql` or a
+`clarification`.
+
+RE-call compiles SQL under a read-only authorizer on the same transaction
+used for the checks. Run the returned statement against that same version of
+the snapshot. Query execution and the choice of model provider belong to the
+calling application.
+
 ### Verified fix selection
 
 `recall records --repo owner/name --select-fix request.json` takes an explicit shortlist
