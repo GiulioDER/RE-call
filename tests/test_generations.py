@@ -377,6 +377,44 @@ def test_exact_pipeline_and_source_hash_reuses_chunks_without_embedding(manager)
 
 
 @requires_db
+def test_reused_chunks_get_this_servers_tsvector(manager) -> None:
+    """A reused chunk's `tsv` is derived by the server running the build, never copied.
+
+    `tsv` is the server's stemming of the chunk text, and PostgreSQL 19 stems some English words
+    differently from 17 and 18. A copied `tsv` survives a major upgrade into every rebuild, while
+    the generation records the new server's stemmer probe, so the probe check passes on stale
+    lexemes. The earlier generation's `tsv` is overwritten here to stand in for another server's.
+
+    Red proof: on master 47613dfbb, where `_reuse_source` copies `tsv`, this test fails on the
+    `stale == []` assertion with every reused row still holding the planted lexemes.
+    """
+    data = b"the organization pasted an interval into the evening report"
+    manifest = _manifest(manager.tenant_id, data)
+    reader = _reader(manifest, data)
+    pipeline = _pipeline("model-a")
+    first = _ready(manager, manifest, pipeline, reader, _Embedder(1))
+    manager.promote(first, unsafe_development=True)
+    with manager._connect() as conn:
+        conn.execute(
+            "UPDATE recall_chunks_v1 SET tsv = to_tsvector('simple', 'stemmed elsewhere') "
+            "WHERE tenant_id = %s AND generation_id = %s",
+            (manager.tenant_id, first),
+        )
+
+    second = manager.create(manifest, pipeline)
+    stats = manager.build(second.generation_id, reader, _Embedder(9), lambda text: [text])
+
+    assert stats.reused_objects == 1, "the test must exercise the reuse path"
+    with manager._connect() as conn:
+        stale = conn.execute(
+            "SELECT chunk_id FROM recall_chunks_v1 "
+            "WHERE tenant_id = %s AND generation_id = %s AND tsv <> to_tsvector('english', text)",
+            (manager.tenant_id, second.generation_id),
+        ).fetchall()
+    assert stale == [], "a reused chunk kept a tsvector this server did not derive"
+
+
+@requires_db
 @pytest.mark.parametrize("prior", [None, {"project": "old", "indexed_commit": "oldcommit"}])
 def test_reused_chunks_receive_current_build_provenance(manager, prior) -> None:
     """DAT-001: baseline 61b428432 fails persisted project/commit after source reuse."""
