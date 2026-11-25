@@ -8,7 +8,7 @@ import type { ToolDef } from "./mcp_client";
 export type ExtraTool = { name: string; reason: string; write: boolean };
 
 /** RE-call's six assistant tools, byte for byte as `tests/fixtures/assistant_surface_contract.json` at the
- * repository root pins them (unchanged from tree d1a0856e, 0.15.0), with `parameters` named `inputSchema`
+ * repository root pins them (`recall_remember` gained `settle` after 0.16.1), with `parameters` named `inputSchema`
  * as MCP names it. `tests/unit/surface.test.ts` fails on any difference. */
 export const TRAINED: ToolDef[] = [
   {
@@ -185,7 +185,7 @@ export const TRAINED: ToolDef[] = [
   },
   {
     "name": "recall_remember",
-    "description": "Store ONE fact in the user's long-term memory for future sessions. Put dates in the text as YYYY-MM-DD with the weekday and the user's time zone. valid_from/valid_until (YYYY-MM-DD) say when the fact holds; supersedes names a memo_id this fact replaces. fact (optional) is the same fact as {subject, predicate, object}: recall_evidence then returns cards that recall_apply_fact can cite. Corrections should pass supersedes and the revision returned by search or a write receipt as expected_revision (a lowercase SHA-256, exactly as returned). Reuse request_id (at most 128 characters) only to retry the same write. A refusal carries `refused`, and a refused precondition also a `conflict` code. include_receipt returns write, indexing and calibration readiness separately; old calls still return only memo_id. A correction target that already has a successor is refused. Before stating a fact, look its subject up with recall_current_facts(subject=...) and repeat an existing subject and predicate exactly; the receipt's fact_key says which key the fact went under, what else is in force for it, and any supersession left to settle.",
+    "description": "Store ONE fact in the user's long-term memory for future sessions. Put dates in the text as YYYY-MM-DD with the weekday and the user's time zone. valid_from/valid_until (YYYY-MM-DD) say when the fact holds; supersedes names a memo_id this fact replaces. fact (optional) is the same fact as {subject, predicate, object}: recall_evidence then returns cards that recall_apply_fact can cite. Corrections should pass supersedes and the revision returned by search or a write receipt as expected_revision (a lowercase SHA-256, exactly as returned). Reuse request_id (at most 128 characters) only to retry the same write. A refusal carries `refused`, and a refused precondition also a `conflict` code. include_receipt returns write, indexing and calibration readiness separately; old calls still return only memo_id. A correction target that already has a successor is refused. Before stating a fact, look its subject up with recall_current_facts(subject=...) and repeat an existing subject and predicate exactly; the receipt's fact_key says which key the fact went under, what else is in force for it, and any supersession left to settle. settle (where the server allows it) writes that supersession into this memo instead, when the earlier memo is the assistant's and the predicate holds one value at a time; the answer's settle names the memo it replaced, or why it did not.",
     "inputSchema": {
       "properties": {
         "text": {
@@ -246,6 +246,11 @@ export const TRAINED: ToolDef[] = [
         "include_receipt": {
           "default": false,
           "title": "Include Receipt",
+          "type": "boolean"
+        },
+        "settle": {
+          "default": false,
+          "title": "Settle",
           "type": "boolean"
         }
       },

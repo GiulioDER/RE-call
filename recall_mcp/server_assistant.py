@@ -135,6 +135,7 @@ def _register_assistant_tools(mcp: ToolRegistrar, deps: _ToolDeps, held: _HeldTo
         request_id: str = "",
         expected_revision: str = "",
         include_receipt: bool = False,
+        settle: bool = False,
     ) -> str:
         state = _state(ctx)
         store = await _require(SCOPE_WRITE, ctx)
@@ -154,6 +155,7 @@ def _register_assistant_tools(mcp: ToolRegistrar, deps: _ToolDeps, held: _HeldTo
                     include_receipt=include_receipt,
                     access_context=_access_context(state, store),
                     read_facts=_caller_may_read(state),
+                    settle=settle,
                     **_policy(state, store),
                 )
             )

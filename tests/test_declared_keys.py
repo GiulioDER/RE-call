@@ -15,6 +15,9 @@ Invariants and the failure each one catches:
   R(a') makes when an older dated memo holds another value, the proposal reversed for a backdated
   memo, a note instead of a proposal when the memos are undated, and `not_single_valued` or
   `unchecked` where no answer can be given.
+- K6 `settle_target` names the older memo of rule R(a') for a memo not yet written, nothing when
+  nothing is in force or the memo is backdated, and declines an undated memo, two older memos of
+  one start, an unserved listing, a declared `set`, and an `email` fact declared `single`.
 
 Red proof, 2026-10-23, on the remote test host, each mutation applied alone and its test run alone,
 then restored and the whole file green (recorded in the pull request):
@@ -36,6 +39,7 @@ from recall.declared_keys import (
     STATED_KEY_SUCCESSOR_RULE,
     KeyedMemo,
     key_receipt,
+    settle_target,
     subject_name,
     subject_view,
     successor_pairs,
@@ -142,3 +146,77 @@ def test_the_receipt_names_the_key_its_state_and_the_edge_to_settle() -> None:
     assert key_receipt(_listing([], served="degraded"), "m/1.md", tea)["state"] == "unchecked"
     hidden = key_receipt(_listing([_standing(coffee, "m/2.md")]), "m/1.md", tea)
     assert hidden["state"] == "not_in_force", hidden
+
+
+def test_the_settle_target_is_the_rules_older_memo_and_the_table_decides_cardinality() -> None:
+    """K6. `settle_target` names the memo rule R(a') gives a memo not yet written, and otherwise
+    why the pair stays a proposal. An `email` fact declared `single` is still declined: G1 reads
+    RE-call's table, not the declaration, which a capable writer got wrong for email, phone number
+    and nickname every time (the maintainer's private study CD-1, 2026-11-25).
+    """
+    tea, coffee = _fact("user", "drink", "tea", 1), _fact("user", "drink", "coffee", 2)
+    one = _listing([_standing(tea, "m/1.md")])
+    assert settle_target(one, coffee, None) == ("m/1.md", None)
+    assert settle_target(one, _fact("user", "drink", "coffee"), datetime(2026, 1, 2, tzinfo=UTC)) == ("m/1.md", None)
+    assert settle_target(_listing([]), coffee, None) == (None, None), "nothing in force, nothing to settle"
+    assert settle_target(one, _fact("user", "drink", "coffee"), None) == (None, "undated")
+    early = AtomicFact("memory", "user", "drink", "milk", valid_from=datetime(2025, 12, 1, tzinfo=UTC))
+    assert settle_target(one, early, None) == (None, None), "a backdated memo supersedes nothing"
+    declared = AtomicFact("memory", "user", "email", "b@example.org", valid_from=datetime(2026, 1, 2, tzinfo=UTC),
+                          cardinality="single")
+    email = AtomicFact("memory", "user", "email", "a@example.org", valid_from=datetime(2026, 1, 1, tzinfo=UTC),
+                       cardinality="single")
+    assert settle_target(_listing([_standing(email, "m/1.md")]), declared, None) == (None, "not_single_in_table")
+    as_set = AtomicFact("memory", "user", "drink", "milk", valid_from=datetime(2026, 1, 2, tzinfo=UTC), cardinality="set")
+    assert settle_target(one, as_set, None) == (None, "not_single_valued")
+    same_day = _listing([], [_contested((tea, "m/1.md"), (_fact("user", "drink", "milk", 1), "m/2.md"))])
+    assert settle_target(same_day, coffee, None) == (None, "several_older_memos")
+    assert settle_target(_listing([_standing(tea, "m/1.md")], served="degraded"), coffee, None) == (None, "unchecked")
+
+
+def test_settle_declines_while_two_earlier_memos_hold_the_key() -> None:
+    """K7. With two earlier values of a key in force, `settle_target` declines `several_older_memos`
+    whatever their starts: rule R(a') pairs a new memo with the latest earlier start only, so
+    settling it would leave the older value in force beside the new one, the key still contested.
+
+    Red proof (CCA run 20261125T120125Z, DOC-003), on the remote test host: against the pre-fix
+    `recall.declared_keys.settle_target` (the PR head before the audit fixes), which counted only
+    the latest earlier start group, this returned `('m/2.md', None)` and failed the assertion.
+    """
+    tea, milk, coffee = (_fact("user", "drink", "tea", 1), _fact("user", "drink", "milk", 2),
+                         _fact("user", "drink", "coffee", 3))
+    held = _listing([], [_contested((tea, "m/1.md"), (milk, "m/2.md"))])
+    assert settle_target(held, coffee, None) == (None, "several_older_memos")
+
+
+def test_settle_declines_while_any_other_memo_holds_the_key() -> None:
+    """K8. A settle that would leave another holder of the key in force (undated, of the new memo's
+    start, or later than it) is declined `other_memos_hold_key`: the key would read contested after
+    a write that claims to settle it. One earlier memo alone still settles.
+
+    Red proof (CCA run 20261125T120125Z, fix audit FA-1-5), on the remote test host: against the
+    pass-1 snapshot of `recall.declared_keys.settle_target`, which counted only earlier-dated holders,
+    the undated case returned `('m/1.md', None)` and failed the first assertion.
+    """
+    milk, coffee = _fact("user", "drink", "milk", 1), _fact("user", "drink", "coffee", 3)
+    for other in (_fact("user", "drink", "tea"), _fact("user", "drink", "juice", 3), _fact("user", "drink", "soda", 5)):
+        held = _listing([], [_contested((milk, "m/1.md"), (other, "m/2.md"))])
+        assert settle_target(held, coffee, None) == (None, "other_memos_hold_key"), other
+    assert settle_target(_listing([_standing(milk, "m/1.md")]), coffee, None) == ("m/1.md", None)
+
+
+def test_settle_reads_the_table_whatever_the_predicate_is_spelled() -> None:
+    """K9. `phone number`, `Email-Address` and `PHONE_NUMBER` are the table's set-valued
+    `phone_number` and `email_address`, so a settle of them is declined `not_single_in_table`: the
+    table spells predicates with underscores, and a writer that spells one with a space or a hyphen
+    would otherwise read as single-valued and retire the other value (owner's decision on CCA
+    STAKES-002, 2026-11-25). The ledger's own lookup is unchanged.
+
+    Red proof (CCA run 20261125T120125Z, STAKES-002), on the remote test host: against
+    `recall.declared_keys.settle_precondition` before this change (the predicate casefolded only),
+    `phone number` returned `('m/1.md', None)` and failed the first assertion.
+    """
+    for predicate in ("phone number", "Email-Address", "PHONE_NUMBER"):
+        older = AtomicFact("memory", "user", predicate, "1", valid_from=datetime(2026, 1, 1, tzinfo=UTC))
+        newer = AtomicFact("memory", "user", predicate, "2", valid_from=datetime(2026, 1, 2, tzinfo=UTC))
+        assert settle_target(_listing([_standing(older, "m/1.md")]), newer, None) == (None, "not_single_in_table"), predicate

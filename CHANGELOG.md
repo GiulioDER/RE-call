@@ -16,6 +16,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   whose stem changed. Building and promoting a new generation on the new server refreshes them;
   the legacy `chunks` table, and a generation refreshed in place, use the statements in
   [DEPENDENCIES.md](docs/DEPENDENCIES.md).
+* `recall_remember(settle=true)` on the assistant surface writes the `supersedes` that rule
+  `deterministic.stated_key_successor` would propose for the new memo into the memo itself, so a
+  later value of a declared key replaces the earlier one without a second write or a review. It
+  needs the operator's `RECALL_ASSISTANT_SETTLE_SUCCESSORS=1` as well (off by default; a call
+  without it is refused). It settles only when the writer gave a structured `fact` and named no
+  `supersedes` of its own, the caller has the read scope, no source security policy is configured,
+  the current facts were served in full, the new memo is dated, RE-call's predicate table (not the
+  fact's own declaration) calls the predicate single-valued, the one earlier memo it would
+  supersede is the only memo holding the key, and that memo is an assistant memo file with no
+  successor yet. Otherwise the memo is written without the edge and the answer's `settle` names the
+  reason ([API](docs/API.md) lists them); a retry of the same `request_id` answers what its first
+  call did. Settled edges are listed in the memo folder's authorship ledger under `settled`.
 
 ### Changed
 

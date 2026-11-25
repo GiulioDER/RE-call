@@ -20,6 +20,9 @@ also want the per-turn memory block and write tools limited to the session you d
    .venv-recall/Scripts/pip install "recall-rag[fastembed,mcp]"     # bin/pip on macOS and Linux
    ```
 
+   The plugin offers `recall_remember`'s `settle`, which a release after 0.16.1 serves; an older server
+   does not know it.
+
 2. **A Lite store**, created once (the plugin does not run setup). RE-call certifies trusted answers only
    when the memo folder holds at least 20 distinct chunks. On an empty folder setup binds no calibration
    and every search fails with "no calibration artifact is bound to this tenant and generation". Run it in
@@ -81,6 +84,7 @@ also want the per-turn memory block and write tools limited to the session you d
    | `prefetch` | `true` | the per-turn block |
    | `write_tools` | `true` | the write tools, on a Lite store only |
    | `extra_tools` | `true` | the tools beyond the six |
+   | `settle_successors` | `false` | lets `recall_remember(settle=true)` write the supersession it settles (RE-call's `RECALL_ASSISTANT_SETTLE_SUCCESSORS`), on a Lite store only |
 
    The shared dir is `<XDG_CONFIG_HOME or ~/.config>/re-call`, one per user and the same for every agent;
    XDG_CONFIG_HOME counts only when it is an absolute path. The shared store and its memo folder are

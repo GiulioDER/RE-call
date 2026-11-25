@@ -9,7 +9,7 @@ design violation.
 
 Packages: `recall`, `recall_mcp`, `recall_agent`, `recall_hooks`, `recall_interop`, `recall_consistency`
 Modules: 379
-Cross package edges: 464
+Cross package edges: 466
 
 ## Highest fan in modules
 
@@ -88,6 +88,7 @@ Cross package edges: 464
 | 17 | `recall_mcp.server_memory_admin` |
 | 16 | `recall.cli_commands.generation_cmd` |
 | 16 | `recall.cli_commands.provenance_cmd` |
+| 16 | `recall_mcp.assistant` |
 | 15 | `recall_mcp.desktop_ingest` |
 | 15 | `recall_mcp.graph_first_api` |
 | 15 | `recall_mcp.query_construction_api` |
@@ -98,7 +99,6 @@ Cross package edges: 464
 | 14 | `recall.generation_rescue` |
 | 14 | `recall.lite.refresh` |
 | 14 | `recall.setup` |
-| 14 | `recall_mcp.assistant` |
 | 14 | `recall_mcp.reasoning_api` |
 
 ## Cross package edges
@@ -161,12 +161,14 @@ They are observations, not automatic failures.
 | `recall_interop.memory_benchmarks` | `recall.retriever` |
 | `recall_interop.memory_benchmarks` | `recall.store` |
 | `recall_mcp.access_log` | `recall.observability` |
+| `recall_mcp.assistant` | `recall._env` |
 | `recall_mcp.assistant` | `recall.backends` |
 | `recall_mcp.assistant` | `recall.calibration_v2` |
 | `recall_mcp.assistant` | `recall.confinement` |
 | `recall_mcp.assistant` | `recall.declared_keys` |
 | `recall_mcp.assistant` | `recall.embeddings` |
 | `recall_mcp.assistant` | `recall.errors` |
+| `recall_mcp.assistant` | `recall.frontmatter` |
 | `recall_mcp.assistant` | `recall.lite` |
 | `recall_mcp.assistant` | `recall.lite.assistant_memos` |
 | `recall_mcp.assistant` | `recall.lite.memo_requests` |
@@ -906,7 +908,7 @@ They are observations, not automatic failures.
 | `recall_interop.memory_benchmarks` | 7 | 142 |
 | `recall_mcp` | 0 | 0 |
 | `recall_mcp.access_log` | 1 | 1 |
-| `recall_mcp.assistant` | 14 | 157 |
+| `recall_mcp.assistant` | 16 | 157 |
 | `recall_mcp.auth` | 4 | 41 |
 | `recall_mcp.codex_server` | 2 | 221 |
 | `recall_mcp.compat` | 0 | 0 |

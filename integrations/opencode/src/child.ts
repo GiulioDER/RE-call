@@ -102,6 +102,8 @@ export function childEnv(config: Config, parent: Record<string, string | undefin
   if (isLiteDsn(config.dsn)) {
     env.RECALL_INDEX_ROOT = config.memoFolder;
     env.RECALL_ASSISTANT_MEMOS = join(config.memoFolder, ASSISTANT_SUBFOLDER);
+    // The server's half of `recall_remember(settle=true)`: without it every settle is refused.
+    if (config.settleSuccessors) env.RECALL_ASSISTANT_SETTLE_SUCCESSORS = "1";
     // It holds vectors of memo text, so it stays beside the store, as Hermes keeps it with the
     // profile's memory rather than under the platform cache directory.
     env.RECALL_EMBED_CACHE = join(dirname(storePath(config.dsn)), "embeddings.sqlite");

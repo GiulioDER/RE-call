@@ -80,6 +80,19 @@ describe("the child process", () => {
     expect(seen).toContain("HF_HUB_OFFLINE");
   }, 20_000);
 
+  /** Invariant: the option `settle_successors` hands the server RE-call's
+   * `RECALL_ASSISTANT_SETTLE_SUCCESSORS=1` on a Lite store, and nothing sets it otherwise, so the plugin's
+   * `settle` parameter can work where the user turned it on (CCA ENV-003, run 20261125T132233Z).
+   *
+   * Red proof (2026-11-25, local Windows): against src/child.ts before this change, which never set the
+   * variable, the first `expect` failed with `undefined` received. Restored, green. */
+  test("settle_successors reaches the server only when turned on", () => {
+    const dataDir = tempDir();
+    expect(childEnv(loadConfig({ settle_successors: true }, dataDir), {}).RECALL_ASSISTANT_SETTLE_SUCCESSORS).toBe("1");
+    expect(childEnv(loadConfig({}, dataDir), { RECALL_ASSISTANT_SETTLE_SUCCESSORS: "1" }).RECALL_ASSISTANT_SETTLE_SUCCESSORS).toBeUndefined();
+    expect(() => loadConfig({ settle_successors: "yes" }, dataDir)).toThrow("settle_successors must be true or false");
+  });
+
   /** Invariant (Review Focus 4): a store under a folder with spaces and non-ASCII characters gets a
    * `sqlite:///` DSN that, read the way RE-call reads it (`Path(dsn[len("sqlite:///"):])`), names the
    * store file, after the trip through the child's environment.

@@ -44,6 +44,7 @@ describe("loadConfig", () => {
       k: 5,
       prefetch: true,
       writeTools: true,
+      settleSuccessors: false,
       extraTools: true,
     });
   });

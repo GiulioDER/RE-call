@@ -1,4 +1,4 @@
-"""Keys a memo's writer declares, and the three things RE-call does with them.
+"""Keys a memo's writer declares, and what RE-call does with them.
 
 A memo states a fact in its `recall_graph` frontmatter (or through `recall_remember`'s `fact`), and the
 fact's key is the ledger's conflict key: namespace, subject, predicate and context, compared exactly
@@ -16,10 +16,13 @@ So this module gives a writer what that writer used:
 - `successor_pairs`, rule R(a'): of the memos stating one single-valued key, each supersedes the
   memos of the latest earlier start, WHATEVER the value. "Another value" was the first wording, and
   a key whose history repeats a value then kept its first fact in force against the last
-  (WK-1, 2026-10-23). The rule only proposes: `recall.reasoning_proposals` serves its pairs as
-  `requires_review`, and nothing here writes an edge;
+  (WK-1, 2026-10-23). The rule proposes: `recall.reasoning_proposals` serves its pairs as
+  `requires_review`, and nothing here writes an edge; only a writer that settles the pair in its own
+  write (`settle_target`) makes one an edge without review;
 - `key_receipt`: the part of a write receipt that says which key a new memo's fact went under, what
-  else is in force for it, and the edge rule R(a') proposes, if any.
+  else is in force for it, and the edge rule R(a') proposes, if any;
+- `settle_target`: the edge rule R(a') gives a memo not yet written, for a writer that asks to
+  settle it in the same write (`recall_remember(settle=true)`), or why it stays a proposal.
 
 Undated memos, and memos of one start, are never ordered against each other: a sort position would
 name the newer one (`recall.reasoning_proposals._deterministic._date_successors` has the same rule).
@@ -32,9 +35,9 @@ from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from itertools import groupby
-from typing import Any
+from typing import Any, cast
 
-from recall.provenance_controller import canonical_json, predicate_cardinality
+from recall.provenance_controller import DEFAULT_PREDICATE_CARDINALITY, canonical_json, predicate_cardinality
 from recall.types import AtomicFact
 
 __all__ = [
@@ -42,6 +45,8 @@ __all__ = [
     "KeyedMemo",
     "fact_key",
     "key_receipt",
+    "settle_precondition",
+    "settle_target",
     "subject_name",
     "subject_view",
     "successor_pairs",
@@ -213,7 +218,7 @@ def key_receipt(
     if key is None:
         receipt["state"] = "not_single_valued"
         return receipt
-    if listing.get("served_state") in {"degraded", "unchecked"}:
+    if listing.get("served_state") in _UNSERVED:
         receipt["state"] = "unchecked"
         return receipt
     statements = _statements(listing, key)
@@ -230,12 +235,7 @@ def key_receipt(
     else:
         values = {canonical_json(payload.get("object")) for payload, _sources, _standing in statements}
         receipt["state"] = "current" if len(values) == 1 else "contested"
-    memos = []
-    for payload, sources, _standing in statements:
-        stated = AtomicFact.from_payload(payload)
-        for name in sources:
-            memos.append(KeyedMemo(name, stated, stated.valid_from))
-    for older, newer in successor_pairs(memos, incident_to=source):
+    for older, newer in successor_pairs(_keyed(statements), incident_to=source):
         receipt["proposals"].append({
             "rule_id": STATED_KEY_SUCCESSOR_RULE, "status": "requires_review", "relation": "supersedes",
             "superseded": name_of(older.name), "superseder": name_of(newer.name),
@@ -244,3 +244,70 @@ def key_receipt(
         receipt["note"] = ("another value is in force for this key and the memos cannot be ordered by "
                            "valid_from; write the correction with supersedes, or give the memos dates")
     return receipt
+
+
+def _keyed(statements: list[tuple[dict[str, Any], list[str], bool]]) -> list[KeyedMemo]:
+    memos = []
+    for payload, sources, _standing in statements:
+        stated = AtomicFact.from_payload(payload)
+        for name in sources:
+            memos.append(KeyedMemo(name, stated, stated.valid_from))
+    return memos
+
+
+#: The listing states in which a lookup could not read the store; nothing is decided over one.
+_UNSERVED = frozenset({"degraded", "unchecked"})
+
+#: The name a memo not yet written goes by in `settle_target`; no stored source can carry it.
+_UNWRITTEN = "\x00unwritten"
+
+
+def settle_target(
+    listing: Mapping[str, Any], fact: AtomicFact, valid_from: datetime | None
+) -> tuple[str | None, str | None]:
+    """The memo rule R(a') says a memo not yet written, stating `fact` from `valid_from`, supersedes:
+    `(source, None)`; `(None, None)` when it supersedes nothing; `(None, reason)` when the pair must
+    stay a proposal. A writer that settles at write time writes the source as its `supersedes`.
+
+    The predicate must be single-valued in RE-call's own table (`DEFAULT_PREDICATE_CARDINALITY`),
+    whatever the fact declares: `predicate_cardinality` would let a declared `single` override the
+    table, and a capable writer declared email, phone number and nickname `single` every time (the
+    maintainer's private study CD-1, 2026-11-25: 41 of 132 set-valued keys would have been settled).
+    A fact declared `set` or `event` has no key, so a declaration can only make this stricter.
+
+    It settles only when the one memo it supersedes is the only memo holding the key: rule R(a')
+    pairs the new memo with the latest earlier start alone, so any other holder (a second earlier
+    memo, an undated one, one of the new memo's start or a later one) would stay in force beside the
+    new memo, and the key would still be contested after a write that claims to settle it.
+    """
+    reason = settle_precondition(fact, valid_from)
+    if reason is not None:
+        return None, reason
+    if listing.get("served_state") in _UNSERVED:
+        return None, "unchecked"
+    start = cast(datetime, fact.valid_from or valid_from)
+    key = cast(tuple[str, str, str, str], fact_key(fact))
+    held = _keyed(_statements(listing, key))
+    if len({m.name for m in held if m.valid_from is not None and _utc(m.valid_from) < _utc(start)}) > 1:
+        return None, "several_older_memos"
+    memos = [KeyedMemo(_UNWRITTEN, fact, start), *held]
+    olders = {older.name for older, newer in successor_pairs(memos, incident_to=_UNWRITTEN) if newer.name == _UNWRITTEN}
+    if not olders:
+        return None, None
+    if {m.name for m in held} - olders:
+        return None, "other_memos_hold_key"
+    return olders.pop(), None
+
+
+def settle_precondition(fact: AtomicFact, valid_from: datetime | None) -> str | None:
+    """Why `settle_target` declines `fact` before reading any listing, or None: a writer checks this
+    first, so a write the listing cannot change does not pay for reading one."""
+    # The table spells predicates with underscores; a writer's "phone number" is its `phone_number`.
+    spelled = "_".join(fact.predicate.casefold().replace("-", " ").split())
+    if DEFAULT_PREDICATE_CARDINALITY.get(spelled, "single") != "single":
+        return "not_single_in_table"
+    if fact_key(fact) is None:
+        return "not_single_valued"
+    if (fact.valid_from or valid_from) is None:
+        return "undated"
+    return None
