@@ -584,6 +584,9 @@ def _forget_memory_unlocked(
         chunks_removed = store.delete_sources_across(
             [store.table, shadow_store.table], to_delete, withdraw=withdraw
         )
+    elif isinstance(store, LiteStore):
+        # A person's forget or withdraw, so the file stays out of the next refresh of its folder.
+        chunks_removed = store.delete_sources(to_delete, withdraw=withdraw, mark_forgotten=True) if to_delete else 0
     else:
         chunks_removed = store.delete_sources(to_delete, withdraw=withdraw) if to_delete else 0
     outbox_events_scrubbed = 0

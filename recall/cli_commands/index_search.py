@@ -70,6 +70,8 @@ def _index_summary(stats: IndexStats) -> str:
         summary += f", skipped {stats.undecodable} file(s) whose contents are not UTF-8"
     if stats.unrepresentable:
         summary += f", skipped {stats.unrepresentable} file(s) whose NAME is not UTF-8"
+    if stats.forgotten:
+        summary += f", left out {stats.forgotten} file(s) you forgot (index one by name to bring it back)"
     return summary
 
 
