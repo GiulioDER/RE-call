@@ -54,7 +54,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 * `EvidenceItem.snapshot_format` carries the date format the snapshot check observed, as its own
   field of the evidence payload rather than in the note text, so a note cannot pass its own words
   off as a verified observation. The key appears only on checked items, so every other prompt is
-  unchanged.
+  unchanged. `recall.evidence.render_snapshot_evidence_prompt` renders a checked bundle with a
+  system message that tells the model what the field means and that it takes precedence over a
+  format stated in the text; `recall search --sqlite-snapshot` uses it.
 
 ### Changed
 

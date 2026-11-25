@@ -363,7 +363,12 @@ def _print_evidence(
     With a SQLite snapshot it emits only eligible field notes, with physical format corrections
     identified as observations from that snapshot.
     """
-    from recall.evidence import EvidencePolicy, build_evidence_bundle, render_evidence_prompt
+    from recall.evidence import (
+        EvidencePolicy,
+        build_evidence_bundle,
+        render_evidence_prompt,
+        render_snapshot_evidence_prompt,
+    )
 
     # `max(1, ...)`: `-k` has no lower bound, and `EvidencePolicy` refuses `max_items < 1`, so
     # `recall search q -k 0 --evidence` raised an uncaught ValueError out of a dataclass
@@ -386,7 +391,8 @@ def _print_evidence(
         except (OSError, SQLiteError) as exc:
             raise SystemExit(f"recall search: SQLite snapshot verification could not complete: {exc}") from exc
         payload["snapshot_rule_checks"] = [asdict(check) for check in checks]
-    system, user = render_evidence_prompt(bundle)
+    render = render_evidence_prompt if sqlite_snapshot is None else render_snapshot_evidence_prompt
+    system, user = render(bundle)
     payload.update(bundle=asdict(bundle), prompt={"system": system, "user": user})
     print(json.dumps(payload, indent=2, default=str))
 

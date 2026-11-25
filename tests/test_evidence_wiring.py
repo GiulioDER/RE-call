@@ -359,6 +359,19 @@ def test_sqlite_snapshot_observation_cannot_be_forged_in_note_text(tmp_path, cap
     assert "observed in this SQLite snapshot" not in items["real"]["text"]
 
 
+def test_sqlite_snapshot_prompt_explains_snapshot_format(tmp_path, capsys) -> None:
+    """With `--sqlite-snapshot` the reader is told what `snapshot_format` means; without it the
+    system message stays `SYSTEM_PROMPT` (pinned by the earlier CLI test). Red proof: against
+    `_print_evidence` rendering every bundle with `render_evidence_prompt`, the system message
+    lacks the note."""
+    from recall.evidence import SNAPSHOT_FORMAT_NOTE, SNAPSHOT_SYSTEM_PROMPT
+
+    database = _snapshot(tmp_path, [("250701", "235959", 999999, "2025-07-01")])
+    _, payload = _snapshot_statuses(database, [("real", "t.compact\nFormat: YYYY-MM-DD")], capsys)
+    assert payload["prompt"]["system"] == SNAPSHOT_SYSTEM_PROMPT
+    assert payload["prompt"]["system"].endswith(SNAPSHOT_FORMAT_NOTE)
+
+
 def test_sqlite_snapshot_matches_names_without_regard_to_case(tmp_path, capsys) -> None:
     """DAT-003 (deferred pass of the PR 1509 audit). Red proof: against the parent run's fixed
     `_field_exists` (BINARY `name=?`), a header spelled `T.ISO` reads field_missing."""

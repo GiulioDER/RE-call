@@ -111,7 +111,10 @@ its own line as `Format: YYYY-MM-DD` or `Format: YYMMDD`. The verifier also
 accepts `in the form YYMMDD` on its own line. A note with a single supported
 declaration is checked against all non-null values. A checked item carries the
 format observed in the snapshot in its own `snapshot_format` field, which only
-the verifier sets; the note text never states it. If the values use the other
+the verifier sets; the note text never states it. The prompt's system message
+then tells the model what the field means and that it takes precedence over a
+format stated in the text; a library caller renders it with
+`recall.evidence.render_snapshot_evidence_prompt(bundle)`. If the values use the other
 supported format, the declaration is removed from the prompt text. This derived
 text retains the source chunk ID for traceability. The indexed text stays intact.
 
