@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from typing import BinaryIO
 
 
 def read_input_bytes(spec: str, limit: int | None = None) -> bytes:
@@ -17,7 +18,7 @@ def read_input_bytes(spec: str, limit: int | None = None) -> bytes:
     """
     size = -1 if limit is None else limit + 1
     if spec == "-":
-        stream = getattr(sys.stdin, "buffer", None)
+        stream: BinaryIO | None = getattr(sys.stdin, "buffer", None)
         if stream is None:
             raise OSError("standard input is not readable as bytes")
         return stream.read(size)

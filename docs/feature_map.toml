@@ -38,7 +38,7 @@ area = "Install and connect"
 name = "The `recall` command line"
 summary = "The command tree, its global options, and the helpers its command families share."
 scripts = ["recall"]
-modules = ["recall/cli.py", "recall/cli_commands/__init__.py", "recall/cli_commands/_shared.py", "recall/cli_commands/_lite.py"]
+modules = ["recall/cli.py", "recall/cli_commands/__init__.py", "recall/cli_commands/_shared.py", "recall/cli_commands/_lite.py", "recall/cli_commands/_input.py"]
 tests = ["tests/test_cli*.py"]
 docs = ["docs/API.md"]
 
@@ -265,6 +265,16 @@ mcp = ["recall_records"]
 modules = ["recall/records.py", "recall/records_files.py", "recall/anchors.py", "recall/fix_selection.py", "recall/cli_commands/records_cmd.py"]
 tests = ["tests/test_records*.py", "tests/test_anchors*.py"]
 docs = ["docs/AUDIT_MEMORY_DESIGN.md"]
+
+[[feature]]
+id = "repair-checks"
+area = "Memory truth"
+name = "Repair check selection"
+summary = "After a failed repair, build a selector prompt over a fixed menu of checks, validate the chosen pair, and package the observed results for the retry."
+cli = ["repair-checks"]
+modules = ["recall/cli_commands/repair_checks.py"]
+tests = ["tests/test_repair_checks.py"]
+docs = ["docs/API.md"]
 
 [[feature]]
 id = "agent-reports"
