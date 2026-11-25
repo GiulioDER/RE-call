@@ -84,6 +84,10 @@ from recall.types import Chunk, ScoredChunk
 #: A DSN naming a lite store: ``sqlite:///path/to/memory.db``.
 LITE_DSN_PREFIX = "sqlite:///"
 SCHEMA_VERSION = "1"
+#: Audit events that keep a memo a person forgot out of every walk of its folder until its file is
+#: indexed by name (`LiteStore.forgotten_sources`). Names only; the payload is empty.
+FORGOTTEN_EVENT = "memo_forgotten"
+RESTORED_EVENT = "memo_restored"
 #: The order that makes the first `calibrations` row the one in force, shared by every reader
 #: (the store, `recall.lite.inspect`) so the doctor reports the calibration search serves.
 LATEST_CALIBRATION_ORDER = "ORDER BY created_at DESC, rowid DESC"
@@ -899,7 +903,7 @@ class LiteStore:
             erase_replaced(self, gone)
         return len(chunks)
 
-    def delete_sources(self, sources: list[str], *, withdraw: bool = False) -> int:
+    def delete_sources(self, sources: list[str], *, withdraw: bool = False, mark_forgotten: bool = False) -> int:
         """Delete every row of `sources`; the delete and the version bump commit together or not at all.
 
         Apart, a failed bump would leave the rows gone and every cache keyed on the version (the
@@ -912,11 +916,21 @@ class LiteStore:
 
         The calibration evidence of any fit measured on one of `sources` is deleted too, in the same
         transaction, since its stored test questions quote that source's text.
+
+        `mark_forgotten` is a person's forget or withdraw, never the indexer's prune: each source is
+        recorded as forgotten in the same transaction, so a refresh will not index its file again
+        (`forgotten_sources`; owner decision 2026-11-25).
         """
         if not sources:
             return 0
         wanted = json.dumps(sources)
         with self._write():
+            if mark_forgotten:
+                self._conn.executemany(
+                    "INSERT INTO audit_events (event_id, event_type, actor, generation_id, source_uri, payload, created_at) "
+                    "VALUES (?, ?, 'recall_forget', NULL, ?, '{}', ?)",
+                    [(f"evt_{uuid.uuid4().hex}", FORGOTTEN_EVENT, source, _now()) for source in sources],
+                )
             entries = self._conn.execute(
                 "SELECT source, metadata, first_indexed_at FROM chunks "
                 "WHERE source IN (SELECT value FROM json_each(?)) ORDER BY rowid",
@@ -945,13 +959,32 @@ class LiteStore:
             self._bump()
         return int(removed)
 
-    def delete_sources_across(self, tables: list[str], sources: list[str], *, withdraw: bool = False) -> int:
+    def delete_sources_across(
+        self, tables: list[str], sources: list[str], *, withdraw: bool = False, mark_forgotten: bool = False
+    ) -> int:
         if sources and not tables:
             raise ValueError("tables must not be empty")
         unknown = [t for t in dict.fromkeys(tables) if t != self._table]
         if unknown:
             raise LiteStoreError(f"a lite store has one table ({self._table!r}); cannot erase sources in {unknown}")
-        return self.delete_sources(sources, withdraw=withdraw)
+        return self.delete_sources(sources, withdraw=withdraw, mark_forgotten=mark_forgotten)
+
+    def forgotten_sources(self, sources: Sequence[str]) -> set[str]:
+        """Those of `sources` a person forgot or withdrew and nobody has indexed by name since."""
+        if not sources:
+            return set()
+        rows = self._metadata_values(
+            "SELECT source_uri, event_type FROM audit_events WHERE event_type IN (?, ?) "
+            "AND source_uri IN (SELECT value FROM json_each(?)) ORDER BY created_at, rowid",
+            (FORGOTTEN_EVENT, RESTORED_EVENT, json.dumps(list(sources))),
+        )
+        latest = {str(source): str(kind) for source, kind in rows}
+        return {source for source, kind in latest.items() if kind == FORGOTTEN_EVENT}
+
+    def restore_forgotten(self, sources: Sequence[str]) -> None:
+        """Clear the forgotten mark of `sources`: a person indexed each file by name."""
+        for source in self.forgotten_sources(sources):
+            self.append_audit_event(RESTORED_EVENT, {}, source_uri=source, actor="recall_index")
 
     def analyze_if_stale(self, modified: int) -> bool:
         """SQLite needs no planner statistics refresh for these queries; nothing to do."""

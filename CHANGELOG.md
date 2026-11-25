@@ -18,6 +18,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ### Changed
 
+* On a lite store, a memo you forget or withdraw stays forgotten while its file is still in the
+  memo folder. `recall lite refresh` (and the MCP server's refresh, and `recall index <folder>`)
+  used to index it again on the next run; now they leave it out and report it as `forgotten`.
+  Index the file by name (`recall index <file>`) to bring it back. A file deleted from the folder
+  is pruned and re-added on return as before. PostgreSQL stores are unchanged.
 * A generation now records how its PostgreSQL server stems a fixed probe of words, and a server
   that stems them differently (as PostgreSQL 19 does for some English words) gets
   `LINEAGE_MISMATCH` for that generation until it is rebuilt there. `recall doctor` reports the

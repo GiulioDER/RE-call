@@ -178,6 +178,13 @@ server keeps the embedder setup configured until you run setup again with the ne
 it does not refresh a store that records another embedder, profile or model than its own, and its
 answers say so. To change models cleanly, build a separate store, as described under updates below.
 
+A memo you forget or withdraw stays out of the store while its file is still in the memo folder:
+`recall lite refresh`, the MCP server's own refresh and `recall index <folder>` leave it out and
+count it as `forgotten` in their report. Editing the file does not bring it back, so a forget made
+to erase something is not undone by a later edit that still holds it. To bring it back, index the
+file by name: `recall index <folder>/<memo>.md`. A file you delete from the folder is pruned as
+before, and indexed again if it returns.
+
 `recall forget` and `recall withdraw` also erase the memo's vectors from the shared embedding cache
 (`RECALL_EMBED_CACHE`, on by default under the platform cache directory), under every embedder that
 embedded its text, so they do not stay there until eviction. They erase the cache file the
