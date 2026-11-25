@@ -21,7 +21,9 @@ benchmarks/PLAN-*.md
 benchmarks/finetune/model*/
 benchmarks/finetune/_ce_run/
 calibration.json
-.claude/
+# Session state, worktrees and local settings stay out; the project's own skills are committed.
+.claude/*
+!.claude/skills/
 # RE-call's own per-folder state, wherever it appears: the review sidecars `recall dashboard` and
 # `recall_report_stale` keep beside a memo folder (reports, rejections, edits, lint dismissals), and
 # the SQLite store `recall setup --lite` creates. All of it holds memo text or vectors, so none of it

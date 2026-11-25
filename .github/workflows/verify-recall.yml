@@ -1,0 +1,88 @@
+name: verify-recall walk
+
+# Drives every feature recipe in `.claude/skills/verify-recall/references/features/` against
+# master, nightly, with the offline `hashing` embedder: no model, no paid API, no database server.
+# A failure means RE-call's behavior and the skill's feature map no longer agree. The nightly or
+# manual run then opens one issue, or comments on the open one, with the failed checks; fix the
+# feature file (doc drift) or the code (a regression), never by weakening the check.
+#
+# NOT REQUIRED and outside ci.yml's merge-gate: it watches master for drift. On a pull request
+# that changes the skill or this file it runs too, so a recipe change is walked before it lands,
+# and there it files nothing.
+on:
+  schedule:
+    - cron: "41 4 * * *"
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .claude/skills/verify-recall/**
+      - .github/workflows/verify-recall.yml
+
+permissions:
+  contents: read
+
+jobs:
+  walk:
+    name: Walk every verify-recall recipe
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
+
+      # `dev` carries the MCP client the `mcp` recipes drive.
+      - name: Install
+        run: bash .github/scripts/locked_install.sh dev
+
+      - name: Walk
+        id: walk
+        run: python .claude/skills/verify-recall/walk.py --report "$RUNNER_TEMP/walk-report.md"
+
+      - name: Summary
+        if: always()
+        run: cat "$RUNNER_TEMP/walk-report.md" >> "$GITHUB_STEP_SUMMARY" || true
+
+      - name: Keep the report and the evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: verify-recall-walk
+          path: |
+            ${{ runner.temp }}/walk-report.md
+            /tmp/recall-verify/
+          retention-days: 14
+          if-no-files-found: warn
+
+  report:
+    name: File the drift as an issue
+    needs: walk
+    if: failure() && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: Open or update the issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          title="verify-recall nightly walk failed"
+          body="The nightly walk of the verify-recall feature map failed on master: $RUN_URL
+
+          The run's summary lists each failed feature and check, and its artifact holds the evidence.
+          Fix the feature file if the map drifted, or the code if RE-call regressed; close this issue
+          when a walk passes."
+          number=$(gh issue list --repo "$REPO" --state open --search "in:title \"$title\"" --json number --jq '.[0].number // empty')
+          if [ -n "$number" ]; then
+            gh issue comment "$number" --repo "$REPO" --body "Still failing: $RUN_URL"
+          else
+            gh issue create --repo "$REPO" --title "$title" --body "$body"
+          fi
