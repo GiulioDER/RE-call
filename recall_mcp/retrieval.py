@@ -21,6 +21,7 @@ from recall.profiles import FAST_PROFILE, RetrievalProfile, resolve_retrieval_pr
 from recall.profiles import QUALITY_PROFILE, RetrievalAdmission, RetrievalOverloaded
 from recall.query_class import route_query, routing_mode
 from recall.explanations import RetrievalExplanation, memory_audit
+from recall.frontmatter import INDEXED_VIA_KEY
 from recall.related import RelatedEvidenceResult, trusted_related
 from recall.rerank import COREB_CODE_RERANKER_MODEL
 from recall.store import PgVectorStore
@@ -361,6 +362,7 @@ def _cost_surface(
 def _search_hit_model(hit: TrustedHit, *, include_scores: bool) -> SearchHit:
     """Project a trusted hit into the search response shape."""
     content_hash = hit.chunk.metadata.get("content_hash")
+    indexed_via = hit.chunk.metadata.get(INDEXED_VIA_KEY)
     return SearchHit(
         revision=content_hash if isinstance(content_hash, str) else None,
         chunk_id=hit.chunk.id,
@@ -373,6 +375,7 @@ def _search_hit_model(hit: TrustedHit, *, include_scores: bool) -> SearchHit:
         valid_from=hit.validity.valid_from.isoformat() if hit.validity.valid_from else None,
         ordinal=hit.provenance.ord,
         indexed_at=hit.provenance.indexed_at.isoformat() if hit.provenance.indexed_at else None,
+        indexed_via=indexed_via if isinstance(indexed_via, str) else None,
         text=hit.chunk.text,
     )
 

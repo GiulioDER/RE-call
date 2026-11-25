@@ -1012,6 +1012,15 @@ class LiteStore:
         )
         return {source: str(digest) for source, digest in rows}
 
+    def indexed_via_for(self, sources: Sequence[str]) -> dict[str, str]:
+        """`PgVectorStore.indexed_via_for` on the lite file."""
+        rows = self._metadata_values(
+            "SELECT DISTINCT source, json_extract(metadata, '$.indexed_via') FROM chunks "
+            "WHERE source IN (SELECT value FROM json_each(?)) AND json_extract(metadata, '$.indexed_via') IS NOT NULL",
+            (json.dumps(list(sources)),),
+        )
+        return {source: str(via) for source, via in rows}
+
     def source_raw_hash(self, source: str) -> str | None:
         """`source_raw_hashes()[source]` for one source, by the `source` index; None when absent."""
         rows = self._metadata_values(

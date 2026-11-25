@@ -191,6 +191,17 @@ relabel its own origin, but supersession does not consult provenance. In a memor
 agents are the usual writers, the realistic form of this attack is an agent persuaded by text it
 retrieved or browsed into writing a memory that retires a true one.
 
+**The write channel is recorded, not enforced.** Each chunk keeps `indexed_via`, the channel its
+source first entered the index through: `cli_index` (`recall index`), `recall_index`,
+`recall_ingest`, `recall_remember` or `folder_refresh` (a lite folder refresh, the SessionEnd
+hook, setup). A re-index keeps the first value, so a person re-indexing a file an agent left for
+`recall_index` does not relabel it; a source forgotten and indexed again starts over. It is never
+read from front matter. `recall_search` returns it on every hit and the lite dashboard shows it
+beside each "Superseded by" link, so a planted successor reads as one that came through
+`recall_ingest`. It changes no verdict, and it names the tool, not the person or agent behind it:
+a file an agent writes to disk and a person indexes with `recall index` reads `cli_index`.
+Sources indexed before it existed, and generation builds, carry none.
+
 So corpus write access is the trust boundary for validity, exactly as it is for content. Hold it
 the same way: index only directories whose writers you trust (`RECALL_INDEX_ROOT`, and the source
 policy above), and do not index text an outside party can place there, such as scraped pages,
