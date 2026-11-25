@@ -98,6 +98,35 @@ removal.
 | `recall-enterprise` | Manage generation routing and readiness for production deployments. |
 | `recall repair-checks` | `prompt`: prepare a check selection prompt; `resolve`: validate the chosen checks; `feedback`: package the observations for a repair retry. See [Repair check selection](#repair-check-selection). |
 
+### Snapshot-checked SQLite rules
+
+`recall search "account opening date" --sqlite-snapshot analytics.sqlite`
+returns the evidence bundle and rendered prompt for the local SQLite file
+that the caller will query. Use the returned `prompt` as the model input.
+The command uses the existing retrieval trust gate and checks the selected
+field notes within a read-only SQLite transaction.
+
+A field note begins with a `table.column` line. Put a date representation on
+its own line as `Format: YYYY-MM-DD` or `Format: YYMMDD`. The verifier also
+accepts `in the form YYMMDD` on its own line. A note with a single supported
+declaration is checked against all non-null values. If those values use the
+other supported format, the prompt replaces the declaration with the observed
+format and identifies it as an observation from the snapshot. This derived
+text retains the source chunk ID for traceability. The indexed text stays intact.
+
+Ordinary field descriptions retain their wording when their table and column
+exist. The check establishes physical representation and field existence.
+Business definitions and units are sourced from the original notes. Notes
+without a field header, notes for missing fields, and date claims that cannot
+be resolved from a uniform non-empty column are omitted. The bundle abstains
+if it has no eligible notes. The JSON includes `snapshot_rule_checks` by
+chunk ID, with the observed format when known.
+
+Pass a local SQLite snapshot with the same contents the analytics query will
+use. This option is available from the CLI and
+`recall.sqlite_rules.verify_sqlite_rules(bundle, snapshot)`. The CLI output
+uses the canonical text and cannot be combined with `--locale`.
+
 ### Verified fix selection
 
 `recall records --repo owner/name --select-fix request.json` takes an explicit shortlist

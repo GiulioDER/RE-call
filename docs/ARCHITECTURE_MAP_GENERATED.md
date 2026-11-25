@@ -8,7 +8,7 @@ design violation.
 ## Scope
 
 Packages: `recall`, `recall_mcp`, `recall_agent`, `recall_hooks`, `recall_interop`, `recall_consistency`
-Modules: 379
+Modules: 380
 Cross package edges: 466
 
 ## Highest fan in modules
@@ -61,8 +61,8 @@ Cross package edges: 466
 | Direct imports | Module |
 |---:|---|
 | 59 | `recall_mcp.service` |
+| 31 | `recall.cli_commands.index_search` |
 | 31 | `recall_mcp.server_lifespan` |
-| 30 | `recall.cli_commands.index_search` |
 | 27 | `recall.generations` |
 | 27 | `recall_mcp.server` |
 | 26 | `recall_mcp.lifecycle` |
@@ -614,7 +614,7 @@ They are observations, not automatic failures.
 | `recall.cli_commands.generation_cmd` | 16 | 146 |
 | `recall.cli_commands.graph_cmd` | 11 | 142 |
 | `recall.cli_commands.idempotency_cmd` | 2 | 40 |
-| `recall.cli_commands.index_search` | 30 | 156 |
+| `recall.cli_commands.index_search` | 31 | 157 |
 | `recall.cli_commands.lint_check` | 8 | 146 |
 | `recall.cli_commands.lite_cmd` | 10 | 189 |
 | `recall.cli_commands.manifest_cmd` | 5 | 147 |
@@ -830,6 +830,7 @@ They are observations, not automatic failures.
 | `recall.source_identity` | 1 | 18 |
 | `recall.sparse` | 1 | 1 |
 | `recall.sql_identifiers` | 0 | 0 |
+| `recall.sqlite_rules` | 1 | 7 |
 | `recall.stale_reports` | 5 | 155 |
 | `recall.state_dir` | 0 | 0 |
 | `recall.stated_facts` | 12 | 140 |

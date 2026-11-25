@@ -215,6 +215,59 @@ def test_the_cli_can_print_the_evidence_bundle_and_the_prompt_it_renders_to(caps
     assert payload["prompt"]["user"].startswith(EVIDENCE_OPEN)
 
 
+def test_sqlite_snapshot_evidence_corrects_format_and_keeps_other_supported_notes(tmp_path, capsys) -> None:
+    """Red proof: bypass verification in _print_evidence; the stale date reaches the prompt."""
+    import sqlite3
+    from contextlib import closing
+
+    from recall.cli_commands.index_search import _print_evidence
+
+    database = tmp_path / "analytics.sqlite"
+    with closing(sqlite3.connect(database)) as conn:
+        conn.execute("CREATE TABLE account (opened TEXT, category TEXT, mixed TEXT)")
+        conn.executemany("INSERT INTO account VALUES (?, ?, ?)", [
+            ("2025-06-01", "retail", "2025-06-01"),
+            ("2025-07-01", "business", "250701"),
+            (None, None, None),
+        ])
+        conn.execute("CREATE VIEW account_view AS SELECT opened FROM account")
+        conn.commit()
+
+    stale = _hit("date", text="account.opened\nThe account opening date.\nin the form YYMMDD")
+    matching = _hit("iso", text="account.opened\nFormat: YYYY-MM-DD")
+    category = _hit("category", text="account.category\nThe reporting category assigned to the account.")
+    misses = [
+        _hit("expired", text="account.opened\nFormat: YYMMDD", verdict="expired"),
+        _hit("mixed", text="account.mixed\nFormat: YYYY-MM-DD"),
+        _hit("missing", text="account.unknown\nFormat: YYMMDD"),
+        _hit("view", text="account_view.opened\nFormat: YYMMDD"),
+        _hit("unsupported", text="account.opened\nFormat: DD/MM/YYYY"),
+        _hit("unbound", text="Unscoped dates use YYMMDD."),
+    ]
+    _print_evidence(_result([stale, matching, category, *misses]), max_items=10, sqlite_snapshot=database)
+
+    output = capsys.readouterr().out
+    assert "YYMMDD" not in output
+    payload = json.loads(output)
+    assert "Format observed in this SQLite snapshot: YYYY-MM-DD" in payload["prompt"]["user"]
+    assert [item["chunk_id"] for item in payload["bundle"]["items"]] == ["date", "iso", "category"]
+    assert payload["bundle"]["items"][1]["text"] == matching.chunk.text
+    assert payload["bundle"]["items"][2]["text"] == category.chunk.text
+    statuses = {check["chunk_id"]: check["status"] for check in payload["snapshot_rule_checks"]}
+    assert statuses == {
+        "date": "format_corrected", "iso": "format_verified", "category": "field_present",
+        "mixed": "unverified_format", "missing": "field_missing", "view": "field_missing",
+        "unsupported": "unsupported_format_claim", "unbound": "not_a_field_note",
+    }
+    assert "in the form YYMMDD" in stale.chunk.text
+
+    _print_evidence(_result(misses), max_items=10, sqlite_snapshot=database)
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["bundle"]["decision"] == "abstain"
+    assert payload["bundle"]["items"] == []
+    assert payload["bundle"]["reason_code"] == "no_verified_database_rules"
+
+
 def test_the_cli_evidence_output_neutralises_a_terminal_payload(capsys) -> None:
     """JSON is the safety property here, not the formatting choice.
 
