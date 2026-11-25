@@ -2540,6 +2540,22 @@ class PgVectorStore(SourceMutationMixin, SupersessionMixin, ReceiptsAuditMixin):
         )
         return {source: content_hash for source, content_hash in rows}
 
+    def indexed_via_for(self, sources: Sequence[str]) -> dict[str, str]:
+        """`{source: indexed_via}` for the `sources` a write is about to replace: the channel each
+        first entered the index through, which `Indexer._flush` keeps across the re-index."""
+        if not sources:
+            return {}
+        scope, scope_args = self._row_scope_args()
+        rows = self._with_retry(
+            lambda conn: conn.execute(
+                f"SELECT DISTINCT {self._SOURCE_COL}, metadata->>'indexed_via' FROM {self._table} "
+                f"WHERE tenant_id = %s{scope} AND {self._SOURCE_COL} = ANY(%s) "
+                f"AND metadata->>'indexed_via' IS NOT NULL",
+                (self._tenant, *scope_args, list(sources)),
+            ).fetchall()
+        )
+        return {str(source): str(via) for source, via in rows}
+
     def source_raw_hashes(self) -> dict[str, str]:
         """Raw content hashes by source, independent of embedding profile or context mode."""
         rows = self._with_retry(

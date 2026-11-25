@@ -59,6 +59,7 @@ def index_memory_directory(
                     chunker=chunk_text,
                     cache=cache,
                     context_policy=context_policy_for_profile(embedding_profile_id(embedder)),
+                    indexed_via="folder_refresh",
                 )
                 stats = indexer.index_path(memory_dir, glob="**/*.md")
     except Exception as exc:  # best effort: scaffolded files must survive even if this fails  # BROAD-CATCH: fail-open

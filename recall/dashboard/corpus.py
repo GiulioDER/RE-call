@@ -306,7 +306,8 @@ def assemble_graph(
     """The graph from the queries' rows. Pure, so its rules are testable without a database.
 
     `files`: `(file, chunks, first indexed, type, valid_from, valid_until, heading hierarchy)`
-    with an optional eighth `source_uri` column for resolving copies;
+    with an optional eighth `source_uri` column for resolving copies and a ninth `indexed_via`
+    (the write channel, `recall.frontmatter.INDEXED_VIA_KEY`) that a lite file supplies;
     `winner`: superseded file -> the file replacing it; `relations`: `(relation, subject file,
     object file)`; `mentions`: `(entity id, file)` with an optional third `source_uri` column;
     `imports`: `(importer, imported)`.
@@ -330,6 +331,7 @@ def assemble_graph(
             # unpadded `2026-9-30` would sort after `2026-10-05`.
             "valid_from": _iso_day(valid_from), "valid_until": _iso_day(valid_until),
             "folder": file.split("/", 1)[0] if "/" in file else "", "issues": [], "chunks": chunks,
+            "indexed_via": sources[1] if len(sources) > 1 else None,
         }
     def node_of(path: str, source: str | None = None) -> str | None:
         """The node a path (and, when known, its source) is drawn as; None when ambiguous."""

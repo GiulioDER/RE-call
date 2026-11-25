@@ -10,6 +10,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ### Added
 
+* Each indexed chunk records `indexed_via`, the write channel its source first entered the index
+  through: `cli_index` (`recall index`), `recall_index`, `recall_ingest`, `recall_remember` or
+  `folder_refresh` (a lite folder refresh, the SessionEnd hook, setup). A re-index through another
+  channel keeps the first, and front matter cannot set it. `recall_search` returns it on every hit,
+  and the lite dashboard shows it beside each "Superseded by" link, so a person can see that a
+  `supersedes:` declaration arrived through an agent's upload. It changes no verdict. Sources
+  indexed before this release carry none until they change and are indexed again; generation
+  builds carry none.
 * `recall schema compact` rewrites the legacy table, `recall_chunks_v1` and the fact tables
   `recall forget` rewrites with `REPACK (CONCURRENTLY)`, so erased rows leave the table files while
   reads and writes continue. It needs PostgreSQL 19 and the migration DSN, holds the migration

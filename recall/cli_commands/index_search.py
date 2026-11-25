@@ -451,6 +451,7 @@ def _cmd_index(args: argparse.Namespace) -> None:
                         batch_chunks=args.batch_chunks,
                         security_policy=security_policy,
                         security_context=security_context,
+                        indexed_via="cli_index",
                     )
                     try:
                         stats = indexer.index_path(args.path, glob=args.glob)
