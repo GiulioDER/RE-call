@@ -96,6 +96,7 @@ removal.
 | `recall idempotency` | `reconcile`: record an operator verified mutation result after a replay result was lost. |
 | `recall records` | Look up audit records by exact key, with no embedder: `--anchors FILE` (a JSON list of `{file, symbol, code_sha}`, with `--repo`), `--id`, or `--all` for a complete dump of the tenant's records. `--repo` is required with `--anchors`; with `--id` or `--all`, only records of this repository. `--kind` filters, `--json` prints the envelope the `recall_records` MCP tool returns. Each record carries its `recall_record` exactly as authored, its anchor match (`exact`, `symbol_changed`, `file_only`), and its supersession and `caused` edges; superseded and expired records are listed and marked (`superseded_by`, `expired`), never hidden. Applies the source policy (`RECALL_SOURCE_POLICY_FILE`) as `recall search` does: a record in a denied file is left out, and a denied successor reads `<withheld>` (so does one whose file cannot be placed for the policy, a path two roots hold). A record a `supersedes:` reference names among several files reads `<ambiguous>`. Served on a lite store. A fourth form, `--select-fix FILE`, selects one fix (see [Verified fix selection](#verified-fix-selection)): it requires `--repo`, refuses `--kind`, always prints its own JSON decision (so `--json` changes nothing), and exits non-zero on a request over 4 MiB or one that fails validation. |
 | `recall-enterprise` | Manage generation routing and readiness for production deployments. |
+| `recall repair-checks` | Prepare a check selection prompt, validate the chosen checks and package observations for a repair retry. See [Repair check selection](#repair-check-selection). |
 
 ### Verified fix selection
 
@@ -160,6 +161,60 @@ The JSON response contains `decision`, `reason`, `shortlist` (entries of `id` an
 
 The ordinary records forms continue to return audit records. This pilot supports lite and
 generation-backed stores.
+
+### Repair check selection
+
+Use this opt-in workflow when a repair attempt still fails and the runner can offer a
+menu of relevant checks. The CLI works locally with either store configuration. It
+builds JSON for the caller's selector, validates the selected IDs and packages the
+runner's observations. The caller supplies the model, executes checks on the same
+failed edit, and keeps the request fixed through the three phases.
+
+```sh
+recall repair-checks prompt request.json
+recall repair-checks resolve request.json selection.json
+recall repair-checks feedback request.json selection.json observations.json
+```
+
+The request describes the task, the current failure, the failed edit, and a menu of
+2 to 16 checks with unique IDs and both roles represented. Each description states
+what to inspect and which behavior is expected. IDs have up to 64 ASCII letters,
+digits, underscores or hyphens and begin with a letter or digit. For example,
+
+```json
+{
+  "task": "Preserve a note's date when changing its title.",
+  "failure": "The date disappears after reloading.",
+  "failed_edit": "Save the title from the editor.",
+  "checks": [
+    {"id": "date", "role": "diagnostic", "description": "Reopen the renamed note and check its saved date."},
+    {"id": "undated", "role": "preservation", "description": "Rename an undated note and verify it stays undated."}
+  ]
+}
+```
+
+When RE-call returns citable evidence for a distinct earlier repair, the caller can
+add `prior_procedure` with the exact `source` and a `procedure` describing the relevant
+way to distinguish outcomes. Verify that the source is current and that the procedure
+applies. Keep the current fix and answers to the menu out of the procedure. Omit the
+field when no applicable source is available. The CLI accepts this provenance from the
+caller. The normal retrieval trust checks happen before constructing the request.
+
+Give the selector the prompt's `instructions`, `input` and `response_schema`. Supply
+its JSON response, for example `{"diagnostic":"date","preservation":"undated"}`, to
+`resolve` before running the chosen checks. For an abstention, use JSON `null`.
+An invalid response exits with an error, and the caller can continue with an abstention.
+
+For `feedback`, supply one observation per chosen ID with `id`, `outcome`
+(`pass`, `fail`, `error` or `skipped`), and optional `detail`. Use an empty array
+for abstention. Each output check contains its ID, role, description and observed
+result. Give that output to the repair agent alongside its current task and failed
+edit. The prior procedure is scoped to selection.
+
+Each input is UTF-8 JSON limited to 512 KiB. Use `-` for at most one input per
+invocation. Text fields are limited to 4096 characters and the failed edit to 65536.
+Unknown fields, duplicate JSON keys, wrong-role choices and mismatched observations
+are rejected.
 
 ## MCP
 
