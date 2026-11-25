@@ -1022,6 +1022,22 @@ jobs:
       - name: Refuse infrastructure and private memory content in the public tree
         run: python scripts/check_public_tree.py
 
+  comment-ratchet:
+    # A TODO in place of the work, or a suppression without its code and reason, may not grow in
+    # any file. Counts are recorded per file in scripts/comment_ratchet_baseline.json.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
+        with:
+          python-version: "3.12"
+
+      - name: Refuse new escape comments
+        run: python scripts/check_comment_ratchet.py
+
   typecheck:
     runs-on: ubuntu-latest
     steps:
@@ -1580,6 +1596,7 @@ jobs:
       - session-db
       - citations
       - public-tree
+      - comment-ratchet
       - typecheck
       - floor
       - citation-anchors
@@ -1612,6 +1629,7 @@ jobs:
             "${{ needs.session-db.result }}" \
             "${{ needs.citations.result }}" \
             "${{ needs.public-tree.result }}" \
+            "${{ needs.comment-ratchet.result }}" \
             "${{ needs.typecheck.result }}" \
             "${{ needs.floor.result }}" \
             "${{ needs.citation-anchors.result }}" \

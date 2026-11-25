@@ -1,0 +1,1364 @@
+{
+ "benchmarks/agent_ab/arms.py": {
+  "bare-suppression": 1
+ },
+ "benchmarks/agent_ab/sdk_exec.py": {
+  "bare-suppression": 1
+ },
+ "benchmarks/agent_ab/stats.py": {
+  "bare-suppression": 1
+ },
+ "benchmarks/agent_ab/tasksuccess.py": {
+  "bare-suppression": 1
+ },
+ "benchmarks/agent_ab/traps.py": {
+  "bare-suppression": 1
+ },
+ "benchmarks/analyze.py": {
+  "bare-suppression": 1
+ },
+ "benchmarks/atm_answer_diagnosis.py": {
+  "bare-suppression": 1
+ },
+ "benchmarks/beam/aml_c9_probe.py": {
+  "bare-suppression": 1
+ },
+ "benchmarks/beam/dedup_probe.py": {
+  "bare-suppression": 3
+ },
+ "benchmarks/beam/embed_parity.py": {
+  "bare-suppression": 2
+ },
+ "benchmarks/beam/pair.py": {
+  "bare-suppression": 2
+ },
+ "benchmarks/beam/rank_probe.py": {
+  "bare-suppression": 2
+ },
+ "benchmarks/beam/transfer_index.py": {
+  "bare-suppression": 2
+ },
+ "benchmarks/benchd/recall_adapter.py": {
+  "bare-suppression": 1
+ },
+ "benchmarks/calibration_drift.py": {
+  "bare-suppression": 1
+ },
+ "benchmarks/covgate_multievidence.py": {
+  "bare-suppression": 1
+ },
+ "benchmarks/enterprise_rag.py": {
+  "bare-suppression": 1
+ },
+ "benchmarks/evidence_tokens.py": {
+  "bare-suppression": 1
+ },
+ "benchmarks/judge_quality.py": {
+  "bare-suppression": 1
+ },
+ "benchmarks/ladder/systems/recall_system.py": {
+  "bare-suppression": 1
+ },
+ "benchmarks/llm.py": {
+  "bare-suppression": 1
+ },
+ "benchmarks/locomo_audit.py": {
+  "bare-suppression": 1
+ },
+ "benchmarks/mtrag/late_interaction.py": {
+  "bare-suppression": 1
+ },
+ "benchmarks/rejudge.py": {
+  "bare-suppression": 1
+ },
+ "benchmarks/salvage.py": {
+  "bare-suppression": 1
+ },
+ "benchmarks/store_latency_share.py": {
+  "bare-suppression": 2
+ },
+ "benchmarks/structural_edge_performance.py": {
+  "bare-suppression": 8
+ },
+ "benchmarks/successor_expansion_probe.py": {
+  "bare-suppression": 10
+ },
+ "benchmarks/successor_latency.py": {
+  "bare-suppression": 8
+ },
+ "benchmarks/successor_regression_check.py": {
+  "bare-suppression": 7
+ },
+ "benchmarks/temporal_supersession_traversal.py": {
+  "bare-suppression": 1
+ },
+ "benchmarks/token_f1.py": {
+  "bare-suppression": 1
+ },
+ "benchmarks/usage.py": {
+  "bare-suppression": 1
+ },
+ "docs/make_social_card.py": {
+  "bare-suppression": 1
+ },
+ "examples/self_recall_agent.py": {
+  "bare-suppression": 1
+ },
+ "integrations/hermes/tests/conftest.py": {
+  "bare-suppression": 1
+ },
+ "recall/_voyage_http.py": {
+  "bare-suppression": 1
+ },
+ "recall/atomic_rescue.py": {
+  "bare-suppression": 7
+ },
+ "recall/cli_commands/extract_rewrite.py": {
+  "bare-suppression": 3
+ },
+ "recall/dashboard/server.py": {
+  "bare-suppression": 2
+ },
+ "recall/declared_keys.py": {
+  "bare-suppression": 2
+ },
+ "recall/desktop/install_ui.py": {
+  "bare-suppression": 2
+ },
+ "recall/desktop/jobs.py": {
+  "bare-suppression": 5
+ },
+ "recall/desktop/main.py": {
+  "bare-suppression": 4
+ },
+ "recall/embedding_providers/local.py": {
+  "bare-suppression": 2
+ },
+ "recall/eval/gap_run.py": {
+  "bare-suppression": 1
+ },
+ "recall/extraction.py": {
+  "bare-suppression": 1
+ },
+ "recall/federation.py": {
+  "bare-suppression": 2
+ },
+ "recall/generation_build.py": {
+  "bare-suppression": 2
+ },
+ "recall/integrations/llamaindex.py": {
+  "bare-suppression": 3
+ },
+ "recall/lite/writer_lock.py": {
+  "bare-suppression": 1
+ },
+ "recall/multimodal.py": {
+  "bare-suppression": 2
+ },
+ "recall/ops/restore_drill.py": {
+  "bare-suppression": 1
+ },
+ "recall/paged_evidence.py": {
+  "bare-suppression": 1
+ },
+ "recall/query_class.py": {
+  "bare-suppression": 2
+ },
+ "recall/readiness.py": {
+  "bare-suppression": 1
+ },
+ "recall/rerank.py": {
+  "bare-suppression": 6
+ },
+ "recall/retriever.py": {
+  "bare-suppression": 2
+ },
+ "recall/runtime_route.py": {
+  "bare-suppression": 1
+ },
+ "recall/schema.py": {
+  "bare-suppression": 1
+ },
+ "recall/stale_reports.py": {
+  "bare-suppression": 1
+ },
+ "recall/store.py": {
+  "bare-suppression": 3
+ },
+ "recall/supersession.py": {
+  "bare-suppression": 1
+ },
+ "recall/trust.py": {
+  "bare-suppression": 3
+ },
+ "recall/wizard/identity.py": {
+  "bare-suppression": 1
+ },
+ "recall/wizard/llm.py": {
+  "bare-suppression": 1
+ },
+ "recall_aml/atomic_views.py": {
+  "bare-suppression": 1
+ },
+ "recall_aml/conflict_order.py": {
+  "bare-suppression": 1
+ },
+ "recall_aml/feedback_guard.py": {
+  "bare-suppression": 1
+ },
+ "recall_aml/search_cache.py": {
+  "bare-suppression": 5
+ },
+ "recall_aml/service.py": {
+  "bare-suppression": 2
+ },
+ "recall_aml/storage.py": {
+  "bare-suppression": 3
+ },
+ "recall_hooks/__init__.py": {
+  "bare-suppression": 1
+ },
+ "recall_hooks/credentials.py": {
+  "bare-suppression": 1
+ },
+ "recall_mcp/factories.py": {
+  "bare-suppression": 1
+ },
+ "recall_mcp/limits.py": {
+  "bare-suppression": 1
+ },
+ "recall_mcp/reasoning_admin.py": {
+  "bare-suppression": 1
+ },
+ "recall_mcp/reasoning_api.py": {
+  "bare-suppression": 5
+ },
+ "recall_mcp/related_api.py": {
+  "bare-suppression": 1
+ },
+ "recall_mcp/server.py": {
+  "bare-suppression": 1
+ },
+ "recall_mcp/server_reasoning.py": {
+  "bare-suppression": 1
+ },
+ "recall_mcp/service.py": {
+  "bare-suppression": 1
+ },
+ "scripts/agent_ab_actionable_recall.py": {
+  "bare-suppression": 2
+ },
+ "scripts/agent_ab_analyze.py": {
+  "bare-suppression": 4
+ },
+ "scripts/agent_ab_analyze_tasks.py": {
+  "bare-suppression": 3
+ },
+ "scripts/agent_ab_compare_mechanism.py": {
+  "bare-suppression": 3
+ },
+ "scripts/agent_ab_config_dir_tests.py": {
+  "bare-suppression": 1
+ },
+ "scripts/agent_ab_discoverability_tests.py": {
+  "bare-suppression": 3
+ },
+ "scripts/agent_ab_draft_precision.py": {
+  "bare-suppression": 2
+ },
+ "scripts/agent_ab_export_hazard_vocab.py": {
+  "bare-suppression": 1
+ },
+ "scripts/agent_ab_fusion_frontier.py": {
+  "bare-suppression": 1
+ },
+ "scripts/agent_ab_gate.py": {
+  "bare-suppression": 5
+ },
+ "scripts/agent_ab_isolation_probe.py": {
+  "bare-suppression": 2
+ },
+ "scripts/agent_ab_isolation_tests.py": {
+  "bare-suppression": 1
+ },
+ "scripts/agent_ab_prepare_discoverability_corpus.py": {
+  "bare-suppression": 3
+ },
+ "scripts/agent_ab_probe_alias_index.py": {
+  "bare-suppression": 4
+ },
+ "scripts/agent_ab_probe_discoverability.py": {
+  "bare-suppression": 3
+ },
+ "scripts/agent_ab_probe_expansion.py": {
+  "bare-suppression": 3
+ },
+ "scripts/agent_ab_qualify.py": {
+  "bare-suppression": 3
+ },
+ "scripts/agent_ab_qualify_tasks.py": {
+  "bare-suppression": 4
+ },
+ "scripts/agent_ab_repo_negatives.py": {
+  "bare-suppression": 1
+ },
+ "scripts/agent_ab_run.py": {
+  "bare-suppression": 9
+ },
+ "scripts/agent_ab_run_tasks.py": {
+  "bare-suppression": 12
+ },
+ "scripts/agent_ab_salvage.py": {
+  "bare-suppression": 7
+ },
+ "scripts/agent_ab_tool_cost.py": {
+  "bare-suppression": 5
+ },
+ "scripts/agent_ab_trigger_screen.py": {
+  "bare-suppression": 1
+ },
+ "scripts/agent_ab_validate.py": {
+  "bare-suppression": 1
+ },
+ "scripts/aml_beam_offline_arms.py": {
+  "bare-suppression": 5
+ },
+ "scripts/aml_c7_qualification.py": {
+  "bare-suppression": 2
+ },
+ "scripts/aml_c8_graph_openrouter_smoke.py": {
+  "bare-suppression": 1
+ },
+ "scripts/aml_c9_coding_window_check.py": {
+  "bare-suppression": 5
+ },
+ "scripts/aml_c9_compile_citation_diagnosis.py": {
+  "bare-suppression": 6
+ },
+ "scripts/aml_c9_mechanism_bench.py": {
+  "bare-suppression": 1
+ },
+ "scripts/aml_c9_reader_dates_report.py": {
+  "bare-suppression": 1
+ },
+ "scripts/aml_c9_window_format_check.py": {
+  "bare-suppression": 7
+ },
+ "scripts/aml_c9_window_format_recover_labels.py": {
+  "bare-suppression": 1
+ },
+ "scripts/aml_c9_window_format_report.py": {
+  "bare-suppression": 1
+ },
+ "scripts/aml_compiler_provider_latency.py": {
+  "bare-suppression": 4
+ },
+ "scripts/aml_e1_census.py": {
+  "bare-suppression": 2
+ },
+ "scripts/aml_e2_census.py": {
+  "bare-suppression": 3
+ },
+ "scripts/aml_hosted_verify.py": {
+  "bare-suppression": 1
+ },
+ "scripts/aml_k1_census.py": {
+  "bare-suppression": 1
+ },
+ "scripts/aml_k2v2_calibrate.py": {
+  "bare-suppression": 2
+ },
+ "scripts/aml_k2v2_vectors.py": {
+  "bare-suppression": 5
+ },
+ "scripts/aml_k2v3_calibrate.py": {
+  "bare-suppression": 4
+ },
+ "scripts/aml_locomo_aggregation_view.py": {
+  "bare-suppression": 3
+ },
+ "scripts/aml_locomo_loss_diagnosis.py": {
+  "bare-suppression": 2
+ },
+ "scripts/aml_locomo_route_compare.py": {
+  "bare-suppression": 2
+ },
+ "scripts/aml_mm_scope_score.py": {
+  "bare-suppression": 5
+ },
+ "scripts/aml_mm_scope_stage2.py": {
+  "bare-suppression": 4
+ },
+ "scripts/aml_multimodal_memeye.py": {
+  "bare-suppression": 1
+ },
+ "scripts/aml_t1k2_locomo.py": {
+  "bare-suppression": 7
+ },
+ "scripts/aml_t2_census.py": {
+  "bare-suppression": 2
+ },
+ "scripts/aml_text_route_smoke.py": {
+  "bare-suppression": 1
+ },
+ "scripts/aml_x1_stageb.py": {
+  "bare-suppression": 1
+ },
+ "scripts/attest_corpus.py": {
+  "bare-suppression": 1
+ },
+ "scripts/bench_aml_search_cache.py": {
+  "bare-suppression": 11
+ },
+ "scripts/bench_libreoffice_profile.py": {
+  "bare-suppression": 1
+ },
+ "scripts/build_aml_atomic_rescue_artifact.py": {
+  "bare-suppression": 1
+ },
+ "scripts/build_atomic_fact_blind_source_holdout.py": {
+  "bare-suppression": 2
+ },
+ "scripts/build_atomic_fact_production_artifact.py": {
+  "bare-suppression": 6
+ },
+ "scripts/build_atomic_micro_artifact.py": {
+  "bare-suppression": 1
+ },
+ "scripts/capture_guarded_spare_slot_dev_features.py": {
+  "bare-suppression": 5
+ },
+ "scripts/check_doc_citations.py": {
+  "bare-suppression": 2
+ },
+ "scripts/check_hnsw_recall.py": {
+  "bare-suppression": 5
+ },
+ "scripts/check_libreoffice_msg.py": {
+  "bare-suppression": 1
+ },
+ "scripts/desktop_image_smoke.py": {
+  "bare-suppression": 1
+ },
+ "scripts/measure_hosted_embedding_widths.py": {
+  "bare-suppression": 1
+ },
+ "scripts/mutation_code_changes.py": {
+  "bare-suppression": 2
+ },
+ "scripts/mutmut_type_filter.py": {
+  "bare-suppression": 2
+ },
+ "scripts/prepare_atomic_fact_pilot.py": {
+  "bare-suppression": 1
+ },
+ "scripts/replay_source_admission_spare_slots.py": {
+  "bare-suppression": 2
+ },
+ "scripts/run_atomic_fact_active_live.py": {
+  "bare-suppression": 5
+ },
+ "scripts/run_atomic_fact_context4_pilot.py": {
+  "bare-suppression": 6
+ },
+ "scripts/run_atomic_fact_current_generation_shadow.py": {
+  "bare-suppression": 5
+ },
+ "scripts/run_atomic_fact_exact_rescue_shortlist.py": {
+  "bare-suppression": 5
+ },
+ "scripts/run_atomic_fact_production_shadow.py": {
+  "bare-suppression": 3
+ },
+ "scripts/run_atomic_fact_release_confirmation.py": {
+  "bare-suppression": 7
+ },
+ "scripts/run_live_document_expansion_audit.py": {
+  "bare-suppression": 2
+ },
+ "scripts/run_live_graph_answer_quality.py": {
+  "bare-suppression": 5
+ },
+ "scripts/run_live_graph_performance_attribution.py": {
+  "bare-suppression": 1
+ },
+ "scripts/run_live_retrieval_leg_audit.py": {
+  "bare-suppression": 2
+ },
+ "scripts/run_live_source_conditioned_admission.py": {
+  "bare-suppression": 2
+ },
+ "scripts/run_live_source_conditioning_alpha_screen.py": {
+  "bare-suppression": 6
+ },
+ "scripts/run_live_source_conditioning_holdout.py": {
+  "bare-suppression": 5
+ },
+ "scripts/run_live_source_conditioning_same_vector.py": {
+  "bare-suppression": 5
+ },
+ "scripts/run_live_source_conditioning_shadow.py": {
+  "bare-suppression": 4
+ },
+ "scripts/run_openrouter_answer_batch.py": {
+  "bare-suppression": 3
+ },
+ "scripts/write_time_recall_hook_tests.py": {
+  "bare-suppression": 1
+ },
+ "tests/conftest.py": {
+  "bare-suppression": 7
+ },
+ "tests/lite_lane_worker.py": {
+  "bare-suppression": 1
+ },
+ "tests/test_016_deferred_fixes.py": {
+  "bare-suppression": 5
+ },
+ "tests/test_absent_memo_facts.py": {
+  "bare-suppression": 17
+ },
+ "tests/test_advice_injection.py": {
+  "bare-suppression": 1
+ },
+ "tests/test_agent_ab_analyze_tasks.py": {
+  "bare-suppression": 2
+ },
+ "tests/test_agent_ab_compare_drivers.py": {
+  "bare-suppression": 1
+ },
+ "tests/test_agent_ab_sdk_exec.py": {
+  "bare-suppression": 3
+ },
+ "tests/test_agent_ab_stats.py": {
+  "bare-suppression": 1
+ },
+ "tests/test_aml_add_concurrency.py": {
+  "bare-suppression": 5
+ },
+ "tests/test_aml_add_response_budget.py": {
+  "bare-suppression": 5
+ },
+ "tests/test_aml_atomic_rescue.py": {
+  "bare-suppression": 1
+ },
+ "tests/test_aml_atomic_views.py": {
+  "bare-suppression": 24
+ },
+ "tests/test_aml_c9_coding_window_check.py": {
+  "bare-suppression": 3
+ },
+ "tests/test_aml_forget.py": {
+  "bare-suppression": 8
+ },
+ "tests/test_aml_full2_audit_fixes.py": {
+  "bare-suppression": 6
+ },
+ "tests/test_aml_lenient_requests.py": {
+  "bare-suppression": 1
+ },
+ "tests/test_aml_locomo_aggregation_view.py": {
+  "bare-suppression": 1
+ },
+ "tests/test_aml_locomo_loss_diagnosis.py": {
+  "bare-suppression": 2
+ },
+ "tests/test_aml_order_gate.py": {
+  "bare-suppression": 1
+ },
+ "tests/test_aml_pr749_740_regressions.py": {
+  "bare-suppression": 1
+ },
+ "tests/test_aml_prior_record_budget.py": {
+  "bare-suppression": 5
+ },
+ "tests/test_aml_relative_dates_and_adjacency.py": {
+  "bare-suppression": 2
+ },
+ "tests/test_aml_rerank_switch.py": {
+  "bare-suppression": 7
+ },
+ "tests/test_aml_route_gates.py": {
+  "bare-suppression": 1
+ },
+ "tests/test_aml_search_cache.py": {
+  "bare-suppression": 19
+ },
+ "tests/test_aml_search_deadline.py": {
+  "bare-suppression": 14
+ },
+ "tests/test_aml_speed_audit_fixes.py": {
+  "bare-suppression": 13
+ },
+ "tests/test_aml_speed_review_fixes.py": {
+  "bare-suppression": 2
+ },
+ "tests/test_aml_text_route_smoke.py": {
+  "bare-suppression": 1
+ },
+ "tests/test_aml_window_compose.py": {
+  "bare-suppression": 10
+ },
+ "tests/test_analyze_after_index.py": {
+  "bare-suppression": 1
+ },
+ "tests/test_answer_premise_cca_regressions.py": {
+  "bare-suppression": 1
+ },
+ "tests/test_answer_premise_profile.py": {
+  "bare-suppression": 2
+ },
+ "tests/test_apply_fact_generation_pin.py": {
+  "bare-suppression": 2
+ },
+ "tests/test_atomic_rescue_by_tenant.py": {
+  "bare-suppression": 2
+ },
+ "tests/test_atomic_rescue_default_on_cca.py": {
+  "bare-suppression": 13
+ },
+ "tests/test_atomic_rescue_deferred_cca.py": {
+  "bare-suppression": 18
+ },
+ "tests/test_atomic_rescue_gate.py": {
+  "bare-suppression": 2
+ },
+ "tests/test_atomic_rescue_keyed_layout.py": {
+  "bare-suppression": 7
+ },
+ "tests/test_atomic_rescue_view_gate.py": {
+  "bare-suppression": 2
+ },
+ "tests/test_atomic_rescue_when_missing.py": {
+  "bare-suppression": 2
+ },
+ "tests/test_atomizer.py": {
+  "bare-suppression": 1
+ },
+ "tests/test_aws_deploy_contract.py": {
+  "bare-suppression": 4
+ },
+ "tests/test_beam_transfer_index_guards.py": {
+  "bare-suppression": 1
+ },
+ "tests/test_bench_driver_quarantine.py": {
+  "bare-suppression": 1
+ },
+ "tests/test_bench_latency.py": {
+  "bare-suppression": 1
+ },
+ "tests/test_bench_llm.py": {
+  "bare-suppression": 2
+ },
+ "tests/test_bench_llm_block_content.py": {
+  "bare-suppression": 5
+ },
+ "tests/test_bench_llm_client_lock.py": {
+  "bare-suppression": 1
+ },
+ "tests/test_bench_llm_max_tokens.py": {
+  "bare-suppression": 1
+ },
+ "tests/test_bench_llm_unusable_response.py": {
+  "bare-suppression": 1
+ },
+ "tests/test_bench_llm_usage_lock.py": {
+  "bare-suppression": 2
+ },
+ "tests/test_bench_run.py": {
+  "bare-suppression": 9
+ },
+ "tests/test_bench_salvage.py": {
+  "bare-suppression": 3
+ },
+ "tests/test_bench_systems.py": {
+  "bare-suppression": 2
+ },
+ "tests/test_bench_voyage_rerank_client_lock.py": {
+  "bare-suppression": 1
+ },
+ "tests/test_benchd_adapter.py": {
+  "bare-suppression": 1
+ },
+ "tests/test_benchmark_provider_metadata.py": {
+  "bare-suppression": 5
+ },
+ "tests/test_bge_large_profile.py": {
+  "bare-suppression": 1
+ },
+ "tests/test_build_aml_atomic_rescue_artifact.py": {
+  "bare-suppression": 4
+ },
+ "tests/test_build_progress.py": {
+  "bare-suppression": 1
+ },
+ "tests/test_calibration_drift.py": {
+  "bare-suppression": 18
+ },
+ "tests/test_calibration_import_rescore.py": {
+  "bare-suppression": 6
+ },
+ "tests/test_calibration_v2.py": {
+  "bare-suppression": 7
+ },
+ "tests/test_calibration_v2_hunt_fixes.py": {
+  "bare-suppression": 9
+ },
+ "tests/test_cca_hunt_storage_core.py": {
+  "bare-suppression": 3
+ },
+ "tests/test_cca_integrations_second_pass.py": {
+  "bare-suppression": 1
+ },
+ "tests/test_cca_pr699_690_deferred.py": {
+  "bare-suppression": 6
+ },
+ "tests/test_cca_storage_core_deferred.py": {
+  "bare-suppression": 3
+ },
+ "tests/test_check_hnsw_recall_path.py": {
+  "bare-suppression": 2
+ },
+ "tests/test_check_hnsw_recall_scoring.py": {
+  "bare-suppression": 14
+ },
+ "tests/test_client_extras.py": {
+  "bare-suppression": 2
+ },
+ "tests/test_code_anchor_chunks.py": {
+  "bare-suppression": 10
+ },
+ "tests/test_confinement.py": {
+  "bare-suppression": 1
+ },
+ "tests/test_consistency_stale_probe.py": {
+  "bare-suppression": 1
+ },
+ "tests/test_context_modes.py": {
+  "bare-suppression": 6
+ },
+ "tests/test_context_modes_index.py": {
+  "bare-suppression": 5
+ },
+ "tests/test_corpus_rewrite_contract.py": {
+  "bare-suppression": 8
+ },
+ "tests/test_dashboard_cca_hunt.py": {
+  "bare-suppression": 1
+ },
+ "tests/test_dashboard_cca_hunt2.py": {
+  "bare-suppression": 2
+ },
+ "tests/test_dashboard_config.py": {
+  "bare-suppression": 1
+ },
+ "tests/test_dashboard_corpus.py": {
+  "bare-suppression": 1
+ },
+ "tests/test_dashboard_edit.py": {
+  "bare-suppression": 1
+ },
+ "tests/test_dashboard_reports_tenant_cli.py": {
+  "bare-suppression": 1
+ },
+ "tests/test_dashboard_review.py": {
+  "bare-suppression": 1
+ },
+ "tests/test_dashboard_review_database.py": {
+  "bare-suppression": 2
+ },
+ "tests/test_decision_ledger.py": {
+  "bare-suppression": 1
+ },
+ "tests/test_desktop.py": {
+  "bare-suppression": 11
+ },
+ "tests/test_desktop_installer.py": {
+  "bare-suppression": 4
+ },
+ "tests/test_document_bundles.py": {
+  "bare-suppression": 1
+ },
+ "tests/test_embedding_asymmetric_semantics.py": {
+  "bare-suppression": 1
+ },
+ "tests/test_embedding_cache_default.py": {
+  "bare-suppression": 1
+ },
+ "tests/test_embedding_cache_identity.py": {
+  "bare-suppression": 3
+ },
+ "tests/test_embedding_offline_enforcement.py": {
+  "bare-suppression": 4
+ },
+ "tests/test_embedding_profile_registry.py": {
+  "bare-suppression": 3
+ },
+ "tests/test_embeddings_non_transient_marker.py": {
+  "bare-suppression": 2
+ },
+ "tests/test_embeddings_retry_classifier.py": {
+  "bare-suppression": 5
+ },
+ "tests/test_entailment_removed.py": {
+  "bare-suppression": 1
+ },
+ "tests/test_enterprise_control_plane.py": {
+  "bare-suppression": 1
+ },
+ "tests/test_enterprise_integration.py": {
+  "bare-suppression": 1
+ },
+ "tests/test_enterprise_rag.py": {
+  "bare-suppression": 2
+ },
+ "tests/test_enterprise_readiness.py": {
+  "bare-suppression": 7
+ },
+ "tests/test_erasure_authorization.py": {
+  "bare-suppression": 2
+ },
+ "tests/test_erasure_retires_generation_caches.py": {
+  "bare-suppression": 7
+ },
+ "tests/test_error_path_disclosure.py": {
+  "bare-suppression": 2
+ },
+ "tests/test_eval_bm25.py": {
+  "bare-suppression": 1
+ },
+ "tests/test_eval_labelled_question_ids.py": {
+  "bare-suppression": 1
+ },
+ "tests/test_eval_longmemeval_perq.py": {
+  "bare-suppression": 1
+ },
+ "tests/test_evidence_contract.py": {
+  "bare-suppression": 1
+ },
+ "tests/test_evidence_wiring.py": {
+  "bare-suppression": 10
+ },
+ "tests/test_fact_redaction.py": {
+  "bare-suppression": 1
+ },
+ "tests/test_fact_retraction_hunt_cca.py": {
+  "bare-suppression": 1
+ },
+ "tests/test_fact_withdrawal.py": {
+  "bare-suppression": 1
+ },
+ "tests/test_facts_family_cca.py": {
+  "bare-suppression": 2
+ },
+ "tests/test_fallback_profile_id_distinctness.py": {
+  "bare-suppression": 2
+ },
+ "tests/test_fastembed_cache_default.py": {
+  "bare-suppression": 2
+ },
+ "tests/test_federate_subject_binding.py": {
+  "bare-suppression": 1
+ },
+ "tests/test_federation.py": {
+  "bare-suppression": 1
+ },
+ "tests/test_federation_adapter.py": {
+  "bare-suppression": 2
+ },
+ "tests/test_federation_cca_pr699_690.py": {
+  "bare-suppression": 7
+ },
+ "tests/test_fts_stemmer_probe.py": {
+  "bare-suppression": 6
+ },
+ "tests/test_general_knowledge_hook.py": {
+  "bare-suppression": 13
+ },
+ "tests/test_generation_build.py": {
+  "bare-suppression": 6
+ },
+ "tests/test_generation_cache_erasure_release.py": {
+  "bare-suppression": 11
+ },
+ "tests/test_generation_dense_search_path.py": {
+  "bare-suppression": 4
+ },
+ "tests/test_generation_rescue.py": {
+  "bare-suppression": 13
+ },
+ "tests/test_generation_rescue_release.py": {
+  "bare-suppression": 12
+ },
+ "tests/test_generation_store_calibration_cache.py": {
+  "bare-suppression": 7
+ },
+ "tests/test_generation_store_identity.py": {
+  "bare-suppression": 1
+ },
+ "tests/test_generation_store_row_scope.py": {
+  "bare-suppression": 1
+ },
+ "tests/test_generation_store_supersession_cache.py": {
+  "bare-suppression": 5
+ },
+ "tests/test_graph_first.py": {
+  "bare-suppression": 1
+ },
+ "tests/test_graph_first_service.py": {
+  "bare-suppression": 1
+ },
+ "tests/test_graph_lazy_loading.py": {
+  "bare-suppression": 12
+ },
+ "tests/test_hnsw_filtered_recall.py": {
+  "bare-suppression": 8
+ },
+ "tests/test_hooks_cca_deferred.py": {
+  "bare-suppression": 1
+ },
+ "tests/test_hooks_cca_hunt.py": {
+  "bare-suppression": 4
+ },
+ "tests/test_hunt_index_embedding_identity.py": {
+  "bare-suppression": 4
+ },
+ "tests/test_hunt_index_schema_deferred.py": {
+  "bare-suppression": 2
+ },
+ "tests/test_ignored_flags_refused.py": {
+  "bare-suppression": 1
+ },
+ "tests/test_index_fingerprint_covers_the_profile.py": {
+  "bare-suppression": 1
+ },
+ "tests/test_index_glob_confinement.py": {
+  "bare-suppression": 2
+ },
+ "tests/test_index_incremental.py": {
+  "bare-suppression": 5
+ },
+ "tests/test_index_provenance.py": {
+  "bare-suppression": 4
+ },
+ "tests/test_integrations_agent_tool_contract.py": {
+  "bare-suppression": 1
+ },
+ "tests/test_integrations_langchain.py": {
+  "bare-suppression": 5
+ },
+ "tests/test_integrations_llamaindex.py": {
+  "bare-suppression": 5
+ },
+ "tests/test_integrations_untrusted_hits.py": {
+  "bare-suppression": 1
+ },
+ "tests/test_learned_sparse.py": {
+  "bare-suppression": 1
+ },
+ "tests/test_libreoffice_profile_pool.py": {
+  "bare-suppression": 2
+ },
+ "tests/test_lineage.py": {
+  "bare-suppression": 1
+ },
+ "tests/test_lite_atomic_rescue.py": {
+  "bare-suppression": 20
+ },
+ "tests/test_lite_auto_refresh_mcp.py": {
+  "bare-suppression": 28
+ },
+ "tests/test_lite_calibration.py": {
+  "bare-suppression": 10
+ },
+ "tests/test_lite_carry_forward.py": {
+  "bare-suppression": 3
+ },
+ "tests/test_lite_cca_deferred_016.py": {
+  "bare-suppression": 2
+ },
+ "tests/test_lite_cca_hunt2_fixes.py": {
+  "bare-suppression": 12
+ },
+ "tests/test_lite_cca_hunt_fixes.py": {
+  "bare-suppression": 3
+ },
+ "tests/test_lite_cli_provenance.py": {
+  "bare-suppression": 1
+ },
+ "tests/test_lite_forget_erases_atomic_rescue.py": {
+  "bare-suppression": 6
+ },
+ "tests/test_lite_generation_identity.py": {
+  "bare-suppression": 2
+ },
+ "tests/test_lite_refit_lane.py": {
+  "bare-suppression": 2
+ },
+ "tests/test_lite_refresh.py": {
+  "bare-suppression": 15
+ },
+ "tests/test_lite_runtime_boundaries.py": {
+  "bare-suppression": 1
+ },
+ "tests/test_lite_semantic_graph.py": {
+  "bare-suppression": 15
+ },
+ "tests/test_lite_setup.py": {
+  "bare-suppression": 2
+ },
+ "tests/test_lite_setup_cache.py": {
+  "bare-suppression": 1
+ },
+ "tests/test_lite_setup_profiles.py": {
+  "bare-suppression": 1
+ },
+ "tests/test_lite_store.py": {
+  "bare-suppression": 1
+ },
+ "tests/test_lite_writer_lock.py": {
+  "bare-suppression": 8
+ },
+ "tests/test_live_source_conditioned_admission.py": {
+  "bare-suppression": 1
+ },
+ "tests/test_mcp_auth_deferred_regressions.py": {
+  "bare-suppression": 2
+ },
+ "tests/test_mcp_auth_http.py": {
+  "bare-suppression": 1
+ },
+ "tests/test_mcp_clearance_binding.py": {
+  "bare-suppression": 2
+ },
+ "tests/test_mcp_graph_projection_cache.py": {
+  "bare-suppression": 6
+ },
+ "tests/test_mcp_http_contract.py": {
+  "bare-suppression": 2
+ },
+ "tests/test_mcp_ingest_routing.py": {
+  "bare-suppression": 16
+ },
+ "tests/test_mcp_rerank_opt_in.py": {
+  "bare-suppression": 4
+ },
+ "tests/test_mcp_service_index.py": {
+  "bare-suppression": 6
+ },
+ "tests/test_mcp_table_env.py": {
+  "bare-suppression": 1
+ },
+ "tests/test_mcp_trust_mode_env.py": {
+  "bare-suppression": 1
+ },
+ "tests/test_memo_corrections_deferred.py": {
+  "bare-suppression": 3
+ },
+ "tests/test_memo_journal_forget_paths.py": {
+  "bare-suppression": 4
+ },
+ "tests/test_memo_journal_root_context.py": {
+  "bare-suppression": 5
+ },
+ "tests/test_memory_audit.py": {
+  "bare-suppression": 6
+ },
+ "tests/test_mtrag_generation_no_choices.py": {
+  "bare-suppression": 2
+ },
+ "tests/test_near_miss.py": {
+  "bare-suppression": 1
+ },
+ "tests/test_near_miss_resilience.py": {
+  "bare-suppression": 1
+ },
+ "tests/test_onnxruntime_version_is_fingerprint_key_material.py": {
+  "bare-suppression": 1
+ },
+ "tests/test_owner_decisions_index_storage.py": {
+  "bare-suppression": 3
+ },
+ "tests/test_paged_evidence.py": {
+  "bare-suppression": 20
+ },
+ "tests/test_pr29_20_regressions.py": {
+  "bare-suppression": 2
+ },
+ "tests/test_pr439_install_regressions.py": {
+  "bare-suppression": 1
+ },
+ "tests/test_pr449_440_drift_order.py": {
+  "bare-suppression": 4
+ },
+ "tests/test_pr449_440_rollback_seed.py": {
+  "bare-suppression": 1
+ },
+ "tests/test_pr469_460_regressions.py": {
+  "bare-suppression": 1
+ },
+ "tests/test_pr543_dependency_cache.py": {
+  "bare-suppression": 1
+ },
+ "tests/test_pr545_reuse_paths.py": {
+  "bare-suppression": 1
+ },
+ "tests/test_pr589_580_regressions.py": {
+  "bare-suppression": 2
+ },
+ "tests/test_pre016_audit_fixes.py": {
+  "bare-suppression": 4
+ },
+ "tests/test_prepare_atomic_fact_pilot.py": {
+  "bare-suppression": 4
+ },
+ "tests/test_production_resilience.py": {
+  "bare-suppression": 2
+ },
+ "tests/test_profile_identity_gates.py": {
+  "bare-suppression": 10
+ },
+ "tests/test_proof_obligations.py": {
+  "bare-suppression": 1
+ },
+ "tests/test_proposal_metrics.py": {
+  "bare-suppression": 1
+ },
+ "tests/test_provenance_owner_items.py": {
+  "bare-suppression": 9
+ },
+ "tests/test_provider_fingerprint_reaches_registered_profiles.py": {
+  "bare-suppression": 2
+ },
+ "tests/test_rate_limit_http.py": {
+  "bare-suppression": 4
+ },
+ "tests/test_reasoning_api.py": {
+  "bare-suppression": 1
+ },
+ "tests/test_reasoning_graph.py": {
+  "bare-suppression": 1
+ },
+ "tests/test_reasoning_hunt_cca.py": {
+  "bare-suppression": 10
+ },
+ "tests/test_reasoning_owner_decisions.py": {
+  "bare-suppression": 3
+ },
+ "tests/test_reasoning_planner.py": {
+  "bare-suppression": 2
+ },
+ "tests/test_reasoning_routing.py": {
+  "bare-suppression": 1
+ },
+ "tests/test_recall_agent_contract.py": {
+  "bare-suppression": 5
+ },
+ "tests/test_records_cli.py": {
+  "bare-suppression": 1
+ },
+ "tests/test_records_code_tenant.py": {
+  "bare-suppression": 1
+ },
+ "tests/test_records_deferred.py": {
+  "bare-suppression": 2
+ },
+ "tests/test_records_files_hunt_cca.py": {
+  "bare-suppression": 1
+ },
+ "tests/test_refs_cycles.py": {
+  "bare-suppression": 1
+ },
+ "tests/test_refs_phase4.py": {
+  "bare-suppression": 4
+ },
+ "tests/test_related_caused_by.py": {
+  "bare-suppression": 1
+ },
+ "tests/test_release_mcp_reports.py": {
+  "bare-suppression": 1
+ },
+ "tests/test_release_script.py": {
+  "bare-suppression": 1
+ },
+ "tests/test_release_tag_workflow.py": {
+  "bare-suppression": 1
+ },
+ "tests/test_report_tools_database_names.py": {
+  "bare-suppression": 1
+ },
+ "tests/test_report_tools_postgres.py": {
+  "bare-suppression": 2
+ },
+ "tests/test_report_visibility_retries.py": {
+  "bare-suppression": 1
+ },
+ "tests/test_rerank.py": {
+  "bare-suppression": 1
+ },
+ "tests/test_rescue_builder.py": {
+  "bare-suppression": 6
+ },
+ "tests/test_rescue_cross_process.py": {
+  "bare-suppression": 2
+ },
+ "tests/test_rescue_deferred_minors.py": {
+  "bare-suppression": 4
+ },
+ "tests/test_retrieval_duplicate_work.py": {
+  "bare-suppression": 16
+ },
+ "tests/test_retrieval_generation_read.py": {
+  "bare-suppression": 2
+ },
+ "tests/test_retrieval_profiles.py": {
+  "bare-suppression": 1
+ },
+ "tests/test_rewrite_routing_contract.py": {
+  "bare-suppression": 1
+ },
+ "tests/test_scope.py": {
+  "bare-suppression": 1
+ },
+ "tests/test_search_evidence.py": {
+  "bare-suppression": 6
+ },
+ "tests/test_security_policy.py": {
+  "bare-suppression": 1
+ },
+ "tests/test_semantic_graph.py": {
+  "bare-suppression": 2
+ },
+ "tests/test_semantic_lint.py": {
+  "bare-suppression": 4
+ },
+ "tests/test_settings.py": {
+  "bare-suppression": 1
+ },
+ "tests/test_setup_cloud_embedder_key.py": {
+  "bare-suppression": 1
+ },
+ "tests/test_small_corpus_rescue_release.py": {
+  "bare-suppression": 1
+ },
+ "tests/test_sparse_scripts.py": {
+  "bare-suppression": 4
+ },
+ "tests/test_stale_reports.py": {
+  "bare-suppression": 1
+ },
+ "tests/test_stated_facts.py": {
+  "bare-suppression": 25
+ },
+ "tests/test_stated_facts_deferred.py": {
+  "bare-suppression": 3
+ },
+ "tests/test_stated_facts_ledger.py": {
+  "bare-suppression": 3
+ },
+ "tests/test_stated_facts_postgres.py": {
+  "bare-suppression": 10
+ },
+ "tests/test_store.py": {
+  "bare-suppression": 5
+ },
+ "tests/test_store_latency_splade_arm.py": {
+  "bare-suppression": 7
+ },
+ "tests/test_store_round_trips.py": {
+  "bare-suppression": 5
+ },
+ "tests/test_strict_trust_search.py": {
+  "bare-suppression": 2
+ },
+ "tests/test_successor_expansion.py": {
+  "bare-suppression": 1
+ },
+ "tests/test_supersession_arbiter.py": {
+  "bare-suppression": 3
+ },
+ "tests/test_supersession_edge_dating.py": {
+  "bare-suppression": 1
+ },
+ "tests/test_supersession_records.py": {
+  "bare-suppression": 1
+ },
+ "tests/test_their_harness_backend.py": {
+  "bare-suppression": 1
+ },
+ "tests/test_trust_policy.py": {
+  "bare-suppression": 1
+ },
+ "tests/test_truth_extraction_chain_contract.py": {
+  "bare-suppression": 1
+ },
+ "tests/test_truth_extraction_recheck.py": {
+  "bare-suppression": 3
+ },
+ "tests/test_truth_extraction_sqlite_cache_contract.py": {
+  "bare-suppression": 2
+ },
+ "tests/test_uncalibrated_warning.py": {
+  "bare-suppression": 1
+ },
+ "tests/test_undecidable_gates.py": {
+  "bare-suppression": 1
+ },
+ "tests/test_unknown_term_boundaries.py": {
+  "bare-suppression": 1
+ },
+ "tests/test_validity_empty_window.py": {
+  "bare-suppression": 1
+ },
+ "tests/test_verify_release_tag.py": {
+  "bare-suppression": 1
+ },
+ "tests/test_version_is_single_sourced.py": {
+  "bare-suppression": 1
+ },
+ "tests/test_voyage_context4_production.py": {
+  "bare-suppression": 1
+ },
+ "tests/test_voyage_http_client.py": {
+  "bare-suppression": 2
+ },
+ "tests/test_voyage_reranker_serving.py": {
+  "bare-suppression": 5
+ },
+ "tests/test_wizard_cca_hunt.py": {
+  "bare-suppression": 3
+ },
+ "tests/test_wizard_cca_hunt2_pipeline.py": {
+  "bare-suppression": 7
+ },
+ "tests/test_wizard_cca_hunt2_stack.py": {
+  "bare-suppression": 1
+ },
+ "tests/test_wizard_corpora.py": {
+  "bare-suppression": 6
+ },
+ "tests/test_wizard_deferred_pass.py": {
+  "bare-suppression": 1
+ },
+ "tests/test_wizard_identity.py": {
+  "bare-suppression": 5
+ },
+ "tests/test_wizard_owner_decisions.py": {
+  "bare-suppression": 1
+ },
+ "tests/test_wizard_pipeline.py": {
+  "bare-suppression": 1
+ },
+ "tests/test_wizard_stack.py": {
+  "bare-suppression": 8
+ },
+ "tests/test_wizard_uninstall.py": {
+  "bare-suppression": 1
+ },
+ "tests/test_wizard_wiring.py": {
+  "bare-suppression": 1
+ },
+ "tools/prior_art/cli.py": {
+  "bare-suppression": 2
+ }
+}
