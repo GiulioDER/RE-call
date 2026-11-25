@@ -43,6 +43,7 @@ NO_CHUNK_TABLE = {
     "secret": "manages provider secrets",
     "uninstall": "removes installed integration files",
     "check": "checks memo files",
+    "repair-checks": "reads caller JSON files and opens no store",
 }
 
 #: Commands that use a table of their own whatever `--table` says. Listed so the gap is visible.

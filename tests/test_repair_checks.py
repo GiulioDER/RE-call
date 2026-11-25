@@ -2,6 +2,7 @@
 
 import io
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -133,6 +134,43 @@ def test_invalid_menu_reports_no_request_text(
     with pytest.raises(SystemExit, match="invalid request") as error:
         main(["repair-checks", "prompt", request])
     assert "private" not in str(error.value)
+    assert capsys.readouterr().out == ""
+
+
+def test_response_schema_patterns_are_portable_json_schema(
+    request_payload: dict, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The selector schema must be usable by a standard JSON Schema validator.
+
+    Red proof: against c176f9bae (pattern ``\\A...\\z`` at
+    ``recall/cli_commands/repair_checks.py`` ``_CheckId``) this fails in the loop's
+    assertion that no pattern holds ``\\A``, ``\\Z`` or ``\\z``, because ECMA-262 has no
+    such escapes and Python ``re`` before 3.14 rejects ``\\z``.
+    """
+    main(["repair-checks", "prompt", _write(tmp_path, "request.json", request_payload)])
+    schema = json.loads(capsys.readouterr().out)["response_schema"]
+    patterns = [field["pattern"] for field in schema["$defs"]["_Selection"]["properties"].values()]
+    assert len(patterns) == 2
+    for pattern in patterns:
+        assert not re.search(r"\\[AZz]", pattern), pattern
+        # JSON Schema applies a pattern as an unanchored search.
+        assert re.search(pattern, "d2") and not re.search(pattern, "d2!")
+
+
+@pytest.mark.parametrize("check_id", ["d2\n", "-d2", "d" * 65])
+def test_rejects_malformed_selection_ids(
+    check_id: str, request_payload: dict, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A selection ID is refused unless it matches the whole ID pattern.
+
+    Red proof: with the ``$`` anchor removed from ``_CheckId`` in
+    ``recall/cli_commands/repair_checks.py``, the ``"d2\\n"`` and ``"d" * 65`` cases are
+    accepted and ``pytest.raises`` fails.
+    """
+    request = _write(tmp_path, "request.json", request_payload)
+    selection = _write(tmp_path, "selection.json", {"diagnostic": check_id, "preservation": "p1"})
+    with pytest.raises(SystemExit, match="invalid selection"):
+        main(["repair-checks", "resolve", request, selection])
     assert capsys.readouterr().out == ""
 
 

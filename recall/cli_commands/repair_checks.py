@@ -13,7 +13,8 @@ from pydantic import BaseModel, ConfigDict, Field, StringConstraints, TypeAdapte
 _MAX_INPUT_BYTES = 512 * 1024
 _MAX_CHECKS = 16
 _Role = Literal["diagnostic", "preservation"]
-_CheckId = Annotated[str, StringConstraints(pattern=r"\A[A-Za-z0-9][A-Za-z0-9_-]{0,63}\z")]
+# The prompt publishes this pattern in a JSON Schema, whose ECMA-262 dialect has no \A or \z.
+_CheckId = Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")]
 _Text = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=4096)]
 _Edit = Annotated[str, StringConstraints(min_length=1, max_length=64 * 1024)]
 _T = TypeVar("_T")
