@@ -9,7 +9,7 @@ design violation.
 
 Packages: `recall`, `recall_mcp`, `recall_agent`, `recall_hooks`, `recall_interop`, `recall_consistency`
 Modules: 379
-Cross package edges: 465
+Cross package edges: 466
 
 ## Highest fan in modules
 
@@ -161,6 +161,7 @@ They are observations, not automatic failures.
 | `recall_interop.memory_benchmarks` | `recall.retriever` |
 | `recall_interop.memory_benchmarks` | `recall.store` |
 | `recall_mcp.access_log` | `recall.observability` |
+| `recall_mcp.assistant` | `recall._env` |
 | `recall_mcp.assistant` | `recall.backends` |
 | `recall_mcp.assistant` | `recall.calibration_v2` |
 | `recall_mcp.assistant` | `recall.confinement` |
