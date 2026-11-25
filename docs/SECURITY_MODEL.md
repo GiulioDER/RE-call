@@ -171,15 +171,22 @@ note that declares `supersedes: <stem of a true memory>` turns that memory's hit
 `superseded`, and when a demoted hit cleared the calibrated threshold, the planted successor is
 served as `ok` even if its own score is below it (the `promoted_files` step in
 `recall.trust_gate.evaluate`). A planted document that reuses the target's file name has a weaker
-effect: the reference becomes ambiguous, the documents sharing that name are reported as
-`ambiguous_supersession`, and none of them is served as `ok`. Either way the outcome is a refusal or
-a wrong current answer, and nothing in the result distinguishes it from a legitimate update.
+effect, and which one depends on where it lands. Under the declaring memo's own root, in another
+folder or spelled with another case, it makes a bare reference ambiguous: the documents the
+reference could name are reported as `ambiguous_supersession`, and none of them is served as `ok`.
+Under another root (an upload through `recall_ingest` lands under `uploads/<tenant>/`), the
+reference names the copy in the declaring memo's own root (`ReferenceIndex._pick` in
+`recall/supersession.py`), so the true target is retired as declared and the planted copy is
+served on its own score, like any note that declares nothing. Either way the outcome is a refusal
+or a wrong current answer, and nothing in the verdict distinguishes it from a legitimate update.
 
 Since the window rule (2026-10-21) a planted successor demotes its target only while the planted
 document's own `valid_from` and `valid_until` hold, and one whose window cannot be parsed demotes
-at every instant, as before. References are matched case-insensitively and NFC-folded, an exact
-root-relative path first, so a planted `NOTES.md` now collides with `notes.md` (ambiguity, a
-refusal) where it did not before, while a path-qualified reference names one file.
+at every instant, as before. References are matched case-insensitively and NFC-folded. A reference
+that names a folder is matched by its path, and a bare name by its stem alone (a bare name matched
+by path let a planted root-level `notes.md` capture `supersedes: notes` meant for
+`archive/notes.md`), so a planted `NOTES.md` collides with `notes.md` (ambiguity, a refusal) while
+a path-qualified reference names one file.
 
 **The agent-facing write paths carry the same authority.** `recall_ingest` indexes uploaded file
 contents through the same pipeline, and `recall_index` indexes files under `RECALL_INDEX_ROOT`, so
