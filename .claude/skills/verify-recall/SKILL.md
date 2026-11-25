@@ -14,9 +14,20 @@ python .claude/skills/verify-recall/control_recall.py --help
 ```
 
 Generated from pstack's `/create-verification-skill` (github.com/cursor/plugins, MIT, Lauren Tan)
-and adapted to this repository. Keep it honest with `/maintain-verification-skill` or by hand: the
-feature files are the maintained source, and `tests/test_verify_recall.py` refuses a feature file
-whose name is not a feature id in `docs/feature_map.toml`.
+and adapted to this repository.
+
+## Upkeep
+
+- **Nightly, by itself:** the `verify-recall walk` workflow runs `walk.py` on master, which drives
+  every recipe below and checks each stated end state. A failure opens (or comments on) the issue
+  "verify-recall nightly walk failed", with the failed checks in the run summary and the evidence
+  as an artifact. Fix the feature file when the map drifted, the code when RE-call regressed.
+- **With every recipe change:** change its check in `walk.py` in the same commit; the workflow
+  walks a pull request that touches this directory.
+- **Structure:** `tests/test_verify_recall.py` refuses a feature file whose name is not a feature
+  id in `docs/feature_map.toml`, one without the four sections, or one the index does not link.
+- **Judgment the walk cannot make** (a new feature with no file yet, a recipe that no longer
+  describes the user's path) is `/maintain-verification-skill`'s pass, or a person's.
 
 ## Launch
 
