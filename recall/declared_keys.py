@@ -1,4 +1,4 @@
-"""Keys a memo's writer declares, and the three things RE-call does with them.
+"""Keys a memo's writer declares, and what RE-call does with them.
 
 A memo states a fact in its `recall_graph` frontmatter (or through `recall_remember`'s `fact`), and the
 fact's key is the ledger's conflict key: namespace, subject, predicate and context, compared exactly
@@ -16,8 +16,9 @@ So this module gives a writer what that writer used:
 - `successor_pairs`, rule R(a'): of the memos stating one single-valued key, each supersedes the
   memos of the latest earlier start, WHATEVER the value. "Another value" was the first wording, and
   a key whose history repeats a value then kept its first fact in force against the last
-  (WK-1, 2026-10-23). The rule only proposes: `recall.reasoning_proposals` serves its pairs as
-  `requires_review`, and nothing here writes an edge;
+  (WK-1, 2026-10-23). The rule proposes: `recall.reasoning_proposals` serves its pairs as
+  `requires_review`, and nothing here writes an edge; only a writer that settles the pair in its own
+  write (`settle_target`) makes one an edge without review;
 - `key_receipt`: the part of a write receipt that says which key a new memo's fact went under, what
   else is in force for it, and the edge rule R(a') proposes, if any;
 - `settle_target`: the edge rule R(a') gives a memo not yet written, for a writer that asks to
@@ -217,7 +218,7 @@ def key_receipt(
     if key is None:
         receipt["state"] = "not_single_valued"
         return receipt
-    if listing.get("served_state") in {"degraded", "unchecked"}:
+    if listing.get("served_state") in _UNSERVED:
         receipt["state"] = "unchecked"
         return receipt
     statements = _statements(listing, key)
@@ -254,6 +255,9 @@ def _keyed(statements: list[tuple[dict[str, Any], list[str], bool]]) -> list[Key
     return memos
 
 
+#: The listing states in which a lookup could not read the store; nothing is decided over one.
+_UNSERVED = frozenset({"degraded", "unchecked"})
+
 #: The name a memo not yet written goes by in `settle_target`; no stored source can carry it.
 _UNWRITTEN = "\x00unwritten"
 
@@ -279,7 +283,7 @@ def settle_target(
     reason = settle_precondition(fact, valid_from)
     if reason is not None:
         return None, reason
-    if listing.get("served_state") in {"degraded", "unchecked"}:
+    if listing.get("served_state") in _UNSERVED:
         return None, "unchecked"
     start = cast(datetime, fact.valid_from or valid_from)
     key = cast(tuple[str, str, str, str], fact_key(fact))

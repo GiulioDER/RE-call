@@ -8,7 +8,7 @@ import type { ToolDef } from "./mcp_client";
 export type ExtraTool = { name: string; reason: string; write: boolean };
 
 /** RE-call's six assistant tools, byte for byte as `tests/fixtures/assistant_surface_contract.json` at the
- * repository root pins them (unchanged from tree d1a0856e, 0.15.0), with `parameters` named `inputSchema`
+ * repository root pins them (`recall_remember` gained `settle` after 0.16.1), with `parameters` named `inputSchema`
  * as MCP names it. `tests/unit/surface.test.ts` fails on any difference. */
 export const TRAINED: ToolDef[] = [
   {

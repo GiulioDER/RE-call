@@ -41,11 +41,11 @@ from typing import TYPE_CHECKING, Any, cast
 from recall.backends import write_session
 from recall.confinement import within
 from recall.errors import RecallError
+from recall._env import strict_bool
 from recall.declared_keys import STATED_KEY_SUCCESSOR_RULE, settle_precondition, settle_target
 from recall.lite.assistant_memos import ASSISTANT_AUTHOR, MEMO_ID, MemoFolder
 
 from recall_mcp.models import ForgetResult, WithdrawResult
-from recall_mcp.settings import _bool
 
 if TYPE_CHECKING:
     from recall.embeddings import Embedder
@@ -72,6 +72,9 @@ ASSISTANT_ENV = "RECALL_ASSISTANT_MEMOS"
 #: The operator's half of `recall_remember(settle=true)`: off by default, and a call that asks to
 #: settle on a server without it is refused rather than written without the edge.
 SETTLE_ENV = "RECALL_ASSISTANT_SETTLE_SUCCESSORS"
+#: The refusals of a settled `supersedes` that `remember` turns into a declined settle, by reason:
+#: the rule read the target from the index, and the files have moved on since.
+_UNSETTLED = {"stale_target": "target_has_successor", "target_missing": "target_missing"}
 #: The tools this surface adds. Registered only when the surface is on.
 ASSISTANT_TOOLS: frozenset[str] = frozenset({"recall_remember", "recall_forget_memo"})
 
@@ -192,9 +195,8 @@ def assistant_memos_from_env(env: Mapping[str, str], *, lite: bool) -> Assistant
             f"{ASSISTANT_ENV}={str(folder)!r} is outside RECALL_INDEX_ROOT={str(index_root)!r}; the "
             "server's refresh would not follow it"
         )
-    memos = AssistantMemos(folder, index_root=index_root)
-    memos.settle_successors = _bool(env, SETTLE_ENV, False)
-    return memos
+    return AssistantMemos(folder, index_root=index_root,
+                          settle_successors=strict_bool(env.get(SETTLE_ENV), name=SETTLE_ENV))
 
 
 def _key_only(fact: object) -> dict[str, Any]:
@@ -211,8 +213,12 @@ class AssistantMemos(MemoFolder):
     """The memo folder (`recall.lite.assistant_memos`) with its lane-held writes and the view that
     names hits by memo id."""
 
-    #: Whether this server lets `remember(settle=True)` write the rule's edge (SETTLE_ENV).
-    settle_successors = False
+    def __init__(
+        self, folder: str | Path, *, index_root: str | Path | None = None, settle_successors: bool = False
+    ) -> None:
+        super().__init__(folder, index_root=index_root)
+        #: Whether this server lets `remember(settle=True)` write the rule's edge (SETTLE_ENV).
+        self.settle_successors = settle_successors
 
     def remember(
         self,
@@ -256,15 +262,25 @@ class AssistantMemos(MemoFolder):
             note: dict[str, Any] | None = None
             if settle:
                 supersedes, note = self._settle(
-                    store, fact, valid_from, supersedes, request_id, access_context, read_facts,
-                    refresh_kwargs.get("security_policy"),
+                    store, fact=fact, valid_from=valid_from, supersedes=supersedes, request_id=request_id,
+                    access_context=access_context, read_facts=read_facts,
+                    security_policy=refresh_kwargs.get("security_policy"),
                 )
-            result = self.write(
-                text, kind, valid_from, valid_until, supersedes, fact, author=author,
-                request_id=request_id, expected_revision=expected_revision, include_receipt=include_receipt,
-                has_successor=lambda target, own: self._indexed_successor(store, target, own),
-                settled_by=STATED_KEY_SUCCESSOR_RULE if note is not None and note.get("settled") else None,
-            )
+            def write_with(target: str | None, note: dict[str, Any] | None) -> dict[str, Any]:
+                return self.write(
+                    text, kind, valid_from, valid_until, target, fact, author=author,
+                    request_id=request_id, expected_revision=expected_revision, include_receipt=include_receipt,
+                    has_successor=lambda target, own: self._indexed_successor(store, target, own),
+                    settled_by=STATED_KEY_SUCCESSOR_RULE if note is not None and note.get("settled") else None,
+                    settle_note=note,
+                )
+
+            result = write_with(supersedes, note)
+            if note is not None and note.get("settled") and result.get("conflict") in _UNSETTLED:
+                # `write_memo`'s own check of the target, the only one, found the rule's older memo
+                # already succeeded or gone since it was indexed: the memo is written without the edge.
+                note = {"declined": _UNSETTLED[result["conflict"]]}
+                result = write_with(None, note)
             if note is not None and "memo_id" in result:
                 result["settle"] = note
             if "memo_id" in result:
@@ -279,17 +295,19 @@ class AssistantMemos(MemoFolder):
             return result
 
     def _settle(
-        self, store: LiteStore, fact: object, valid_from: str | None, supersedes: str | None,
+        self, store: LiteStore, *, fact: object, valid_from: str | None, supersedes: str | None,
         request_id: str | None, access_context: Any, read_facts: bool, security_policy: Any,
     ) -> tuple[str | None, dict[str, Any]]:
         """The `supersedes` a settling write carries, and the answer's `settle` note.
 
         A `supersedes` the writer named wins. A retry of a journalled request replays the target its
-        first call wrote: the journal hashes `supersedes` into the request's identity, and on a retry
-        the superseded memo is no longer in force, so computing the pair again would find none and
-        the retry would read as another request. Otherwise the target is `settle_target`'s over the
-        current facts the caller may read, and must be a memo the assistant wrote: the one target
-        `write` accepts, which would otherwise refuse the whole write.
+        first call wrote, and the note it journalled: the journal hashes `supersedes` into the
+        request's identity, and on a retry the superseded memo is no longer in force, so computing
+        the pair again would find none and the retry would read as another request. A request
+        journalled without a note (its first call did not settle) replays its own `supersedes` as the
+        writer's. Otherwise the target is `settle_target`'s over the current facts the caller may
+        read, and must be a memo the assistant wrote. Whether it has a successor yet is `write`'s
+        own check, and `remember` declines the edge when that check refuses it.
         """
         from recall.frontmatter import validity_bounds
         from recall.lite.memo_requests import load_ledger
@@ -302,11 +320,13 @@ class AssistantMemos(MemoFolder):
             return None, {"declined": "no_fact"}
         if not read_facts:
             return None, {"declined": "unchecked"}
-        if request_id is not None:
-            entry = load_ledger(self.ledger_path).get("requests", {}).get(request_id)
-            if isinstance(entry, dict):
-                replayed = entry.get("supersedes")
-                return replayed, {"settled": replayed}
+        own = load_ledger(self.ledger_path)
+        entry = own.get("requests", {}).get(request_id) if request_id is not None else None
+        if isinstance(entry, dict):
+            replayed, journalled = entry.get("supersedes"), entry.get("settle")
+            if isinstance(journalled, dict):
+                return replayed, dict(journalled)
+            return replayed, {"declined": "writer_named_supersedes"} if replayed is not None else {"settled": None}
         if security_policy is not None:
             # The listing a policy filters can miss a holder of the key, and counting over the whole
             # store would let the answer reveal a memo the caller may not read (CCA STAKES-001).
@@ -326,7 +346,7 @@ class AssistantMemos(MemoFolder):
         if source is None:
             return None, {"settled": None}
         ref = self.ref_of_source(source)
-        located = None if ref is None else self.assistant_target(ref)
+        located = None if ref is None else self.assistant_target(ref, ledger=own)
         if ref is None or not isinstance(located, tuple):
             return None, {"declined": "not_assistant_memo"}
         return ref, {"settled": located[1] if located[0] == self.folder else ref}
@@ -367,7 +387,9 @@ class AssistantMemos(MemoFolder):
         """The receipt's `fact_key`: `key_receipt` over the current facts as the caller may read them.
 
         It reads the whole current-facts projection, inside the write lane, so its cost grows with
-        the ledger; only a receipt asked for, of a memo stating a fact, pays it.
+        the ledger; only a receipt asked for, of a memo stating a fact, pays it. A settling write has
+        read it once already (`_settle`), before the memo existed, so a settling write with a
+        receipt pays it twice: the receipt must show the key after the write.
         """
         from recall.declared_keys import key_receipt
         from recall.types import AtomicFact

@@ -199,6 +199,7 @@ class MemoFolder:
         include_receipt: bool = False,
         has_successor: Callable[[str, str | None], bool] | None = None,
         settled_by: str | None = None,
+        settle_note: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Write one memo file without indexing it. Returns what `write_memo` returns: {memo_id},
         with a receipt for a guarded call, {refused: reason}, or {refused, conflict}.
@@ -270,7 +271,7 @@ class MemoFolder:
             has_successor=has_successor, target=target,
             successor_folders=tuple(ledger.parent for ledger in _journal_ledgers(self.index_root))
             if target is not None else (),
-            settled_by=settled_by,
+            settled_by=settled_by, settle_note=settle_note,
         )
 
     def target_of(self, ref: str) -> tuple[Path, str] | None:
@@ -289,14 +290,17 @@ class MemoFolder:
         folder = within(self.index_root, self.index_root / parent)
         return None if folder is None else (folder, memo_id)
 
-    def assistant_target(self, ref: str) -> tuple[Path, str] | str:
+    def assistant_target(self, ref: str, *, ledger: Mapping[str, Any] | None = None) -> tuple[Path, str] | str:
         """The folder and memo id of the assistant's memo `ref` names (`target_of`), or why `write`
         refuses `ref` as a `supersedes`: the one rule, shared by a writer's `supersedes` and a
-        settled one."""
+        settled one. `ledger` is this folder's, when the caller has already read it in the same
+        write lane."""
         located = self.target_of(ref)
         if located is None:
             return f"no memo {ref!r}"
-        authors = load_ledger(located[0] / LEDGER_NAME)["authors"]
+        if ledger is None or located[0] != self.folder:
+            ledger = load_ledger(located[0] / LEDGER_NAME)
+        authors = ledger["authors"]
         if located[1] not in authors:
             return f"no memo {ref!r}"
         if authors[located[1]] != ASSISTANT_AUTHOR:

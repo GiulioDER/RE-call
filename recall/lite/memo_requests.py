@@ -26,7 +26,7 @@ import os
 import re
 import tempfile
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -412,13 +412,15 @@ def write_memo(
     supersedes: str | None, request_id: str | None, expected_revision: str | None,
     include_receipt: bool, has_successor: Callable[[str, str | None], bool] | None = None,
     target: tuple[Path, str] | None = None, successor_folders: Sequence[Path] = (),
-    settled_by: str | None = None,
+    settled_by: str | None = None, settle_note: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Write `body` as a memo. Call while holding the store's write lane.
 
     `target` locates `supersedes` (`_target_conflict`); a correction without it is `target_missing`.
     `settled_by` names the rule whose pair `supersedes` is, recorded in the ledger's `settled` map
     beside the memo's author, so every edge settled at write time can be listed later.
+    `settle_note` is the answer's `settle` note of a settling write, journalled with its request, so a
+    retry answers what the first call did rather than inferring it from `supersedes`.
 
     Replies `{memo_id}` (legacy calls), `{memo_id, receipt}` when a receipt is asked for or a
     `request_id` or `expected_revision` is given, `{refused}` for a malformed `request_id` or
@@ -522,6 +524,8 @@ def write_memo(
                 # A memo id of this folder, or another folder's qualified id, which no forget here
                 # names: which correction a forget must re-key.
                 entry["supersedes"] = supersedes
+            if settle_note is not None:
+                entry["settle"] = dict(settle_note)
             requests[request_id] = entry
         memo_id = _publish(folder, ledger_path, ledger, data, kind=kind, number=_next_number(folder, ledger), entry=entry)
     if changed:

@@ -289,6 +289,92 @@ def test_settle_is_declined_where_a_source_policy_filters_the_listing(
     monkeypatch.setattr(recall_mcp.provenance, "current_facts_memory", empty)
     memos = AssistantMemos(tmp_path / "memos", index_root=tmp_path)
     (tmp_path / "memos").mkdir()
-    answer = memos._settle(None, {**TEA, "object": "coffee"}, "2026-02-01", None, None, None, True, object())  # type: ignore[arg-type]  # the store is never reached
+    answer = memos._settle(
+        None,  # type: ignore[arg-type]  # the store is never reached under a policy
+        fact={**TEA, "object": "coffee"}, valid_from="2026-02-01", supersedes=None, request_id=None,
+        access_context=None, read_facts=True, security_policy=object(),
+    )
     assert answer == (None, {"declined": "unchecked"}), answer
     assert reads == [], "the listing was read under a source policy"
+
+
+def test_settle_declines_a_target_whose_successor_is_written_but_not_indexed(
+    settle_envs: tuple[dict[str, str], dict[str, str]], tmp_path: Path
+) -> None:
+    """S10. The rule's older memo already has a successor on disk that no refresh has indexed yet:
+    settle declines `target_has_successor` and the memo is written without an edge. Its failure:
+    the settle passed the target to `write`, whose folder scan refused the whole call
+    `stale_target`, for a target the caller never named (CCA BUG-002).
+
+    Red proof (CCA run 20261125T132233Z, BUG-002), on the remote test host: against
+    `recall_mcp.assistant.AssistantMemos._settle` before this change, the answer was the refusal
+    `stale_target` with no `settle` note, and the assertion on `moved["settle"]` failed.
+    """
+    memos = AssistantMemos(tmp_path / "memos", index_root=tmp_path)
+
+    async def body(a: Call, p: Call, state: dict[str, Any]) -> None:
+        await _remember(a, "tea", "2026-01-01")
+        # Written, not indexed: the server's next refresh has not run yet.
+        written = memos.write("The user's tea note is corrected.", kind="note", supersedes="pref-0001")
+        assert "memo_id" in written, written
+        moved = json.loads(await _remember(a, "coffee", "2026-02-01", settle=True))
+        assert moved.get("settle") == {"declined": "target_has_successor"}, moved
+        assert "supersedes" not in (tmp_path / "memos" / f"{moved['memo_id']}.md").read_text(encoding="utf-8")
+
+    _serve_both(settle_envs, body)
+
+
+def test_a_retry_answers_what_the_first_settle_did(settle_envs: tuple[dict[str, str], dict[str, str]]) -> None:
+    """S11. A retry of a settling write whose first call declined answers the same decline: the
+    note is journalled with the request. Its failure: the retry inferred the note from the
+    journalled `supersedes`, and a declined first call replayed as `{"settled": None}`, "nothing to
+    settle" (CCA STAKES-003).
+
+    Red proof (CCA run 20261125T132233Z, STAKES-003), on the remote test host: against
+    `recall_mcp.assistant.AssistantMemos._settle` and `recall.lite.memo_requests.write_memo` before
+    this change, the retry's `settle` was `{"settled": None}` and the second assertion failed.
+    """
+
+    async def body(a: Call, p: Call, state: dict[str, Any]) -> None:
+        await _remember(a, "tea", "2026-01-01")
+        await _remember(a, "milk", "2026-01-01")
+        first = json.loads(await _remember(a, "water", "2026-02-01", settle=True, request_id="r-2"))
+        assert first.get("settle") == {"declined": "several_older_memos"}, first
+        again = json.loads(await _remember(a, "water", "2026-02-01", settle=True, request_id="r-2"))
+        assert again.get("settle") == {"declined": "several_older_memos"}, again
+        assert again["memo_id"] == first["memo_id"] and again.get("receipt", {}).get("replayed") is True, again
+
+    _serve_both(settle_envs, body)
+
+
+def test_a_settled_write_checks_its_target_once(
+    settle_envs: tuple[dict[str, str], dict[str, str]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """S12. A write that settles walks the index root for successor folders once, in `write`: the
+    write lane is held for the walk and for the scan of every memo folder it feeds. Its failure: a
+    pre-check in `_settle` repeated the walk and the scan that `write_memo` then made again for the
+    same target, in the same lane (CCA fix audit FA-1-7, run 20261125T132233Z).
+
+    Red proof (CCA run 20261125T132233Z, FA-1-7), on the remote test host: against the pass-1
+    snapshot of `recall_mcp.assistant.AssistantMemos._settle`, which called
+    `MemoFolder.successor_conflict`, the walk ran twice and the assertion on `walks` failed.
+    """
+    import recall.lite.assistant_memos as memo_folder
+
+    walks: list[object] = []
+    real = memo_folder._journal_ledgers
+
+    def counted(root: Path) -> list[Path]:
+        walks.append(root)
+        return real(root)
+
+    monkeypatch.setattr(memo_folder, "_journal_ledgers", counted)
+
+    async def body(a: Call, p: Call, state: dict[str, Any]) -> None:
+        await _remember(a, "tea", "2026-01-01")
+        walks.clear()
+        moved = json.loads(await _remember(a, "coffee", "2026-02-01", settle=True))
+        assert moved.get("settle") == {"settled": "pref-0001"}, moved
+        assert len(walks) == 1, f"the index root was walked {len(walks)} times for one settled write"
+
+    _serve_both(settle_envs, body)

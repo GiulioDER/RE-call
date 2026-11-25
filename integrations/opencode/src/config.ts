@@ -12,6 +12,8 @@ export type Config = {
   prefetch: boolean;
   writeTools: boolean;
   extraTools: boolean;
+  /** RE-call's `RECALL_ASSISTANT_SETTLE_SUCCESSORS`: off unless the user turns it on, as on the server. */
+  settleSuccessors: boolean;
   /** One line to log when an older OpenCode only store is kept instead of the shared one. */
   notice?: string;
 };
@@ -95,7 +97,7 @@ function liteDsn(file: string): string {
  * default store is there. A custom memo folder uses the OpenCode store unless a DSN is supplied.
  * With neither option set, an older OpenCode store is kept if the shared store is absent. */
 export function loadConfig(options: Record<string, unknown>, dataDir: string, sharedDir?: string): Config {
-  const known = new Set<string>([...Object.keys(STRINGS), ...Object.keys(BOOLEANS), "k"]);
+  const known = new Set<string>([...Object.keys(STRINGS), ...Object.keys(BOOLEANS), "k", "settle_successors"]);
   for (const key of Object.keys(options)) {
     // A misspelt option silently ignored would, for `write_tools`, offer what the user turned off.
     if (!known.has(key)) throw new Error(`re-call: unknown option ${JSON.stringify(key)}`);
@@ -110,6 +112,8 @@ export function loadConfig(options: Record<string, unknown>, dataDir: string, sh
     if (typeof value !== "boolean") throw new Error(`re-call: option ${key} must be true or false`);
     return value;
   };
+  const settle = options.settle_successors ?? false;
+  if (typeof settle !== "boolean") throw new Error("re-call: option settle_successors must be true or false");
   const k = options.k ?? 5;
   if (typeof k !== "number" || !Number.isInteger(k)) throw new Error("re-call: option k must be an integer");
 
@@ -146,6 +150,7 @@ export function loadConfig(options: Record<string, unknown>, dataDir: string, sh
     prefetch: flag("prefetch"),
     writeTools: flag("write_tools"),
     extraTools: flag("extra_tools"),
+    settleSuccessors: settle,
     ...(notice ? { notice } : {}),
   };
 }
