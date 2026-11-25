@@ -171,6 +171,23 @@ Rollback and garbage collection do not remove tombstones. The tombstone also cha
 generation's effective corpus fingerprint, so a calibration measured before erasure becomes stale
 and a replacement generation cannot recover the old binding.
 
+Deleted and rewritten rows stay in the table files as dead versions, and a `VACUUM` only marks
+their space reusable. On PostgreSQL 19 or later, run a compaction nightly after garbage collection,
+with the migration role, which owns the tables:
+
+```bash
+recall --migration-dsn "$RECALL_MIGRATION_DSN" schema compact
+```
+
+It runs `REPACK (CONCURRENTLY)` on the legacy table, `recall_chunks_v1` and the fact tables that
+`recall forget` rewrites, so the live rows move into new files and the old ones are removed. Reads
+and writes continue during it, more slowly. It rebuilds every index, the HNSW index included, so
+on a large chunk table it takes minutes: schedule it for a quiet hour, and raise the migration
+role's `maintenance_work_mem` so the HNSW graph fits in memory while it is rebuilt. It holds the
+migration lock, so it cannot overlap `recall schema apply`. Before PostgreSQL 19 it refuses: the
+only rewrite there is `VACUUM FULL`, which blocks each table for its whole run. A rewrite does not
+reach the WAL, replicas, backups, or the filesystem blocks the old files occupied.
+
 Rows from a v0.8 table remain readable through the legacy API and are registered as
 `legacy_unverified` evidence. They are never copied into `recall_chunks_v1`, selected as an active
 generation, or exposed through strict v1 generation search.

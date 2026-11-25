@@ -138,6 +138,24 @@ def test_r5_schema_is_judged_on_the_dsn_it_opens() -> None:
     assert applied is not None and LITE in applied, f"a lite migration DSN was not refused: {applied}"
 
 
+def test_schema_compact_points_a_lite_store_to_vacuum() -> None:
+    """`schema compact` is judged like `status` and `plan`: on the migration DSN when given, else
+    the serving DSN, so a lite user without a migration DSN is pointed to `recall forget --vacuum`,
+    the lite equivalent, rather than told to supply a migration DSN.
+
+    Red proof: with the compact reason removed from `recall.backends.lite_command_refusal` (every
+    schema subcommand gets "A lite file has no migrations"), this fails on the first `--vacuum`
+    assertion. Judging the migration DSN alone, as `apply` is, was tried and dropped: it changes
+    only the lite-serving case without a migration DSN, and for the worse."""
+    assert lite_command_refusal(_parsed(["--dsn", LITE, "--migration-dsn", PG, "schema", "compact"])) is None
+    for argv in (
+        ["--dsn", PG, "--migration-dsn", LITE, "schema", "compact"],
+        ["--dsn", LITE, "schema", "compact"],
+    ):
+        refused = lite_command_refusal(_parsed(argv))
+        assert refused is not None and "--vacuum" in refused, refused
+
+
 def test_r6_a_postgres_run_does_not_import_the_lite_store() -> None:
     """PERF-001. The classification costs a non-lite run nothing: `recall.lite.store` (and through
     it calibration, embeddings and sqlite3) is imported only when a DSN the run judges is

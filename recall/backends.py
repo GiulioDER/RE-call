@@ -106,7 +106,10 @@ def lite_command_refusal(args: Namespace) -> str | None:
     if command == "schema":
         if getattr(args, "schema_cmd", None) == "grants":
             return None  # prints SQL for an operator to run; opens nothing
-        reason = "A lite file has no migrations; `recall doctor` reports its state."
+        if getattr(args, "schema_cmd", None) == "compact":
+            reason = "A lite file has no tables to repack; `recall forget --vacuum` reclaims and zeroes its freed bytes."
+        else:
+            reason = "A lite file has no migrations; `recall doctor` reports its state."
     elif command == "lint":
         if not getattr(args, "semantic", False):
             return None  # the file checks open no store
