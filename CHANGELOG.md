@@ -13,8 +13,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 * PostgreSQL 19 is supported. CI runs schema migrations and the upgrade from 0.14.0 on 16 to 19,
   and the complete suite on 19 as well as 18. The Docker default stays on 18. 19's English stemmer
   changed, so after moving a database to 19 the stored `tsvector` values can miss queries for words
-  whose stem changed. A generation rebuild does not refresh them; recompute them with the statements
-  in [DEPENDENCIES.md](docs/DEPENDENCIES.md).
+  whose stem changed. Building and promoting a new generation on the new server refreshes them;
+  the legacy `chunks` table, and a generation refreshed in place, use the statements in
+  [DEPENDENCIES.md](docs/DEPENDENCIES.md).
 * `recall_remember(settle=true)` on the assistant surface writes the `supersedes` that rule
   `deterministic.stated_key_successor` would propose for the new memo into the memo itself, so a
   later value of a declared key replaces the earlier one without a second write or a review. It
@@ -30,6 +31,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ### Changed
 
+* On a lite store, a memo you forget or withdraw stays forgotten while its file is still in the
+  memo folder. `recall lite refresh` (and the MCP server's refresh, and `recall index <folder>`)
+  used to index it again on the next run; now they leave it out and report it as `forgotten`.
+  Index the file by name (`recall index <file>`) to bring it back. A file deleted from the folder
+  is pruned and re-added on return as before. PostgreSQL stores are unchanged.
 * A generation now records how its PostgreSQL server stems a fixed probe of words, and a server
   that stems them differently (as PostgreSQL 19 does for some English words) gets
   `LINEAGE_MISMATCH` for that generation until it is rebuilt there. `recall doctor` reports the
@@ -38,6 +44,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 ### Fixed
 
 * The MCP handshake reports the installed RE-call version in `serverInfo.version`.
+* A generation build that reuses an unchanged source derives its `tsvector` on the server running
+  the build instead of copying the earlier generation's. A copy carried an old server's stemming
+  through every rebuild after a PostgreSQL major upgrade, while the generation recorded the new
+  server's stemmer, so the stemmer check passed on stale lexemes.
 
 ## [0.16.1] (2026-11-23)
 

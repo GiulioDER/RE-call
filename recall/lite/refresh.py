@@ -325,6 +325,8 @@ class RefreshReport:
     skipped: int = 0
     deleted: int = 0
     denied: int = 0
+    #: Files a person forgot, left out of this refresh until one is indexed by name.
+    forgotten: int = 0
     chunks_total: int = 0
     calibration: str = ""
     calibration_reason: str = ""
@@ -354,6 +356,11 @@ class RefreshReport:
             )
             if self.denied:
                 lines.append(f"denied       {self.denied} file(s) refused by the source policy, not indexed")
+            if self.forgotten:
+                lines.append(
+                    f"forgotten    {self.forgotten} file(s) you forgot, left out; "
+                    "`recall index <file>` brings one back"
+                )
         if self.calibration:
             lines.append(f"calibration  {self.calibration}: {self.calibration_reason}")
         if self.atomic:
@@ -654,6 +661,7 @@ def _refresh_locked(
                 report.chunks_written += stats.chunks
                 report.skipped += stats.skipped
                 report.deleted += stats.deleted
+                report.forgotten += stats.forgotten
         calibration = _calibrate(store, embedder, background_calibration, refusal_env)
     except Exception as exc:  # BROAD-CATCH: fail-open  # recorded in the state file and returned
         _log.warning("lite refresh of %s failed: %s", db, exc)

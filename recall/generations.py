@@ -847,7 +847,12 @@ class GenerationManager:
             # see it as such.
             "text, metadata || %s::jsonb || jsonb_build_object('reused_from_generation', generation_id, "
             "%s::text, %s::text), "
-            "embedding, clock_timestamp(), COALESCE(first_indexed_at, indexed_at), tsv "
+            # `tsv` is derived again, never copied: it is this server's stemming of the text, and
+            # PostgreSQL 19 stems some words differently from 18 (19 release notes, E.1.3.5).
+            "embedding, clock_timestamp(), COALESCE(first_indexed_at, indexed_at), "
+            "to_tsvector((SELECT (g.pipeline_identity #>> '{fts_configuration,language}')::regconfig "
+            "FROM recall_generations g WHERE g.tenant_id = recall_chunks_v1.tenant_id "
+            "AND g.generation_id = recall_chunks_v1.generation_id), text) "
             "FROM recall_chunks_v1 "
             "WHERE tenant_id = %s AND generation_id = %s AND source_uri = %s",
             (

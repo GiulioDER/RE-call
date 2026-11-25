@@ -853,6 +853,7 @@ class IndexStats:
     deleted: int = 0   # files gone from disk whose rows were pruned
     undecodable: int = 0   # files whose contents are not valid UTF-8, so not read
     unrepresentable: int = 0   # files whose name is not valid UTF-8, so not stored
+    forgotten: int = 0   # files a person forgot, left out of this walk of their folder
 
 
 @dataclass(frozen=True)
@@ -1079,6 +1080,15 @@ class Indexer:
         passed, not whether its value happens to differ from the default.
         """
         root, files, dropped = self._resolve_candidates(path, glob, files)
+        # A memo a person forgot stays out of every walk of its folder (a refresh, a folder index);
+        # indexing its file by name brings it back (owner decision, 2026-11-25). Only a lite store
+        # records the mark, so a store without these methods indexes as before.
+        held = getattr(self._store, "forgotten_sources", None)
+        forgotten = held([str(f) for f in files]) if callable(held) and files else set()
+        if forgotten and root.is_dir():
+            files = [f for f in files if str(f) not in forgotten]
+        elif forgotten:
+            getattr(self._store, "restore_forgotten")(sorted(forgotten))
         # Identify each file by its ROOT-RELATIVE path, not its bare basename: two files with the
         # same basename in different directories (a/notes.md, b/notes.md) must not collide in the
         # supersession map or in provenance. Mirrors recall.lint's `rel` keying. A single-file
@@ -1335,6 +1345,7 @@ class Indexer:
             deleted=deleted,
             undecodable=undecodable,
             unrepresentable=unrepresentable,
+            forgotten=len(forgotten) if root.is_dir() else 0,
         )
 
     def _resolve_candidates(
