@@ -40,6 +40,7 @@ flowchart LR
     f_claim_extraction["Claim extraction and rewrite"]
     f_forget["Forget and withdraw"]
     f_audit_records["Audit records"]
+    f_repair_checks["Repair check selection"]
     f_agent_reports["Agent stale and use reports"]
   end
   subgraph a_5["Surfaces"]
@@ -87,6 +88,7 @@ flowchart LR
   s_mcp --> f_forget
   s_cli --> f_audit_records
   s_mcp --> f_audit_records
+  s_cli --> f_repair_checks
   s_mcp --> f_agent_reports
   s_mcp --> f_mcp_server
   s_scripts --> f_mcp_server
@@ -121,6 +123,7 @@ flowchart LR
 | [Claim extraction and rewrite](#claim-extraction) | Memory truth | `recall extract`, `recall rewrite` |
 | [Forget and withdraw](#forget) | Memory truth | `recall forget`, `recall withdraw`, `recall_forget`, `recall_withdraw` |
 | [Audit records](#audit-records) | Memory truth | `recall records`, `recall_records` |
+| [Repair check selection](#repair-checks) | Memory truth | `recall repair-checks` |
 | [Agent stale and use reports](#agent-reports) | Memory truth | `recall_report_stale`, `recall_report_use` |
 | [MCP server](#mcp-server) | Surfaces | `recall-mcp` (script), `recall-codex-mcp` (script), `recall_stats`, `recall_tenants`, `recall_inventory`, `recall_resolve_reference` |
 | [Authentication, tenancy and source policy](#auth) | Surfaces | library only |
@@ -162,7 +165,7 @@ Say which part of an install is wrong, and which optional models and extras are 
 The command tree, its global options, and the helpers its command families share.
 
 - **Entry points:** `recall` (script)
-- **Modules:** `recall/cli.py`, `recall/cli_commands/__init__.py`, `recall/cli_commands/_shared.py`, `recall/cli_commands/_lite.py`
+- **Modules:** `recall/cli.py`, `recall/cli_commands/__init__.py`, `recall/cli_commands/_shared.py`, `recall/cli_commands/_lite.py`, `recall/cli_commands/_input.py`
 - **Tests:** `tests/test_cli*.py`
 - **Docs:** `docs/API.md`
 
@@ -322,6 +325,16 @@ Bug and fix records keyed to the code they describe, looked up by exact key.
 - **Modules:** `recall/records.py`, `recall/records_files.py`, `recall/anchors.py`, `recall/fix_selection.py`, `recall/cli_commands/records_cmd.py`
 - **Tests:** `tests/test_records*.py`, `tests/test_anchors*.py`
 - **Docs:** `docs/AUDIT_MEMORY_DESIGN.md`
+
+<a id="repair-checks"></a>
+## Repair check selection
+
+After a failed repair, build a selector prompt over a fixed menu of checks, validate the chosen pair, and package the observed results for the retry.
+
+- **Entry points:** `recall repair-checks`
+- **Modules:** `recall/cli_commands/repair_checks.py`
+- **Tests:** `tests/test_repair_checks.py`
+- **Docs:** `docs/API.md`
 
 <a id="agent-reports"></a>
 ## Agent stale and use reports

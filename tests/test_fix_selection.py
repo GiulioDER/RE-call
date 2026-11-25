@@ -304,6 +304,26 @@ def test_stdin_request_decodes_as_utf8_whatever_the_console_code_page(
     assert _read_fix_request("-").candidates[0].repair == "Reject → the second row."
 
 
+@pytest.mark.parametrize("reader", ["_read_fix_request", "_read_anchors"])
+@pytest.mark.parametrize("stdin", [None, "text-only"])
+def test_unreadable_stdin_is_refused_like_an_unreadable_file(
+    monkeypatch: pytest.MonkeyPatch, reader: str, stdin: str | None,
+) -> None:
+    """A closed or text-only standard input gives the records refusal, not a traceback.
+
+    Red proof (CCA BUG-002 sibling, deferred run 20261125T110735Z): with the pre-fix
+    `sys.stdin.buffer.read` in both `recall.cli_commands.records_cmd` readers, every case raises
+    AttributeError instead of the SystemExit `pytest.raises` expects.
+    """
+    import io
+
+    from recall.cli_commands import records_cmd
+
+    monkeypatch.setattr("sys.stdin", None if stdin is None else io.StringIO("{}"))
+    with pytest.raises(SystemExit, match="recall records: cannot read"):
+        getattr(records_cmd, reader)("-")
+
+
 def test_stdin_anchors_decode_as_utf8_whatever_the_console_code_page(monkeypatch: pytest.MonkeyPatch) -> None:
     """`--anchors -` shares the request reader's decoding (CCA BUG-001 sibling, run 20261124T214848Z).
 
