@@ -108,6 +108,18 @@ def run(walk: Walk, run_id: str, launched: dict[str, Any]) -> None:
     w.check("forget", "--yes forgets 1 chunk", "forgot 1 chunk(s) from 1 source(s)." in d.get("stdout", ""), d.get("stdout", d))
     d, _ = w.ctl("search", "--run", run_id, "--development", "zephyr rollout waves")
     w.check("forget", "the memo is gone from search", all(r.get("source") != "zephyr_rollout.md" for r in d.get("rows", [])), d.get("rows", d))
+    d, _ = w.ctl("refresh", "--run", run_id)
+    report = d.get("report") or {}
+    w.check("forget", "a refresh leaves the forgotten memo out", (report.get("indexed_files"), report.get("forgotten"), report.get("chunks_total")) == (0, 1, 22), report)
+    d, _ = w.ctl("search", "--run", run_id, "--development", "zephyr rollout waves")
+    w.check("forget", "still gone from search after the refresh", all(r.get("source") != "zephyr_rollout.md" for r in d.get("rows", [])), d.get("rows", d))
+    d, _ = w.ctl("index", "--run", run_id, "zephyr_rollout.md")
+    w.check("forget", "indexing the file by name succeeds", d.get("exit") == 0, d)
+    d, _ = w.ctl("search", "--run", run_id, "--development", "zephyr rollout waves")
+    w.check("forget", "the memo is back after an index by name", (d.get("rows") or [{}])[0].get("source") == "zephyr_rollout.md", (d.get("rows") or [d])[:1])
+    d, _ = w.ctl("refresh", "--run", run_id)
+    report = d.get("report") or {}
+    w.check("forget", "the next refresh keeps it (forgotten 0, 23 chunks)", (report.get("forgotten"), report.get("chunks_total")) == (0, 23), report)
 
 
 def main(argv: list[str] | None = None) -> int:

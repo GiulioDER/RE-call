@@ -71,6 +71,7 @@ is registered with no client on purpose.
 | `refresh --run R [--check]` | `recall lite refresh --json`; `report.current`, `indexed_files`, `chunks_written` |
 | `write-memo --run R name.md "text"` | creates or replaces one memo in the run's folder |
 | `forget --run R name.md [--yes]` | `recall forget`; previews unless `--yes` |
+| `index --run R name.md` | `recall index` of one memo by name; the way back for a forgotten one |
 | `mcp --run R [--development] tool --args '{json}'` | starts `recall_mcp.server` over stdio on the run's store, lists tools, calls one; `structured` is the decoded answer |
 | `list` | every run under the verify root, which are this checkout's |
 
