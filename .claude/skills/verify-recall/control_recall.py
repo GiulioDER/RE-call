@@ -105,7 +105,9 @@ def launch(args: argparse.Namespace) -> int:
 
 def doctor(args: argparse.Namespace) -> int:
     run = _run_dir(args.run)
-    done = _recall(run, "doctor", ["doctor", "--json", "--project-root", str(run / "scratch")])
+    # Doctor checks the embedder it is told, else the default fastembed: name the run's own.
+    embedder = json.loads((run / "run.json").read_text(encoding="utf-8"))["embedder"]
+    done = _recall(run, "doctor", ["doctor", "--json", "--project-root", str(run / "scratch")], embedder=embedder)
     checks = {c["name"]: c for c in json.loads(done["stdout"] or '{"checks": []}')["checks"]}
     package = checks.get("recall package", {}).get("detail", "")
     problems = [] if str(CHECKOUT / "recall") in package else [f"recall loaded from elsewhere: {package}"]

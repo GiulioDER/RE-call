@@ -19,7 +19,10 @@ Run `recall --serving-dsn <dsn> doctor --json --project-root <project>`.
 
 ## Gotchas
 
-- Two `warn`s are expected on every run: `calibration` (hashing never certifies) and `claude code`
-  (the run is registered with no client, on purpose).
+- `calibration` always warns (hashing never certifies). `claude code` warns where a Claude Code
+  configuration exists and is skipped where none does, such as CI; the run is registered with no
+  client on purpose.
+- Doctor checks the embedder it is given, else the default `fastembed`, which CI does not install;
+  `control_recall doctor` passes the run's own (observed on CI 2026-11-25: `embedder: fail` before).
 - `--project-root` is the run's scratch folder, so doctor never reads the checkout's own client
   configuration as if it were the run's.

@@ -61,7 +61,10 @@ def run(walk: Walk, run_id: str, launched: dict[str, Any]) -> None:
     checks = d.get("checks", {})
     w.check("doctor", "healthy", d.get("healthy") and rc == 0, d.get("problems", d))
     w.check("doctor", "database and corpus ok, docker skipped", (checks.get("database"), checks.get("corpus"), checks.get("docker")) == ("ok", "ok", "skip"), checks)
-    w.check("doctor", "only calibration and claude code warn", {k for k, v in checks.items() if v == "warn"} == {"calibration", "claude code"}, checks)
+    warned = {k for k, v in checks.items() if v == "warn"}
+    # `claude code` warns where a Claude Code configuration exists and is skipped where none does.
+    w.check("doctor", "calibration warns, and nothing else but claude code", "calibration" in warned and warned <= {"calibration", "claude code"}, checks)
+    w.check("doctor", "the run's own embedder is checked", checks.get("embedder") == "ok", checks)
 
     d, _ = w.ctl("search", "--run", run_id, QUESTION)
     w.check("search", "strict search refuses with CALIBRATION_UNCERTIFIED", (d.get("exit"), d.get("code"), d.get("rows")) == (1, "CALIBRATION_UNCERTIFIED", []), d)

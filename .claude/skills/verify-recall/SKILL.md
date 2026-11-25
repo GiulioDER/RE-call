@@ -59,8 +59,9 @@ python .claude/skills/verify-recall/control_recall.py doctor --run <run>
 
 Read-only. `"healthy": true` requires `recall doctor --json` to have no `fail`, the `recall` package
 to load from this checkout, and the run's store to exist. Run it before the first drive and after any
-drive that surprised you. Two `warn`s are expected on every run: `calibration` (hashing never
-certifies) and `claude code` (the run is registered with no client, on purpose).
+drive that surprised you. `calibration` always warns (hashing never certifies); `claude code`
+warns where a Claude Code configuration exists and is skipped where none does (CI), because the run
+is registered with no client on purpose.
 
 ## Drive
 
