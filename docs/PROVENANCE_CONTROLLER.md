@@ -118,7 +118,8 @@ it names already hides the prior value wherever the new fact holds. Model-inferr
 never authorization evidence.
 
 Predicates are single-valued by default. A fixed table makes a few multi-valued
-(`DEFAULT_PREDICATE_CARDINALITY`: `email`, `phone`, `alias` and similar are `set`; `visited`,
+(`DEFAULT_PREDICATE_CARDINALITY`: `email`, `phone`, `alias`, `citizenship`, `author` and similar,
+and lower-cased Wikidata ids such as `p27` and `p50`, are `set`; `visited`,
 `attended` and similar are `event`), and a fact may declare its own `cardinality`. Two values
 conflict unless both are `set` or both are `event`, so declaring `set` cannot slip a second
 value past a single-valued one. Multiplicity is never inferred from retrieval output.
