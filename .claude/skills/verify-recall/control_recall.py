@@ -160,6 +160,16 @@ def forget(args: argparse.Namespace) -> int:
                   "stderr": done["stderr"][-800:], "evidence": done["evidence"]}, 0 if done["exit"] == 0 else 1)
 
 
+def index(args: argparse.Namespace) -> int:
+    run = _run_dir(args.run)
+    target = (run / "scratch" / "notes" / args.name).resolve()
+    if target.parent != (run / "scratch" / "notes").resolve() or not target.is_file():
+        raise Usage(f"{args.name!r} is not a memo in the run's folder", "pass a bare name such as zephyr_rollout.md; `write-memo` creates one")
+    done = _recall(run, "index", ["index", str(target)])
+    return _emit({"run": args.run, "exit": done["exit"], "stdout": done["stdout"][-800:],
+                  "stderr": done["stderr"][-800:], "evidence": done["evidence"]}, 0 if done["exit"] == 0 else 1)
+
+
 def mcp(args: argparse.Namespace) -> int:
     run = _run_dir(args.run)
     try:
@@ -242,6 +252,10 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--yes", action="store_true", help="actually delete; without it this is a dry run")
     p.add_argument("sources", nargs="+")
     p.set_defaults(handler=forget)
+    p = sub.add_parser("index", help="`recall index` one memo of the run's folder by name (brings back a forgotten memo)")
+    p.add_argument("--run", required=True)
+    p.add_argument("name")
+    p.set_defaults(handler=index)
     p = sub.add_parser("mcp", help="start the MCP server over stdio on the run's store, list tools, call one")
     p.add_argument("--run", required=True)
     p.add_argument("--development", action="store_true")
