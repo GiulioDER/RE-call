@@ -35,6 +35,7 @@ from recall.extraction import (
     strip_nul_from_blocks,
 )
 from recall.frontmatter import (
+    INDEXED_VIA_KEY,
     MARKDOWN_SUFFIXES,
     RECORD_KEY,
     legacy_pairing_differs,
@@ -921,8 +922,13 @@ class Indexer:
         security_context: AccessContext | None = None,
         env: Mapping[str, str] | None = None,
         context_group_for_file: Callable[[Path], str] | None = None,
+        indexed_via: str | None = None,
     ) -> None:
         self._store = store
+        #: The write channel (`recall index`, `recall_index`, `recall_ingest`, ...) stamped on each
+        #: chunk as `indexed_via` when its source enters the index; a re-index keeps the first one
+        #: (`_flush`), so a person re-indexing a file an agent wrote does not relabel it.
+        self._indexed_via = indexed_via
         self._embedder = embedder
         self._env = dict(os.environ if env is None else env)
         self._chunker = chunker
@@ -1677,6 +1683,7 @@ class Indexer:
         """Embed and write one batch. Returns chunks written."""
         if not sources:
             return 0
+        self._stamp_indexed_via(sources, [*chunks, *(shadow_chunks or [])])
         # Embed BEFORE touching the store: if embedding fails, this batch's old rows stay
         # intact. With a cache, unchanged chunk text is served from cache and never re-embedded.
         active_texts = embedding_texts if embedding_texts is not None else [c.text for c in chunks]
@@ -1731,6 +1738,19 @@ class Indexer:
             self._store.tenant, operation_id, len(shadow_chunks)
         )
         return self._write_sparse(chunks)
+
+    def _stamp_indexed_via(self, sources: list[str], chunks: list[Chunk]) -> None:
+        """Each chunk's `indexed_via`: the channel its source first entered through, else this run's.
+
+        Read from the store just before `replace_sources` deletes the old rows. A store without the
+        read (a test double, a read-only generation store) keeps only this run's channel.
+        """
+        lookup = getattr(self._store, "indexed_via_for", None)
+        held: dict[str, str] = lookup(sources) if callable(lookup) else {}
+        for chunk in chunks:
+            via = held.get(chunk.source, self._indexed_via)
+            if via is not None:
+                chunk.metadata[INDEXED_VIA_KEY] = via
 
     def _embed_bounded(
         self, embedder: Embedder, texts: list[str], group_keys: list[str] | None = None

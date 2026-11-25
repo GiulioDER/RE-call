@@ -297,6 +297,7 @@ def _index_memory_unlocked(
                 security_policy=security_policy,
                 security_context=security_context,
                 env=values,
+                indexed_via="recall_ingest" if lane_purpose == "ingest" else "recall_index",
             )
             # Publication already holds this same guard; a second PostgreSQL
             # connection would contend with the caller's non-reentrant lock.

@@ -171,15 +171,22 @@ note that declares `supersedes: <stem of a true memory>` turns that memory's hit
 `superseded`, and when a demoted hit cleared the calibrated threshold, the planted successor is
 served as `ok` even if its own score is below it (the `promoted_files` step in
 `recall.trust_gate.evaluate`). A planted document that reuses the target's file name has a weaker
-effect: the reference becomes ambiguous, the documents sharing that name are reported as
-`ambiguous_supersession`, and none of them is served as `ok`. Either way the outcome is a refusal or
-a wrong current answer, and nothing in the result distinguishes it from a legitimate update.
+effect, and which one depends on where it lands. Under the declaring memo's own root, in another
+folder or spelled with another case, it makes a bare reference ambiguous: the documents the
+reference could name are reported as `ambiguous_supersession`, and none of them is served as `ok`.
+Under another root (an upload through `recall_ingest` lands under `uploads/<tenant>/`), the
+reference names the copy in the declaring memo's own root (`ReferenceIndex._pick` in
+`recall/supersession.py`), so the true target is retired as declared and the planted copy is
+served on its own score, like any note that declares nothing. Either way the outcome is a refusal
+or a wrong current answer, and nothing in the verdict distinguishes it from a legitimate update.
 
 Since the window rule (2026-10-21) a planted successor demotes its target only while the planted
 document's own `valid_from` and `valid_until` hold, and one whose window cannot be parsed demotes
-at every instant, as before. References are matched case-insensitively and NFC-folded, an exact
-root-relative path first, so a planted `NOTES.md` now collides with `notes.md` (ambiguity, a
-refusal) where it did not before, while a path-qualified reference names one file.
+at every instant, as before. References are matched case-insensitively and NFC-folded. A reference
+that names a folder is matched by its path, and a bare name by its stem alone (a bare name matched
+by path let a planted root-level `notes.md` capture `supersedes: notes` meant for
+`archive/notes.md`), so a planted `NOTES.md` collides with `notes.md` (ambiguity, a refusal) while
+a path-qualified reference names one file.
 
 **The agent-facing write paths carry the same authority.** `recall_ingest` indexes uploaded file
 contents through the same pipeline, and `recall_index` indexes files under `RECALL_INDEX_ROOT`, so
@@ -190,6 +197,17 @@ differently: `Indexer.apply_provenance` in `recall/index.py` writes it last, so 
 relabel its own origin, but supersession does not consult provenance. In a memory corpus, where
 agents are the usual writers, the realistic form of this attack is an agent persuaded by text it
 retrieved or browsed into writing a memory that retires a true one.
+
+**The write channel is recorded, not enforced.** Each chunk keeps `indexed_via`, the channel its
+source first entered the index through: `cli_index` (`recall index`), `recall_index`,
+`recall_ingest`, `recall_remember` or `folder_refresh` (a lite folder refresh, the SessionEnd
+hook, setup). A re-index keeps the first value, so a person re-indexing a file an agent left for
+`recall_index` does not relabel it; a source forgotten and indexed again starts over. It is never
+read from front matter. `recall_search` returns it on every hit and the lite dashboard shows it
+beside each "Superseded by" link, so a planted successor reads as one that came through
+`recall_ingest`. It changes no verdict, and it names the tool, not the person or agent behind it:
+a file an agent writes to disk and a person indexes with `recall index` reads `cli_index`.
+Sources indexed before it existed, and generation builds, carry none.
 
 So corpus write access is the trust boundary for validity, exactly as it is for content. Hold it
 the same way: index only directories whose writers you trust (`RECALL_INDEX_ROOT`, and the source

@@ -845,7 +845,8 @@
       const list = el("ul");
       for (const other of items.slice(0, 40)) {
         const li = el("li");
-        const btn = el("button", "linkbtn", other.title);
+        const via = end === "source" && label.startsWith("Superseded by") && other.indexed_via;
+        const btn = el("button", "linkbtn", via ? other.title + " · via " + other.indexed_via : other.title);
         btn.dataset.memo = other.id;
         btn.type = "button";
         btn.addEventListener("click", (ev) => {

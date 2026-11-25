@@ -29,6 +29,9 @@ VALIDITY_KEYS = ("valid_from", "valid_until", "supersedes")
 #: The one validity key that may hold several values. Read it with `supersedes_targets`.
 SUPERSEDES = "supersedes"
 GRAPH_KEY = "recall_graph"
+#: Chunk metadata naming the write channel a source first entered the index through
+#: (`Indexer(indexed_via=...)`). Never a frontmatter key, so a document cannot name its own channel.
+INDEXED_VIA_KEY = "indexed_via"
 #: An audit record: one line of JSON, kept exactly as authored. `recall.records.admit_record`
 #: validates it where metadata is written; this parser only reads it. Metadata, not a truth claim:
 #: it never touches validity, which stays in `valid_from`, `valid_until` and `supersedes`.

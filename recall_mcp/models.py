@@ -53,6 +53,12 @@ class SearchHit(BaseModel):
     indexed_at: str | None = Field(
         default=None, description="ISO timestamp of when this memory entered the index."
     )
+    indexed_via: str | None = Field(
+        default=None,
+        description="The channel this memory's source first entered the index through: "
+        "cli_index | recall_index | recall_ingest | recall_remember | folder_refresh. A re-index "
+        "keeps the first. Null for a source indexed before this was recorded, or by another path.",
+    )
     text: str = Field(description="The retrieved memory chunk.")
     authority: str = Field(default="unknown", description="Authored authority tier.")
     dependencies: list[str] = Field(

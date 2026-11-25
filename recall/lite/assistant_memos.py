@@ -334,7 +334,10 @@ class MemoFolder:
         """
         from recall.lite.refresh import Outcome, refresh
 
-        report = refresh(store, [self.folder], embedder, force=True, key_root=self.index_root, **kwargs)
+        report = refresh(
+            store, [self.folder], embedder, force=True, key_root=self.index_root,
+            indexed_via="recall_remember", **kwargs,
+        )
         if report.outcome not in (Outcome.REFRESHED, Outcome.UNCHANGED):
             raise RuntimeError(f"memo refresh {report.outcome.value}: {report.reason}")
         return report

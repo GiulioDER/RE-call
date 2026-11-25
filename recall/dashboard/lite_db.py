@@ -623,7 +623,7 @@ def corpus_graph(dsn: str, tenant: str, *, today: date | None = None) -> dict[st
 
     files = [
         (file, len(group), min(r.first_indexed_at for r in group), most(group, "type"), most(group, "valid_from"),
-         most(group, "valid_until"), group[0].metadata.get("heading_hierarchy"), source)
+         most(group, "valid_until"), group[0].metadata.get("heading_hierarchy"), source, most(group, "indexed_via"))
         for (file, source), group in by_file.items()
     ]
     entities = {entity.id: entity for entity in graph.entities}

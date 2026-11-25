@@ -395,7 +395,7 @@ def test_index_memory_directory_indexes_via_indexer(monkeypatch, tmp_path):
             calls["checked"] = True
 
     class FakeIndexer:
-        def __init__(self, store, embedder, chunker=None, cache=None, context_policy=None):
+        def __init__(self, store, embedder, chunker=None, cache=None, context_policy=None, indexed_via=None):
             calls["store"] = store
             calls["embedder"] = embedder
             calls["cache"] = cache

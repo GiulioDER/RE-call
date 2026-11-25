@@ -465,6 +465,7 @@ def refresh(
     record_spec: str | None = None,
     record_profile: str | None = None,
     refusal_env: Mapping[str, str] | None = None,
+    indexed_via: str = "folder_refresh",
 ) -> RefreshReport:
     """Bring `store` up to date with `roots`. See the module docstring; never raises on a busy lane.
 
@@ -561,6 +562,7 @@ def refresh(
                 record_spec=record_spec,
                 record_profile=record_profile,
                 refusal_env=refusal_env,
+                indexed_via=indexed_via,
             )
     except LiteWriterCoalesced:
         report.outcome = Outcome.COALESCED
@@ -590,6 +592,7 @@ def _refresh_locked(
     record_profile: str | None = None,
     refusal_env: Mapping[str, str] | None = None,
     rescue_env: Mapping[str, str] | None = None,
+    indexed_via: str = "folder_refresh",
 ) -> RefreshReport:
     """`rescue_env`, when given, is the environment the atomic rescue artifact is built under in
     place of `refusal_env` (setup's, which registers settings its own shell does not hold)."""
@@ -651,6 +654,7 @@ def _refresh_locked(
                 allow_prune=allow_prune,
                 security_policy=security_policy,
                 security_context=security_context,
+                indexed_via=indexed_via,
             )
             for root in roots:
                 # Picks the key root for stored names; no file is read.
