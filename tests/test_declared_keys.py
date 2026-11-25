@@ -172,3 +172,34 @@ def test_the_settle_target_is_the_rules_older_memo_and_the_table_decides_cardina
     same_day = _listing([], [_contested((tea, "m/1.md"), (_fact("user", "drink", "milk", 1), "m/2.md"))])
     assert settle_target(same_day, coffee, None) == (None, "several_older_memos")
     assert settle_target(_listing([_standing(tea, "m/1.md")], served="degraded"), coffee, None) == (None, "unchecked")
+
+
+def test_settle_declines_while_two_earlier_memos_hold_the_key() -> None:
+    """K7. With two earlier values of a key in force, `settle_target` declines `several_older_memos`
+    whatever their starts: rule R(a') pairs a new memo with the latest earlier start only, so
+    settling it would leave the older value in force beside the new one, the key still contested.
+
+    Red proof (CCA run 20261125T120125Z, DOC-003), on the remote test host: against the pre-fix
+    `recall.declared_keys.settle_target` (the PR head before the audit fixes), which counted only
+    the latest earlier start group, this returned `('m/2.md', None)` and failed the assertion.
+    """
+    tea, milk, coffee = (_fact("user", "drink", "tea", 1), _fact("user", "drink", "milk", 2),
+                         _fact("user", "drink", "coffee", 3))
+    held = _listing([], [_contested((tea, "m/1.md"), (milk, "m/2.md"))])
+    assert settle_target(held, coffee, None) == (None, "several_older_memos")
+
+
+def test_settle_declines_while_any_other_memo_holds_the_key() -> None:
+    """K8. A settle that would leave another holder of the key in force (undated, of the new memo's
+    start, or later than it) is declined `other_memos_hold_key`: the key would read contested after
+    a write that claims to settle it. One earlier memo alone still settles.
+
+    Red proof (CCA run 20261125T120125Z, fix audit FA-1-5), on the remote test host: against the
+    pass-1 snapshot of `recall.declared_keys.settle_target`, which counted only earlier-dated holders,
+    the undated case returned `('m/1.md', None)` and failed the first assertion.
+    """
+    milk, coffee = _fact("user", "drink", "milk", 1), _fact("user", "drink", "coffee", 3)
+    for other in (_fact("user", "drink", "tea"), _fact("user", "drink", "juice", 3), _fact("user", "drink", "soda", 5)):
+        held = _listing([], [_contested((milk, "m/1.md"), (other, "m/2.md"))])
+        assert settle_target(held, coffee, None) == (None, "other_memos_hold_key"), other
+    assert settle_target(_listing([_standing(milk, "m/1.md")]), coffee, None) == ("m/1.md", None)

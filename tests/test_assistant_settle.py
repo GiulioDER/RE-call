@@ -49,9 +49,12 @@ from typing import Any
 import pytest
 
 from recall.declared_keys import STATED_KEY_SUCCESSOR_RULE
-from recall.lite.assistant_memos import LEDGER_NAME
+from recall.lite.assistant_memos import LEDGER_NAME, MemoFolder
+import recall_mcp.provenance
+from recall.types import AtomicFact
 from recall_mcp.assistant import SETTLE_ENV, AssistantMemos
 from tests.test_assistant_surface import TEA, Call, _serve_both
+from tests.test_lite_calibration import ContentWordEmbedder
 from tests.test_assistant_surface import envs as envs  # noqa: F401  # the fixture, reused
 
 
@@ -168,5 +171,97 @@ def test_a_retry_replays_the_settled_write(settle_envs: tuple[dict[str, str], di
         assert first.get("settle") == {"settled": "pref-0001"}, first
         assert "refused" not in again and again["memo_id"] == first["memo_id"], again
         assert again.get("receipt", {}).get("replayed") is True and again.get("settle") == {"settled": "pref-0001"}, again
+
+    _serve_both(settle_envs, body)
+
+
+SISTER = {"subject": "sister", "predicate": "city", "object": "Lyon"}
+
+
+def test_settle_declines_a_source_that_is_not_the_memo_file_of_its_stem(
+    settle_envs: tuple[dict[str, str], dict[str, str]], tmp_path: Path
+) -> None:
+    """S6. The older statement of the key is `memos/pref-0001.markdown`, beside the assistant's own
+    `pref-0001.md` about another key: settle declines `not_assistant_memo` and retires nothing. Its
+    failure: the source's suffix stripped into `pref-0001`, so the edge retired the `.md` memo,
+    which never stated the key.
+
+    Red proof (CCA run 20261125T120125Z, SEC-001), on the remote test host: against the pre-fix
+    `recall_mcp.assistant.AssistantMemos._settle` (`PurePath(source).with_suffix("")`), the answer's
+    `settle` was `{"settled": "pref-0001"}` and the assertion failed.
+    """
+
+    async def body(a: Call, p: Call, state: dict[str, Any]) -> None:
+        own = json.loads(await a("recall_remember", text="The user's sister lives in Lyon.", kind="pref",
+                                 valid_from="2026-01-01", fact=SISTER))
+        assert own["memo_id"] == "pref-0001", own
+        graph = {"facts": [AtomicFact.from_payload(TEA).to_payload()]}
+        (tmp_path / "memos" / "pref-0001.markdown").write_text(
+            "---\nvalid_from: 2026-01-01\nrecall_graph: " + json.dumps(graph) + "\n---\nThe user drink tea now.\n",
+            encoding="utf-8")
+        await a("recall_remember", text="The user went to Rome.", kind="note")  # its refresh indexes the .markdown file
+        assert "tea" in _values(await a("recall_current_facts", subject="user")), "the .markdown file was not indexed"
+        moved = json.loads(await _remember(a, "coffee", "2026-02-01", settle=True))
+        assert moved.get("settle") == {"declined": "not_assistant_memo"}, moved
+        assert "supersedes" not in (tmp_path / "memos" / f"{moved['memo_id']}.md").read_text(encoding="utf-8")
+
+    _serve_both(settle_envs, body)
+
+
+def test_settle_declines_a_memo_at_the_index_root_from_a_folder_below_it(
+    settle_envs: tuple[dict[str, str], dict[str, str]], tmp_path: Path
+) -> None:
+    """S7. An assistant memo at the index root, `pref-0001.md`, holds the key, and the assistant
+    folder `memos/` has its own `pref-0001` about another key: settle declines `not_assistant_memo`,
+    since no reference from `memos/` names the root memo. Its failure: the bare id read as this
+    folder's memo, so the edge retired `memos/pref-0001.md` and the root memo stayed in force.
+
+    Red proof (CCA run 20261125T120125Z, BUG-001), on the remote test host: against the pre-fix
+    `recall_mcp.assistant.AssistantMemos._settle` (`self.target_of` of the bare stem), the answer's
+    `settle` was `{"settled": "pref-0001"}` and the assertion failed.
+    """
+    root = MemoFolder(tmp_path, index_root=tmp_path)
+    assert root.write("The user drink tea now.", kind="pref", valid_from="2026-01-01", fact=TEA)["memo_id"] == "pref-0001"
+
+    async def body(a: Call, p: Call, state: dict[str, Any]) -> None:
+        own = json.loads(await a("recall_remember", text="The user's sister lives in Lyon.", kind="pref",
+                                 valid_from="2026-01-01", fact=SISTER))
+        assert own["memo_id"] == "pref-0001", own
+        root.refresh(state["store"], ContentWordEmbedder())  # the root folder's own refresh; this server's indexes memos/ only
+        assert "tea" in _values(await a("recall_current_facts", subject="user")), "the root memo was not indexed"
+        moved = json.loads(await _remember(a, "coffee", "2026-02-01", settle=True))
+        assert moved.get("settle") == {"declined": "not_assistant_memo"}, moved
+        assert "supersedes" not in (tmp_path / "memos" / f"{moved['memo_id']}.md").read_text(encoding="utf-8")
+
+    _serve_both(settle_envs, body)
+
+
+def test_a_settle_the_listing_cannot_change_does_not_read_it(
+    settle_envs: tuple[dict[str, str], dict[str, str]], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """S8. A settle of a predicate the table calls set-valued is declined without reading the
+    current facts, which `_settle` reads under the store's write lane. Its failure: the whole
+    ledger projected, and other writers held, for a write declined whatever it says.
+
+    Red proof (CCA run 20261125T120125Z, PERF-001), on the remote test host: against the pre-fix
+    `recall_mcp.assistant.AssistantMemos._settle`, which read the listing before `settle_target`'s
+    first check, the counted reader was called once and the assertion on `reads` failed.
+    """
+
+    reads: list[object] = []
+    real = recall_mcp.provenance.current_facts_memory
+
+    def counted(*args: Any, **kwargs: Any) -> Any:
+        reads.append(kwargs)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(recall_mcp.provenance, "current_facts_memory", counted)
+
+    async def body(a: Call, p: Call, state: dict[str, Any]) -> None:
+        answer = json.loads(await a(
+            "recall_remember", text="The user's email address is a@example.org.", kind="fact", valid_from="2026-01-01",
+            fact={"subject": "user", "predicate": "email", "object": "a@example.org"}, settle=True))
+        assert answer.get("settle") == {"declined": "not_single_in_table"}, answer
+        assert reads == [], f"the listing was read {len(reads)} time(s) for a settle it cannot change"
 
     _serve_both(settle_envs, body)

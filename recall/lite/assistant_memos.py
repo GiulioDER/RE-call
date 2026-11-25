@@ -26,7 +26,7 @@ import os
 import re
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from datetime import date
-from pathlib import Path
+from pathlib import Path, PurePath, PurePosixPath
 from typing import TYPE_CHECKING, Any
 
 from recall.confinement import within
@@ -245,15 +245,10 @@ class MemoFolder:
                 return {"refused": f"fact is not a valid structured fact: {exc}"}
         target = None
         if supersedes is not None:
-            located = self.target_of(supersedes)
-            if located is None:
-                return {"refused": f"no memo {supersedes!r}"}
+            located = self.assistant_target(supersedes)
+            if isinstance(located, str):
+                return {"refused": located}
             folder, memo_id = located
-            authors = load_ledger(folder / LEDGER_NAME)["authors"]
-            if memo_id not in authors:
-                return {"refused": f"no memo {supersedes!r}"}
-            if authors[memo_id] != ASSISTANT_AUTHOR:
-                return {"refused": f"{supersedes} was not written by the assistant; it cannot be superseded"}
             if folder == self.folder:
                 supersedes = memo_id  # this folder's memo, journalled by its id as a forget here names it
             path = folder / f"{memo_id}.md"
@@ -293,6 +288,39 @@ class MemoFolder:
             return self.folder, memo_id
         folder = within(self.index_root, self.index_root / parent)
         return None if folder is None else (folder, memo_id)
+
+    def assistant_target(self, ref: str) -> tuple[Path, str] | str:
+        """The folder and memo id of the assistant's memo `ref` names (`target_of`), or why `write`
+        refuses `ref` as a `supersedes`: the one rule, shared by a writer's `supersedes` and a
+        settled one."""
+        located = self.target_of(ref)
+        if located is None:
+            return f"no memo {ref!r}"
+        authors = load_ledger(located[0] / LEDGER_NAME)["authors"]
+        if located[1] not in authors:
+            return f"no memo {ref!r}"
+        if authors[located[1]] != ASSISTANT_AUTHOR:
+            return f"{ref} was not written by the assistant; it cannot be superseded"
+        return located
+
+    def ref_of_source(self, source: str) -> str | None:
+        """The `supersedes` reference naming exactly the memo file stored as `source` (its path under
+        the index root), or None when no reference does.
+
+        A bare memo id names this folder's memo, so a memo at the index root has no reference from a
+        folder below it, and a file of another suffix is not the memo of its stem: in both cases
+        `target_of` would name a different file, and a settled edge would retire it.
+        """
+        path = PurePosixPath(PurePath(source).as_posix())
+        if path.suffix != ".md" or not MEMO_ID.fullmatch(path.stem):
+            return None
+        parent = path.parent.as_posix()
+        ref = path.stem if parent == "." else f"{parent}/{path.stem}"
+        located = self.target_of(ref)
+        if located is None:
+            return None
+        named = (located[0] / f"{located[1]}.md").relative_to(self.index_root).as_posix()
+        return ref if named == path.as_posix() else None
 
     def refresh(self, store: LiteStore, embedder: Embedder, **kwargs: Any) -> RefreshReport:
         """Index the folder now, through the lite refresh the server itself runs, keyed to the index root.

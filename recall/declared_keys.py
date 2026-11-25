@@ -34,7 +34,7 @@ from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from itertools import groupby
-from typing import Any
+from typing import Any, cast
 
 from recall.provenance_controller import DEFAULT_PREDICATE_CARDINALITY, canonical_json, predicate_cardinality
 from recall.types import AtomicFact
@@ -44,6 +44,7 @@ __all__ = [
     "KeyedMemo",
     "fact_key",
     "key_receipt",
+    "settle_precondition",
     "settle_target",
     "subject_name",
     "subject_view",
@@ -269,19 +270,38 @@ def settle_target(
     table, and a capable writer declared email, phone number and nickname `single` every time (the
     maintainer's private study CD-1, 2026-11-25: 41 of 132 set-valued keys would have been settled).
     A fact declared `set` or `event` has no key, so a declaration can only make this stricter.
+
+    It settles only when the one memo it supersedes is the only memo holding the key: rule R(a')
+    pairs the new memo with the latest earlier start alone, so any other holder (a second earlier
+    memo, an undated one, one of the new memo's start or a later one) would stay in force beside the
+    new memo, and the key would still be contested after a write that claims to settle it.
     """
-    if DEFAULT_PREDICATE_CARDINALITY.get(fact.predicate.casefold(), "single") != "single":
-        return None, "not_single_in_table"
-    key = fact_key(fact)
-    if key is None:
-        return None, "not_single_valued"
+    reason = settle_precondition(fact, valid_from)
+    if reason is not None:
+        return None, reason
     if listing.get("served_state") in {"degraded", "unchecked"}:
         return None, "unchecked"
-    start = fact.valid_from or valid_from
-    if start is None:
-        return None, "undated"
-    memos = [KeyedMemo(_UNWRITTEN, fact, start), *_keyed(_statements(listing, key))]
-    olders = {older.name for older, newer in successor_pairs(memos, incident_to=_UNWRITTEN) if newer.name == _UNWRITTEN}
-    if len(olders) > 1:
+    start = cast(datetime, fact.valid_from or valid_from)
+    key = cast(tuple[str, str, str, str], fact_key(fact))
+    held = _keyed(_statements(listing, key))
+    if len({m.name for m in held if m.valid_from is not None and _utc(m.valid_from) < _utc(start)}) > 1:
         return None, "several_older_memos"
-    return (olders.pop(), None) if olders else (None, None)
+    memos = [KeyedMemo(_UNWRITTEN, fact, start), *held]
+    olders = {older.name for older, newer in successor_pairs(memos, incident_to=_UNWRITTEN) if newer.name == _UNWRITTEN}
+    if not olders:
+        return None, None
+    if {m.name for m in held} - olders:
+        return None, "other_memos_hold_key"
+    return olders.pop(), None
+
+
+def settle_precondition(fact: AtomicFact, valid_from: datetime | None) -> str | None:
+    """Why `settle_target` declines `fact` before reading any listing, or None: a writer checks this
+    first, so a write the listing cannot change does not pay for reading one."""
+    if DEFAULT_PREDICATE_CARDINALITY.get(fact.predicate.casefold(), "single") != "single":
+        return "not_single_in_table"
+    if fact_key(fact) is None:
+        return "not_single_valued"
+    if (fact.valid_from or valid_from) is None:
+        return "undated"
+    return None

@@ -41,8 +41,8 @@ from typing import TYPE_CHECKING, Any, cast
 from recall.backends import write_session
 from recall.confinement import within
 from recall.errors import RecallError
-from recall.declared_keys import STATED_KEY_SUCCESSOR_RULE, settle_target
-from recall.lite.assistant_memos import ASSISTANT_AUTHOR, LEDGER_NAME, MEMO_ID, MemoFolder
+from recall.declared_keys import STATED_KEY_SUCCESSOR_RULE, settle_precondition, settle_target
+from recall.lite.assistant_memos import ASSISTANT_AUTHOR, MEMO_ID, MemoFolder
 
 from recall_mcp.models import ForgetResult, WithdrawResult
 from recall_mcp.settings import _bool
@@ -312,15 +312,18 @@ class AssistantMemos(MemoFolder):
             start = validity_bounds({"valid_from": valid_from})[0]
         except (TypeError, ValueError, KeyError):
             return None, {"declined": "invalid"}  # `write` refuses it, with its own reason
+        early = settle_precondition(stated, start)
+        if early is not None:
+            return None, {"declined": early}
         listing = current_facts_memory(cast(Any, store), security_policy=security_policy, access_context=access_context)
         source, reason = settle_target(listing, stated, start)
         if reason is not None:
             return None, {"declined": reason}
         if source is None:
             return None, {"settled": None}
-        ref = PurePath(source).with_suffix("").as_posix()  # a stored name is the path under the index root
-        located = self.target_of(ref)
-        if located is None or load_ledger(located[0] / LEDGER_NAME)["authors"].get(located[1]) != ASSISTANT_AUTHOR:
+        ref = self.ref_of_source(source)
+        located = None if ref is None else self.assistant_target(ref)
+        if ref is None or not isinstance(located, tuple):
             return None, {"declined": "not_assistant_memo"}
         return ref, {"settled": located[1] if located[0] == self.folder else ref}
 
