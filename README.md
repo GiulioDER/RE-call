@@ -10,8 +10,6 @@
 
 <h3 align="center">
   <a href="https://re-call.dev/"><img src="docs/assets/re_call_logo.png" alt="RE-call" width="56" height="56" align="absmiddle"> official site</a>
-  &nbsp;&nbsp;&nbsp;
-  <a href="https://www.youtube.com/@RE-call-y6k"><img src="docs/assets/youtube.svg" alt="RE-call YouTube channel" width="48" height="34" align="absmiddle"></a>
 </h3>
 
 **RE-call is persistent memory for agents, built on hybrid retrieval with rank fusion.**
@@ -38,6 +36,7 @@ that are expired or not yet valid. Use `recall forget` to erase a memo's indexed
   <a href="https://github.com/GiulioDER/RE-call/blob/master/LICENSE"><img src="https://img.shields.io/badge/License-AGPL--3.0-blue.svg" alt="License: AGPL-3.0"></a>
   <img src="https://img.shields.io/badge/python-3.11%2B-blue" alt="Python 3.11+">
   <a href="docs/LITE.md"><img src="https://img.shields.io/badge/Lite-SQLite%2C%20no%20server-003B57" alt="Lite: SQLite, no server"></a>
+  <a href="docs/INSTALLATION.md#guided-postgresql-setup"><img src="https://img.shields.io/badge/PostgreSQL-pgvector-4169E1?logo=postgresql&amp;logoColor=white" alt="PostgreSQL + pgvector"></a>
   <a href="https://glama.ai/mcp/servers/GiulioDER/RE-call"><img src="https://glama.ai/mcp/servers/GiulioDER/RE-call/badges/score.svg" alt="RE-call MCP server"></a>
   <a href="https://mcprush.com/to/re-call-mcp-memory-server?ref=badge"><img src="https://mcprush.com/badge/re-call-mcp-memory-server/score.svg" alt="RE-call MCP Memory Server on mcprush"></a>
 </p>
