@@ -8,7 +8,7 @@ design violation.
 ## Scope
 
 Packages: `recall`, `recall_mcp`, `recall_agent`, `recall_hooks`, `recall_interop`, `recall_consistency`
-Modules: 378
+Modules: 379
 Cross package edges: 464
 
 ## Highest fan in modules
@@ -601,6 +601,7 @@ They are observations, not automatic failures.
 | `recall.claude_code` | 7 | 185 |
 | `recall.cli` | 6 | 141 |
 | `recall.cli_commands` | 0 | 0 |
+| `recall.cli_commands._input` | 0 | 0 |
 | `recall.cli_commands._lite` | 3 | 141 |
 | `recall.cli_commands._shared` | 13 | 142 |
 | `recall.cli_commands.backup_cmd` | 1 | 8 |
@@ -617,8 +618,8 @@ They are observations, not automatic failures.
 | `recall.cli_commands.manifest_cmd` | 5 | 147 |
 | `recall.cli_commands.provenance_cmd` | 16 | 158 |
 | `recall.cli_commands.reasoning_cmd` | 11 | 177 |
-| `recall.cli_commands.records_cmd` | 10 | 144 |
-| `recall.cli_commands.repair_checks` | 0 | 0 |
+| `recall.cli_commands.records_cmd` | 11 | 145 |
+| `recall.cli_commands.repair_checks` | 1 | 1 |
 | `recall.cli_commands.schema_cmd` | 2 | 143 |
 | `recall.cli_commands.secret_cmd` | 1 | 4 |
 | `recall.cli_commands.setup_wizard` | 20 | 203 |

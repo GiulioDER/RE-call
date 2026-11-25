@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from recall.cli import main
+from recall.cli_commands import repair_checks
 
 
 @pytest.fixture
@@ -37,7 +38,6 @@ def _write(tmp_path: Path, name: str, payload: object) -> str:
 
 def test_selection_only_uses_history_in_the_prompt(
     request_payload: dict, tmp_path: Path, capsys: pytest.CaptureFixture[str],
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     request = _write(tmp_path, "request.json", request_payload)
     selection = _write(tmp_path, "selection.json", {"diagnostic": "d2", "preservation": "p1"})
@@ -74,10 +74,55 @@ def test_selection_only_uses_history_in_the_prompt(
     assert capsys.readouterr().out == feedback
     assert not store.exists()
 
+
+def test_stdin_decodes_as_utf8_whatever_the_console_code_page(
+    request_payload: dict, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch,
+) -> None:
     raw = json.dumps(request_payload, ensure_ascii=False).encode("utf-8-sig")
     monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(raw), encoding="cp1252"))
-    main([*cli, "prompt", "-"])
+    main(["repair-checks", "prompt", "-"])
     assert json.loads(capsys.readouterr().out)["input"]["failed_edit"] == request_payload["failed_edit"]
+
+
+@pytest.mark.parametrize("stdin", [None, io.StringIO("{}")], ids=["closed", "text-only"])
+def test_unreadable_stdin_is_refused_like_an_unreadable_file(
+    stdin: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Red proof (CCA BUG-002, deferred run 20261125T110735Z): with the pre-fix
+    ``sys.stdin.buffer.read`` in ``recall/cli_commands/repair_checks.py`` ``_read_json``, both
+    cases raise AttributeError instead of the refusal ``pytest.raises`` expects.
+    """
+    monkeypatch.setattr(sys, "stdin", stdin)
+    with pytest.raises(SystemExit, match="could not read request"):
+        main(["repair-checks", "prompt", "-"])
+    assert capsys.readouterr().out == ""
+
+
+def test_only_one_input_may_come_from_stdin(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Red proof (CCA CODE-003): with the ``paths.count("-") > 1`` guard in ``_run`` removed, the
+    request is read from the captured stdin and the command exits with ``could not read request``,
+    so the ``match`` fails.
+    """
+    observations = _write(tmp_path, "observations.json", [])
+    with pytest.raises(SystemExit, match="read only one input from stdin"):
+        main(["repair-checks", "feedback", "-", "-", observations])
+    assert capsys.readouterr().out == ""
+
+
+def test_input_over_the_size_limit_is_refused(
+    request_payload: dict, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Red proof (CCA CODE-003): with the ``len(raw) > _MAX_INPUT_BYTES`` guard in ``_read_json``
+    removed, the read still stops one byte past the limit, so the truncated request is refused as
+    ``invalid JSON`` and the ``match`` fails.
+    """
+    request_payload["failed_edit"] = "x" * repair_checks._MAX_INPUT_BYTES
+    request = _write(tmp_path, "request.json", request_payload)
+    with pytest.raises(SystemExit, match="request exceeds 512 KiB"):
+        main(["repair-checks", "prompt", request])
+    assert capsys.readouterr().out == ""
 
 
 @pytest.mark.parametrize("selection", [

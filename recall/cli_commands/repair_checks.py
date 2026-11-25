@@ -4,19 +4,21 @@ from __future__ import annotations
 
 import argparse
 import json
-import sys
-from pathlib import Path
 from typing import Annotated, Literal, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, TypeAdapter, ValidationError, model_validator
 
+from recall.cli_commands._input import read_input_bytes
+
 _MAX_INPUT_BYTES = 512 * 1024
 _MAX_CHECKS = 16
+_MAX_TEXT_CHARS = 4096
+_MAX_EDIT_CHARS = 64 * 1024
 _Role = Literal["diagnostic", "preservation"]
 # The prompt publishes this pattern in a JSON Schema, whose ECMA-262 dialect has no \A or \z.
 _CheckId = Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")]
-_Text = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=4096)]
-_Edit = Annotated[str, StringConstraints(min_length=1, max_length=64 * 1024)]
+_Text = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=_MAX_TEXT_CHARS)]
+_Edit = Annotated[str, StringConstraints(min_length=1, max_length=_MAX_EDIT_CHARS)]
 _T = TypeVar("_T")
 
 _SELECTOR_INSTRUCTIONS = (
@@ -72,7 +74,7 @@ class _Observation(_StrictModel):
     detail: _Text | None = None
 
 
-_REQUEST = TypeAdapter(_Request)
+_REQUEST: TypeAdapter[_Request] = TypeAdapter(_Request)
 _SELECTION: TypeAdapter[_Selection | None] = TypeAdapter(_Selection | None)
 _OBSERVATIONS: TypeAdapter[list[_Observation]] = TypeAdapter(Annotated[list[_Observation], Field(max_length=2)])
 
@@ -88,13 +90,9 @@ def _unique_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
 
 def _read_json(spec: str, label: str, adapter: TypeAdapter[_T]) -> _T:
     try:
-        if spec == "-":
-            raw = sys.stdin.buffer.read(_MAX_INPUT_BYTES + 1)
-        else:
-            with Path(spec).open("rb") as stream:
-                raw = stream.read(_MAX_INPUT_BYTES + 1)
+        raw = read_input_bytes(spec, _MAX_INPUT_BYTES)
         if len(raw) > _MAX_INPUT_BYTES:
-            raise SystemExit(f"recall repair-checks: {label} exceeds 512 KiB")
+            raise SystemExit(f"recall repair-checks: {label} exceeds {_MAX_INPUT_BYTES // 1024} KiB")
         data = json.loads(raw.decode("utf-8-sig"), object_pairs_hook=_unique_keys)
         return adapter.validate_python(data)
     except OSError as exc:
