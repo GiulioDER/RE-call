@@ -294,7 +294,7 @@ def test_settle_is_declined_where_a_source_policy_filters_the_listing(
         fact={**TEA, "object": "coffee"}, valid_from="2026-02-01", supersedes=None, request_id=None,
         access_context=None, read_facts=True, security_policy=object(),
     )
-    assert answer == (None, {"declined": "unchecked"}), answer
+    assert answer == (None, {"declined": "unchecked"}, False), answer
     assert reads == [], "the listing was read under a source policy"
 
 
@@ -376,5 +376,48 @@ def test_a_settled_write_checks_its_target_once(
         moved = json.loads(await _remember(a, "coffee", "2026-02-01", settle=True))
         assert moved.get("settle") == {"settled": "pref-0001"}, moved
         assert len(walks) == 1, f"the index root was walked {len(walks)} times for one settled write"
+
+    _serve_both(settle_envs, body)
+
+
+def test_a_retry_of_an_interrupted_settle_answers_the_stale_target(
+    settle_envs: tuple[dict[str, str], dict[str, str]], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """S13. A settling request interrupted between its reservation and its publish, whose target
+    then gains a successor, is retried with its `request_id`: the retry is refused `stale_target`,
+    and nothing is written. Its failure: `remember` took the journal's refusal of the replayed edge
+    for a fresh request's, wrote again without the edge, and the journal answered that rewrite
+    `request_mismatch`, as though the `request_id` had been used for another write (CCA fix audit
+    FA-2-5, run 20261125T132233Z).
+
+    Red proof (2026-11-25, CCA FA-2-5), on the remote test host:
+    `tests/test_assistant_settle.py::test_a_retry_of_an_interrupted_settle_answers_the_stale_target`
+    against `recall_mcp.assistant.AssistantMemos.remember` at 6a653f1e6 (its edgeless rewrite after
+    `_UNSETTLED`, taken on a replay too) failed the assertion on `again["conflict"]` with
+    `request_mismatch`; with `_settle` reporting the replay and `remember` skipping the rewrite, it
+    passes.
+    """
+    from recall.lite import memo_requests
+
+    memos = AssistantMemos(tmp_path / "memos", index_root=tmp_path)
+    create = memo_requests._create
+
+    def interrupted(path: Path, body: bytes) -> None:
+        raise OSError("injected interruption before memo publication")
+
+    async def body(a: Call, p: Call, state: dict[str, Any]) -> None:
+        await _remember(a, "tea", "2026-01-01")
+        monkeypatch.setattr(memo_requests, "_create", interrupted)
+        crashed = await _remember(a, "coffee", "2026-02-01", settle=True, request_id="r-3")
+        monkeypatch.setattr(memo_requests, "_create", create)
+        assert "before memo publication" in crashed, crashed
+        entry = json.loads((tmp_path / "memos" / LEDGER_NAME).read_text(encoding="utf-8"))["requests"]["r-3"]
+        assert entry["state"] == "prepared" and entry.get("settle") == {"settled": "pref-0001"}, entry
+        moved = memos.write("The user's tea note is corrected.", kind="note", supersedes="pref-0001")
+        assert "memo_id" in moved, moved
+        before = sorted(p.name for p in (tmp_path / "memos").glob("*.md"))
+        again = json.loads(await _remember(a, "coffee", "2026-02-01", settle=True, request_id="r-3"))
+        assert again.get("conflict") == "stale_target", again
+        assert sorted(p.name for p in (tmp_path / "memos").glob("*.md")) == before, "the refused retry wrote a memo"
 
     _serve_both(settle_envs, body)

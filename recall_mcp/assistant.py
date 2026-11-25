@@ -260,8 +260,9 @@ class AssistantMemos(MemoFolder):
             return {"refused": f"settle is off on this server; the operator turns it on with {SETTLE_ENV}"}
         with write_session(store, "remember"):
             note: dict[str, Any] | None = None
+            replayed = False
             if settle:
-                supersedes, note = self._settle(
+                supersedes, note, replayed = self._settle(
                     store, fact=fact, valid_from=valid_from, supersedes=supersedes, request_id=request_id,
                     access_context=access_context, read_facts=read_facts,
                     security_policy=refresh_kwargs.get("security_policy"),
@@ -276,9 +277,11 @@ class AssistantMemos(MemoFolder):
                 )
 
             result = write_with(supersedes, note)
-            if note is not None and note.get("settled") and result.get("conflict") in _UNSETTLED:
+            if note is not None and note.get("settled") and result.get("conflict") in _UNSETTLED and not replayed:
                 # `write_memo`'s own check of the target, the only one, found the rule's older memo
                 # already succeeded or gone since it was indexed: the memo is written without the edge.
+                # Not on a replay: the journal holds the request with its edge, so a rewrite without
+                # it would be refused as another request (CCA fix audit FA-2-5).
                 note = {"declined": _UNSETTLED[result["conflict"]]}
                 result = write_with(None, note)
             if note is not None and "memo_id" in result:
@@ -297,8 +300,9 @@ class AssistantMemos(MemoFolder):
     def _settle(
         self, store: LiteStore, *, fact: object, valid_from: str | None, supersedes: str | None,
         request_id: str | None, access_context: Any, read_facts: bool, security_policy: Any,
-    ) -> tuple[str | None, dict[str, Any]]:
-        """The `supersedes` a settling write carries, and the answer's `settle` note.
+    ) -> tuple[str | None, dict[str, Any], bool]:
+        """The `supersedes` a settling write carries, the answer's `settle` note, and whether both
+        were replayed from the journal.
 
         A `supersedes` the writer named wins. A retry of a journalled request replays the target its
         first call wrote, and the note it journalled: the journal hashes `supersedes` into the
@@ -315,41 +319,41 @@ class AssistantMemos(MemoFolder):
         from recall_mcp.provenance import current_facts_memory
 
         if supersedes is not None:
-            return supersedes, {"declined": "writer_named_supersedes"}
+            return supersedes, {"declined": "writer_named_supersedes"}, False
         if not isinstance(fact, dict):
-            return None, {"declined": "no_fact"}
+            return None, {"declined": "no_fact"}, False
         if not read_facts:
-            return None, {"declined": "unchecked"}
+            return None, {"declined": "unchecked"}, False
         own = load_ledger(self.ledger_path)
         entry = own.get("requests", {}).get(request_id) if request_id is not None else None
         if isinstance(entry, dict):
             replayed, journalled = entry.get("supersedes"), entry.get("settle")
             if isinstance(journalled, dict):
-                return replayed, dict(journalled)
-            return replayed, {"declined": "writer_named_supersedes"} if replayed is not None else {"settled": None}
+                return replayed, dict(journalled), True
+            return replayed, {"declined": "writer_named_supersedes"} if replayed is not None else {"settled": None}, True
         if security_policy is not None:
             # The listing a policy filters can miss a holder of the key, and counting over the whole
             # store would let the answer reveal a memo the caller may not read (CCA STAKES-001).
-            return None, {"declined": "unchecked"}
+            return None, {"declined": "unchecked"}, False
         try:
             stated = AtomicFact.from_payload(fact)
             start = validity_bounds({"valid_from": valid_from})[0]
         except (TypeError, ValueError, KeyError):
-            return None, {"declined": "invalid"}  # `write` refuses it, with its own reason
+            return None, {"declined": "invalid"}, False  # `write` refuses it, with its own reason
         early = settle_precondition(stated, start)
         if early is not None:
-            return None, {"declined": early}
+            return None, {"declined": early}, False
         listing = current_facts_memory(cast(Any, store), security_policy=security_policy, access_context=access_context)
         source, reason = settle_target(listing, stated, start)
         if reason is not None:
-            return None, {"declined": reason}
+            return None, {"declined": reason}, False
         if source is None:
-            return None, {"settled": None}
+            return None, {"settled": None}, False
         ref = self.ref_of_source(source)
         located = None if ref is None else self.assistant_target(ref, ledger=own)
         if ref is None or not isinstance(located, tuple):
-            return None, {"declined": "not_assistant_memo"}
-        return ref, {"settled": located[1] if located[0] == self.folder else ref}
+            return None, {"declined": "not_assistant_memo"}, False
+        return ref, {"settled": located[1] if located[0] == self.folder else ref}, False
 
     def _complete_receipt(
         self, store: LiteStore, embedder: Embedder, memo_id: str, receipt: dict[str, Any],
