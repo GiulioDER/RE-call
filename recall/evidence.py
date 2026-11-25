@@ -85,6 +85,9 @@ class EvidenceItem:
     confidence: float
     verdict: Literal["ok"] = "ok"
     authority: str = "unknown"
+    #: The date format `recall.sqlite_rules.verify_sqlite_rules` observed in the queried SQLite
+    #: snapshot. It travels apart from `text`, so a note cannot pass its own words off as one.
+    snapshot_format: str | None = None
 
 
 #: Whether a bundle may be answered from; the decoder in `recall.reasoning_response` reads it.
@@ -352,6 +355,8 @@ def _item_payload(item: EvidenceItem) -> dict[str, object]:
     for key in ("indexed_at", "valid_from", "valid_until"):
         value = payload[key]
         payload[key] = value.isoformat() if isinstance(value, datetime) else None
+    if payload["snapshot_format"] is None:
+        del payload["snapshot_format"]  # Only snapshot-checked evidence carries it; other prompts are unchanged.
     return payload
 
 
@@ -396,7 +401,10 @@ def _user_message(query: str, items: tuple[EvidenceItem, ...]) -> str:
 
 
 def _compact_item_payload(item: EvidenceItem) -> dict[str, str]:
-    return {"chunk_id": item.chunk_id, "text": item.text}
+    payload = {"chunk_id": item.chunk_id, "text": item.text}
+    if item.snapshot_format is not None:
+        payload["snapshot_format"] = item.snapshot_format
+    return payload
 
 
 def render_compact_evidence_prompt(bundle: EvidenceBundle) -> tuple[str, str]:

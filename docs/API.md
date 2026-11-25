@@ -109,16 +109,22 @@ field notes within a read-only SQLite transaction.
 A field note begins with a `table.column` line. Put a date representation on
 its own line as `Format: YYYY-MM-DD` or `Format: YYMMDD`. The verifier also
 accepts `in the form YYMMDD` on its own line. A note with a single supported
-declaration is checked against all non-null values. If those values use the
-other supported format, the prompt replaces the declaration with the observed
-format and identifies it as an observation from the snapshot. This derived
+declaration is checked against all non-null values. A checked item carries the
+format observed in the snapshot in its own `snapshot_format` field, which only
+the verifier sets; the note text never states it. If the values use the other
+supported format, the declaration is removed from the prompt text. This derived
 text retains the source chunk ID for traceability. The indexed text stays intact.
 
-Ordinary field descriptions retain their wording when their table and column
-exist. The check establishes physical representation and field existence.
-Business definitions and units are sourced from the original notes. Notes
-without a field header, notes for missing fields, and date claims that cannot
-be resolved from a uniform non-empty column are omitted. The bundle abstains
+Field descriptions that make no format claim retain their wording when their
+table and column exist. Any `Format:` or `in the form` line is a format claim,
+and so is any date pattern such as `DD/MM/YYYY` or `%d/%m/%Y` in the body. A
+note whose claims are not one supported declaration is omitted. A `YYMMDD` value must
+also be a valid date. The check establishes physical representation and field
+existence. Business definitions and units are sourced from the original notes.
+Notes without a field header, notes for missing fields, and date claims that
+cannot be resolved from a uniform non-empty column are omitted, as is a note
+whose column scan does not finish within the two-second budget shared by the
+whole bundle. The bundle abstains
 if it has no eligible notes. The JSON includes `snapshot_rule_checks` by
 chunk ID, with the observed format when known.
 

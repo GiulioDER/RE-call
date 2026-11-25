@@ -358,6 +358,7 @@ def _evidence_bundle_from_dict(payload: Mapping[str, object]) -> EvidenceBundle:
             confidence=_required_float(item["confidence"]),
             verdict=_checked_literal(item.get("verdict", "ok"), ("ok",), "evidence verdict"),
             authority=str(item.get("authority", "unknown")),
+            snapshot_format=_optional_str(item.get("snapshot_format")),
         )
         for item in (_mapping(value) for value in _sequence(payload["items"]))
     )
