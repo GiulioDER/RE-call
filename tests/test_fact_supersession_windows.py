@@ -29,6 +29,7 @@ from recall.lite import LiteStore
 from recall.lite.facts import LiteFactLedger
 from recall.provenance_controller import (
     CONTROLLER_SCHEMA_VERSION,
+    DEFAULT_PREDICATE_CARDINALITY,
     DecisionCode,
     EvidenceCardStore,
     FactApplicationRequest,
@@ -41,6 +42,7 @@ from recall.provenance_controller import (
     project_current,
     split_contested,
 )
+from recall.declared_keys import settle_precondition
 from recall.types import AtomicFact
 from tests.fact_fixtures import evidence_card
 
@@ -260,6 +262,29 @@ def test_c1_a_second_email_is_not_a_contradiction(env: Env) -> None:
     assert contested == ()
 
 
+def test_c1b_a_second_citizenship_is_not_a_contradiction_by_name_or_wikidata_id(env: Env) -> None:
+    """Node tests/test_fact_supersession_windows.py::test_c1b_a_second_citizenship_is_not_a_contradiction_by_name_or_wikidata_id.
+
+    Invariant: `citizenship` and Wikidata's `P27` (country of citizenship) are set-valued
+    (`DEFAULT_PREDICATE_CARDINALITY`), so a dual citizen's second country stands beside the first,
+    contests nothing, and is never settled at write time; `P19` (place of birth) stays single.
+    Red with the 2026-11-25 table additions removed from `recall.provenance_controller`: fails on
+    "a second citizenship was refused as a contradiction".
+    """
+    for predicate in ("citizenship", "P27"):
+        first = AtomicFact(namespace="memory", subject=f"person:{predicate}", predicate=predicate, object="Italy")
+        second = AtomicFact(namespace="memory", subject=f"person:{predicate}", predicate=predicate, object="Canada")
+        env.apply(first, f"{predicate}-1.md", f"{predicate}-1")
+        decision = env.apply(second, f"{predicate}-2.md", f"{predicate}-2")
+        assert decision.code == DecisionCode.APPLIED, f"a second {predicate} was refused as a contradiction: {decision.code}"
+        assert settle_precondition(second, NOW) == "not_single_in_table", predicate
+    standing, contested = split_contested(env.ledger.current(tenant_id=TENANT, now=NOW))
+    assert sorted(str(e.fact.object) for e in standing) == ["Canada", "Canada", "Italy", "Italy"]
+    assert contested == ()
+    born = dict(namespace="memory", subject="person:p19", predicate="P19")
+    assert facts_conflict(AtomicFact(**born, object="Rome"), AtomicFact(**born, object="Oslo"))
+
+
 def test_c2_a_fact_may_declare_its_own_cardinality() -> None:
     """Node tests/test_fact_supersession_windows.py::test_c2_a_fact_may_declare_its_own_cardinality.
 
@@ -274,7 +299,8 @@ def test_c2_a_fact_may_declare_its_own_cardinality() -> None:
     single_city = dict(namespace="memory", subject="person:alice", predicate="city")
     assert not facts_conflict(AtomicFact(**visit, object="Rome"), AtomicFact(**visit, object="Oslo"))
     assert facts_conflict(AtomicFact(**single_city, object="Rome"), AtomicFact(**single_city, object="Oslo"))
-    hobby = dict(namespace="memory", subject="person:alice", predicate="hobby", cardinality="set")
+    hobby = dict(namespace="memory", subject="person:alice", predicate="weekend_game", cardinality="set")
+    assert hobby["predicate"] not in DEFAULT_PREDICATE_CARDINALITY, "only the declaration may make it set-valued"
     assert not facts_conflict(AtomicFact(**hobby, object="chess"), AtomicFact(**hobby, object="go")), (
         "a declared set-valued predicate still conflicts"
     )

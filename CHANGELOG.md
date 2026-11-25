@@ -53,6 +53,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   that stems them differently (as PostgreSQL 19 does for some English words) gets
   `LINEAGE_MISMATCH` for that generation until it is rebuilt there. `recall doctor` reports the
   same check. Generations built before this record nothing and serve as before.
+* RE-call's predicate table lists more set-valued predicates: `citizenship`, `nationality`,
+  `educated_at`, `author`, `genre`, `founder`, `notable_work`, `award`, `hobby`, `sibling`,
+  `friend`, `allergy` (with their plurals and close spellings), and 18 Wikidata property ids whose
+  values one subject commonly holds at once, lower-cased (`p27` country of citizenship, `p50`
+  author, `p106` occupation, `p40` child and others; the list is in
+  `DEFAULT_PREDICATE_CARDINALITY`). A second value of one of these now stands beside the first
+  instead of being refused or contested, and `recall_remember(settle=true)` never settles it.
+  Because current facts are projected when read, two such values already in a ledger stop being
+  reported as contested; a supersession already recorded stays as recorded.
 
 ### Fixed
 

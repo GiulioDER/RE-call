@@ -532,6 +532,21 @@ DEFAULT_PREDICATE_CARDINALITY: Mapping[str, PredicateCardinality] = MappingProxy
                 "email", "emails", "email_address", "phone", "phones", "phone_number", "alias",
                 "aliases", "nickname", "nicknames", "tag", "tags", "language", "languages",
                 "skill", "skills", "member_of", "child", "children", "pet", "pets",
+                "citizenship", "nationality", "country_of_citizenship", "educated_at", "author",
+                "authors", "genre", "genres", "founder", "founders", "founded_by", "notable_work",
+                "notable_works", "award", "awards", "hobby", "hobbies", "sibling", "siblings",
+                "friend", "friends", "allergy", "allergies",
+                # Wikidata property ids, lower-cased as the lookup is, for the properties whose
+                # values one subject commonly holds at once (citizenship P27, author P50, country
+                # of origin P495, founder P112, position played P413, performer P175, creator
+                # P170, developer P178, educated at P69, genre P136, languages spoken P1412,
+                # official language P37, notable work P800, occupation P106, work location P937,
+                # language of work P407, child P40, original broadcaster P449). Wikidata's own
+                # constraints cannot decide this: they also call properties held one at a time
+                # (chief executive officer, head coach, spouse) multi-valued, because Wikidata
+                # keeps their history as separate statements.
+                "p27", "p50", "p495", "p112", "p413", "p175", "p170", "p178", "p69", "p136",
+                "p1412", "p37", "p800", "p106", "p937", "p407", "p40", "p449",
             ),
             "set",
         ),
