@@ -85,6 +85,9 @@ class EvidenceItem:
     confidence: float
     verdict: Literal["ok"] = "ok"
     authority: str = "unknown"
+    #: The date format `recall.sqlite_rules.verify_sqlite_rules` observed in the queried SQLite
+    #: snapshot. It travels apart from `text`, so a note cannot pass its own words off as one.
+    snapshot_format: str | None = None
 
 
 #: Whether a bundle may be answered from; the decoder in `recall.reasoning_response` reads it.
@@ -254,6 +257,18 @@ SYSTEM_PROMPT = (
 # rule, which is why it went unnoticed. ``tests/test_answer_provider.py`` pins it on the payload
 # actually sent.
 
+#: Appended to `SYSTEM_PROMPT` by `render_snapshot_evidence_prompt`, the renderer for a bundle
+#: checked by `recall.sqlite_rules.verify_sqlite_rules`. Library authored and fixed, like
+#: `SYSTEM_PROMPT`: no corpus value is interpolated into it.
+SNAPSHOT_FORMAT_NOTE = (
+    " An evidence item may carry snapshot_format: the date format RE-call observed for that "
+    "item's column in the caller's SQLite snapshot. RE-call sets it, not the item's text; when "
+    "the text states a different date format, follow snapshot_format."
+)
+#: Built once from two library constants and returned by identity, like `DATED_SYSTEM_PROMPT`.
+SNAPSHOT_SYSTEM_PROMPT = SYSTEM_PROMPT + SNAPSHOT_FORMAT_NOTE
+
+
 #: The answer profiles. ``dated`` (the default for `recall_reasoning_query` since 2026-09-29) is
 #: `render_dated_evidence_prompt`; ``plain`` (``RECALL_REASONING_ANSWER_PROFILE=plain``, the opt-out)
 #: is `render_evidence_prompt`, unchanged.
@@ -352,6 +367,8 @@ def _item_payload(item: EvidenceItem) -> dict[str, object]:
     for key in ("indexed_at", "valid_from", "valid_until"):
         value = payload[key]
         payload[key] = value.isoformat() if isinstance(value, datetime) else None
+    if payload["snapshot_format"] is None:
+        del payload["snapshot_format"]  # Only snapshot-checked evidence carries it; other prompts are unchanged.
     return payload
 
 
@@ -396,7 +413,10 @@ def _user_message(query: str, items: tuple[EvidenceItem, ...]) -> str:
 
 
 def _compact_item_payload(item: EvidenceItem) -> dict[str, str]:
-    return {"chunk_id": item.chunk_id, "text": item.text}
+    payload = {"chunk_id": item.chunk_id, "text": item.text}
+    if item.snapshot_format is not None:
+        payload["snapshot_format"] = item.snapshot_format
+    return payload
 
 
 def render_compact_evidence_prompt(bundle: EvidenceBundle) -> tuple[str, str]:
@@ -712,6 +732,16 @@ def render_evidence_prompt(bundle: EvidenceBundle) -> tuple[str, str]:
     corpus-controlled byte lives inside the delimited JSON payload of the second message.
     """
     return SYSTEM_PROMPT, _user_message(bundle.query, bundle.items)
+
+
+def render_snapshot_evidence_prompt(bundle: EvidenceBundle) -> tuple[str, str]:
+    """`render_evidence_prompt` for a bundle checked by `recall.sqlite_rules.verify_sqlite_rules`.
+
+    The system message is :data:`SNAPSHOT_SYSTEM_PROMPT`, returned by identity: `SYSTEM_PROMPT`
+    plus a fixed note saying what an item's ``snapshot_format`` means. The user message is the
+    one `render_evidence_prompt` builds.
+    """
+    return SNAPSHOT_SYSTEM_PROMPT, _user_message(bundle.query, bundle.items)
 
 
 def render_dated_evidence_prompt(bundle: EvidenceBundle, question_date: str) -> tuple[str, str]:

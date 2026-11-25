@@ -41,6 +41,22 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   successor yet. Otherwise the memo is written without the edge and the answer's `settle` names the
   reason ([API](docs/API.md) lists them); a retry of the same `request_id` answers what its first
   call did. Settled edges are listed in the memo folder's authorship ledger under `settled`.
+* `recall search --sqlite-snapshot FILE` checks the retrieved field notes against the SQLite file
+  the analytics query will use, in one read-only transaction, before printing the evidence bundle
+  and prompt. A note headed `table.column` is kept when the table and column exist. A
+  `Format: YYYY-MM-DD` or `Format: YYMMDD` declaration is checked against every non-null value of
+  the column; when the values use the other format, the declaration is removed from the prompt
+  text. Notes for missing fields, other date notations and unresolvable claims are left out, and
+  `snapshot_rule_checks` gives each note's status. The bundle abstains when no note remains. It
+  cannot be combined with `--locale`. The library form is
+  `recall.sqlite_rules.verify_sqlite_rules`; see
+  [API.md](docs/API.md#snapshot-checked-sqlite-rules).
+* `EvidenceItem.snapshot_format` carries the date format the snapshot check observed, as its own
+  field of the evidence payload rather than in the note text, so a note cannot pass its own words
+  off as a verified observation. The key appears only on checked items, so every other prompt is
+  unchanged. `recall.evidence.render_snapshot_evidence_prompt` renders a checked bundle with a
+  system message that tells the model what the field means and that it takes precedence over a
+  format stated in the text; `recall search --sqlite-snapshot` uses it.
 
 ### Changed
 

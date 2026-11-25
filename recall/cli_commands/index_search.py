@@ -248,6 +248,12 @@ def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
         "and assemble evidence in document order",
     )
     p_search.add_argument(
+        "--sqlite-snapshot",
+        type=Path,
+        metavar="FILE",
+        help="emit only a snapshot-checked evidence bundle and prompt for SQLite field notes",
+    )
+    p_search.add_argument(
         "--folder",
         help="restrict the search to one folder of the corpus and everything beneath it, named "
         "as it appears in a hit's `file` provenance (`python`, `python/lib`). `/` means the "
@@ -339,7 +345,8 @@ def _print_localized_result(result: TrustedResult, locale: str) -> None:
 
 
 def _print_evidence(
-    result: TrustedResult, max_items: int, *, document_mode: bool = False
+    result: TrustedResult, max_items: int, *, document_mode: bool = False,
+    sqlite_snapshot: Path | None = None,
 ) -> None:
     """Print the generator-neutral evidence bundle and the exact prompt it renders to.
 
@@ -352,8 +359,16 @@ def _print_evidence(
     This is the CLI's whole exposure of `recall.evidence`: the bundle a generator would be given,
     plus `system` and `user` exactly as `render_evidence_prompt` produces them, so an operator can
     inspect the boundary without writing a program against the library.
+
+    With a SQLite snapshot it emits only eligible field notes, with physical format corrections
+    identified as observations from that snapshot.
     """
-    from recall.evidence import EvidencePolicy, build_evidence_bundle, render_evidence_prompt
+    from recall.evidence import (
+        EvidencePolicy,
+        build_evidence_bundle,
+        render_evidence_prompt,
+        render_snapshot_evidence_prompt,
+    )
 
     # `max(1, ...)`: `-k` has no lower bound, and `EvidencePolicy` refuses `max_items < 1`, so
     # `recall search q -k 0 --evidence` raised an uncaught ValueError out of a dataclass
@@ -365,11 +380,20 @@ def _print_evidence(
             bundle_mode="document" if document_mode else "retrieval",
         ),
     )
-    system, user = render_evidence_prompt(bundle)
-    payload = {
-        "bundle": asdict(bundle),
-        "prompt": {"system": system, "user": user},
-    }
+    payload: dict[str, object] = {}
+    if sqlite_snapshot is not None:
+        from sqlite3 import Error as SQLiteError
+
+        from recall.sqlite_rules import verify_sqlite_rules
+
+        try:
+            bundle, checks = verify_sqlite_rules(bundle, sqlite_snapshot)
+        except (OSError, SQLiteError) as exc:
+            raise SystemExit(f"recall search: SQLite snapshot verification could not complete: {exc}") from exc
+        payload["snapshot_rule_checks"] = [asdict(check) for check in checks]
+    render = render_evidence_prompt if sqlite_snapshot is None else render_snapshot_evidence_prompt
+    system, user = render(bundle)
+    payload.update(bundle=asdict(bundle), prompt={"system": system, "user": user})
     print(json.dumps(payload, indent=2, default=str))
 
 
@@ -869,6 +893,9 @@ def _cmd_search(args: argparse.Namespace) -> None:
     # First, before any model or database work: a configuration that still asks for the removed
     # entailment judge is refused rather than served the wider, unjudged results.
     _refuse_removed_entailment()
+    sqlite_snapshot = getattr(args, "sqlite_snapshot", None)
+    if sqlite_snapshot is not None and args.locale:
+        raise SystemExit("recall search: --sqlite-snapshot requires the canonical output; omit --locale")
     route = _runtime_route(args)
     if (refusal := route.table_refusal(args.table, "recall search")) is not None:
         raise SystemExit(refusal)
@@ -945,6 +972,12 @@ def _cmd_search(args: argparse.Namespace) -> None:
             )
         except TrustRefusal as exc:
             raise SystemExit(refusal_message(exc)) from exc
+        if sqlite_snapshot is not None:
+            _print_evidence(
+                result, max_items=args.k, document_mode=args.expand_documents,
+                sqlite_snapshot=sqlite_snapshot,
+            )
+            return
         print(f"  route: {route.describe()}")
         _print_result(result)
         if args.locale:

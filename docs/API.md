@@ -98,6 +98,68 @@ removal.
 | `recall-enterprise` | Manage generation routing and readiness for production deployments. |
 | `recall repair-checks` | `prompt`: prepare a check selection prompt; `resolve`: validate the chosen checks; `feedback`: package the observations for a repair retry. See [Repair check selection](#repair-check-selection). |
 
+### Snapshot-checked SQLite rules
+
+`recall search "account opening date" --sqlite-snapshot analytics.sqlite`
+returns the evidence bundle and rendered prompt for the local SQLite file
+that the caller will query. Use the returned `prompt` as the model input.
+The command uses the existing retrieval trust gate and checks the selected
+field notes within a read-only SQLite transaction.
+
+A field note begins with a `table.column` line. Put a date representation on
+its own line as `Format: YYYY-MM-DD` or `Format: YYMMDD`. The verifier also
+accepts `in the form YYMMDD` on its own line. A note with a single supported
+declaration is checked against all non-null values. A checked item carries the
+format observed in the snapshot in its own `snapshot_format` field, which only
+the verifier sets; the note text never states it. The prompt's system message
+then tells the model what the field means and that it takes precedence over a
+format stated in the text; a library caller renders it with
+`recall.evidence.render_snapshot_evidence_prompt(bundle)`. If the values use the other
+supported format, the declaration is removed from the prompt text. This derived
+text retains the source chunk ID for traceability. The indexed text stays intact.
+
+Field descriptions that make no format claim retain their wording when their
+table and column exist. Any `Format:` or `in the form` line is a format claim,
+and so is any date pattern such as `DD/MM/YYYY` or `%d/%m/%Y` in the body. A
+note whose claims are not one supported declaration is omitted. A `YYMMDD` value must
+also be a valid date. The check establishes physical representation and field
+existence. Business definitions and units are sourced from the original notes.
+Notes without a field header, notes for missing fields, and date claims that
+cannot be resolved from a uniform non-empty column are omitted, as is a note
+whose column scan does not finish within the two-second budget shared by the
+whole bundle. Table and column names match without regard to ASCII case, as
+SQLite resolves them. The bundle
+abstains with reason code `no_verified_database_rules` if it has no eligible
+notes. The JSON includes `snapshot_rule_checks` by chunk ID, with the observed
+format when known. Each check has one status:
+
+| Status | Note |
+|---|---|
+| `field_present` | kept unchanged; it makes no format claim |
+| `format_verified` | kept with `snapshot_format`; the declaration matches the snapshot |
+| `format_corrected` | kept with `snapshot_format`; the declaration is removed from the text |
+| `not_a_field_note` | omitted; no `table.column` header line, or nothing after it |
+| `field_missing` | omitted; no such ordinary table (not a view or virtual table) and column |
+| `unsupported_format_claim` | omitted; its claims are not one supported declaration |
+| `unverified_format` | omitted; the column is empty, not uniformly one supported format, or its scan ran out of budget |
+
+Pass a local SQLite snapshot with the same contents the analytics query will
+use. It is read in one read transaction that holds a shared lock until the
+check ends, so the check sees one consistent state of the file. The reader
+waits for a writer's lock with a 0.25 second busy timeout. While the check
+runs, a writer to a rollback-journal snapshot cannot commit. It waits up to its
+own busy timeout: if the check ends first, the commit goes through; otherwise
+it fails with "database is locked". For a
+WAL-mode snapshot, an existing `-wal` file is part of the state checked, as it
+is for the analytics query; it can hold committed data, so do not delete it. If
+the `-wal` or `-shm` file does not exist, the read creates it beside the
+database, and it remains until a read-write connection to the database closes.
+In a directory the caller cannot write to, a WAL-mode snapshot missing either
+file cannot be opened, and the check fails. This option is available from the
+CLI and
+`recall.sqlite_rules.verify_sqlite_rules(bundle, snapshot)`. The CLI output
+uses the canonical text and cannot be combined with `--locale`.
+
 ### Verified fix selection
 
 `recall records --repo owner/name --select-fix request.json` takes an explicit shortlist
