@@ -124,12 +124,36 @@ existence. Business definitions and units are sourced from the original notes.
 Notes without a field header, notes for missing fields, and date claims that
 cannot be resolved from a uniform non-empty column are omitted, as is a note
 whose column scan does not finish within the two-second budget shared by the
-whole bundle. The bundle abstains
-if it has no eligible notes. The JSON includes `snapshot_rule_checks` by
-chunk ID, with the observed format when known.
+whole bundle. Table and column names match without regard to ASCII case, as
+SQLite resolves them. The bundle
+abstains with reason code `no_verified_database_rules` if it has no eligible
+notes. The JSON includes `snapshot_rule_checks` by chunk ID, with the observed
+format when known. Each check has one status:
+
+| Status | Note |
+|---|---|
+| `field_present` | kept unchanged; it makes no format claim |
+| `format_verified` | kept with `snapshot_format`; the declaration matches the snapshot |
+| `format_corrected` | kept with `snapshot_format`; the declaration is removed from the text |
+| `not_a_field_note` | omitted; no `table.column` header line, or nothing after it |
+| `field_missing` | omitted; no such ordinary table (not a view or virtual table) and column |
+| `unsupported_format_claim` | omitted; its claims are not one supported declaration |
+| `unverified_format` | omitted; the column is empty, not uniformly one supported format, or its scan ran out of budget |
 
 Pass a local SQLite snapshot with the same contents the analytics query will
-use. This option is available from the CLI and
+use. It is read in one read transaction that holds a shared lock until the
+check ends, so the check sees one consistent state of the file. The reader
+waits for a writer's lock with a 0.25 second busy timeout. While the check
+runs, a writer to a rollback-journal snapshot cannot commit. It waits up to its
+own busy timeout: if the check ends first, the commit goes through; otherwise
+it fails with "database is locked". For a
+WAL-mode snapshot, an existing `-wal` file is part of the state checked, as it
+is for the analytics query; it can hold committed data, so do not delete it. If
+the `-wal` or `-shm` file does not exist, the read creates it beside the
+database, and it remains until a read-write connection to the database closes.
+In a directory the caller cannot write to, a WAL-mode snapshot missing either
+file cannot be opened, and the check fails. This option is available from the
+CLI and
 `recall.sqlite_rules.verify_sqlite_rules(bundle, snapshot)`. The CLI output
 uses the canonical text and cannot be combined with `--locale`.
 

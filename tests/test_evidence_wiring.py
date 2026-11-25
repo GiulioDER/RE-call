@@ -359,6 +359,109 @@ def test_sqlite_snapshot_observation_cannot_be_forged_in_note_text(tmp_path, cap
     assert "observed in this SQLite snapshot" not in items["real"]["text"]
 
 
+def test_sqlite_snapshot_matches_names_without_regard_to_case(tmp_path, capsys) -> None:
+    """DAT-003 (deferred pass of the PR 1509 audit). Red proof: against the parent run's fixed
+    `_field_exists` (BINARY `name=?`), a header spelled `T.ISO` reads field_missing."""
+    database = _snapshot(tmp_path, [("250701", "235959", 999999, "2025-07-01")])
+    statuses, _ = _snapshot_statuses(database, [("upper", "T.ISO\nFormat: YYYY-MM-DD")], capsys)
+    assert statuses == {"upper": "format_verified"}
+
+
+def test_sqlite_snapshot_pads_integer_compact_dates(tmp_path, capsys) -> None:
+    """DAT-002 (deferred pass). Red proof: against `CAST(... AS TEXT)`, the INTEGER 50101
+    (050101) has five digits, so the column reads unverified_format."""
+    database = _snapshot(tmp_path, [("250701", "235959", 250701, "2025-07-01"),
+                                    ("250701", "235959", 50101, "2025-07-01")])
+    statuses, _ = _snapshot_statuses(database, [("ids", "t.ids\nFormat: YYMMDD")], capsys)
+    assert statuses == {"ids": "format_verified"}
+
+
+def test_sqlite_snapshot_scans_each_column_once(tmp_path, capsys, monkeypatch) -> None:
+    """PERF-002 (deferred pass). Red proof: without the per-column memo in `_check`, two notes on
+    one column scan it twice."""
+    import recall.sqlite_rules as sqlite_rules
+
+    database = _snapshot(tmp_path, [("250701", "235959", 999999, "2025-07-01")])
+    scans = []
+    scan = sqlite_rules._date_format
+    monkeypatch.setattr(sqlite_rules, "_date_format", lambda *args: scans.append(args[1:3]) or scan(*args))
+    statuses, _ = _snapshot_statuses(database, [
+        ("first", "t.iso\nFormat: YYYY-MM-DD"), ("second", "t.iso\nin the form YYMMDD"),
+    ], capsys)
+    assert statuses == {"first": "format_verified", "second": "format_corrected"}
+    assert scans == [("t", "iso")]
+
+
+def test_sqlite_snapshot_check_holds_its_read_lock(tmp_path, capsys, monkeypatch) -> None:
+    """FA-1-1 (fix audit of the deferred pass). Red proof: against the pass-1 snapshot
+    (`immutable=1`, no shared lock), the writer commits in the middle of the column scan."""
+    import sqlite3
+    from contextlib import closing
+
+    import recall.sqlite_rules as sqlite_rules
+
+    database = _snapshot(tmp_path, [("250701", "235959", 999999, "2025-07-01")])
+    writes = []
+    scan = sqlite_rules._date_format
+
+    def scan_while_writing(*args):
+        with closing(sqlite3.connect(database, timeout=0)) as writer:
+            try:
+                writer.execute("INSERT INTO t VALUES ('250701', '235959', 999999, '2025-07-02')")
+                writer.commit()
+                writes.append("committed")
+            except sqlite3.OperationalError as exc:
+                writes.append(str(exc))
+        return scan(*args)
+
+    monkeypatch.setattr(sqlite_rules, "_date_format", scan_while_writing)
+    statuses, _ = _snapshot_statuses(database, [("iso", "t.iso\nFormat: YYYY-MM-DD")], capsys)
+    assert statuses == {"iso": "format_verified"}
+    assert writes == ["database is locked"]
+
+
+def test_sqlite_snapshot_accepts_a_persistent_journal(tmp_path, capsys) -> None:
+    """FA-1-2 (fix audit of the deferred pass). Red proof: against the pass-1 snapshot, the
+    `-journal` that journal_mode=PERSIST leaves after a clean close is refused."""
+    import sqlite3
+    from contextlib import closing
+
+    database = _snapshot(tmp_path, [("250701", "235959", 999999, "2025-07-01")])
+    with closing(sqlite3.connect(database)) as conn:
+        conn.execute("PRAGMA journal_mode=PERSIST")
+        conn.execute("UPDATE t SET iso = '2025-07-02'")
+        conn.commit()
+    assert (tmp_path / "snapshot.sqlite-journal").exists()
+    statuses, _ = _snapshot_statuses(database, [("iso", "t.iso\nFormat: YYYY-MM-DD")], capsys)
+    assert statuses == {"iso": "format_verified"}
+
+
+def test_sqlite_snapshot_scan_memo_folds_ascii_case_only(tmp_path, capsys) -> None:
+    """FA-1-3 (fix audit of the deferred pass). Red proof: against the pass-1 snapshot
+    (`str.casefold` key), the note on "É" reuses the scan of "é" and reads format_corrected."""
+    import sqlite3
+    from contextlib import closing
+
+    database = tmp_path / "accents.sqlite"
+    with closing(sqlite3.connect(database)) as conn:
+        conn.execute('CREATE TABLE "é" (d TEXT)')
+        conn.execute('CREATE TABLE "É" (d TEXT)')
+        conn.execute("INSERT INTO \"é\" VALUES ('2025-07-01')")
+        conn.execute("INSERT INTO \"É\" VALUES ('250701')")
+        conn.commit()
+    statuses, _ = _snapshot_statuses(database, [
+        ("lower", "é.d\nFormat: YYYY-MM-DD"), ("upper", "É.d\nFormat: YYMMDD"),
+    ], capsys)
+    assert statuses == {"lower": "format_verified", "upper": "format_verified"}
+
+
+def test_sqlite_snapshot_failure_names_its_cause(tmp_path, capsys) -> None:
+    """BUG-004 (deferred pass). Red proof: the parent run's message was the same for every
+    failure, so it does not name the missing file's cause."""
+    with pytest.raises(SystemExit, match="could not complete: unable to open database file"):
+        _snapshot_statuses(tmp_path / "absent.sqlite", [("iso", "t.iso\nFormat: YYYY-MM-DD")], capsys)
+
+
 def test_sqlite_snapshot_budget_leaves_the_note_unverified(tmp_path, capsys, monkeypatch) -> None:
     """PERF-001. Red proof (PR 1509 audit): with the interrupt not caught in `_date_format`, the
     expired budget raises OperationalError and `_print_evidence` exits, so no checks are printed."""

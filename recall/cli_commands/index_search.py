@@ -384,7 +384,7 @@ def _print_evidence(
         try:
             bundle, checks = verify_sqlite_rules(bundle, sqlite_snapshot)
         except (OSError, SQLiteError) as exc:
-            raise SystemExit("recall search: SQLite snapshot verification could not complete") from exc
+            raise SystemExit(f"recall search: SQLite snapshot verification could not complete: {exc}") from exc
         payload["snapshot_rule_checks"] = [asdict(check) for check in checks]
     system, user = render_evidence_prompt(bundle)
     payload.update(bundle=asdict(bundle), prompt={"system": system, "user": user})
