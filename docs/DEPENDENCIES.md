@@ -26,9 +26,14 @@ supported majors and runs the complete suite on 19 as well as 18.
 PostgreSQL 19 updated eight Snowball stemmers, English among them, which now "produce different
 stems for some words" (19 release notes). A database moved to 19, by `pg_upgrade` or by dump and
 restore, keeps the `tsvector` values its generations stored under the old release, so sparse search
-can miss words whose stem changed. Rebuilding a generation does not refresh them: a rebuild copies
-the stored values of every unchanged source. Recompute them in place once, after the move, with the
-servers and indexers stopped.
+can miss words whose stem changed. A generation built on the new server derives every `tsvector`
+there, including those of unchanged sources it reuses (0.16.1 and earlier copied them), so building
+and promoting a new generation for each tenant refreshes them. A generation built under the old
+release and still serving keeps its old values. If the release that built it records the server's
+stemmer, strict search refuses it with `LINEAGE_MISMATCH` until it is replaced; one built by 0.16.1
+or earlier records nothing and is served as before. To refresh in place instead, and always for the
+legacy `chunks` table, which no generation build writes, run the block below once after the move,
+with the servers and indexers stopped.
 
 Run the block below as the role that applied the migrations (the tables' owner) or as a superuser.
 These tables force row level security even on their owner, so if the owner runs the block without

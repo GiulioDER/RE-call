@@ -13,8 +13,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 * PostgreSQL 19 is supported. CI runs schema migrations and the upgrade from 0.14.0 on 16 to 19,
   and the complete suite on 19 as well as 18. The Docker default stays on 18. 19's English stemmer
   changed, so after moving a database to 19 the stored `tsvector` values can miss queries for words
-  whose stem changed. A generation rebuild does not refresh them; recompute them with the statements
-  in [DEPENDENCIES.md](docs/DEPENDENCIES.md).
+  whose stem changed. Building and promoting a new generation on the new server refreshes them;
+  the legacy `chunks` table, and a generation refreshed in place, use the statements in
+  [DEPENDENCIES.md](docs/DEPENDENCIES.md).
 
 ### Changed
 
@@ -31,6 +32,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 ### Fixed
 
 * The MCP handshake reports the installed RE-call version in `serverInfo.version`.
+* A generation build that reuses an unchanged source derives its `tsvector` on the server running
+  the build instead of copying the earlier generation's. A copy carried an old server's stemming
+  through every rebuild after a PostgreSQL major upgrade, while the generation recorded the new
+  server's stemmer, so the stemmer check passed on stale lexemes.
 
 ## [0.16.1] (2026-11-23)
 
