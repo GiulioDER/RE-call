@@ -25,6 +25,7 @@ Lite ships in the PyPI wheel from `0.15.0`; earlier wheels do not contain it.
 | [MEMO_CORRECTIONS.md](MEMO_CORRECTIONS.md) | Assistant memo correction preconditions, retry identities, receipts and compatibility. |
 | [COMPATIBILITY.md](COMPATIBILITY.md) | Versioning, API and wire contracts, schema upgrades, and release evidence. |
 | [REPOSITORY_MAP.md](REPOSITORY_MAP.md) | Product, evidence, benchmark support, and archive boundaries. |
+| [FEATURE_MAP.md](FEATURE_MAP.md) | Where each feature lives: its commands, MCP tools, modules, tests and docs (generated, CI-checked). |
 | [WIZARD.md](WIZARD.md) | The install wizard's headless and GUI front ends, config format, and refusals. |
 | [FIRST_CALIBRATION.md](FIRST_CALIBRATION.md) | Walkthrough from an indexed folder to a trusted, certified corpus, with the traps named where you hit them. |
 | [PRODUCTION.md](PRODUCTION.md) | Production posture, supported boundaries, and known limits. |

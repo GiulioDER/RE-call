@@ -10,14 +10,13 @@ from __future__ import annotations
 
 import argparse
 import json
-import sys
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import Any
 
 from pydantic import ValidationError
 
 from recall.backends import lite_route_refusal, open_legacy_store
+from recall.cli_commands._input import read_input_bytes
 from recall.cli_commands._lite import lite_read_meta
 from recall.fix_selection import FixRequest, select_fix, unavailable
 from recall.lite import is_lite_dsn, lite_dsn_path
@@ -86,7 +85,7 @@ def _read_anchors(spec: str) -> Any:
     try:
         # utf-8-sig: an editor's byte order mark is not JSON, and a file that is not UTF-8 at all
         # (a UnicodeDecodeError, which is a ValueError) is refused here like any unreadable file.
-        raw = sys.stdin.buffer.read() if spec == "-" else Path(spec).read_bytes()
+        raw = read_input_bytes(spec)
         text = raw.decode("utf-8-sig")
         return json.loads(text)
     except (OSError, ValueError) as exc:
@@ -129,12 +128,7 @@ def _lookup(
 
 def _read_fix_request(spec: str) -> FixRequest:
     try:
-        # Bytes, so standard input decodes as UTF-8 like a file does, whatever the console code page.
-        if spec == "-":
-            raw = sys.stdin.buffer.read(MAX_FIX_REQUEST_BYTES + 1)
-        else:
-            with Path(spec).open("rb") as stream:
-                raw = stream.read(MAX_FIX_REQUEST_BYTES + 1)
+        raw = read_input_bytes(spec, MAX_FIX_REQUEST_BYTES)
         if len(raw) > MAX_FIX_REQUEST_BYTES:
             raise SystemExit(f"recall records: fix request exceeds {MAX_FIX_REQUEST_BYTES // 2**20} MiB")
         return FixRequest.model_validate_json(raw.decode("utf-8-sig"))

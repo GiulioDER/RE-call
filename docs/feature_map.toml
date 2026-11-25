@@ -1,0 +1,437 @@
+# The source of docs/FEATURE_MAP.md. Edit this file, then run `python tools/feature_map.py`.
+#
+# One [[feature]] per thing a user or an agent can do with RE-call. CI (`--check`) refuses:
+#   - a console script, `recall` command or MCP tool that no feature names;
+#   - a module in a shipped package that no feature's `modules` matches;
+#   - a name that does not exist, or a glob that matches no tracked file;
+#   - a docs/FEATURE_MAP.md that differs from what this file generates.
+# In a glob, `*` also matches `/`, so `recall/lite/*` covers the whole directory.
+# A module may belong to more than one feature; list it where a reader would look for it.
+
+[[feature]]
+id = "install"
+area = "Install and connect"
+name = "Install, setup wizard and uninstall"
+summary = "Take a machine from nothing to a calibrated corpus wired into Claude Code or Codex, and take it apart again."
+scripts = ["recall-install", "recall-uninstall"]
+cli = ["setup", "wizard", "uninstall", "quickstart"]
+modules = [
+    "recall/wizard/*", "recall/setup.py", "recall/quickstart.py", "recall/seed.py",
+    "recall/claude_code.py", "recall/codex.py", "recall/cli_commands/setup_wizard.py",
+]
+tests = ["tests/test_wizard*.py", "tests/test_setup*.py", "tests/test_quickstart*.py", "tests/test_codex*.py", "tests/test_claude_code*.py"]
+docs = ["docs/INSTALLATION.md", "docs/GETTING_STARTED.md", "docs/WIZARD.md", "docs/CODEX_RECALL_INTEGRATION.md"]
+
+[[feature]]
+id = "doctor"
+area = "Install and connect"
+name = "Doctor and capability diagnostics"
+summary = "Say which part of an install is wrong, and which optional models and extras are present, writing nothing."
+cli = ["doctor"]
+modules = ["recall/doctor.py", "recall/capabilities.py", "recall/cli_commands/doctor_cmd.py"]
+tests = ["tests/test_doctor*.py", "tests/test_capabilities*.py"]
+docs = ["docs/INSTALLATION.md"]
+
+[[feature]]
+id = "cli"
+area = "Install and connect"
+name = "The `recall` command line"
+summary = "The command tree, its global options, and the helpers its command families share."
+scripts = ["recall"]
+modules = ["recall/cli.py", "recall/cli_commands/__init__.py", "recall/cli_commands/_shared.py", "recall/cli_commands/_lite.py", "recall/cli_commands/_input.py"]
+tests = ["tests/test_cli*.py"]
+docs = ["docs/API.md"]
+
+[[feature]]
+id = "hooks"
+area = "Install and connect"
+name = "Claude Code and Codex hooks"
+summary = "Search memory with the user's prompt and with what the agent is about to write, keep the memo folder indexed, and close this session's MCP transports."
+scripts = ["recall-hooks", "recall-codex-hooks"]
+modules = ["recall_hooks/*", "recall/memory_index.py"]
+tests = ["tests/test_hooks*.py", "tests/test_recall_hooks*.py", "tests/test_auditor*.py", "tests/test_hosted*.py"]
+docs = ["docs/USING_WITH_CLAUDE.md", "docs/CODEX_RECALL_INTEGRATION.md"]
+
+[[feature]]
+id = "indexing"
+area = "Write path"
+name = "Indexing and ingest"
+summary = "Turn files into chunks and vectors: reading documents, front matter, chunking, budgets, the one-writer lock, and the MCP ingest jobs."
+cli = ["index"]
+mcp = ["recall_index", "recall_ingest", "recall_job_status"]
+modules = [
+    "recall/index.py", "recall/index_budget.py", "recall/index_lock.py", "recall/document.py",
+    "recall/frontmatter.py", "recall/extraction.py", "recall/context.py", "recall/chunk_records.py",
+    "recall/uploads.py", "recall/cli_commands/index_search.py",
+    "recall_mcp/indexing.py", "recall_mcp/server_ingest.py", "recall_mcp/desktop_ingest.py",
+]
+tests = ["tests/test_index*.py", "tests/test_context*.py", "tests/test_document*.py"]
+docs = ["docs/HOW_IT_WORKS.md"]
+
+[[feature]]
+id = "embeddings"
+area = "Write path"
+name = "Embedders, profiles and the embedding cache"
+summary = "Local and hosted embedders, the registry that pins each profile's identity, learned sparse retrieval, and the content-addressed cache."
+modules = [
+    "recall/embeddings.py", "recall/embedding_core.py", "recall/embedding_prompts.py",
+    "recall/embedding_providers/*", "recall/embedding_registry.py", "recall/_voyage_http.py",
+    "recall/sparse.py", "recall/cache.py", "recall_mcp/factories.py",
+]
+tests = ["tests/test_embedding*.py", "tests/test_voyage*.py", "tests/test_sparse*.py"]
+docs = ["docs/VOYAGE_CONTEXT4.md", "docs/MODEL_LICENSES.md"]
+
+[[feature]]
+id = "multimodal"
+area = "Write path"
+name = "Multimodal memory"
+summary = "Images in memory: bounded provenance and the isolated Voyage multimodal tenant."
+modules = ["recall/multimodal.py"]
+tests = ["tests/test_multimodal*.py"]
+docs = ["docs/MULTIMODAL.md"]
+
+[[feature]]
+id = "generations"
+area = "Write path"
+name = "Generations, promotion and routing"
+summary = "Immutable blue green index generations: build, promote, roll back, the routing control plane, and the enterprise operator CLI."
+scripts = ["recall-enterprise"]
+cli = ["generation"]
+modules = [
+    "recall/generations.py", "recall/generation_build.py", "recall/generation_store.py",
+    "recall/generation_types.py", "recall/control_plane.py", "recall/lineage.py", "recall/migration.py",
+    "recall/promotion.py", "recall/build_progress.py", "recall/runtime_route.py",
+    "recall/enterprise_cli.py", "recall/source_conditioning.py",
+    "recall/cli_commands/generation_cmd.py", "recall_mcp/generation_admin.py",
+]
+tests = ["tests/test_generation*.py", "tests/test_promotion*.py", "tests/test_enterprise*.py"]
+docs = ["docs/GENERATIONS.md", "docs/ENTERPRISE_RETRIEVAL.md"]
+
+[[feature]]
+id = "manifests"
+area = "Write path"
+name = "Corpus manifests"
+summary = "Canonical, immutable corpus manifests and allowlisted S3 object retrieval."
+cli = ["manifest"]
+modules = ["recall/manifest.py", "recall/cli_commands/manifest_cmd.py"]
+tests = ["tests/test_manifest*.py"]
+docs = ["docs/ENTERPRISE_RETRIEVAL.md"]
+
+[[feature]]
+id = "search"
+area = "Read path"
+name = "Search, evidence and the trust gate"
+summary = "Retrieve, rerank, scope and judge: calibrated abstention, trust verdicts, citable evidence bundles, federation across tenants."
+cli = ["search", "scopes", "demo", "code"]
+mcp = ["recall_search", "recall_evidence"]
+modules = [
+    "recall/retriever.py", "recall/rerank.py", "recall/guards.py", "recall/trust.py",
+    "recall/trust_gate.py", "recall/trust_policy.py", "recall/trust_verdicts.py", "recall/evidence.py",
+    "recall/paged_evidence.py", "recall/explanations.py", "recall/support.py", "recall/unknown_terms.py",
+    "recall/scope.py", "recall/scope_prior.py", "recall/retrieval_plan.py", "recall/query_class.py",
+    "recall/query_anchor_admission.py", "recall/profiles.py", "recall/retrieval_slo.py",
+    "recall/federation.py", "recall/cli_commands/index_search.py",
+    "recall_mcp/retrieval.py", "recall_mcp/server_search.py", "recall_mcp/federation_adapter.py",
+]
+tests = ["tests/test_trust*.py", "tests/test_retrieval*.py", "tests/test_evidence*.py", "tests/test_query*.py"]
+docs = ["docs/HOW_IT_WORKS.md", "docs/EVIDENCE.md", "docs/FEDERATED_RETRIEVAL.md", "docs/RETRIEVAL_SLO.md", "docs/ROUTING_GATES.md"]
+
+[[feature]]
+id = "calibration"
+area = "Read path"
+name = "Calibration and drift"
+summary = "Fit, publish and carry forward the per-embedder abstention threshold, watch drift, and report near-miss coverage."
+cli = ["calibration"]
+mcp = ["recall_calibration_status", "recall_calibration_run", "recall_calibration_publish"]
+modules = [
+    "recall/calibration.py", "recall/calibration_v2.py", "recall/calibration_v2_artifact.py",
+    "recall/calibration_v2_bounds.py", "recall/drift.py", "recall/near_miss.py",
+    "recall/near_miss_certificate.py", "recall/served_gap.py",
+    "recall/cli_commands/calibration_cmd.py", "recall_mcp/server_calibration.py",
+]
+tests = ["tests/test_calibration*.py", "tests/test_near*.py"]
+docs = ["docs/CALIBRATION.md", "docs/FIRST_CALIBRATION.md", "docs/UNCALIBRATED_FIRST_RUN_DESIGN.md"]
+
+[[feature]]
+id = "atomic-rescue"
+area = "Read path"
+name = "Atomic rescue"
+summary = "Small word-window views built per generation, so a fact buried in a long chunk can still pass the trust gate."
+modules = [
+    "recall/atomic_rescue.py", "recall/atomic_view_store.py", "recall/atomizer.py",
+    "recall/generation_rescue.py", "recall_mcp/rescue_builder.py",
+]
+tests = ["tests/test_atomic*.py", "tests/test_rescue*.py"]
+docs = ["docs/DESKTOP_ATOMIC_RESCUE_DESIGN.md"]
+
+[[feature]]
+id = "graph"
+area = "Read path"
+name = "Semantic graph and related evidence"
+summary = "The derived evidence graph, graph-first candidate construction, and trusted evidence related to one chunk."
+cli = ["graph"]
+mcp = ["recall_related"]
+modules = [
+    "recall/semantic_graph/*", "recall/graph_first.py", "recall/query_entity_resolution.py",
+    "recall/related.py", "recall/cli_commands/graph_cmd.py",
+    "recall_mcp/graph_expansion.py", "recall_mcp/graph_first_api.py", "recall_mcp/graph_projection.py",
+    "recall_mcp/semantic_graph_cache.py", "recall_mcp/related_api.py",
+]
+tests = ["tests/test_graph*.py", "tests/test_related*.py"]
+docs = ["docs/REASONING_GRAPH.md"]
+
+[[feature]]
+id = "reasoning"
+area = "Read path"
+name = "Reasoning, proposals and query construction"
+summary = "Opt-in multi-hop reasoning over trusted evidence: projections, inference proposals, proof obligations, query construction and rewrite plans."
+cli = ["reasoning"]
+mcp = [
+    "recall_reasoning_query", "recall_reasoning_projection", "recall_reasoning_proposals",
+    "recall_reasoning_audit", "recall_query_construction_challenge", "recall_rewrite_plan",
+]
+modules = [
+    "recall/reasoning.py", "recall/reasoning_expansion.py", "recall/reasoning_expansion_service.py",
+    "recall/reasoning_graph.py", "recall/reasoning_graph_service.py", "recall/reasoning_planner.py",
+    "recall/reasoning_response.py", "recall/reasoning_proposals/*", "recall/proof_obligations.py",
+    "recall/proof_provider.py", "recall/query_construction.py", "recall/answer_provider.py",
+    "recall/provider_metadata.py", "recall/_chat_content.py", "recall/cli_commands/reasoning_cmd.py",
+    "recall_mcp/reasoning_*.py", "recall_mcp/query_construction_api.py", "recall_mcp/server_reasoning.py",
+]
+tests = ["tests/test_reasoning*.py", "tests/test_answer*.py"]
+docs = ["docs/REASONING_API.md", "docs/REASONING_CONTRACT.md", "docs/REASONING_OPERATIONS.md", "docs/INFERENCE_PROPOSALS.md"]
+
+[[feature]]
+id = "supersession"
+area = "Memory truth"
+name = "Supersession and write-time lint"
+summary = "Which memo replaced which: the resolution rule, the arbiter that proposes missing edges, and the lint and check that ask for an edge at write time."
+cli = ["lint", "check"]
+mcp = ["recall_current_state"]
+modules = [
+    "recall/supersession.py", "recall/supersession_arbiter.py", "recall/supersession_cues.py",
+    "recall/supersession_records.py", "recall/store_supersession.py", "recall/lint.py",
+    "recall/semantic_lint.py", "recall/check.py", "recall/fix.py", "recall/derived_block.py",
+    "recall/dependency_invalidation.py", "recall/current_state.py", "recall/cli_commands/lint_check.py",
+]
+tests = ["tests/test_supersession*.py", "tests/test_lint*.py"]
+docs = ["docs/MEMO_CORRECTIONS.md", "docs/DERIVED_BLOCK_DESIGN.md", "docs/ENTAILMENT_SUPERSESSION_STUDY.md"]
+
+[[feature]]
+id = "facts"
+area = "Memory truth"
+name = "Fact ledger and provenance controller"
+summary = "Structured facts with provenance: the append-only ledger, what is in force now, stated and declared keys, and write authorization."
+cli = ["provenance"]
+mcp = ["recall_current_facts", "recall_apply_fact"]
+modules = [
+    "recall/fact_current.py", "recall/fact_events.py", "recall/fact_ledger.py", "recall/fact_projection.py",
+    "recall/stated_facts.py", "recall/declared_keys.py", "recall/provenance_controller.py",
+    "recall/provenance_cards.py", "recall/provenance_card_hash.py", "recall/provenance_json.py",
+    "recall/cli_commands/provenance_cmd.py",
+    "recall_mcp/provenance.py", "recall_mcp/evidence_cards.py", "recall_mcp/server_facts.py",
+]
+tests = ["tests/test_fact*.py", "tests/test_provenance*.py", "tests/test_stated*.py"]
+docs = ["docs/PROVENANCE_CONTROLLER.md", "docs/REFERENCE_TIME_DESIGN.md"]
+
+[[feature]]
+id = "claim-extraction"
+area = "Memory truth"
+name = "Claim extraction and rewrite"
+summary = "Model-backed extraction of structured claims from memo prose, and writing a reviewed promotion back to its file."
+cli = ["extract", "rewrite"]
+modules = ["recall/truth_extraction/*", "recall/rewrite.py", "recall/cli_commands/extract_rewrite.py"]
+tests = ["tests/test_truth*.py", "tests/test_rewrite*.py"]
+docs = ["docs/TRUTH_EXTRACTION_DESIGN.md"]
+
+[[feature]]
+id = "forget"
+area = "Memory truth"
+name = "Forget and withdraw"
+summary = "Erase a memo and what it told the fact ledger, or withdraw it so it can be given back."
+cli = ["forget", "withdraw"]
+mcp = ["recall_forget", "recall_withdraw"]
+modules = ["recall/fact_redaction.py", "recall/fact_retraction.py", "recall/cli_commands/index_search.py", "recall_mcp/server_memory_admin.py"]
+tests = ["tests/test_forget*.py", "tests/test_erasure*.py", "tests/test_withdraw*.py"]
+docs = ["docs/API.md"]
+
+[[feature]]
+id = "audit-records"
+area = "Memory truth"
+name = "Audit records"
+summary = "Bug and fix records keyed to the code they describe, looked up by exact key."
+cli = ["records"]
+mcp = ["recall_records"]
+modules = ["recall/records.py", "recall/records_files.py", "recall/anchors.py", "recall/fix_selection.py", "recall/cli_commands/records_cmd.py"]
+tests = ["tests/test_records*.py", "tests/test_anchors*.py"]
+docs = ["docs/AUDIT_MEMORY_DESIGN.md"]
+
+[[feature]]
+id = "repair-checks"
+area = "Memory truth"
+name = "Repair check selection"
+summary = "After a failed repair, build a selector prompt over a fixed menu of checks, validate the chosen pair, and package the observed results for the retry."
+cli = ["repair-checks"]
+modules = ["recall/cli_commands/repair_checks.py"]
+tests = ["tests/test_repair_checks.py"]
+docs = ["docs/API.md"]
+
+[[feature]]
+id = "agent-reports"
+area = "Memory truth"
+name = "Agent stale and use reports"
+summary = "An agent reports that memory was stale or how it helped; a person accepts or rejects it."
+mcp = ["recall_report_stale", "recall_report_use"]
+modules = ["recall/stale_reports.py", "recall_mcp/stale_reports_api.py", "recall_mcp/use_reports_api.py"]
+tests = ["tests/test_stale*.py", "tests/test_report_*.py", "tests/test_mcp_report_use.py"]
+docs = ["docs/MEMORY_OBSERVABILITY.md"]
+
+[[feature]]
+id = "mcp-server"
+area = "Surfaces"
+name = "MCP server"
+summary = "The server agents call: tool registration and surfaces, lifespan, settings, per-tenant stores, limits, status and inventory."
+scripts = ["recall-mcp", "recall-codex-mcp"]
+mcp = ["recall_stats", "recall_tenants", "recall_inventory", "recall_resolve_reference"]
+modules = [
+    "recall_mcp/__init__.py", "recall_mcp/server.py", "recall_mcp/server_common.py",
+    "recall_mcp/server_lifespan.py", "recall_mcp/server_memory_admin.py", "recall_mcp/settings.py",
+    "recall_mcp/stores.py", "recall_mcp/threads.py", "recall_mcp/tool_surface.py", "recall_mcp/models.py",
+    "recall_mcp/compat.py", "recall_mcp/status.py", "recall_mcp/lifecycle.py", "recall_mcp/limits.py",
+    "recall_mcp/config_report.py", "recall_mcp/translation.py", "recall_mcp/codex_server.py",
+    "recall_mcp/service.py", "recall_mcp/access_log.py",
+]
+tests = ["tests/test_mcp*.py"]
+docs = ["docs/API.md", "docs/USING_WITH_CLAUDE.md"]
+
+[[feature]]
+id = "auth"
+area = "Surfaces"
+name = "Authentication, tenancy and source policy"
+summary = "Bearer tokens and OIDC for the HTTP transport, principal to tenant mapping, row-level security, source authorization and DSN safety."
+modules = [
+    "recall_mcp/auth.py", "recall_mcp/oidc.py", "recall_mcp/server_auth.py",
+    "recall/security_policy.py", "recall/dsn_security.py",
+]
+tests = ["tests/test_auth*.py", "tests/test_oidc*.py", "tests/test_security*.py"]
+docs = ["docs/AUTH.md", "docs/SECURITY_MODEL.md"]
+
+[[feature]]
+id = "assistant"
+area = "Surfaces"
+name = "Assistant memory surface"
+summary = "One fact per memo, remembered and forgotten by memo id, for an assistant on a lite store."
+mcp = ["recall_remember", "recall_forget_memo"]
+modules = ["recall_mcp/assistant.py", "recall_mcp/server_assistant.py", "recall/lite/assistant_memos.py"]
+tests = ["tests/test_assistant*.py"]
+docs = ["docs/LITE.md"]
+
+[[feature]]
+id = "lite"
+area = "Surfaces"
+name = "Lite store (one SQLite file)"
+summary = "RE-call with no database server: the store, its calibration, facts, graph, refresh from memo folders and the writer lock."
+cli = ["lite"]
+modules = [
+    "recall/lite/*", "recall/backends.py", "recall/eval_clock.py",
+    "recall/cli_commands/lite_cmd.py", "recall_mcp/lite_refresh.py",
+]
+tests = ["tests/test_lite*.py"]
+docs = ["docs/LITE.md"]
+
+[[feature]]
+id = "dashboard"
+area = "Surfaces"
+name = "Review dashboard"
+summary = "A local page to review supersession proposals and agent reports, browse the corpus and its graph, and edit declared values."
+cli = ["dashboard"]
+modules = ["recall/dashboard/*", "recall/cli_commands/dashboard_cmd.py"]
+tests = ["tests/test_dashboard*.py"]
+docs = ["docs/MEMORY_OBSERVABILITY.md"]
+
+[[feature]]
+id = "desktop"
+area = "Surfaces"
+name = "Windows desktop app"
+summary = "A PySide6 client: install front end, drag and drop ingest, runtime profiles and release updates."
+scripts = ["recall-desktop"]
+modules = ["recall/desktop/*"]
+tests = ["tests/test_desktop*.py"]
+docs = ["docs/INSTALLATION.md"]
+
+[[feature]]
+id = "integrations"
+area = "Surfaces"
+name = "Agent SDK and framework integrations"
+summary = "RE-call as in-process memory for Claude Agent SDK apps, LangChain and LlamaIndex retrievers, and a façade for other benchmark harnesses."
+modules = ["recall_agent/*", "recall/integrations/*", "recall_interop/*"]
+tests = ["tests/test_agent*.py", "tests/test_integrations*.py"]
+docs = ["docs/USING_WITH_AGENT_SDK.md", "docs/their-harness-parity.md"]
+
+[[feature]]
+id = "hosted"
+area = "Surfaces"
+name = "Hosted memory API (AML)"
+summary = "The Starlette service behind the hosted Add, Search and delete contract, with its retrieval and rendering stages."
+modules = ["recall_aml/*"]
+tests = ["tests/test_aml*.py"]
+docs = ["docs/RECALL_HOSTED_INTEGRATION.md"]
+
+[[feature]]
+id = "storage"
+area = "Operations"
+name = "PostgreSQL store, schema and receipts"
+summary = "The pgvector store, its mutations and idempotency receipts, the connection pool, and versioned, checksum-verified migrations."
+cli = ["schema", "idempotency"]
+modules = [
+    "recall/store.py", "recall/store_mutation.py", "recall/store_receipts.py", "recall/idempotency_receipts.py",
+    "recall/pool.py", "recall/db_constants.py", "recall/sql_identifiers.py", "recall/types.py",
+    "recall/schema.py", "recall/migrations/*", "recall/cli_commands/schema_cmd.py",
+    "recall/cli_commands/idempotency_cmd.py",
+]
+tests = ["tests/test_store*.py", "tests/test_schema*.py", "tests/test_idempotency*.py"]
+docs = ["docs/MIGRATIONS.md", "docs/COMPATIBILITY.md"]
+
+[[feature]]
+id = "operations"
+area = "Operations"
+name = "Production operations"
+summary = "Aurora backup and restore drills, staged secret rotation, health controllers and fail-closed enterprise readiness."
+cli = ["backup", "secret"]
+modules = [
+    "recall/ops/*", "recall/readiness.py", "recall/cli_commands/backup_cmd.py",
+    "recall/cli_commands/secret_cmd.py",
+]
+tests = ["tests/test_restore*.py", "tests/test_enterprise_readiness.py", "tests/test_rotation*.py", "tests/test_db_retry.py", "tests/test_production_resilience.py"]
+docs = ["docs/PRODUCTION.md", "docs/AWS_OPERATIONS.md", "docs/OPERATING_MODES.md"]
+
+[[feature]]
+id = "observability"
+area = "Operations"
+name = "Observability and the decision ledger"
+summary = "Logging, metrics, timing, and the append-only witness of what the trust layer decided and why."
+modules = ["recall/observability.py", "recall/timing.py", "recall/decision_ledger.py"]
+tests = ["tests/test_observability*.py", "tests/test_decision*.py"]
+docs = ["docs/MEMORY_OBSERVABILITY.md", "docs/DECISION_LEDGER.md"]
+
+[[feature]]
+id = "evaluation"
+area = "Research"
+name = "Evaluation harness and consistency audit"
+summary = "Reproducible retrieval evaluation (LOCOMO, LongMemEval, BEIR, synthetic scale), promotion evidence, and the corpus consistency report."
+modules = ["recall/eval/*", "recall_consistency/*"]
+tests = ["tests/test_eval*.py", "tests/test_consistency*.py"]
+docs = ["docs/BENCHMARKS.md", "docs/RESEARCH_PROTOCOL.md"]
+
+[[feature]]
+id = "foundation"
+area = "Operations"
+name = "Shared foundation"
+summary = "What everything imports: errors, limits, the version, safe file replacement, path containment, document identity and the `.recall` state directory."
+modules = [
+    "recall/__init__.py", "recall/_env.py", "recall/_frozen.py", "recall/errors.py", "recall/constants.py",
+    "recall/version.py", "recall/atomic_write.py", "recall/confinement.py", "recall/source_identity.py",
+    "recall/state_dir.py", "recall/schemas/*",
+]
+tests = ["tests/test_confinement*.py", "tests/test_source_identity*.py"]
+docs = ["docs/ENGINEERING.md"]

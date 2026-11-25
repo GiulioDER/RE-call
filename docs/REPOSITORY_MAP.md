@@ -12,6 +12,10 @@ packages. Regenerate it with `make architecture-map`, or verify that it is curre
 `make architecture-lint`; dead code and dependency checks run with `make dead-code` and
 `make deps-audit`.
 
+`FEATURE_MAP.md` answers a different question: where each feature lives (its commands, MCP tools,
+modules, tests and docs). It is generated from `feature_map.toml` by `python tools/feature_map.py`,
+and `--check` refuses a command, tool, console script or module that no feature claims.
+
 The generated map is evidence for refactoring decisions, not a replacement for runtime tracing.
 Dynamic imports, plugin loading, and environment selected providers still require focused tests.
 

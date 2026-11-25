@@ -104,6 +104,7 @@ _COMMAND_REGISTRATIONS: tuple[tuple[frozenset[str], str, str], ...] = (
     (frozenset({"dashboard"}), "recall.cli_commands.dashboard_cmd", "register"),
     (frozenset({"lite"}), "recall.cli_commands.lite_cmd", "register"),
     (frozenset({"records"}), "recall.cli_commands.records_cmd", "register"),
+    (frozenset({"repair-checks"}), "recall.cli_commands.repair_checks", "register"),
 )
 
 

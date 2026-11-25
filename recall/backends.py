@@ -59,7 +59,7 @@ LITE_SERVED: frozenset[str] = frozenset(
         # `--generation` naming anything else is refused by name in its own handler.
         "graph",
         # Never open the store a DSN names: files, manifests, backups, secrets, client config.
-        "check", "extract", "rewrite", "manifest", "backup", "secret", "uninstall",
+        "check", "extract", "rewrite", "manifest", "backup", "secret", "uninstall", "repair-checks",
         # Takes its database from its own config file, not from the global DSN.
         "wizard",
         # Partly served, partly refused: the refused forms are decided in `lite_command_refusal`.
