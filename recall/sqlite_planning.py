@@ -187,7 +187,7 @@ def _check_plan(
 
 
 def _read_authorizer(
-    action: int, arg1: str | None, arg2: str | None, database: str | None, source: str | None
+    action: int, _arg1: str | None, arg2: str | None, database: str | None, _source: str | None
 ) -> int:
     if action not in _READ_ACTIONS:
         return sqlite3.SQLITE_DENY
