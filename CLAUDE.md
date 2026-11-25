@@ -124,6 +124,9 @@ when `find_spec("voyageai")` is None, even though it never imports the SDK. A sp
 - Lint is `python -m ruff check .`. **Never run `ruff format`**: most files do not conform to it
   and CI only ever runs `ruff check`.
 - Types are a CI gate too, and ruff does not check them: `python -m mypy` (or `make typecheck`).
+- **To find where a feature lives, read `docs/FEATURE_MAP.md`** (or `python tools/feature_map.py
+  --which <path>` for a file). It is generated from `docs/feature_map.toml`, and CI refuses a new
+  command, MCP tool, console script or module that no feature claims: add it there and regenerate.
 - `docs/ARCHITECTURE_MAP_GENERATED.md` records the import graph only (module counts, cross package
   edges, fan in and fan out), and CI refuses a stale one. Only a change to the graph (an import, a
   module added, moved or removed) needs `python tools/architecture_map.py`; an edit that changes no
