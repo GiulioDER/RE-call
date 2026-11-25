@@ -26,8 +26,11 @@ and adapted to this repository.
   walks a pull request that touches this directory.
 - **Structure:** `tests/test_verify_recall.py` refuses a feature file whose name is not a feature
   id in `docs/feature_map.toml`, one without the four sections, or one the index does not link.
-- **Judgment the walk cannot make** (a new feature with no file yet, a recipe that no longer
-  describes the user's path) is `/maintain-verification-skill`'s pass, or a person's.
+- **Weekly, by an agent:** the maintainer's cloud routine "verify-recall weekly maintenance"
+  (Mondays 05:00 UTC) does the judgment the walk cannot: reads each feature file against its
+  modules and the week's commits, looks for new commands and tools with no file, runs the walk,
+  and opens at most one pull request, on a `claude/verify-recall-maintain-<date>` branch, editing
+  only this directory. It never merges, and opens nothing while such a pull request is open.
 
 ## Launch
 
