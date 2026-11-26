@@ -226,8 +226,9 @@ def verify_sqlite_rules(
     A bundle that does not answer is returned unchanged, and the snapshot is not opened. Otherwise
     each item gets a `SnapshotRuleStatus` (docs/API.md says what each means), the cards are
     cleared, and a bundle left with no item abstains with
-    ``reason_code="no_verified_database_rules"``. Column scans share a two-second budget; a scan
-    past it leaves its note unverified rather than raising.
+    ``reason_code="no_verified_database_rules"``. Column scans share a two-second budget; a note
+    whose scan runs past it gets ``unverified_format`` and is dropped from the bundle, rather than
+    raising.
 
     Raises:
         sqlite3.Error: the snapshot cannot be opened or read, including when a writer holds it
