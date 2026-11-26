@@ -380,6 +380,20 @@ def test_sqlite_snapshot_matches_names_without_regard_to_case(tmp_path, capsys) 
     assert statuses == {"upper": "format_verified"}
 
 
+def test_sqlite_snapshot_sees_generated_columns(tmp_path, capsys) -> None:
+    """A note on a generated column is checked like any other. Red proof (PR 1512 follow-up):
+    against `_field_exists` listing columns with pragma_table_info, which omits generated
+    columns, `t.day` reads field_missing."""
+    import sqlite3
+    from contextlib import closing
+
+    database = _snapshot(tmp_path, [("250701", "235959", 999999, "2025-07-01")])
+    with closing(sqlite3.connect(database)) as conn:
+        conn.execute("ALTER TABLE t ADD COLUMN day TEXT GENERATED ALWAYS AS (iso) VIRTUAL")
+    statuses, _ = _snapshot_statuses(database, [("day", "t.day\nFormat: YYYY-MM-DD")], capsys)
+    assert statuses == {"day": "format_verified"}
+
+
 def test_sqlite_snapshot_pads_integer_compact_dates(tmp_path, capsys) -> None:
     """DAT-002 (deferred pass). Red proof: against `CAST(... AS TEXT)`, the INTEGER 50101
     (050101) has five digits, so the column reads unverified_format."""
@@ -503,9 +517,9 @@ def test_sqlite_snapshot_budget_leaves_the_note_unverified(tmp_path, capsys, mon
 
 def test_sqlite_snapshot_checks_fields_without_post_3_25_pragmas(tmp_path, monkeypatch) -> None:
     """BUG-002. An authorizer refuses the pragma functions newer than the 3.25 floor
-    (`table_list` 3.37, `table_xinfo` 3.26), standing in for an old SQLite library. Red proof
-    (PR 1509 audit): the pre-fix `_field_exists` queries pragma_table_list and raises
-    DatabaseError("not authorized")."""
+    (`table_list` 3.37, `table_xinfo` 3.26), standing in for an old SQLite library, which also
+    reports its version as 3.25. Red proof (PR 1509 audit): the pre-fix `_field_exists` queries
+    pragma_table_list and raises DatabaseError("not authorized")."""
     import sqlite3
 
     import recall.sqlite_rules as sqlite_rules
@@ -522,6 +536,7 @@ def test_sqlite_snapshot_checks_fields_without_post_3_25_pragmas(tmp_path, monke
         return conn
 
     monkeypatch.setattr(sqlite_rules.sqlite3, "connect", old_sqlite)
+    monkeypatch.setattr(sqlite_rules.sqlite3, "sqlite_version_info", (3, 25, 0))
     bundle = build_evidence_bundle(_result([_hit("iso", text="t.iso\nFormat: YYYY-MM-DD")]),
                                    EvidencePolicy(max_items=10))
     _, checks = sqlite_rules.verify_sqlite_rules(bundle, database)

@@ -66,17 +66,26 @@ def _fold(name: str) -> str:
     return name.translate(_ASCII_LOWER)
 
 
+def _columns_pragma() -> str:
+    """The pragma function that lists every column of a table on this SQLite.
+
+    table_xinfo (3.26) also lists generated columns (3.31), which table_info omits; below 3.26
+    no generated column can exist, so table_info is complete there (the project floor is 3.25).
+    """
+    return "pragma_table_xinfo" if sqlite3.sqlite_version_info >= (3, 26) else "pragma_table_info"
+
+
 def _field_exists(conn: sqlite3.Connection, table: str, column: str) -> bool:
-    # sqlite_master and pragma_table_info exist on every SQLite the project supports (floor 3.25);
-    # pragma_table_list needs 3.37. table_info omits generated columns. SQLite resolves
-    # identifiers without regard to ASCII case, so the lookup does too.
+    # sqlite_master exists on every SQLite the project supports; pragma_table_list needs 3.37.
+    # SQLite resolves identifiers without regard to ASCII case, so the lookup does too.
     if not conn.execute(
         "SELECT 1 FROM main.sqlite_master WHERE type='table' AND name=? COLLATE NOCASE "
         "AND sql NOT LIKE 'CREATE VIRTUAL TABLE%'", (table,)
     ).fetchone():
         return False
     return conn.execute(
-        "SELECT 1 FROM pragma_table_info(?, 'main') WHERE name=? COLLATE NOCASE", (table, column)
+        f"SELECT 1 FROM {_columns_pragma()}(?, 'main') WHERE name=? COLLATE NOCASE",  # noqa: S608, a fixed pragma name.
+        (table, column),
     ).fetchone() is not None
 
 
