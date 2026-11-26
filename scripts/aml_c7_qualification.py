@@ -79,10 +79,10 @@ class HttpClient:
             data=body,
             method="GET" if payload is None else "POST",
             headers={
-                "Authorization": f"Bearer {self._api_key}",
                 "Content-Type": "application/json",
             },
         )
+        request.add_unredirected_header("Authorization", f"Bearer {self._api_key}")
         try:
             with urlopen(request, timeout=self._timeout) as response:  # noqa: S310
                 raw = response.read().decode("utf-8")

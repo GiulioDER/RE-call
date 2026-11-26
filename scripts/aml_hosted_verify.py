@@ -34,8 +34,9 @@ class Client:
             self.base_url + path,
             data=body,
             method="GET" if payload is None else "POST",
-            headers={"Authorization": f"Bearer {self.key}", "Content-Type": "application/json"},
+            headers={"Content-Type": "application/json"},
         )
+        request.add_unredirected_header("Authorization", f"Bearer {self.key}")
         started = time.perf_counter()
         try:
             with urlopen(request, timeout=60) as response:  # noqa: S310

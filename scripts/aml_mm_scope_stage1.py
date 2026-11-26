@@ -77,7 +77,9 @@ def sha256_bytes(value: bytes) -> str:
 
 
 def _get(url: str, *, timeout: float = 120, headers: dict[str, str] | None = None) -> bytes:
-    request = Request(url, headers={"User-Agent": "RE-call-mm-scope/1", **(headers or {})})
+    request = Request(url, headers={"User-Agent": "RE-call-mm-scope/1"})
+    for name, value in (headers or {}).items():
+        request.add_unredirected_header(name, value)
     with urlopen(request, timeout=timeout) as response:  # noqa: S310, pinned hosts only
         return bytes(response.read())
 
@@ -174,8 +176,9 @@ def call(port: int, path: str, payload: dict[str, Any], token: str, *, attempts:
             f"http://127.0.0.1:{port}{path}",
             data=body,
             method="POST",
-            headers={"Content-Type": "application/json", "Authorization": f"Bearer {token}"},
+            headers={"Content-Type": "application/json"},
         )
+        request.add_unredirected_header("Authorization", f"Bearer {token}")
         started = time.perf_counter()
         try:
             with urlopen(request, timeout=900) as response:  # noqa: S310, localhost only

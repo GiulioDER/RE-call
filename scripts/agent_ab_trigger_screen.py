@@ -128,8 +128,9 @@ def judge(draft: str, key: str) -> bool | None:
     }).encode("utf-8")
     request = urllib.request.Request(
         "https://openrouter.ai/api/v1/chat/completions", data=body,
-        headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+        headers={"Content-Type": "application/json"},
     )
+    request.add_unredirected_header("Authorization", f"Bearer {key}")
     for _ in range(3):
         try:
             with urllib.request.urlopen(request, timeout=90) as response:  # noqa: S310

@@ -124,8 +124,9 @@ def ask(key: str, system_prompt: str, parts: list[dict[str, Any]]) -> dict[str, 
             "https://openrouter.ai/api/v1/chat/completions",
             data=body,
             method="POST",
-            headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+            headers={"Content-Type": "application/json"},
         )
+        request.add_unredirected_header("Authorization", f"Bearer {key}")
         try:
             with urlopen(request, timeout=600) as response:  # noqa: S310, pinned host
                 result = json.loads(response.read())

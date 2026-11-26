@@ -95,7 +95,7 @@ def test_openrouter_answer_provider_posts_json_and_records_usage(monkeypatch: py
         seen["timeout"] = timeout
         return _Response()
 
-    monkeypatch.setattr(answer_provider.request, "urlopen", _urlopen)
+    monkeypatch.setattr(answer_provider._OPENER, "open", _urlopen)
     provider = resolve_answer_provider(
         {
             "RECALL_REASONING_ANSWER_ENABLED": "1",
@@ -219,7 +219,7 @@ def test_openai_compatible_provider_omits_openrouter_reasoning(
         seen["payload"] = json.loads(getattr(req, "data").decode())
         return _Response()
 
-    monkeypatch.setattr(answer_provider.request, "urlopen", _urlopen)
+    monkeypatch.setattr(answer_provider._OPENER, "open", _urlopen)
     provider = resolve_answer_provider(
         {
             "RECALL_REASONING_ANSWER_ENABLED": "1",
@@ -346,7 +346,7 @@ def test_a_json_object_request_carries_the_word_json_in_its_system_message(
         seen.append(json.loads(getattr(req, "data").decode()))
         return _Response()
 
-    monkeypatch.setattr(answer_provider.request, "urlopen", _urlopen)
+    monkeypatch.setattr(answer_provider._OPENER, "open", _urlopen)
     provider = resolve_answer_provider(
         {
             "RECALL_REASONING_ANSWER_ENABLED": "1",

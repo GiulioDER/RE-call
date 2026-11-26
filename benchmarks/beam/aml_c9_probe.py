@@ -206,7 +206,9 @@ def http_json(
 ) -> tuple[int, dict[str, Any], dict[str, str]]:
     body = json.dumps(payload).encode("utf-8") if payload is not None else None
     request = Request(url, data=body, method="POST" if body is not None else "GET",
-                      headers={"Content-Type": "application/json", **headers})
+                      headers={"Content-Type": "application/json"})
+    for name, value in headers.items():
+        request.add_unredirected_header(name, value)
     try:
         with urlopen(request, timeout=timeout) as response:  # noqa: S310
             raw = response.read().decode("utf-8")
