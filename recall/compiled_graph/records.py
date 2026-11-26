@@ -102,14 +102,22 @@ def _strings(value: object) -> list[str] | None:
 
 
 def validate_reply(
-    reply: Mapping[str, Any], anchors: Sequence[SourceAnchor]
+    reply: Mapping[str, Any],
+    anchors: Sequence[SourceAnchor],
+    *,
+    sent_anchor_ids: Sequence[str] | None = None,
 ) -> tuple[list[CompiledRecord], CompileDiagnostics]:
-    """Accepted records and counters; raises ValueError when the reply has no record list."""
+    """Accepted records and counters; raises ValueError when the reply has no record list.
+
+    ``anchors`` is every anchor of the source: a full id and value recovery may name any of them.
+    ``sent_anchor_ids`` is the subset the request carried after ``fit_payload`` (all, when None),
+    and only those resolve a bare index, since the model never saw the others' indices.
+    """
     if not isinstance(reply, Mapping) or not isinstance(reply.get("records"), list):
         raise ValueError("compile reply carries no record list")
     counts = {field.name: 0 for field in fields(CompileDiagnostics)}
     anchor_by_id = {anchor.id: anchor for anchor in anchors}
-    sent_ids = [anchor.id for anchor in anchors]
+    sent_ids = list(sent_anchor_ids) if sent_anchor_ids is not None else [a.id for a in anchors]
     proposals = reply["records"][:MAX_RECORDS]
     counts["proposed_records"] = len(proposals)
     accepted: list[CompiledRecord] = []

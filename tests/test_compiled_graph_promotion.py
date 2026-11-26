@@ -15,6 +15,12 @@ Red proof, recorded 2026-11-26 (production symbols in ``recall.compiled_graph.pr
   ``relation_hits``.
 - ``test_target_outside_pool_ignored``: admitting a target outside the pool as a synthetic hit
   fails on the returned ids.
+- ``test_seeds_without_edges_take_seed_slots``: dropping edgeless seeds before ``[:SEED_K]``
+  (``[seed for seed in seeds if seed[1]][:SEED_K]``) fails on ``promoted_count == 0``.
+- ``test_earlier_seed_outweighs_later``: a constant weight in place of ``1 / (RRF_K + seed_rank)``
+  fails on the promoted order (ties fall back to baseline rank).
+- ``test_repeated_record_target_counted_once``: the ``seen`` check removed fails on
+  ``relation_hits`` and the promoted order.
 - ``test_membership_and_scores_unchanged`` (scores half): a promoted hit rebuilt with score 1.0
   fails on the score check.
 - ``test_ties_break_by_baseline_rank_then_id``: sorting by id before baseline rank fails on the
@@ -111,6 +117,26 @@ def test_ties_break_by_baseline_rank_then_id() -> None:
     pool = pool[:8] + list(reversed(pool[8:]))
     result = promote(pool, [("r0", ("c22", "c25", "c27"))])
     assert _ids(result.hits)[8:10] == ["c27", "c25"]
+
+
+def test_seeds_without_edges_take_seed_slots() -> None:
+    pool = _pool()
+    seeds = [(f"r{i}", ()) for i in range(SEED_K)] + [("late", ("c25",))]
+    result = promote(pool, seeds)
+    assert result.promoted_count == 0
+    assert result.relation_hits == 0
+
+
+def test_earlier_seed_outweighs_later() -> None:
+    result = promote(_pool(), [("r0", ("c25",)), ("r1", ("c20",))])
+    assert _ids(result.hits)[8:10] == ["c25", "c20"]
+
+
+def test_repeated_record_target_counted_once() -> None:
+    seeds = [("r0", ("c25", "c25")), ("r1", ("c20",)), ("r2", ("c20",))]
+    result = promote(_pool(), seeds)
+    assert result.relation_hits == 3
+    assert _ids(result.hits)[8:10] == ["c20", "c25"]
 
 
 def test_no_seeds_or_empty_pool_is_identity() -> None:

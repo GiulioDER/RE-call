@@ -1,8 +1,13 @@
 """Server-resolved edges from compiled records to raw chunks, and bounded raw promotion.
 
 Ported from ``recall_aml/graph.py`` (``attach_grounded_relations``, ``promote_grounded_raw``). An
-edge exists only where a record's verbatim span overlaps a chunk's own offsets in the same source;
+edge exists only where a cited anchor window overlaps a chunk's own offsets in the same source;
 promotion never moves ranks 1 to 8, moves at most two, and changes no membership and no score.
+
+Two differences from the AML code: a (record, target) pair counts once however many of the
+record's spans touch the target, because anchors overlap by 160 characters and AML counted one
+target twice through that overlap; and edges are not re-checked here at query time, because the
+artifact that carries them is refused unless its lineage is the serving one.
 """
 
 from __future__ import annotations
@@ -56,8 +61,10 @@ def promote(
 ) -> Promotion:
     """Promote raw hits linked from the first ``SEED_K`` seeds into ranks 9 and 10.
 
-    ``seeds`` are ``(record_key, edge_chunk_ids)`` in seed rank order. Each distinct (record,
-    target) adds ``1 / (RRF_K + seed_rank)`` to the target; ties break by baseline rank, then id.
+    ``seeds`` are ``(record_key, edge_chunk_ids)`` in seed rank order, and must include records
+    with no edges: every seed takes a rank and one of the ``SEED_K`` slots, as on the AML service.
+    Each distinct (record, target) adds ``1 / (RRF_K + seed_rank)`` to the target; ties break by
+    baseline rank, then id.
     """
     pool = list(baseline)
     if not pool or not seeds:

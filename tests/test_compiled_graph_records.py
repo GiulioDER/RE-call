@@ -10,6 +10,8 @@ Red proof, recorded 2026-11-26 (production symbols in ``recall.compiled_graph.re
   ``_BARE_ANCHOR_INDEX`` branch made ``if False``) fails on ``resolved_bare_anchor_ids == 1``.
 - ``test_record_without_valid_anchor_dropped``: an unknown id falling back to the first anchor
   (``anchor_by_id.get(anchor_id, anchors[0])``) fails on ``records == []``.
+- ``test_bare_index_resolves_only_against_sent_anchors``: resolving bare indices against every
+  anchor (``sent_ids = [anchor.id for anchor in anchors]``) fails on ``resolved_bare_anchor_ids``.
 - ``test_value_recovers_anchor_when_cited_id_unknown``: the recovery branch made ``if False`` fails
   on the recovered anchor ids.
 - ``test_more_than_eight_records_truncated``: dropping the ``[:MAX_RECORDS]`` slice fails on
@@ -104,6 +106,19 @@ def test_unknown_anchor_ids_dropped_and_bare_indices_resolved() -> None:
     assert records[0].anchor_ids == (anchors[1].id,)
     assert diagnostics.resolved_bare_anchor_ids == 1
     assert diagnostics.invalid_anchor_references == 1
+
+
+def test_bare_index_resolves_only_against_sent_anchors() -> None:
+    anchors = _anchors()
+    reply = {
+        "records": [
+            _record(summary="invented", evidence_anchor_ids=["a001"]),
+            _record(summary="invented", evidence_anchor_ids=[anchors[1].id]),
+        ]
+    }
+    records, diagnostics = validate_reply(reply, anchors, sent_anchor_ids=[anchors[0].id])
+    assert diagnostics.resolved_bare_anchor_ids == 0
+    assert [record.anchor_ids for record in records] == [(anchors[1].id,)]
 
 
 def test_record_without_valid_anchor_dropped() -> None:
