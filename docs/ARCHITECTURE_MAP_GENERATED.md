@@ -8,7 +8,7 @@ design violation.
 ## Scope
 
 Packages: `recall`, `recall_mcp`, `recall_agent`, `recall_hooks`, `recall_interop`, `recall_consistency`
-Modules: 380
+Modules: 381
 Cross package edges: 467
 
 ## Highest fan in modules
@@ -831,6 +831,7 @@ They are observations, not automatic failures.
 | `recall.source_identity` | 1 | 18 |
 | `recall.sparse` | 1 | 1 |
 | `recall.sql_identifiers` | 0 | 0 |
+| `recall.sqlite_planning` | 2 | 8 |
 | `recall.sqlite_rules` | 1 | 7 |
 | `recall.stale_reports` | 5 | 155 |
 | `recall.state_dir` | 0 | 0 |

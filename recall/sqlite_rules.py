@@ -6,7 +6,8 @@ import re
 import sqlite3
 import string
 import unicodedata
-from contextlib import closing
+from collections.abc import Iterator
+from contextlib import closing, contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path
 from time import monotonic
@@ -60,17 +61,31 @@ def _identifier(name: str) -> str:
     return '"' + name.replace('"', '""') + '"'
 
 
+def _fold(name: str) -> str:
+    """SQLite resolves table and column names without regard to ASCII case."""
+    return name.translate(_ASCII_LOWER)
+
+
+def _columns_pragma() -> str:
+    """The pragma function that lists every column of a table on this SQLite.
+
+    table_xinfo (3.26) also lists generated columns (3.31), which table_info omits; below 3.26
+    no generated column can exist, so table_info is complete there (the project floor is 3.25).
+    """
+    return "pragma_table_xinfo" if sqlite3.sqlite_version_info >= (3, 26) else "pragma_table_info"
+
+
 def _field_exists(conn: sqlite3.Connection, table: str, column: str) -> bool:
-    # sqlite_master and pragma_table_info exist on every SQLite the project supports (floor 3.25);
-    # pragma_table_list needs 3.37. table_info omits generated columns. SQLite resolves
-    # identifiers without regard to ASCII case, so the lookup does too.
+    # sqlite_master exists on every SQLite the project supports; pragma_table_list needs 3.37.
+    # SQLite resolves identifiers without regard to ASCII case, so the lookup does too.
     if not conn.execute(
         "SELECT 1 FROM main.sqlite_master WHERE type='table' AND name=? COLLATE NOCASE "
         "AND sql NOT LIKE 'CREATE VIRTUAL TABLE%'", (table,)
     ).fetchone():
         return False
     return conn.execute(
-        "SELECT 1 FROM pragma_table_info(?, 'main') WHERE name=? COLLATE NOCASE", (table, column)
+        f"SELECT 1 FROM {_columns_pragma()}(?, 'main') WHERE name=? COLLATE NOCASE",  # noqa: S608, a fixed pragma name.
+        (table, column),
     ).fetchone() is not None
 
 
@@ -86,29 +101,20 @@ def _date_format(conn: sqlite3.Connection, table: str, column: str, deadline: fl
     )
     as_iso = f"'20'||substr({compact},1,2)||'-'||substr({compact},3,2)||'-'||substr({compact},5,2)"
     expired: list[bool] = []
-
-    def interrupt() -> int:
-        if monotonic() >= deadline:
-            expired.append(True)
-            return 1
-        return 0
-
-    conn.set_progress_handler(interrupt, _PROGRESS_STEPS)
     try:
-        count, iso_count, compact_count = conn.execute(
-            f"SELECT count({field}), "  # noqa: S608, IDs are schema-checked and quoted, patterns are bound.
-            f"sum(typeof({field})='text' AND {field} GLOB ? AND date({field}, '+0 days')={field}), "
-            f"sum(typeof({field}) IN ('text', 'integer') AND {compact} GLOB ? "
-            f"AND date({as_iso}, '+0 days')={as_iso}) "
-            f"FROM main.{_identifier(table)}",
-            (iso, digits * 6),
-        ).fetchone()
+        with _snapshot_deadline(conn, deadline, expired):
+            count, iso_count, compact_count = conn.execute(
+                f"SELECT count({field}), "  # noqa: S608, IDs are schema-checked and quoted, patterns are bound.
+                f"sum(typeof({field})='text' AND {field} GLOB ? AND date({field}, '+0 days')={field}), "
+                f"sum(typeof({field}) IN ('text', 'integer') AND {compact} GLOB ? "
+                f"AND date({as_iso}, '+0 days')={as_iso}) "
+                f"FROM main.{_identifier(table)}",
+                (iso, digits * 6),
+            ).fetchone()
     except sqlite3.OperationalError:
         if expired:
             return None  # The verification budget ran out: this note stays unverified and is omitted.
         raise
-    finally:
-        conn.set_progress_handler(None, _PROGRESS_STEPS)
     if count and count == iso_count:
         return _ISO
     if count and count == compact_count:
@@ -122,6 +128,8 @@ def _check(
     deadline: float,
     observed_formats: dict[tuple[str, str], str | None],
 ) -> tuple[EvidenceItem | None, SnapshotRuleCheck]:
+    # Only an observation made in this transaction may reach the prompt as `snapshot_format`.
+    item = replace(item, snapshot_format=None)
     header, _, body = item.text.partition("\n")
     field = _FIELD.fullmatch(header.strip())
     if field is None or not body.strip():
@@ -140,7 +148,7 @@ def _check(
     if _FORMAT.fullmatch(claimed) is None:
         return None, SnapshotRuleCheck(item.chunk_id, "unsupported_format_claim")
     # One read transaction serves every note, so a column scanned once answers for all of them.
-    key = (table.translate(_ASCII_LOWER), column.translate(_ASCII_LOWER))
+    key = (_fold(table), _fold(column))
     if key not in observed_formats:
         observed_formats[key] = _date_format(conn, table, column, deadline)
     observed = observed_formats[key]
@@ -155,6 +163,61 @@ def _check(
     return corrected, SnapshotRuleCheck(item.chunk_id, "format_corrected", observed)
 
 
+@contextmanager
+def _open_snapshot(snapshot: Path) -> Iterator[sqlite3.Connection]:
+    uri = snapshot.resolve().as_uri() + "?mode=ro"
+    with closing(sqlite3.connect(uri, uri=True, timeout=_BUSY_TIMEOUT_SECONDS)) as conn:
+        conn.execute("PRAGMA trusted_schema=OFF")
+        conn.execute("PRAGMA query_only=ON")
+        conn.execute("BEGIN")
+        yield conn
+
+
+@contextmanager
+def _snapshot_deadline(
+    conn: sqlite3.Connection, deadline: float | None = None, expired: list[bool] | None = None
+) -> Iterator[None]:
+    """Interrupt SQLite work on `conn` at `deadline`, by default `_BUDGET_SECONDS` from now.
+
+    An interruption is appended to `expired`, so a caller can tell it from another error.
+    """
+    end = monotonic() + _BUDGET_SECONDS if deadline is None else deadline
+
+    def interrupt() -> int:
+        if monotonic() < end:
+            return 0
+        if expired is not None:
+            expired.append(True)
+        return 1
+
+    conn.set_progress_handler(interrupt, _PROGRESS_STEPS)
+    try:
+        yield
+    finally:
+        conn.set_progress_handler(None, 0)
+
+
+def _verify_rules(
+    conn: sqlite3.Connection, bundle: EvidenceBundle
+) -> tuple[EvidenceBundle, tuple[SnapshotRuleCheck, ...]]:
+    items: list[EvidenceItem] = []
+    checks: list[SnapshotRuleCheck] = []
+    observed_formats: dict[tuple[str, str], str | None] = {}
+    deadline = monotonic() + _BUDGET_SECONDS
+    for item in bundle.items:
+        checked, audit = _check(conn, item, deadline, observed_formats)
+        checks.append(audit)
+        if checked is not None:
+            items.append(checked)
+    prepared = replace(bundle, items=tuple(items), cards=())
+    if not items:
+        prepared = replace(
+            prepared, decision="abstain", reason_code="no_verified_database_rules",
+            decision_state="no_supporting_evidence",
+        )
+    return prepared, tuple(checks)
+
+
 def verify_sqlite_rules(
     bundle: EvidenceBundle, snapshot: Path
 ) -> tuple[EvidenceBundle, tuple[SnapshotRuleCheck, ...]]:
@@ -163,8 +226,9 @@ def verify_sqlite_rules(
     A bundle that does not answer is returned unchanged, and the snapshot is not opened. Otherwise
     each item gets a `SnapshotRuleStatus` (docs/API.md says what each means), the cards are
     cleared, and a bundle left with no item abstains with
-    ``reason_code="no_verified_database_rules"``. Column scans share a two-second budget; a scan
-    past it leaves its note unverified rather than raising.
+    ``reason_code="no_verified_database_rules"``. Column scans share a two-second budget; a note
+    whose scan runs past it gets ``unverified_format`` and is dropped from the bundle, rather than
+    raising.
 
     Raises:
         sqlite3.Error: the snapshot cannot be opened or read, including when a writer holds it
@@ -172,23 +236,5 @@ def verify_sqlite_rules(
     """
     if bundle.decision != "answer":
         return bundle, ()
-    items: list[EvidenceItem] = []
-    checks: list[SnapshotRuleCheck] = []
-    observed_formats: dict[tuple[str, str], str | None] = {}
-    deadline = monotonic() + _BUDGET_SECONDS
-    uri = snapshot.resolve().as_uri() + "?mode=ro"
-    with closing(sqlite3.connect(uri, uri=True, timeout=_BUSY_TIMEOUT_SECONDS)) as conn:
-        conn.execute("PRAGMA trusted_schema=OFF")
-        conn.execute("BEGIN")
-        for item in bundle.items:
-            checked, audit = _check(conn, item, deadline, observed_formats)
-            checks.append(audit)
-            if checked is not None:
-                items.append(checked)
-    prepared = replace(bundle, items=tuple(items), cards=())
-    if not items:
-        prepared = replace(
-            prepared, decision="abstain", reason_code="no_verified_database_rules",
-            decision_state="no_supporting_evidence",
-        )
-    return prepared, tuple(checks)
+    with _open_snapshot(snapshot) as conn:
+        return _verify_rules(conn, bundle)
