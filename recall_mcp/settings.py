@@ -282,6 +282,13 @@ ENVIRONMENT_SCHEMA: tuple[EnvironmentSpec, ...] = (
     EnvironmentSpec("RECALL_SHADOW_MODEL_CACHE", "Retrieval", "shadow model cache"),
     EnvironmentSpec("RECALL_SHADOW_MODEL_SHA256", "Retrieval", "shadow model digest"),
     EnvironmentSpec("RECALL_SHADOW_QWEN_MODEL_PATH", "Retrieval", "shadow Qwen model path"),
+    EnvironmentSpec("RECALL_COMPILED_GRAPH_API_KEY", "Compiled graph", "API key of the provider that compiles sources into graph records; required for a compile", secret=True),
+    EnvironmentSpec("RECALL_COMPILED_GRAPH_MODEL", "Compiled graph", "model that compiles sources, for example openai/gpt-6-luna-pro; required, there is no default"),
+    EnvironmentSpec("RECALL_COMPILED_GRAPH_BASE_URL", "Compiled graph", "OpenAI-compatible base URL of the compile provider", "https://openrouter.ai/api/v1"),
+    EnvironmentSpec("RECALL_COMPILED_GRAPH_TIMEOUT", "Compiled graph", "seconds one compile request may take", "60"),
+    EnvironmentSpec("RECALL_COMPILED_GRAPH_MAX_USD", "Compiled graph", "USD cap of one compile build; required, a call whose worst case does not fit is not sent"),
+    EnvironmentSpec("RECALL_COMPILED_GRAPH_COST_PER_1K_INPUT", "Compiled graph", "USD per 1,000 input tokens of the compile model; required"),
+    EnvironmentSpec("RECALL_COMPILED_GRAPH_COST_PER_1K_OUTPUT", "Compiled graph", "USD per 1,000 output tokens of the compile model; required"),
 )
 
 
