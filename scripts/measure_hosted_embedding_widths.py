@@ -45,8 +45,9 @@ def _post(url: str, payload: dict, key: str) -> dict:
     request = urllib.request.Request(
         url,
         data=json.dumps(payload).encode("utf-8"),
-        headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+        headers={"Content-Type": "application/json"},
     )
+    request.add_unredirected_header("Authorization", f"Bearer {key}")
     with urllib.request.urlopen(request, timeout=TIMEOUT_SECONDS) as response:
         return json.load(response)
 

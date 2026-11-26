@@ -132,13 +132,13 @@ def _request_once(
         API_URL,
         data=json.dumps(payload).encode("utf-8"),
         headers={
-            "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
             "HTTP-Referer": "https://github.com/GiulioDER/RE-call",
             "X-OpenRouter-Title": "RE-call pull-request security review",
         },
         method="POST",
     )
+    request.add_unredirected_header("Authorization", f"Bearer {api_key}")
     try:
         with urlopen(request, timeout=90) as response:
             body = response.read()
