@@ -1,14 +1,15 @@
-"""An assistant's memory surface on a lite store: one fact per memo, written and forgotten by memo id.
+"""An assistant's memory surface: one fact per memo, written and forgotten by memo id.
 
 The other write tools take a path (`recall_index`) or a source (`recall_forget`), which suits an
 agent that edits files. A personal assistant does not edit files: it remembers one fact, later
-replaces it, and forgets it when asked. This module is that surface, for a lite server
-(`sqlite:///`) whose operator names a memo folder in `RECALL_ASSISTANT_MEMOS`:
+replaces it, and forgets it when asked. This module is that surface, for a server whose operator
+names a memo folder in `RECALL_ASSISTANT_MEMOS`:
 
 - `recall_remember` writes ONE fact as one memo file in that folder, with RE-call frontmatter
   (`valid_from` and `valid_until` as dates, `supersedes` as the target's path under the index root,
-  an optional structured fact as `recall_graph`), and indexes it before it returns, so the next
-  search finds it.
+  an optional structured fact as `recall_graph`). On a lite store (`sqlite:///`) it indexes the
+  memo before it returns, so the next search finds it. On PostgreSQL it leaves the memo to the next
+  build of the corpus, as production indexes nothing at write time (`recall.runtime_route`).
 - `supersedes` may name only a memo this surface wrote with the author `assistant`: of this folder
   by its memo id, or of another assistant's memo folder under the same index root by the id search
   names it by (`agent-b/note-0001`). A memo the person wrote, or one seeded from elsewhere, is not
@@ -35,6 +36,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
+from contextlib import AbstractContextManager
 from pathlib import Path, PurePath
 from typing import TYPE_CHECKING, Any, cast
 
@@ -43,13 +45,14 @@ from recall.confinement import within
 from recall.errors import RecallError
 from recall._env import strict_bool
 from recall.declared_keys import STATED_KEY_SUCCESSOR_RULE, settle_precondition, settle_target
+from recall.lite import LiteStore
 from recall.lite.assistant_memos import ASSISTANT_AUTHOR, MEMO_ID, MemoFolder
 
 from recall_mcp.models import ForgetResult, WithdrawResult
 
 if TYPE_CHECKING:
     from recall.embeddings import Embedder
-    from recall.lite import LiteStore
+    from recall.store import PgVectorStore
 
 __all__ = [
     "ASSISTANT_ENV",
@@ -172,20 +175,17 @@ def memo_ref(value: object) -> str | None:
     return str(value).strip().removesuffix(".md")
 
 
-def assistant_memos_from_env(env: Mapping[str, str], *, lite: bool) -> AssistantMemos | None:
+def assistant_memos_from_env(env: Mapping[str, str]) -> AssistantMemos | None:
     """The surface `RECALL_ASSISTANT_MEMOS` asks for, or None when it is unset.
 
-    Refuses rather than serving half of it: the folder must be on a lite store, and inside
-    RECALL_INDEX_ROOT, which the server's automatic refresh follows and stored names are keyed to.
+    Refuses rather than serving half of it: the folder must be inside RECALL_INDEX_ROOT, which stored
+    names are keyed to (and which a lite server's automatic refresh follows). On PostgreSQL the
+    names are the generation's, so RECALL_INDEX_ROOT must be the folder the corpus manifest is
+    built from, or a settle finds no assistant memo to name and declines.
     """
     raw = env.get(ASSISTANT_ENV, "").strip()
     if not raw:
         return None
-    if not lite:
-        raise AssistantSurfaceError(
-            f"{ASSISTANT_ENV} is served on a lite store only (a sqlite:/// DSN); unset it, or use "
-            "recall_index and recall_forget on this store"
-        )
     root = env.get("RECALL_INDEX_ROOT", "").strip()
     if not root:
         raise AssistantSurfaceError(f"{ASSISTANT_ENV} needs RECALL_INDEX_ROOT, the folder it lies in")
@@ -199,14 +199,19 @@ def assistant_memos_from_env(env: Mapping[str, str], *, lite: bool) -> Assistant
                           settle_successors=strict_bool(env.get(SETTLE_ENV), name=SETTLE_ENV))
 
 
-def _key_only(fact: object) -> dict[str, Any]:
-    """`fact_key` for a writer who may not read current facts: its own key, and nothing about others."""
+def _key_only(fact: object, reason: str = "reading what else is in force needs the read scope") -> dict[str, Any]:
+    """`fact_key` naming the fact's own key and nothing about others: for a writer who may not read
+    current facts, and for a memo the store does not serve yet."""
     from recall.types import AtomicFact
 
     stated = AtomicFact.from_payload(fact) if isinstance(fact, dict) else None
     key = None if stated is None else {"namespace": stated.namespace, "subject": stated.subject,
                                        "predicate": stated.predicate, "context": stated.context}
-    return {"key": key, "state": "unchecked", "reason": "reading what else is in force needs the read scope"}
+    return {"key": key, "state": "unchecked", "reason": reason}
+
+
+#: Why a PostgreSQL receipt reports the memo `pending` and its key `unchecked`.
+_BUILT_LATER = "the memo is indexed by the next build of the corpus"
 
 
 class AssistantMemos(MemoFolder):
@@ -222,7 +227,7 @@ class AssistantMemos(MemoFolder):
 
     def remember(
         self,
-        store: LiteStore,
+        store: LiteStore | PgVectorStore,
         embedder: Embedder,
         text: str,
         kind: str = "note",
@@ -253,12 +258,18 @@ class AssistantMemos(MemoFolder):
         gives the new memo is written as its `supersedes`, read inside the same lane so no write can
         move the ledger in between, and the answer's `settle` says `{"settled": <memo id>}`,
         `{"settled": None}` (nothing to settle) or `{"declined": <reason>}` (`_settle`).
+
+        On PostgreSQL the memo is written and left to the next build of the corpus, which is the
+        only way production indexes (`recall.runtime_route`): its receipt says `pending`, and a
+        settle reads what the served generation holds, so it cannot see a memo written since that
+        build and answers `{"settled": None}` for it. The folder scan in `write` still sees such
+        a memo as a successor, so no target is superseded twice.
         """
         if expected_revision is not None and not read_facts:
             return {"refused": "expected_revision needs the read scope", "conflict": "revision_requires_read"}
         if settle and not self.settle_successors:
             return {"refused": f"settle is off on this server; the operator turns it on with {SETTLE_ENV}"}
-        with write_session(store, "remember"):
+        with self._lane(store, "remember"):
             note: dict[str, Any] | None = None
             replayed = False
             if settle:
@@ -288,7 +299,10 @@ class AssistantMemos(MemoFolder):
                 result["settle"] = note
             if "memo_id" in result:
                 receipt = result.get("receipt")
-                if receipt is None:
+                if not isinstance(store, LiteStore):
+                    if receipt is not None:
+                        self._pending_receipt(store, receipt, fact)
+                elif receipt is None:
                     self.refresh(store, embedder, **refresh_kwargs)
                 else:
                     self._complete_receipt(
@@ -297,8 +311,34 @@ class AssistantMemos(MemoFolder):
                     )
             return result
 
+    def _lane(self, store: object, purpose: str) -> AbstractContextManager[Any]:
+        """The lane a write of this folder holds: the lite store's write lane, else the folder's own.
+
+        On PostgreSQL nothing is indexed under it, so the store needs no lock here; what two servers
+        writing one folder would race on is the folder itself (the journal, the next memo id, the
+        successor scan), and a lite lane keyed to the journal file serialises them.
+        """
+        if isinstance(store, LiteStore):
+            return write_session(store, purpose)
+        from recall.lite.writer_lock import lite_lane
+
+        return lite_lane(self.ledger_path, purpose=purpose)
+
+    @staticmethod
+    def _pending_receipt(store: object, receipt: dict[str, Any], fact: object) -> None:
+        """Fill a PostgreSQL receipt: the memo waits for the next build, so it is not ready yet."""
+        resolver = getattr(store, "resolve_calibration", None)
+        try:
+            status = resolver().status.value if callable(resolver) else "unavailable"
+        except Exception as exc:  # BROAD-CATCH: fail-closed readiness, the memo is written
+            status = "unavailable"
+            receipt["error_type"] = type(exc).__name__
+        receipt.update(index_state="pending", calibration_status=status, retrieval_ready=False)
+        if fact is not None:
+            receipt["fact_key"] = _key_only(fact, _BUILT_LATER)
+
     def _settle(
-        self, store: LiteStore, *, fact: object, valid_from: str | None, supersedes: str | None,
+        self, store: LiteStore | PgVectorStore, *, fact: object, valid_from: str | None, supersedes: str | None,
         request_id: str | None, access_context: Any, read_facts: bool, security_policy: Any,
     ) -> tuple[str | None, dict[str, Any], bool]:
         """The `supersedes` a settling write carries, the answer's `settle` note, and whether both
@@ -422,7 +462,7 @@ class AssistantMemos(MemoFolder):
 
     def forget(
         self,
-        store: LiteStore,
+        store: LiteStore | PgVectorStore,
         embedder: Embedder,
         memo_id: str,
         *,
@@ -470,7 +510,7 @@ class AssistantMemos(MemoFolder):
 
     def forget_result(
         self,
-        store: LiteStore,
+        store: LiteStore | PgVectorStore,
         embedder: Embedder,
         memo_id: str,
         *,
@@ -491,7 +531,7 @@ class AssistantMemos(MemoFolder):
 
     def withdraw(
         self,
-        store: LiteStore,
+        store: LiteStore | PgVectorStore,
         embedder: Embedder,
         memo_id: str,
         *,
@@ -512,7 +552,7 @@ class AssistantMemos(MemoFolder):
 
     def _erase_memo(
         self,
-        store: LiteStore,
+        store: LiteStore | PgVectorStore,
         embedder: Embedder,
         memo_id: str,
         *,
@@ -529,7 +569,10 @@ class AssistantMemos(MemoFolder):
         if path is None:
             return None
         verb = "withdrawal" if withdraw else "forget"
-        with write_session(store, "forget"):
+        # A lite row's source is the file's path; a generation's is its manifest URI, which the
+        # file's name under the index root (`metadata.file`) resolves to.
+        name = str(path) if isinstance(store, LiteStore) else path.relative_to(self.index_root).as_posix()
+        with self._lane(store, "forget"):
             # Under the lane, so a concurrent forget of the same memo cannot pass the check too.
             if not path.exists():
                 return None
@@ -539,7 +582,7 @@ class AssistantMemos(MemoFolder):
             try:
                 result = (withdraw_memory if withdraw else forget_memory)(
                     store,  # type: ignore[arg-type]  # the shared lifecycle types the Postgres store
-                    [str(path)],
+                    [name],
                     security_policy=security_policy,
                     security_context=security_context,
                     erase_memo_requests=False,  # cancelled above, and restored if this fails
@@ -552,6 +595,8 @@ class AssistantMemos(MemoFolder):
                 self.restore_requests(previous)
                 raise
             self.unlink_cancelled(path, previous)
+            if not isinstance(store, LiteStore):
+                return result  # the next build of the corpus leaves the deleted file out
             self.refresh(
                 store,
                 embedder,
@@ -579,7 +624,7 @@ class AssistantMemos(MemoFolder):
                 return None
         return memo
 
-    def _indexed_successor(self, store: LiteStore, target: str, own: str | None = None) -> bool:
+    def _indexed_successor(self, store: LiteStore | PgVectorStore, target: str, own: str | None = None) -> bool:
         """Whether an indexed document other than memo `own` claims to supersede memo `target` (a
         memo id here, or another folder's qualified id, `target_of`), as the store resolves
         `supersedes` (folded case, any markdown extension, anywhere under the index root, and
@@ -603,7 +648,7 @@ class AssistantMemos(MemoFolder):
         own_key = key(self.path_of(own)) if own is not None else None
         return any(claimant != own_key for claimant in graph.live_claimants(target_key))
 
-    def _indexed_under_another_name(self, store: LiteStore, path: Path) -> bool:
+    def _indexed_under_another_name(self, store: LiteStore | PgVectorStore, path: Path) -> bool:
         """Whether rows hold this memo under a name other than its path.
 
         Two ways: by its stored file name, the one `refresh` gives it (under the index root when

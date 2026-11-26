@@ -129,7 +129,7 @@ def _register_memory_admin_tools(mcp: ToolRegistrar, deps: _ToolDeps) -> None:
             return {source: memo for source in sources if (memo := assistant.folder_memo(source)) is not None}
 
         def erase_request(memos: dict[str, str]) -> str:
-            if not memos or assistant is None or not isinstance(store, LiteStore):
+            if not memos or assistant is None:
                 return erase_sources(sources).model_dump_json(indent=2)
 
             # Folder memos must lose their files too. Keep the requested names in the response.
