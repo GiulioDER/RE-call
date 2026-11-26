@@ -11,6 +11,7 @@ Red proof, recorded 2026-11-26 (production symbols in ``recall.compiled_graph.ca
 - ``test_unwritable_cache_counts_and_never_raises``: the ``sqlite3.Error`` handler removed fails
   with an exception.
 - ``test_erase_sources_removes_every_row``: erasure by key instead of by source fails on the count.
+- ``test_erased_rows_leave_no_bytes_in_the_file``: ``secure_delete`` off fails on the file bytes.
 - ``test_unreadable_cache_file_degrades_and_forget_removes_it``: the ``unlink`` removed fails on
   ``not path.exists()``.
 - ``test_key_covers_every_constant_that_shapes_records``: ``MAX_OUTPUT_TOKENS`` dropped from the
@@ -130,3 +131,11 @@ def test_key_uses_the_whole_base_url_without_credentials() -> None:
 
     assert key("https://gw.example.test/a/v1") != key("https://gw.example.test/b/v1")
     assert key("https://user:pw@gw.example.test/a/v1") == key("https://gw.example.test/a/v1")
+
+
+def test_erased_rows_leave_no_bytes_in_the_file(tmp_path: Path) -> None:
+    path = tmp_path / "compile-cache.sqlite"
+    cache = CompileCache(path)
+    cache.put(cache_key(CONFIG, "notes/a.md", "0" * 64), "notes/a.md", [RECORD])
+    cache.erase_sources(["notes/a.md"])
+    assert b"Alice owns it." not in path.read_bytes()

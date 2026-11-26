@@ -126,6 +126,9 @@ class CompileCache:
         """Commit on success and always close: Windows cannot delete a file a connection holds."""
         conn = sqlite3.connect(self.path, timeout=30)
         try:
+            # A deleted row otherwise stays readable in the file's free pages until reused, and a
+            # forgotten source's quotes must not.
+            conn.execute("PRAGMA secure_delete = ON")
             with conn:
                 yield conn
         finally:
