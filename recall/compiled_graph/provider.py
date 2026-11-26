@@ -22,6 +22,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 from recall.compiled_graph.anchors import encode_stored_data
 from recall.compiled_graph.records import COMPILE_SYSTEM_PROMPT
+from recall.errors import RecallError
 
 if TYPE_CHECKING:
     from recall.compiled_graph.budget import Budget
@@ -59,19 +60,19 @@ USER_TEMPLATE = "<stored_data>{}</stored_data>"
 Transport = Callable[[str, bytes, Mapping[str, str], float], tuple[int, Mapping[str, str], bytes]]
 
 
-class CompiledGraphConfigError(ValueError):
+class CompiledGraphConfigError(ValueError, RecallError):
     """A required ``RECALL_COMPILED_GRAPH_*`` variable is missing or invalid."""
 
 
-class CreditStop(RuntimeError):
+class CreditStop(RuntimeError, RecallError):
     """The provider refused for credit or authorization: the whole build stops."""
 
 
-class BudgetExhausted(RuntimeError):
+class BudgetExhausted(RuntimeError, RecallError):
     """The next attempt's worst case does not fit what is left: the whole build stops."""
 
 
-class SourceRejected(RuntimeError):
+class SourceRejected(RuntimeError, RecallError):
     """This source gets no records; the build goes on with the next one."""
 
     def __init__(self, message: str, status: int | None = None) -> None:
@@ -79,11 +80,11 @@ class SourceRejected(RuntimeError):
         self.status = status
 
 
-class PayloadTooLarge(RuntimeError):
+class PayloadTooLarge(RuntimeError, RecallError):
     """The provider refused the request's size; the caller may refit it once."""
 
 
-class ReplyLost(RuntimeError):
+class ReplyLost(RuntimeError, RecallError):
     """A transport received a success status but lost the body: the reply was billed."""
 
     def __init__(self, status: int) -> None:
