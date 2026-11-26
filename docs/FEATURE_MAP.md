@@ -262,8 +262,8 @@ Small word-window views built per generation, so a fact buried in a long chunk c
 The derived evidence graph, graph-first candidate construction, and trusted evidence related to one chunk.
 
 - **Entry points:** `recall graph`, `recall_related`
-- **Modules:** `recall/semantic_graph/*`, `recall/graph_first.py`, `recall/query_entity_resolution.py`, `recall/related.py`, `recall/cli_commands/graph_cmd.py`, `recall_mcp/graph_expansion.py`, `recall_mcp/graph_first_api.py`, `recall_mcp/graph_projection.py`, `recall_mcp/semantic_graph_cache.py`, `recall_mcp/related_api.py`
-- **Tests:** `tests/test_graph*.py`, `tests/test_related*.py`
+- **Modules:** `recall/semantic_graph/*`, `recall/compiled_graph/*`, `recall/graph_first.py`, `recall/query_entity_resolution.py`, `recall/related.py`, `recall/cli_commands/graph_cmd.py`, `recall_mcp/graph_expansion.py`, `recall_mcp/graph_first_api.py`, `recall_mcp/graph_projection.py`, `recall_mcp/semantic_graph_cache.py`, `recall_mcp/related_api.py`
+- **Tests:** `tests/test_graph*.py`, `tests/test_related*.py`, `tests/test_compiled_graph*.py`
 - **Docs:** `docs/REASONING_GRAPH.md`
 
 <a id="reasoning"></a>
