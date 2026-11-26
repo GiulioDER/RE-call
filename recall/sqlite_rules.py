@@ -61,6 +61,11 @@ def _identifier(name: str) -> str:
     return '"' + name.replace('"', '""') + '"'
 
 
+def _fold(name: str) -> str:
+    """SQLite resolves table and column names without regard to ASCII case."""
+    return name.translate(_ASCII_LOWER)
+
+
 def _field_exists(conn: sqlite3.Connection, table: str, column: str) -> bool:
     # sqlite_master and pragma_table_info exist on every SQLite the project supports (floor 3.25);
     # pragma_table_list needs 3.37. table_info omits generated columns. SQLite resolves
@@ -87,29 +92,20 @@ def _date_format(conn: sqlite3.Connection, table: str, column: str, deadline: fl
     )
     as_iso = f"'20'||substr({compact},1,2)||'-'||substr({compact},3,2)||'-'||substr({compact},5,2)"
     expired: list[bool] = []
-
-    def interrupt() -> int:
-        if monotonic() >= deadline:
-            expired.append(True)
-            return 1
-        return 0
-
-    conn.set_progress_handler(interrupt, _PROGRESS_STEPS)
     try:
-        count, iso_count, compact_count = conn.execute(
-            f"SELECT count({field}), "  # noqa: S608, IDs are schema-checked and quoted, patterns are bound.
-            f"sum(typeof({field})='text' AND {field} GLOB ? AND date({field}, '+0 days')={field}), "
-            f"sum(typeof({field}) IN ('text', 'integer') AND {compact} GLOB ? "
-            f"AND date({as_iso}, '+0 days')={as_iso}) "
-            f"FROM main.{_identifier(table)}",
-            (iso, digits * 6),
-        ).fetchone()
+        with _snapshot_deadline(conn, deadline, expired):
+            count, iso_count, compact_count = conn.execute(
+                f"SELECT count({field}), "  # noqa: S608, IDs are schema-checked and quoted, patterns are bound.
+                f"sum(typeof({field})='text' AND {field} GLOB ? AND date({field}, '+0 days')={field}), "
+                f"sum(typeof({field}) IN ('text', 'integer') AND {compact} GLOB ? "
+                f"AND date({as_iso}, '+0 days')={as_iso}) "
+                f"FROM main.{_identifier(table)}",
+                (iso, digits * 6),
+            ).fetchone()
     except sqlite3.OperationalError:
         if expired:
             return None  # The verification budget ran out: this note stays unverified and is omitted.
         raise
-    finally:
-        conn.set_progress_handler(None, _PROGRESS_STEPS)
     if count and count == iso_count:
         return _ISO
     if count and count == compact_count:
@@ -143,7 +139,7 @@ def _check(
     if _FORMAT.fullmatch(claimed) is None:
         return None, SnapshotRuleCheck(item.chunk_id, "unsupported_format_claim")
     # One read transaction serves every note, so a column scanned once answers for all of them.
-    key = (table.translate(_ASCII_LOWER), column.translate(_ASCII_LOWER))
+    key = (_fold(table), _fold(column))
     if key not in observed_formats:
         observed_formats[key] = _date_format(conn, table, column, deadline)
     observed = observed_formats[key]
@@ -169,9 +165,23 @@ def _open_snapshot(snapshot: Path) -> Iterator[sqlite3.Connection]:
 
 
 @contextmanager
-def _snapshot_deadline(conn: sqlite3.Connection) -> Iterator[None]:
-    deadline = monotonic() + _BUDGET_SECONDS
-    conn.set_progress_handler(lambda: int(monotonic() >= deadline), _PROGRESS_STEPS)
+def _snapshot_deadline(
+    conn: sqlite3.Connection, deadline: float | None = None, expired: list[bool] | None = None
+) -> Iterator[None]:
+    """Interrupt SQLite work on `conn` at `deadline`, by default `_BUDGET_SECONDS` from now.
+
+    An interruption is appended to `expired`, so a caller can tell it from another error.
+    """
+    end = monotonic() + _BUDGET_SECONDS if deadline is None else deadline
+
+    def interrupt() -> int:
+        if monotonic() < end:
+            return 0
+        if expired is not None:
+            expired.append(True)
+        return 1
+
+    conn.set_progress_handler(interrupt, _PROGRESS_STEPS)
     try:
         yield
     finally:

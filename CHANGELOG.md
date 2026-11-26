@@ -10,6 +10,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ### Added
 
+* `recall.sqlite_planning.generate_sql_from_evidence` drafts one read-only SQLite query from
+  trusted evidence in two calls to a model callback the caller supplies. The first call plans
+  fields, joins and filters; RE-call checks the plan against the snapshot, and the second call
+  writes SQL, which is compiled under a read-only authorizer on the same transaction. The caller
+  runs the query. It is opt-in and calls no model of its own; see
+  [API.md](docs/API.md#snapshot-checked-sql-planning).
 * Each indexed chunk records `indexed_via`, the write channel its source first entered the index
   through: `cli_index` (`recall index`), `recall_index`, `recall_ingest`, `recall_remember` or
   `folder_refresh` (a lite folder refresh, the SessionEnd hook, setup). A re-index through another

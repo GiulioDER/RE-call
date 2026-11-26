@@ -208,3 +208,76 @@ def test_inbound_snapshot_format_is_not_passed_on(bundle: EvidenceBundle, snapsh
 
     planning.generate_sql_from_evidence(replace(bundle, items=(stale,)), snapshot, generator)
     assert [note.get("snapshot_format") for note in calls[0]["notes"]] == [None]
+
+
+def _first_call(bundle: EvidenceBundle, snapshot: Path, plan: dict | None = None) -> tuple[dict, dict | None]:
+    calls: list[dict] = []
+
+    def generator(_system: str, prompt: str) -> str:
+        calls.append(_body(prompt))
+        if len(calls) > 1:
+            return "SELECT 1"
+        return "not a plan" if plan is None else json.dumps(plan)
+
+    result = planning.generate_sql_from_evidence(bundle, snapshot, generator)
+    assert calls, f"no model call was made: {result.reason_code}"
+    return calls[0], calls[1].get("checked_plan") if len(calls) > 1 else None
+
+
+def test_note_cap_counts_verified_notes_only(bundle: EvidenceBundle, snapshot: Path) -> None:
+    """DAT-004 and DOC-003 (PR 1512 deferred pass). The three-note cap applies to notes that
+    pass the snapshot check, so prose and missing fields ranked first do not use up the slots
+    of an eligible note ranked fourth. Red proof: against the pre-fix
+    `generate_sql_from_evidence` (`bundle.items[:3]` before `_verify_rules`) the call abstains
+    with no_verified_database_rules and makes no model call."""
+    noise = tuple(
+        replace(bundle.items[0], chunk_id=f"n{i}", text=text)
+        for i, text in enumerate(("Prose with no field header.", "account.missing\nGone.", "More prose."))
+    )
+    first, _ = _first_call(replace(bundle, items=(*noise, bundle.items[2], bundle.items[1], bundle.items[3], bundle.items[0])), snapshot)
+    assert [note["text"].partition("\n")[0] for note in first["notes"]] == ["loan.status", "account.frequency", "loan.loan_id"]
+
+
+def test_plan_fields_resolve_without_regard_to_ascii_case(bundle: EvidenceBundle, snapshot: Path) -> None:
+    """DAT-002 (PR 1512 deferred pass). SQLite resolves `ACCOUNT.Frequency` to account.frequency,
+    so the plan check must not report it missing. Red proof: against the pre-fix `_catalog`
+    keys and membership tests (exact case) the field is reported `exists: False` and its
+    filter gets no value check."""
+    plan = {**PLAN, "fields": ["ACCOUNT.Account_ID"], "joins": [["Account.account_id", "LOAN.account_id"]],
+            "filters": [{"field": "ACCOUNT.Frequency", "op": "eq", "values": ["POPLATEK TYDNE"]}]}
+    _, checked = _first_call(bundle, snapshot, plan)
+    assert checked is not None
+    assert checked["fields"] == [{"name": "ACCOUNT.Account_ID", "exists": True}]
+    assert checked["joins"][0]["fields_exist"] is True and checked["joins"][0]["shares_stored_value"] is True
+    assert checked["filters"][0]["value_check"] == {"status": "all proposed values stored"}
+
+
+def test_plan_check_sees_generated_columns(bundle: EvidenceBundle, snapshot: Path) -> None:
+    """DAT-003 (PR 1512 deferred pass). Red proof: against the pre-fix `_catalog`
+    (`pragma_table_info`, which omits generated columns) `account.year` is reported missing."""
+    with closing(sqlite3.connect(snapshot)) as conn:
+        conn.execute("ALTER TABLE account ADD COLUMN year TEXT GENERATED ALWAYS AS (substr(date, 1, 4)) VIRTUAL")
+    plan = {**PLAN, "fields": ["account.year"], "filters": [{"field": "account.year", "op": "eq", "values": ["1996"]}]}
+    _, checked = _first_call(bundle, snapshot, plan)
+    assert checked is not None and checked["fields"] == [{"name": "account.year", "exists": True}]
+    assert checked["filters"][0]["value_check"] == {"status": "all proposed values stored"}
+
+
+def test_value_check_honours_the_column_collation(bundle: EvidenceBundle, snapshot: Path) -> None:
+    """FA-1-1 (PR 1512 deferred pass, fix audit of PERF-002). A stored value matches under the
+    column's declared collation, as `column = ?` does. Red proof: against the pass 1
+    `_value_check` (`v IN (SELECT column ...)`, where the left operand is the CTE column `v`,
+    so its BINARY collation governs) 'poplatek tydne' and 'C' are reported missing."""
+    with closing(sqlite3.connect(snapshot)) as conn:
+        conn.executescript(
+            "CREATE TABLE code (name TEXT COLLATE NOCASE, tag TEXT COLLATE RTRIM);"
+            "INSERT INTO code VALUES ('POPLATEK TYDNE', 'C  ');"
+        )
+    plan = {**PLAN, "fields": [], "joins": [], "filters": [
+        {"field": "code.name", "op": "eq", "values": ["poplatek tydne"]},
+        {"field": "code.tag", "op": "in", "values": ["C", "D"]},
+    ]}
+    _, checked = _first_call(bundle, snapshot, plan)
+    assert checked is not None
+    assert checked["filters"][0]["value_check"] == {"status": "all proposed values stored"}
+    assert checked["filters"][1]["value_check"]["missing"] == ["D"]

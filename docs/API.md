@@ -181,9 +181,11 @@ result = generate_sql_from_evidence(
 
 The first call proposes fields, joins, filters, and a measure. RE-call checks
 the plan in the SQLite snapshot before the second call writes SQL. The same
-question, schema, and up to three eligible field notes appear in both calls.
-The optional `code_fields` allowlist uses exact `table.column` names. The
-second call can receive short lists of observed values for those fields.
+question, schema, and the first three field notes that pass the snapshot check
+appear in both calls. The optional `code_fields` allowlist uses `table.column`
+names, which, like the plan's names, match without regard to ASCII case, as
+SQLite identifiers do. The second call can receive short lists of observed
+values for those fields.
 Membership and join overlap checks establish facts about the stored data.
 The writer decides how those facts apply to the question.
 
@@ -198,6 +200,21 @@ caller. Successful calls return either `sql` or a `clarification`. When the
 second reply is neither a clarification nor one read-only `SELECT` or `WITH`
 statement that compiles, the result carries `reason_code`
 `invalid_read_only_sql` and no SQL.
+
+A plan is also malformed when it exceeds a limit: 16,000 characters in all,
+1,200 characters for `grain` or `measure`, 24 entries in each of `fields`,
+`joins` and `filters`, 8 values per filter, and 160 characters per string
+value.
+
+Four SQLite steps each have their own two-second budget: reading the schema,
+the column scans that check date formats in the notes, checking the plan, and
+compiling the SQL. The lookup that checks each note's field exists has no
+budget, so its cost grows with the number of notes in the bundle. A note whose
+scan runs out of budget is dropped; when no note remains, the call returns
+`no_verified_database_rules` before any model call. A plan check that runs out
+sends the original inputs. Running out while reading the schema returns
+`sqlite_snapshot_unavailable`, and running out while compiling returns
+`invalid_read_only_sql`.
 
 RE-call compiles SQL under a read-only authorizer on the same transaction
 used for the checks. Run the returned statement against that same version of
