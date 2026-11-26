@@ -94,7 +94,8 @@ def _caller_may_read(state: dict) -> bool:
 def _register_assistant_tools(mcp: ToolRegistrar, deps: _ToolDeps, held: _HeldTools) -> None:
     """The assistant surface: `recall_remember`, `recall_forget_memo`, and the compact forms.
 
-    Registered only when RECALL_ASSISTANT_MEMOS names a memo folder (`recall_mcp.assistant`). The compact `recall_search` and `recall_evidence` offer only the
+    Registered only when RECALL_ASSISTANT_MEMOS names a memo folder (`recall_mcp.assistant`). The
+    compact `recall_search` and `recall_evidence` offer only the
     parameters an assistant uses; `recall_current_facts` and `recall_apply_fact` keep theirs. All
     seven answer in `assistant_dumps` form except `recall_withdraw`, which answers `WithdrawResult`
     JSON as the plain tool does; their descriptions are the held declarations'.

@@ -48,17 +48,19 @@ OTHER = {"mem/other.md": b"# Other\n\nA plain note about the garden.\n"}
 
 
 @pytest.fixture
-def root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, manager: Any) -> Path:  # noqa: F811
-    """The corpus root, with the surface and settle on and the memo folder stating facts."""
-    corpus = tmp_path / "root"
-    (corpus / "mem").mkdir(parents=True)
+def corpus(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest) -> tuple[Any, Path]:
+    """(the generation manager, the corpus root), with the surface and settle on and the memo
+    folder stating facts."""
+    generations = request.getfixturevalue("manager")
+    root = tmp_path / "root"
+    (root / "mem").mkdir(parents=True)
     monkeypatch.setenv("RECALL_EMBED_CACHE", "off")
-    monkeypatch.setenv("RECALL_INDEX_ROOT", str(corpus))
-    monkeypatch.setenv("RECALL_ASSISTANT_MEMOS", str(corpus / "memos"))
+    monkeypatch.setenv("RECALL_INDEX_ROOT", str(root))
+    monkeypatch.setenv("RECALL_ASSISTANT_MEMOS", str(root / "memos"))
     monkeypatch.setenv(SETTLE_ENV, "1")
-    monkeypatch.setenv("RECALL_STATED_FACT_SOURCES", uri(manager, "memos"))
-    promote(manager, OTHER, "corpus-v0")
-    return corpus
+    monkeypatch.setenv("RECALL_STATED_FACT_SOURCES", uri(generations, "memos"))
+    promote(generations, OTHER, "corpus-v0")
+    return generations, root
 
 
 def _corpus_files(root: Path) -> dict[str, bytes]:
@@ -94,12 +96,13 @@ def _remember(call: Any, obj: str, day: str, **kwargs: Any) -> Any:
     return answer if answer.startswith("RAISED") else json.loads(answer)
 
 
-def _build_tea(manager: Any, root: Path) -> None:  # noqa: F811
+def _build_tea(corpus: tuple[Any, Path]) -> None:
     """pref-0001 (tea) written by the surface and promoted in a generation."""
-    with served(manager) as store:
+    generations, root = corpus
+    with served(generations) as store:
         first = _remember(_tools(store), "tea", "2026-01-01")
     assert first == {"memo_id": "pref-0001", "settle": {"settled": None}}, first
-    promote(manager, _corpus_files(root), "corpus-v1")
+    promote(generations, _corpus_files(root), "corpus-v1")
 
 
 def test_q0_a_postgres_server_serves_the_surface(tmp_path: Path) -> None:
@@ -118,10 +121,11 @@ def test_q0_a_postgres_server_serves_the_surface(tmp_path: Path) -> None:
 
 
 @requires_db
-def test_q1_a_settled_write_supersedes_the_built_memo(manager: Any, root: Path) -> None:  # noqa: F811
+def test_q1_a_settled_write_supersedes_the_built_memo(corpus: tuple[Any, Path]) -> None:
     """Node tests/test_assistant_postgres.py::test_q1_a_settled_write_supersedes_the_built_memo."""
-    _build_tea(manager, root)
-    with served(manager) as store:
+    _build_tea(corpus)
+    generations, root = corpus
+    with served(generations) as store:
         second = _remember(_tools(store), "coffee", "2026-02-01", include_receipt=True)
     assert not isinstance(second, str), second
     assert (second["memo_id"], second["settle"]) == ("pref-0002", {"settled": "pref-0001"}), second
@@ -130,17 +134,18 @@ def test_q1_a_settled_write_supersedes_the_built_memo(manager: Any, root: Path) 
     assert receipt["fact_key"]["state"] == "unchecked", receipt
     memo = (root / "memos" / "pref-0002.md").read_text(encoding="utf-8")
     assert "supersedes: memos/pref-0001.md" in memo, memo
-    promote(manager, _corpus_files(root), "corpus-v2")
-    with served(manager) as store:
+    promote(generations, _corpus_files(root), "corpus-v2")
+    with served(generations) as store:
         got = listed(store)
     assert got == [("coffee", ("memos/pref-0002.md",))], f"the settled edge did not retire tea: {got}"
 
 
 @requires_db
-def test_q2_forget_memo_erases_a_built_memo_and_its_file(manager: Any, root: Path) -> None:  # noqa: F811
+def test_q2_forget_memo_erases_a_built_memo_and_its_file(corpus: tuple[Any, Path]) -> None:
     """Node tests/test_assistant_postgres.py::test_q2_forget_memo_erases_a_built_memo_and_its_file."""
-    _build_tea(manager, root)
-    with served(manager) as store:
+    _build_tea(corpus)
+    generations, root = corpus
+    with served(generations) as store:
         answer = _tools(store)("recall_forget_memo", memo_id="pref-0001")
         got = listed(store)
     assert not answer.startswith("RAISED"), answer
@@ -150,10 +155,11 @@ def test_q2_forget_memo_erases_a_built_memo_and_its_file(manager: Any, root: Pat
 
 
 @requires_db
-def test_q3_withdraw_by_memo_id_deletes_the_file(manager: Any, root: Path) -> None:  # noqa: F811
+def test_q3_withdraw_by_memo_id_deletes_the_file(corpus: tuple[Any, Path]) -> None:
     """Node tests/test_assistant_postgres.py::test_q3_withdraw_by_memo_id_deletes_the_file."""
-    _build_tea(manager, root)
-    with served(manager) as store:
+    _build_tea(corpus)
+    generations, root = corpus
+    with served(generations) as store:
         answer = _tools(store)("recall_withdraw", sources=["pref-0001"])
         got = listed(store)
     assert not answer.startswith("RAISED"), answer
