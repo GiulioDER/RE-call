@@ -193,7 +193,8 @@ def _parse_ok(text: str) -> CompileReply:
     """Read a 200 reply; raises CreditStop or SourceRejected, never asks for a resend."""
     try:
         reply = json.loads(text)
-    except ValueError as exc:
+    # json raises RecursionError, not ValueError, for nesting deeper than it can read.
+    except (ValueError, RecursionError) as exc:
         raise SourceRejected("reply body was not JSON", 200) from exc
     if not isinstance(reply, dict):
         raise SourceRejected("reply body was not a JSON object", 200)
@@ -217,7 +218,7 @@ def _parse_ok(text: str) -> CompileReply:
         content = json.loads(fenced.group(1) if fenced else content_text)
     except SourceRejected:
         raise
-    except (ValueError, KeyError, IndexError, TypeError, AttributeError) as exc:
+    except (ValueError, RecursionError, KeyError, IndexError, TypeError, AttributeError) as exc:
         raise SourceRejected("reply content was not a JSON object", 200) from exc
     if not isinstance(content, dict):
         raise SourceRejected("reply content was not a JSON object", 200)

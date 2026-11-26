@@ -398,25 +398,41 @@ def test_nan_retry_after_falls_back_to_backoff() -> None:
     assert sleeps == [1.0]
 
 
-@pytest.mark.parametrize("raw", [None, b"[" * 100_000])
-def test_unexpected_exception_still_settles_the_attempt(raw: bytes | None) -> None:
+def test_unexpected_exception_still_settles_the_attempt() -> None:
     """An exception no clause names still charges the attempt and frees the budget.
 
-    ``None``: the transport raises ``ValueError`` (a base URL with no scheme). The other case is a
-    billed 200 whose body nests deeper than ``json`` allows, which raises ``RecursionError``.
-    Red proof, 2026-11-26: before the fix both left the reservation held and uncharged, and this
+    The transport raises ``ValueError``, as urllib does for a base URL with no scheme.
+    Red proof, 2026-11-26: before the fix the reservation stayed held and uncharged, and this
     fails on ``budget.spent_usd > 0``.
     """
     def transport(url: str, body: bytes, headers: Mapping[str, str], timeout: float) -> tuple[int, Mapping[str, str], bytes]:
-        if raw is None:
-            raise ValueError("unknown url type")
-        return 200, {}, raw
+        raise ValueError("unknown url type")
 
     budget = RecordingBudget()
-    with pytest.raises((ValueError, RecursionError)):
+    with pytest.raises(ValueError):
         _run(transport, budget=budget)  # type: ignore[arg-type]  # a function, not FakeTransport
     assert budget.spent_usd > 0
     assert budget.reserve(10) is True
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [b"[" * 100_000, json.dumps({"choices": [{"message": {"content": "[" * 100_000}}]}).encode()],
+    ids=["body", "content"],
+)
+def test_too_deep_reply_is_rejected_not_resent(raw: bytes) -> None:
+    """A billed 200 nested deeper than ``json`` can read rejects the source (F-02).
+
+    Red proof, 2026-11-26: with ``RecursionError`` outside ``_parse_ok``'s handlers (before the
+    fix) it escaped untyped, and this fails on ``pytest.raises(SourceRejected)``.
+    """
+    transport = FakeTransport((200, {}, raw))
+    budget = RecordingBudget()
+    with pytest.raises(SourceRejected) as caught:
+        _run(transport, budget=budget)
+    assert caught.value.status == 200
+    assert len(transport.calls) == 1
+    assert budget.spent_usd > 0
 
 
 def test_settings_defaults_are_the_provider_defaults() -> None:
