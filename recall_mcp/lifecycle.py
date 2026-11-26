@@ -667,6 +667,17 @@ def _forget_memory_unlocked(
                 "atomic rescue erasure failed after chunk deletion for tenant %r", store.tenant
             )
             rescue_views_erased = -1
+    compiled_graph_removed = 0
+    if chunks_removed:
+        from recall.compiled_graph.service import erase_forgotten_sources
+
+        try:
+            compiled_graph_removed = erase_forgotten_sources(to_delete, env=runtime_environment())
+        except Exception:  # BROAD-CATCH: error-translation  # the chunks are gone; the message names what is left
+            _log.exception(
+                "compiled graph erasure failed after chunk deletion for tenant %r", store.tenant
+            )
+            compiled_graph_removed = -1
     memo_requests_erased = 0
     if erase_memo_requests:
         from recall.lite.assistant_memos import forget_memo_requests
@@ -745,6 +756,14 @@ def _forget_memory_unlocked(
             "(RECALL_EMBED_CACHE, or the platform default) once to clear them, which costs only "
             "a re-embed."
         )
+    if compiled_graph_removed < 0:
+        message += (
+            " WARNING: the chunk deletion succeeded but erasing them from the compiled graph failed, "
+            "so records quoting them may remain under RECALL_COMPILED_GRAPH_ARTIFACT_ROOT; "
+            "re-run this forget."
+        )
+    elif compiled_graph_removed:
+        message += f" Removed {compiled_graph_removed} compiled graph artifact(s) quoting the deleted text."
     if rescue_views_erased < 0:
         message += (
             " WARNING: the chunk deletion succeeded but erasing them from the atomic rescue failed, "

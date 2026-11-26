@@ -235,6 +235,13 @@ def ensure_rescue_artifact(
     from recall.embeddings import embed_document_groups, embedding_profile, embedding_profile_id
     from recall.lite.writer_lock import _mutex
 
+    from recall.compiled_graph.service import ensure_for_store
+
+    # Every Lite write that keeps a calibration in force passes here, so the compiled graph is built
+    # beside the rescue whether or not the rescue is on. It never raises into the write.
+    compiled = ensure_for_store(store, embedder, os.environ if env is None else env)
+    if compiled:
+        _log.info(compiled)
     root = configured_root(store.tenant, env)
     if root is None:
         return None

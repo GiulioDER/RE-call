@@ -93,6 +93,15 @@ def ensure_for_promotion(
     its mode from; the default is this process's. `make_embedder` is called only when a build runs, so
     a promotion with the rescue off loads no model.
     """
+    from recall.compiled_graph.service import ensure_for_generation
+
+    # Every promotion passes here, so the compiled graph is built before the generation serves,
+    # whether or not the rescue is on. It never raises into the promotion.
+    compiled = ensure_for_generation(
+        dsn, tenant, generation_id, make_embedder, os.environ if env is None else env
+    )
+    if compiled:
+        _log.info(compiled)
     root = _active_root(tenant, env)
     if root is None:
         return None

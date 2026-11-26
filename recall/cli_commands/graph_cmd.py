@@ -33,6 +33,13 @@ def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     )
     status = graph_sub.add_parser("status", help="show the graph build marker and its recorded counts")
     status.add_argument("--generation", help="the generation to report: the active one by default")
+    compile_ = graph_sub.add_parser(
+        "compile",
+        help="build the opt-in LLM-compiled graph (RECALL_COMPILED_GRAPH_*) for the corpus in force",
+    )
+    compile_.add_argument("--generation", help="PostgreSQL: the generation to compile, the active one by default")
+    compile_.add_argument("--force", action="store_true", help="clear a credit backoff and build")
+    compile_.add_argument("--dry-run", action="store_true", help="print the worst-case spend and send nothing")
 
 
 def _cmd_graph(args: argparse.Namespace) -> None:
@@ -43,6 +50,9 @@ def _cmd_graph(args: argparse.Namespace) -> None:
         refusal := generations_table_refusal(getattr(args, "table", None), "recall graph")
     ) is not None:
         raise SystemExit(refusal)
+    if args.graph_cmd == "compile":
+        _compile(args)
+        return
     if is_lite_dsn(args.dsn):
         readiness = _lite_graph(args)
     elif args.graph_cmd == "rebuild":
@@ -116,3 +126,44 @@ def _lite_graph(args: argparse.Namespace) -> GraphReadiness:
                 if result != graph.readiness():
                     raise SystemExit(f"{command}: the corpus changed during the graph rebuild; retry")
             return result
+
+
+def _compile(args: argparse.Namespace) -> None:
+    import os
+
+    from recall.cli_commands._shared import _make_embedder
+    from recall.compiled_graph.service import compiled_graph_mode, ensure_for_store, estimate_compile
+
+    env = dict(os.environ)
+    if compiled_graph_mode(env, args.tenant) == "off":
+        raise SystemExit(
+            f"recall graph compile: the compiled graph is off for tenant {args.tenant!r}; set "
+            "RECALL_COMPILED_GRAPH_MODE (or RECALL_COMPILED_GRAPH_MODE_BY_TENANT) to shadow or active"
+        )
+    embedder = _make_embedder(args.embedder)
+    if is_lite_dsn(args.dsn):
+        from recall.backends import write_session
+        from recall.lite import LiteStore
+
+        with LiteStore.from_dsn(args.dsn, dim=embedder.dim, tenant=args.tenant) as store:
+            if args.dry_run:
+                print(estimate_compile(args.tenant, store.iter_chunks(), env))
+                return
+            # The write lane, so a forget cannot run while this build reads the corpus.
+            with write_session(store, "graph compile"):
+                message = ensure_for_store(store, embedder, env, force=args.force)
+    else:
+        from recall.generation_store import GenerationStore
+
+        generations = GenerationStore(args.dsn, embedder.dim, tenant=args.tenant)
+        try:
+            generations.set_fixed_generation(args.generation or generations.active_generation_id())
+            if args.dry_run:
+                print(estimate_compile(args.tenant, generations.iter_chunks(), env))
+                return
+            message = ensure_for_store(generations, embedder, env, force=args.force)
+        finally:
+            generations.close()
+    print(message)
+    if message.startswith("compiled graph not built"):
+        raise SystemExit(1)
