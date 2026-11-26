@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import http.client
 import json
+import math
 import re
 import time
 from collections.abc import Callable, Mapping
@@ -47,6 +48,14 @@ _SIZE_BODY = re.compile(
 )
 _FENCED = re.compile(r"^\s*```[a-zA-Z]*\s*\n(.*)\n\s*```\s*$", re.DOTALL)
 
+#: The request fields besides model, cap and messages; part of the compile cache key.
+REQUEST_OPTIONS: Mapping[str, Any] = {"temperature": 0, "response_format": {"type": "json_object"}}
+#: The user message around the encoded source; part of the compile cache key.
+USER_TEMPLATE = "<stored_data>{}</stored_data>"
+
+#: ``(url, body, headers, timeout) -> (status, headers, body)``. Every HTTP status comes back as a
+#: value, an error status included; ``OSError`` or ``HTTPException`` means no status arrived (the
+#: attempt is retried), and ``ReplyLost`` means a success status arrived without its body.
 Transport = Callable[[str, bytes, Mapping[str, str], float], tuple[int, Mapping[str, str], bytes]]
 
 
@@ -82,7 +91,16 @@ class ReplyLost(RuntimeError):
         self.status = status
 
 
+def required_env(env: Mapping[str, str], name: str) -> str:
+    variable = f"{ENV_PREFIX}_{name}"
+    value = env.get(variable, "").strip()
+    if not value:
+        raise CompiledGraphConfigError(f"{variable} is required for a compile")
+    return value
+
+
 def url_without_credentials(url: str) -> str:
+    """Scheme, host, port and path of ``url``: userinfo, query and fragment are dropped."""
     parts = urlsplit(url)
     host = parts.hostname or ""
     netloc = f"{host}:{parts.port}" if parts.port else host
@@ -101,20 +119,15 @@ class ProviderConfig:
 
     @classmethod
     def from_env(cls, env: Mapping[str, str]) -> ProviderConfig:
-        def required(name: str) -> str:
-            value = env.get(f"{ENV_PREFIX}_{name}", "").strip()
-            if not value:
-                raise CompiledGraphConfigError(f"{ENV_PREFIX}_{name} is required for a compile")
-            return value
-
-        api_key, model = required("API_KEY"), required("MODEL")
+        api_key, model = required_env(env, "API_KEY"), required_env(env, "MODEL")
         timeout_text = env.get(f"{ENV_PREFIX}_TIMEOUT", "").strip()
         try:
             timeout = float(timeout_text) if timeout_text else DEFAULT_TIMEOUT_SECONDS
         except ValueError as exc:
             raise CompiledGraphConfigError(f"{ENV_PREFIX}_TIMEOUT must be a number") from exc
-        if not timeout > 0:
-            raise CompiledGraphConfigError(f"{ENV_PREFIX}_TIMEOUT must be positive")
+        # A socket refuses an infinite timeout with OverflowError, after the attempt is reserved.
+        if not (math.isfinite(timeout) and timeout > 0):
+            raise CompiledGraphConfigError(f"{ENV_PREFIX}_TIMEOUT must be a finite number above zero")
         base_url = env.get(f"{ENV_PREFIX}_BASE_URL", "").strip() or DEFAULT_BASE_URL
         return cls(api_key=api_key, model=model, base_url=base_url, timeout=timeout)
 
@@ -155,9 +168,13 @@ def _retry_delay(headers: Mapping[str, str], attempt: int) -> float:
     for name, value in headers.items():
         if name.lower() == "retry-after":
             try:
-                return min(max(float(value), 0.0), RETRY_AFTER_CAP_SECONDS)
+                seconds = float(value)
             except ValueError:
                 break
+            # NaN passes min and max unchanged, and time.sleep refuses it.
+            if math.isnan(seconds):
+                break
+            return min(max(seconds, 0.0), RETRY_AFTER_CAP_SECONDS)
     return min(float(2 ** (attempt - 1)), RETRY_AFTER_CAP_SECONDS)
 
 
@@ -219,19 +236,26 @@ def compile_source(
     *,
     sleep: Callable[[float], None] = time.sleep,
 ) -> CompileReply:
-    """Send one compile within ``budget``; return the parsed JSON object and its usage."""
+    """Send one compile within ``budget``; return the parsed JSON object and its usage.
+
+    Every attempt is reserved before it is sent and settled once, at its whole reservation unless
+    a 200 reports usage, on every way out, an unexpected exception included.
+
+    Raises:
+        BudgetExhausted: the next attempt's worst case does not fit; the build stops.
+        CreditStop: 401, 402, or a credit or key-limit refusal (also inside a 200); the build stops.
+        PayloadTooLarge: 413, or a 400 naming the request size; the caller may refit once.
+        SourceRejected: any other refusal, a 200 that cannot be read (never resent), or
+            ``ATTEMPTS`` failed attempts of 408, 409, 429, 5xx or a network error.
+    """
     body = json.dumps(
         {
             "model": config.model,
-            "temperature": 0,
+            **REQUEST_OPTIONS,
             "max_tokens": MAX_OUTPUT_TOKENS,
-            "response_format": {"type": "json_object"},
             "messages": [
                 {"role": "system", "content": COMPILE_SYSTEM_PROMPT},
-                {
-                    "role": "user",
-                    "content": f"<stored_data>{encode_stored_data(payload)}</stored_data>",
-                },
+                {"role": "user", "content": USER_TEMPLATE.format(encode_stored_data(payload))},
             ],
         }
     ).encode("utf-8")
@@ -253,10 +277,13 @@ def compile_source(
             if attempt < ATTEMPTS:
                 sleep(_retry_delay({}, attempt))
             continue
+        except BaseException:
+            budget.settle(None)
+            raise
         if status == 200:
             try:
                 reply = _parse_ok(raw.decode("utf-8", errors="replace"))
-            except (CreditStop, SourceRejected):
+            except BaseException:
                 budget.settle(None)
                 raise
             budget.settle(reply)

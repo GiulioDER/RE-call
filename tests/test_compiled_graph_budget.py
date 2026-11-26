@@ -125,3 +125,14 @@ def test_output_cap_is_not_a_budget_setting() -> None:
     """
     with pytest.raises(TypeError):
         Budget(max_usd=1.0, cost_in_per_1k=0.002, cost_out_per_1k=0.008, max_tokens=100)  # type: ignore[call-arg]  # the field is gone; the call is the one a caller could make before
+
+
+def test_negative_price_message_allows_zero() -> None:
+    """Red proof, 2026-11-26: the one message before the fix ("above zero") fails on ``match``."""
+    env = {
+        "RECALL_COMPILED_GRAPH_MAX_USD": "1",
+        "RECALL_COMPILED_GRAPH_COST_PER_1K_INPUT": "-1",
+        "RECALL_COMPILED_GRAPH_COST_PER_1K_OUTPUT": "0",
+    }
+    with pytest.raises(CompiledGraphConfigError, match="zero or above"):
+        Budget.from_env(env)

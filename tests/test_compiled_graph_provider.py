@@ -380,3 +380,61 @@ def test_redirect_never_carries_the_key() -> None:
         target.close()
     assert target.requests == []
     assert caught.value.status == 302
+
+
+def test_infinite_timeout_is_refused() -> None:
+    """Red proof, 2026-11-26: with ``not timeout > 0`` alone (before the fix) ``inf`` is accepted
+    and this fails on ``pytest.raises`` (DID NOT RAISE); a socket then refuses it with
+    ``OverflowError`` after the attempt is reserved."""
+    with pytest.raises(CompiledGraphConfigError, match="TIMEOUT"):
+        ProviderConfig.from_env({**ENV, "RECALL_COMPILED_GRAPH_TIMEOUT": "inf"})
+
+
+def test_nan_retry_after_falls_back_to_backoff() -> None:
+    """Red proof, 2026-11-26: before the fix the clamp passed NaN through and this fails on the
+    sleeps (``[nan]``); ``time.sleep`` raises on that value."""
+    sleeps: list[float] = []
+    _run(FakeTransport((429, {"Retry-After": "nan"}, b"{}"), (200, {}, _ok({"records": []}))), sleeps)
+    assert sleeps == [1.0]
+
+
+@pytest.mark.parametrize("raw", [None, b"[" * 100_000])
+def test_unexpected_exception_still_settles_the_attempt(raw: bytes | None) -> None:
+    """An exception no clause names still charges the attempt and frees the budget.
+
+    ``None``: the transport raises ``ValueError`` (a base URL with no scheme). The other case is a
+    billed 200 whose body nests deeper than ``json`` allows, which raises ``RecursionError``.
+    Red proof, 2026-11-26: before the fix both left the reservation held and uncharged, and this
+    fails on ``budget.spent_usd > 0``.
+    """
+    def transport(url: str, body: bytes, headers: Mapping[str, str], timeout: float) -> tuple[int, Mapping[str, str], bytes]:
+        if raw is None:
+            raise ValueError("unknown url type")
+        return 200, {}, raw
+
+    budget = RecordingBudget()
+    with pytest.raises((ValueError, RecursionError)):
+        _run(transport, budget=budget)  # type: ignore[arg-type]  # a function, not FakeTransport
+    assert budget.spent_usd > 0
+    assert budget.reserve(10) is True
+
+
+def test_settings_defaults_are_the_provider_defaults() -> None:
+    """Red proof, 2026-11-26: ``DEFAULT_TIMEOUT_SECONDS = 30.0`` fails on the timeout row."""
+    from recall.compiled_graph.provider import DEFAULT_BASE_URL, DEFAULT_TIMEOUT_SECONDS
+    from recall_mcp.settings import ENVIRONMENT_SCHEMA
+
+    defaults = {spec.name: spec.default for spec in ENVIRONMENT_SCHEMA}
+    assert defaults["RECALL_COMPILED_GRAPH_BASE_URL"] == DEFAULT_BASE_URL
+    assert float(defaults["RECALL_COMPILED_GRAPH_TIMEOUT"]) == DEFAULT_TIMEOUT_SECONDS
+
+
+def test_env_example_lists_every_compiled_graph_variable() -> None:
+    """Red proof, 2026-11-26: against ``.env.example`` before the fix this fails listing all seven."""
+    from pathlib import Path
+
+    from recall_mcp.settings import ENVIRONMENT_SCHEMA
+
+    example = (Path(__file__).resolve().parents[1] / ".env.example").read_text(encoding="utf-8")
+    missing = [s.name for s in ENVIRONMENT_SCHEMA if s.section == "Compiled graph" and s.name not in example]
+    assert missing == []
