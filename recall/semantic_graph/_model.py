@@ -51,6 +51,7 @@ RelationStatus = Literal["authored", "candidate"]
 
 
 ExtractionMethod = Literal[
+    "llm_compiled",
     "metadata", "filename", "heading", "explicit_relation", "explicit_reference"
 ]
 

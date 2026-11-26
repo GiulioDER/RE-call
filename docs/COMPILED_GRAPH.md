@@ -21,9 +21,11 @@ turn it to `active`.
    records may be promoted, at most two of them, into **ranks 9 and 10** of an unscoped search.
    Ranks 1 to 8, every score, and the set of chunks returned never change. A scoped search is
    never touched. Search never calls the model.
-4. **For `recall_reasoning_query`**, in `active` mode only, the entities the records copied become
-   mentions on the chunks that contain them. Graph expansion may follow them, and every link
-   reached that way is labelled `llm_compiled`.
+4. **For `recall_reasoning_query`**, in `active` mode only, an entity a record copied becomes a
+   mention on each linked chunk whose own text holds it, but only onto an entity the authored graph
+   already has (matched by normalized name, never an ambiguous one). Graph expansion still walks
+   authored relations only; these mentions widen which chunks a relation reaches, and every chunk
+   reached only through one carries `graph_link: llm_compiled` on its hit.
 
 With the default `k=5`, a plain search returns the same results with the graph on. The effect is
 visible when a caller asks for 9 or more results, and in the reasoning query.

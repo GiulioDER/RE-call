@@ -166,6 +166,10 @@ def build_compiled_graph(
     artifact_records: list[ArtifactRecord] = []
     for index, (source, record) in enumerate(accepted):
         edges = record_edges(record, source.chunks)
+        linked = [chunk for chunk in source.chunks if chunk.id in edges]
+        mentions = tuple(
+            (chunk.id, entity) for chunk in linked for entity in record.entities if entity in chunk.text
+        )
         artifact_records.append(
             ArtifactRecord(
                 key=f"{source.source}#{index}",
@@ -174,6 +178,7 @@ def build_compiled_graph(
                 fields=record.fields,
                 entities=record.entities,
                 edges=edges,
+                mentions=mentions,
             )
         )
     vectors: np.ndarray = np.zeros((0, embedder.dim), dtype=np.float32)

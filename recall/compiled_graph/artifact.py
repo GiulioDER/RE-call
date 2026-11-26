@@ -20,7 +20,8 @@ from typing import Any
 
 import numpy as np
 
-ARTIFACT_SCHEMA_VERSION = 1
+#: 2 added each record's (chunk id, entity) mentions.
+ARTIFACT_SCHEMA_VERSION = 2
 _MEMBERS = ("records.jsonl", "vectors.npy")
 
 
@@ -48,6 +49,8 @@ class ArtifactRecord:
     fields: tuple[str, ...]
     entities: tuple[str, ...]
     edges: tuple[str, ...]
+    #: (chunk id, entity) for each linked chunk whose own text holds the entity.
+    mentions: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -86,6 +89,7 @@ def write_artifact(folder: Path, artifact: CompiledGraphArtifact) -> Path:
                             "fields": list(record.fields),
                             "entities": list(record.entities),
                             "edges": list(record.edges),
+                            "mentions": [list(pair) for pair in record.mentions],
                         }
                     )
                     + "\n"
@@ -119,8 +123,9 @@ def _record(row: object) -> ArtifactRecord:
             fields=tuple(str(value) for value in row["fields"]),
             entities=tuple(str(value) for value in row["entities"]),
             edges=tuple(str(value) for value in row["edges"]),
+            mentions=tuple((str(chunk_id), str(entity)) for chunk_id, entity in row["mentions"]),
         )
-    except (KeyError, TypeError) as exc:
+    except (KeyError, TypeError, ValueError) as exc:
         raise ArtifactDamaged("a record row lacks a field") from exc
 
 

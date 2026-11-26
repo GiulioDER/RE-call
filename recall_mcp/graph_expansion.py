@@ -13,6 +13,7 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from typing import Any, Callable, Mapping, Sequence
 
+from recall.compiled_graph.mentions import admit_llm_mentions, label_hits, llm_dependent_chunks
 from recall.calibration import Calibration
 from recall.reasoning import ReasoningRequest, SemanticGraphExpansionResult
 from recall.security_policy import AccessContext, SourceSecurityPolicy
@@ -1085,6 +1086,10 @@ def expand_semantic_graph(
     def refuse(reason: str) -> None:
         stats.refuse(reason)
 
+    #: Chunks reached only through an LLM-compiled mention (`recall.compiled_graph.mentions`);
+    #: set once admission has run, and labelled on every hit `finish` returns.
+    llm_labels: frozenset[str] = frozenset()
+
     def finish(
         *,
         result: TrustedResult,
@@ -1095,6 +1100,9 @@ def expand_semantic_graph(
         gate_reason: str | None = None,
         scored_candidates: Sequence[ScoredChunk] = (),
     ) -> SemanticGraphExpansionResult:
+        if llm_labels:
+            result = replace(result, hits=label_hits(result.hits, llm_labels))
+            scored_candidates = label_hits(scored_candidates, llm_labels)
         return _finish_expansion(
             started=started,
             stats=stats,
@@ -1231,6 +1239,9 @@ def expand_semantic_graph(
             return finish(result=retrieval, readiness="GRAPH_NOT_READY", gate_reason="scoped_graph_unavailable")
     stats.semantic_diagnostic_count = len(semantic.diagnostics)
     semantic = _controlled_semantic_graph(semantic, relation_control, relation_control_seed)
+    from recall_mcp.settings import runtime_environment
+
+    semantic, llm_pairs = admit_llm_mentions(store, semantic, embedder, runtime_environment())
     indexes = _semantic_graph_indexes(semantic)
     mentions_by_chunk = indexes.mentions_by_chunk
     ambiguous_entities = indexes.ambiguous_entities
@@ -1276,6 +1287,14 @@ def expand_semantic_graph(
         stats=stats,
     )
     candidate_relations_by_chunk = admission.candidate_relations_by_chunk
+    llm_labels = llm_dependent_chunks(
+        candidate_relations_by_chunk,
+        seed_entities,
+        trusted_seed_ids,
+        resolved_query_entities,
+        indexes.mentions_by_chunk,
+        llm_pairs,
+    )
     relation_count = admission.relation_count
     supersession = dict(admission.supersession)
     unresolved = admission.unresolved
