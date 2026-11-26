@@ -60,19 +60,19 @@ USER_TEMPLATE = "<stored_data>{}</stored_data>"
 Transport = Callable[[str, bytes, Mapping[str, str], float], tuple[int, Mapping[str, str], bytes]]
 
 
-class CompiledGraphConfigError(ValueError, RecallError):
+class CompiledGraphConfigError(RecallError, ValueError):
     """A required ``RECALL_COMPILED_GRAPH_*`` variable is missing or invalid."""
 
 
-class CreditStop(RuntimeError, RecallError):
+class CreditStop(RecallError, RuntimeError):
     """The provider refused for credit or authorization: the whole build stops."""
 
 
-class BudgetExhausted(RuntimeError, RecallError):
+class BudgetExhausted(RecallError, RuntimeError):
     """The next attempt's worst case does not fit what is left: the whole build stops."""
 
 
-class SourceRejected(RuntimeError, RecallError):
+class SourceRejected(RecallError, RuntimeError):
     """This source gets no records; the build goes on with the next one."""
 
     def __init__(self, message: str, status: int | None = None) -> None:
@@ -80,11 +80,11 @@ class SourceRejected(RuntimeError, RecallError):
         self.status = status
 
 
-class PayloadTooLarge(RuntimeError, RecallError):
+class PayloadTooLarge(RecallError, RuntimeError):
     """The provider refused the request's size; the caller may refit it once."""
 
 
-class ReplyLost(RuntimeError, RecallError):
+class ReplyLost(RecallError, RuntimeError):
     """A transport received a success status but lost the body: the reply was billed."""
 
     def __init__(self, status: int) -> None:
