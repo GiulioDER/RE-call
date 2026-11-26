@@ -13,12 +13,26 @@ Every test drives a fake transport; nothing reaches a network. Red proof, record
   the call count.
 - ``test_size_refusal_is_payload_too_large``: the size-message check removed fails with
   ``SourceRejected``.
-- ``test_invalid_json_retried_then_rejected``: no retry on a parse failure fails on the count.
+- ``test_unparseable_reply_not_resent``: a parse failure retried fails on the call count (3).
 - ``test_truncated_output_rejected_without_retry``: a cut-off reply parsed anyway fails.
 - ``test_usage_read_from_reply``: usage ignored fails on the token counts.
 - ``test_missing_required_variable_named``: a default model fails on ``pytest.raises``.
 - ``test_request_shape``: the ``response_format`` line removed fails on the request body.
 - ``test_api_key_never_in_errors``: the response body echoed into the message fails the check.
+- ``test_unparseable_reply_not_resent``: a rejected 200 retried (``continue``) fails on the count.
+- ``test_fenced_json_reply_accepted``: fence stripping disabled fails with ``SourceRejected``.
+- ``test_error_object_in_ok_reply_stops_for_credit``: the 402 code check removed fails.
+- ``test_error_object_in_ok_reply_rejects_source``: every error object read as credit fails.
+- ``test_key_limit_stops``: ``key limit`` removed from ``_CREDIT_BODY`` fails.
+- ``test_rate_limit_body_is_retried_not_stopped``: the ``status != 429`` exclusion removed fails
+  with ``CreditStop`` (the body mentions credits).
+- ``test_each_attempt_reserves_the_whole_request``: reserving without ``TEMPLATE_SLACK_TOKENS``
+  fails on the reserved sizes.
+- ``test_budget_refusal_mid_retry_stops``: a refused reservation ending the loop (``break``) fails
+  with ``SourceRejected`` instead of ``BudgetExhausted``.
+- ``test_network_errors_retried``: catching ``OSError`` only lets ``IncompleteRead`` escape.
+- ``test_rejection_carries_status``: the status not passed fails on ``status == 404``.
+- ``test_repr_hides_url_credentials``: ``repr`` printing ``base_url`` as given fails.
 """
 
 from __future__ import annotations
@@ -28,8 +42,11 @@ from collections.abc import Mapping
 
 import pytest
 
+from recall.compiled_graph.budget import Budget
 from recall.compiled_graph.provider import (
     ATTEMPTS,
+    TEMPLATE_SLACK_TOKENS,
+    BudgetExhausted,
     RETRY_AFTER_CAP_SECONDS,
     CompiledGraphConfigError,
     CompileReply,
@@ -66,9 +83,24 @@ class FakeTransport:
         return self.responses.pop(0) if len(self.responses) > 1 else self.responses[0]
 
 
-def _run(transport: FakeTransport, sleeps: list[float] | None = None) -> CompileReply:
+class RecordingBudget(Budget):
+    def __init__(self, max_usd: float = 100.0) -> None:
+        super().__init__(max_usd=max_usd, cost_in_per_1k=0.002, cost_out_per_1k=0.008)
+        self.reserved: list[int] = []
+
+    def reserve(self, request_bytes: int) -> bool:
+        self.reserved.append(request_bytes)
+        return super().reserve(request_bytes)
+
+
+def _run(
+    transport: FakeTransport, sleeps: list[float] | None = None, budget: Budget | None = None
+) -> CompileReply:
     recorded = sleeps if sleeps is not None else []
-    return compile_source(ProviderConfig.from_env(ENV), transport, PAYLOAD, sleep=recorded.append)
+    return compile_source(
+        ProviderConfig.from_env(ENV), transport, PAYLOAD, budget or RecordingBudget(),
+        sleep=recorded.append,
+    )
 
 
 @pytest.mark.parametrize("status", [401, 402])
@@ -124,12 +156,96 @@ def test_size_refusal_is_payload_too_large(status: int) -> None:
     assert len(transport.calls) == 1
 
 
-def test_invalid_json_retried_then_rejected() -> None:
+def test_unparseable_reply_not_resent() -> None:
     bad = json.dumps({"choices": [{"message": {"content": "not json"}, "finish_reason": "stop"}]})
     transport = FakeTransport((200, {}, bad.encode()))
     with pytest.raises(SourceRejected):
         _run(transport)
-    assert len(transport.calls) == 3
+    assert len(transport.calls) == 1
+
+
+def test_fenced_json_reply_accepted() -> None:
+    fenced = '```json\n{"records": []}\n```'
+    body = json.dumps({"choices": [{"message": {"content": fenced}, "finish_reason": "stop"}]})
+    assert _run(FakeTransport((200, {}, body.encode()))).content == {"records": []}
+
+
+def test_error_object_in_ok_reply_stops_for_credit() -> None:
+    body = json.dumps({"error": {"code": 402, "message": "Provider returned error"}})
+    transport = FakeTransport((200, {}, body.encode()))
+    with pytest.raises(CreditStop):
+        _run(transport)
+    assert len(transport.calls) == 1
+
+
+def test_error_object_in_ok_reply_rejects_source() -> None:
+    body = json.dumps({"error": {"code": 400, "message": "Provider returned error"}})
+    transport = FakeTransport((200, {}, body.encode()))
+    with pytest.raises(SourceRejected):
+        _run(transport)
+    assert len(transport.calls) == 1
+
+
+def test_key_limit_stops() -> None:
+    body = json.dumps({"error": {"message": "Key limit exceeded (total limit)"}})
+    with pytest.raises(CreditStop):
+        _run(FakeTransport((403, {}, body.encode())))
+
+
+def test_rate_limit_body_is_retried_not_stopped() -> None:
+    limited = json.dumps(
+        {"error": {"message": "Rate limit exceeded: free-models-per-day. Add credits to unlock more"}}
+    )
+    transport = FakeTransport((429, {}, limited.encode()), (200, {}, _ok({"records": []})))
+    _run(transport)
+    assert len(transport.calls) == 2
+
+
+def test_each_attempt_reserves_the_whole_request() -> None:
+    budget = RecordingBudget()
+    transport = FakeTransport(
+        (503, {}, b"{}"),
+        (200, {}, _ok({"records": []}, usage={"prompt_tokens": 1_000, "completion_tokens": 10})),
+    )
+    _run(transport, budget=budget)
+    sent = len(json.dumps(transport.calls[0][1]).encode())
+    assert len(budget.reserved) == 2
+    assert all(reserved >= sent + TEMPLATE_SLACK_TOKENS for reserved in budget.reserved)
+    first = (budget.reserved[0] / 1000) * 0.002 + 2.4 * 0.008
+    assert abs(budget.spent_usd - (first + 0.002 + 0.01 * 0.008)) < 1e-9
+
+
+def test_budget_refusal_mid_retry_stops() -> None:
+    budget = RecordingBudget(max_usd=0.03)
+    transport = FakeTransport((503, {}, b"{}"))
+    with pytest.raises(BudgetExhausted):
+        _run(transport, budget=budget)
+    assert len(transport.calls) == 1
+
+
+def test_network_errors_retried() -> None:
+    import http.client
+
+    failures: list[BaseException] = [TimeoutError("slow"), http.client.IncompleteRead(b"")]
+
+    def flaky(url: str, body: bytes, headers: Mapping[str, str], timeout: float):  # type: ignore[no-untyped-def]  # mirrors the Transport alias
+        if failures:
+            raise failures.pop(0)
+        return 200, {}, _ok({"records": []})
+
+    assert _run(flaky).content == {"records": []}  # type: ignore[arg-type]  # a function, not FakeTransport
+
+
+def test_rejection_carries_status() -> None:
+    with pytest.raises(SourceRejected) as caught:
+        _run(FakeTransport((404, {}, b"{}")))
+    assert caught.value.status == 404
+
+
+def test_repr_hides_url_credentials() -> None:
+    config = ProviderConfig(api_key=KEY, model="m", base_url="https://user:secret@example.test/v1")
+    assert "secret" not in repr(config)
+    assert KEY not in repr(config)
 
 
 def test_truncated_output_rejected_without_retry() -> None:

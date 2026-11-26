@@ -632,9 +632,9 @@ They are observations, not automatic failures.
 | `recall.compiled_graph` | 0 | 0 |
 | `recall.compiled_graph.anchors` | 0 | 0 |
 | `recall.compiled_graph.budget` | 1 | 3 |
-| `recall.compiled_graph.cache` | 2 | 3 |
+| `recall.compiled_graph.cache` | 3 | 4 |
 | `recall.compiled_graph.promotion` | 2 | 7 |
-| `recall.compiled_graph.provider` | 2 | 2 |
+| `recall.compiled_graph.provider` | 3 | 3 |
 | `recall.compiled_graph.records` | 1 | 1 |
 | `recall.confinement` | 0 | 0 |
 | `recall.constants` | 0 | 0 |

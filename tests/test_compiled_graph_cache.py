@@ -11,6 +11,12 @@ Red proof, recorded 2026-11-26 (production symbols in ``recall.compiled_graph.ca
 - ``test_unwritable_cache_counts_and_never_raises``: the ``sqlite3.Error`` handler removed fails
   with an exception.
 - ``test_erase_sources_removes_every_row``: erasure by key instead of by source fails on the count.
+- ``test_unreadable_cache_file_degrades_and_forget_removes_it``: the ``unlink`` removed fails on
+  ``not path.exists()``.
+- ``test_key_covers_every_constant_that_shapes_records``: ``MAX_OUTPUT_TOKENS`` dropped from the
+  key fails for that name.
+- ``test_key_uses_the_whole_base_url_without_credentials``: the raw ``base_url`` in the key fails
+  the credentials half; the host alone fails the path half.
 """
 
 from __future__ import annotations
@@ -89,3 +95,38 @@ def test_erase_sources_removes_every_row(tmp_path: Path) -> None:
     assert cache.erase_sources(["notes/a.md"]) == 2
     assert cache.get(cache_key(CONFIG, "notes/a.md", "0" * 64)) is None
     assert cache.get(cache_key(CONFIG, "notes/b.md", "0" * 64)) == [RECORD]
+
+
+def test_unreadable_cache_file_degrades_and_forget_removes_it(tmp_path: Path) -> None:
+    path = tmp_path / "compile-cache.sqlite"
+    path.write_bytes(b"this is not a database at all " * 100)
+    cache = CompileCache(path)
+    key = cache_key(CONFIG, "notes/a.md", "0" * 64)
+    assert cache.get(key) is None
+    cache.put(key, "notes/a.md", [RECORD])
+    assert cache.write_failures == 1
+    assert cache.erase_sources(["notes/a.md"]) == 0
+    assert not path.exists()
+
+
+def test_key_covers_every_constant_that_shapes_records(monkeypatch: pytest.MonkeyPatch) -> None:
+    base = cache_key(CONFIG, "notes/a.md", "0" * 64)
+    for module, name in (
+        ("recall.compiled_graph.anchors", "ANCHOR_CHARS"),
+        ("recall.compiled_graph.anchors", "ANCHOR_OVERLAP_CHARS"),
+        ("recall.compiled_graph.records", "MAX_RECORDS"),
+        ("recall.compiled_graph.records", "MAX_ENTITIES"),
+        ("recall.compiled_graph.records", "BACKFILL_CHARS"),
+        ("recall.compiled_graph.provider", "MAX_OUTPUT_TOKENS"),
+    ):
+        with monkeypatch.context() as patch:
+            patch.setattr(f"{module}.{name}", 7)
+            assert cache_key(CONFIG, "notes/a.md", "0" * 64) != base, name
+
+
+def test_key_uses_the_whole_base_url_without_credentials() -> None:
+    def key(url: str) -> str:
+        return cache_key(ProviderConfig(api_key="k", model="m", base_url=url), "s", "0" * 64)
+
+    assert key("https://gw.example.test/a/v1") != key("https://gw.example.test/b/v1")
+    assert key("https://user:pw@gw.example.test/a/v1") == key("https://gw.example.test/a/v1")
