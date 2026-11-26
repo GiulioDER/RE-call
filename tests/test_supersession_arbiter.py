@@ -91,6 +91,15 @@ on its `==` assertion, then restored (green):
   SURVIVED the first version of the test, whose only tie group had three memos (numpy sorts
   fewer than 16 by insertion, which is stable); the 64-memo tie group is what turns it red.
 - N4 `scores > 0` widened to `scores >= 0`: memos sharing no word ranked as neighbours.
+20. `RECALL_ARBITER_SAME_DAY=1` judges only pairs whose file names carry the same leading date,
+drops the others before any call and counts them in the summary; off by default, and a malformed
+value refuses. Red proof, 2026-11-26, against `recall/supersession_arbiter.py`, each failing
+`test_same_day_only_judges_pairs_sharing_a_file_name_date_and_counts_the_rest` in its assertion,
+then restored (green):
+- S1 the same-day skip in `SupersessionArbiter.run` replaced by `if False:`: cross-day pairs are
+  proposed again (set equality fails).
+- S2 `arbiter_settings` ignores the variable: `same_day` stays False when it is set.
+- S3 the summary omits the count: the summary text assertion fails.
 - D3 the arbiter-off refusal for a listing removed: the same test, regex did not match.
 """
 
@@ -442,6 +451,34 @@ def test_the_check_can_be_switched_off_and_is_on_by_default() -> None:
     assert off is not None and off.direction_check is False
     with pytest.raises(ValueError, match="RECALL_ARBITER_DIRECTION_CHECK"):
         arbiter_settings({"RECALL_SUPERSESSION_ARBITER": "1", "RECALL_ARBITER_DIRECTION_CHECK": "maybe"})
+
+
+SAME_DAY_OLD = "2026-06-01-deploy-port-plan.md"
+SAME_DAY_NEW = "2026-06-01-deploy-port-done.md"
+
+
+def test_same_day_only_judges_pairs_sharing_a_file_name_date_and_counts_the_rest() -> None:
+    same_day = {
+        **BODIES,
+        SAME_DAY_OLD: "---\nmodified: 2026-06-01T09:00:00Z\n---\n" + BODIES[OLD],
+        SAME_DAY_NEW: "---\nmodified: 2026-06-01T17:00:00Z\n---\n" + BODIES[NEW],
+    }
+    everything = arbiter(FakeClient()).run(same_day)
+    assert (SAME_DAY_OLD, SAME_DAY_NEW) in {(v.older, v.newer) for v in everything.verdicts}
+    assert (OLD_B, NEW_B) in {(v.older, v.newer) for v in everything.verdicts}
+    assert everything.other_day == 0
+    client = FakeClient()
+    run = arbiter(client, same_day=True).run(same_day)
+    assert {(v.older, v.newer) for v in run.verdicts} == {(SAME_DAY_OLD, SAME_DAY_NEW)}
+    # Dropped before the gate: one gate call and one direction call, for the same-day pair only.
+    assert (client.gate_calls, client.direction_calls) == (1, 1)
+    assert run.other_day > 0 and f"{run.other_day} on different file-name dates" in run.summary()
+    off = arbiter_settings({"RECALL_SUPERSESSION_ARBITER": "1"})
+    assert off is not None and off.same_day is False
+    on =arbiter_settings({"RECALL_SUPERSESSION_ARBITER": "1", "RECALL_ARBITER_SAME_DAY": "1"})
+    assert on is not None and on.same_day is True
+    with pytest.raises(ValueError, match="RECALL_ARBITER_SAME_DAY"):
+        arbiter_settings({"RECALL_SUPERSESSION_ARBITER": "1", "RECALL_ARBITER_SAME_DAY": "maybe"})
 
 
 def test_the_gate_keys_are_unchanged_and_the_questions_never_share_one() -> None:
