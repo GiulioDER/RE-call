@@ -40,7 +40,6 @@ class Budget:
     max_usd: float
     cost_in_per_1k: float
     cost_out_per_1k: float
-    max_tokens: int = MAX_OUTPUT_TOKENS
     spent_usd: float = 0.0
     exhausted: bool = False
     _reserved_usd: float | None = field(default=None, repr=False)
@@ -60,7 +59,7 @@ class Budget:
         """Hold the worst case of one call; False when it does not fit what is left."""
         if self._reserved_usd is not None:
             raise RuntimeError("settle the previous call before reserving another")
-        worst = self._cost(request_bytes, self.max_tokens)
+        worst = self._cost(request_bytes, MAX_OUTPUT_TOKENS)
         if self.exhausted or self.spent_usd + worst > self.max_usd:
             return False
         self._reserved_usd = worst

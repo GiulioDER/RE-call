@@ -38,7 +38,10 @@ Every test drives a fake transport; nothing reaches a network. Red proof, record
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
+import re
+import socket
+import threading
+from collections.abc import Callable, Mapping
 
 import pytest
 
@@ -55,6 +58,7 @@ from recall.compiled_graph.provider import (
     ProviderConfig,
     SourceRejected,
     compile_source,
+    urllib_transport,
 )
 
 KEY = "sk-test-not-a-real-key-123456"
@@ -293,3 +297,86 @@ def test_api_key_never_in_errors() -> None:
             _run(FakeTransport((status, {}, echoed)))
         assert KEY not in str(caught.value)
         assert KEY not in repr(caught.value)
+
+
+class _LoopbackServer:
+    """A one-thread HTTP/1.1 server on 127.0.0.1 that answers each request with ``reply``.
+
+    It reads the whole request before answering, so a client error cannot be a reset before the
+    status line; ``requests`` holds each request's head, lower-cased.
+    """
+
+    def __init__(self, reply: Callable[[int], bytes]) -> None:
+        self.requests: list[bytes] = []
+        self._reply = reply
+        self._sock = socket.socket()
+        self._sock.bind(("127.0.0.1", 0))
+        self._sock.listen(8)
+        self._sock.settimeout(5)
+        self.port = self._sock.getsockname()[1]
+        threading.Thread(target=self._serve, daemon=True).start()
+
+    def _serve(self) -> None:
+        while True:
+            try:
+                conn, _ = self._sock.accept()
+            except OSError:
+                return
+            with conn:
+                data = b""
+                while b"\r\n\r\n" not in data:
+                    data += conn.recv(65536)
+                head, _, rest = data.partition(b"\r\n\r\n")
+                length = re.search(rb"(?i)content-length: *(\d+)", head)
+                while length and len(rest) < int(length.group(1)):
+                    rest += conn.recv(65536)
+                self.requests.append(head.lower())
+                conn.sendall(self._reply(self.port))
+                conn.shutdown(socket.SHUT_WR)
+
+    def close(self) -> None:
+        self._sock.close()
+
+
+def test_lost_body_after_200_is_not_sent_again() -> None:
+    """A 200 whose body breaks mid-read was generated and billed, so it is never resent.
+
+    Red proof, 2026-11-26: against ``urllib_transport`` and ``compile_source`` before the fix
+    (the read failure surfaced as ``IncompleteRead`` and was retried as a network error) this
+    fails on ``len(server.requests) == 1`` with 3.
+    """
+    server = _LoopbackServer(
+        lambda _port: b"HTTP/1.1 200 OK\r\nContent-Length: 500\r\n\r\n{\"choices\":"
+    )
+    config = ProviderConfig(api_key=KEY, model="m", base_url=f"http://127.0.0.1:{server.port}/v1")
+    try:
+        with pytest.raises(SourceRejected) as caught:
+            compile_source(config, urllib_transport, PAYLOAD, RecordingBudget(), sleep=lambda _s: None)
+    finally:
+        server.close()
+    assert len(server.requests) == 1
+    assert caught.value.status == 200
+
+
+def test_redirect_never_carries_the_key() -> None:
+    """A provider's redirect is refused, so the bearer key never reaches the redirect's target.
+
+    Red proof, 2026-11-26: with the default ``urlopen`` opener (before the fix) urllib follows
+    the 302 as a GET carrying ``Authorization``, and this fails on ``target.requests == []``.
+    """
+    target = _LoopbackServer(lambda _port: b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}")
+    origin = _LoopbackServer(
+        lambda _port: (
+            f"HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:{target.port}/steal\r\n"
+            "Content-Length: 0\r\n\r\n"
+        ).encode()
+    )
+    config = ProviderConfig(api_key=KEY, model="m", base_url=f"http://127.0.0.1:{origin.port}/v1")
+    try:
+        with pytest.raises(SourceRejected) as caught:
+            compile_source(config, urllib_transport, PAYLOAD, RecordingBudget(), sleep=lambda _s: None)
+    finally:
+        origin.close()
+        target.close()
+    assert target.requests == []
+    assert caught.value.status == 302

@@ -74,6 +74,14 @@ class PayloadTooLarge(RuntimeError):
     """The provider refused the request's size; the caller may refit it once."""
 
 
+class ReplyLost(RuntimeError):
+    """A transport received a success status but lost the body: the reply was billed."""
+
+    def __init__(self, status: int) -> None:
+        super().__init__(f"HTTP {status} body was lost after the status arrived")
+        self.status = status
+
+
 def url_without_credentials(url: str) -> str:
     parts = urlsplit(url)
     host = parts.hostname or ""
@@ -118,13 +126,27 @@ class CompileReply:
     output_tokens: int | None
 
 
+class _RefuseRedirect(request.HTTPRedirectHandler):
+    # urllib re-sends every header but the content ones to a redirect's target, the bearer key
+    # included, to any host and over plain http; a refused redirect reaches the caller as its 3xx.
+    def redirect_request(self, *args: Any, **kwargs: Any) -> None:
+        return None
+
+
+_OPENER = request.build_opener(_RefuseRedirect)
+
+
 def urllib_transport(
     url: str, body: bytes, headers: Mapping[str, str], timeout: float
 ) -> tuple[int, Mapping[str, str], bytes]:
     req = request.Request(url, data=body, headers=dict(headers), method="POST")
     try:
-        with request.urlopen(req, timeout=timeout) as response:
-            return response.status, dict(response.headers), response.read()
+        with _OPENER.open(req, timeout=timeout) as response:
+            status, response_headers = response.status, dict(response.headers)
+            try:
+                return status, response_headers, response.read()
+            except (OSError, http.client.HTTPException) as exc:
+                raise ReplyLost(status) from exc
     except error.HTTPError as exc:
         return exc.code, dict(exc.headers or {}), exc.read()
 
@@ -221,6 +243,10 @@ def compile_source(
             raise BudgetExhausted("the next compile attempt does not fit the remaining budget")
         try:
             status, response_headers, raw = transport(url, body, headers, config.timeout)
+        except ReplyLost as exc:
+            budget.settle(None)
+            raise SourceRejected("the reply body was lost; a billed reply is not sent again",
+                                 exc.status) from exc
         except (OSError, http.client.HTTPException) as exc:
             budget.settle(None)
             reason = f"network error {type(exc).__name__}"
