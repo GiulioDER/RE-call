@@ -10,8 +10,13 @@ Red proof, recorded 2026-11-26 (production symbols in ``recall.compiled_graph.pr
   promoted again and fails on membership (a duplicate id).
 - ``test_at_most_two_promoted_into_ranks_nine_and_ten``: ``MAX_PROMOTIONS = 3`` fails on
   ``promoted_count == 2``.
+- ``test_repeated_chunk_id_keeps_every_copy``: the pre-fix id-keyed reorder (hits looked up by id,
+  the last copy winning, and every copy of a promoted id dropped from the tail) fails on
+  ``len(result.hits) == len(pool)``; ``setdefault`` replaced by plain assignment (the last copy's
+  rank) fails on ``result.hits[PROTECTED_PREFIX] is pool[10]``; the tail emitted in reverse fails
+  on ``result.hits[12] is pool[12]``.
 - ``test_membership_and_scores_unchanged`` (membership half): keeping promoted hits in the tail
-  (the ``if hit.chunk.id not in promoted_set`` filter removed) fails on the sorted ids.
+  (``and rank not in moved_ranks`` dropped from the tail filter) fails on the sorted ids.
 - ``test_only_first_twenty_seeds_count``: ``seeds[:SEED_K]`` widened to ``seeds`` fails on
   ``relation_hits``.
 - ``test_target_outside_pool_ignored``: admitting a target outside the pool as a synthetic hit
@@ -96,6 +101,16 @@ def test_membership_and_scores_unchanged() -> None:
     assert sorted(_ids(result.hits)) == sorted(_ids(pool))
     scores = {hit.chunk.id: hit.score for hit in pool}
     assert all(hit.score == scores[hit.chunk.id] for hit in result.hits)
+
+
+def test_repeated_chunk_id_keeps_every_copy() -> None:
+    pool = _pool()
+    pool[12] = ScoredChunk(chunk=_chunk("c10"), score=0.05)
+    result = promote(pool, [("r0", ("c10",))])
+    assert len(result.hits) == len(pool)
+    assert sorted(_ids(result.hits)) == sorted(_ids(pool))
+    assert result.hits[PROTECTED_PREFIX] is pool[10]
+    assert result.hits[12] is pool[12]
 
 
 def test_only_first_twenty_seeds_count() -> None:
