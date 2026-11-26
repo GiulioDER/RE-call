@@ -25,7 +25,7 @@ Invariants and the failure each one catches:
   reads superseded.
 - A6 `recall_forget_memo` removes the memo's file, its rows and the fact it was the only evidence
   for; an id outside the memo folder deletes nothing.
-- A7 startup refuses the surface on a non-lite DSN and for a folder outside RECALL_INDEX_ROOT.
+- A7 startup refuses the surface for a folder outside RECALL_INDEX_ROOT.
 - A8 `recall_withdraw` takes a memo of the folder by its id or its file, removes its rows and its
   file, and the next refresh does not index it again; a source outside the folder is withdrawn by
   the plain tool and keeps its file.
@@ -628,13 +628,10 @@ def test_keyed_ordinary_erasure_receipt_replays_without_assistant(
 def test_a_half_configured_surface_refuses_to_start(
     envs: tuple[dict[str, str], dict[str, str]], tmp_path: Path
 ) -> None:
-    """A7."""
+    """A7. A PostgreSQL DSN is served (`tests/test_assistant_postgres.py` Q0)."""
     outside = {**envs[0], "RECALL_ASSISTANT_MEMOS": str(tmp_path.parent / "elsewhere")}
     with pytest.raises(AssistantSurfaceError, match="outside RECALL_INDEX_ROOT"):
         srv.build_server(bootstrap_settings(outside))
-    postgres = {**envs[0], "RECALL_DSN": "postgresql://recall@127.0.0.1:1/recall"}
-    with pytest.raises(AssistantSurfaceError, match="lite store only"):
-        srv.build_server(bootstrap_settings(postgres))
 
 
 def test_a_stated_facts_receipt_names_its_key_and_the_edge_left_to_settle(

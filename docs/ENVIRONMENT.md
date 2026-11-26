@@ -21,7 +21,7 @@ read the MCP registration, so apply those settings when running CLI searches or 
 | `RECALL_LITE_REFRESH_WAIT` | `3` seconds | How long a retrieval waits for a detected refresh. |
 | `RECALL_LITE_WRITE_WAIT` | `300` seconds | Maximum wait in the local writer queue. |
 | `RECALL_LITE_REFIT_WAIT` | `120` seconds | Maximum wait in the separate calibration queue. |
-| `RECALL_ASSISTANT_MEMOS` | Unset (off) | A folder inside `RECALL_INDEX_ROOT` where the assistant tools write memo files; lite (`sqlite:///`) only. |
+| `RECALL_ASSISTANT_MEMOS` | Unset (off) | A folder inside `RECALL_INDEX_ROOT` where the assistant tools write memo files. On PostgreSQL a memo is indexed by the next build of the corpus, so `RECALL_INDEX_ROOT` must be the folder the manifest is built from, and `RECALL_STATED_FACT_SOURCES` must name the memo folder for its facts to be recorded. |
 | `RECALL_ASSISTANT_SETTLE_SUCCESSORS` | `0` (off) | Lets `recall_remember(settle=true)` write the `supersedes` rule `deterministic.stated_key_successor` proposes (see [API](API.md)); read only with `RECALL_ASSISTANT_MEMOS` set. Accepts 1/true/yes/on, and 0/false/no/off or empty for off; any other value stops the server at startup. |
 | `RECALL_STATED_FACT_SOURCES` | Unset: the folders refresh follows | Prefixes of the stored memo names whose stated facts are recorded, comma or space separated; `none` records none. On PostgreSQL it names URIs, absolute paths or paths under `RECALL_INDEX_ROOT`, and unset records none. An absolute path is matched after its symlinks are resolved, so name the folder the memos are stored under; a prefix that resolves elsewhere is logged as a warning. |
 | `RECALL_INDEX_MAX_FILES` | `2000` | File budget for automatic refresh and MCP indexing. |
