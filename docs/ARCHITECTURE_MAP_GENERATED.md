@@ -9,7 +9,7 @@ design violation.
 
 Packages: `recall`, `recall_mcp`, `recall_agent`, `recall_hooks`, `recall_interop`, `recall_consistency`
 Modules: 381
-Cross package edges: 467
+Cross package edges: 469
 
 ## Highest fan in modules
 
@@ -80,6 +80,7 @@ Cross package edges: 467
 | 19 | `recall.lite.store` |
 | 19 | `recall_mcp.provenance` |
 | 18 | `recall.cli_commands.calibration_cmd` |
+| 18 | `recall_mcp.assistant` |
 | 18 | `recall_mcp.server_search` |
 | 17 | `recall.dashboard.server` |
 | 17 | `recall.doctor` |
@@ -88,7 +89,6 @@ Cross package edges: 467
 | 17 | `recall_mcp.server_memory_admin` |
 | 16 | `recall.cli_commands.generation_cmd` |
 | 16 | `recall.cli_commands.provenance_cmd` |
-| 16 | `recall_mcp.assistant` |
 | 15 | `recall_mcp.desktop_ingest` |
 | 15 | `recall_mcp.graph_first_api` |
 | 15 | `recall_mcp.query_construction_api` |
@@ -172,6 +172,8 @@ They are observations, not automatic failures.
 | `recall_mcp.assistant` | `recall.lite` |
 | `recall_mcp.assistant` | `recall.lite.assistant_memos` |
 | `recall_mcp.assistant` | `recall.lite.memo_requests` |
+| `recall_mcp.assistant` | `recall.lite.writer_lock` |
+| `recall_mcp.assistant` | `recall.store` |
 | `recall_mcp.assistant` | `recall.supersession` |
 | `recall_mcp.assistant` | `recall.types` |
 | `recall_mcp.auth` | `recall.errors` |
@@ -911,7 +913,7 @@ They are observations, not automatic failures.
 | `recall_interop.memory_benchmarks` | 7 | 142 |
 | `recall_mcp` | 0 | 0 |
 | `recall_mcp.access_log` | 1 | 1 |
-| `recall_mcp.assistant` | 16 | 157 |
+| `recall_mcp.assistant` | 18 | 157 |
 | `recall_mcp.auth` | 4 | 41 |
 | `recall_mcp.codex_server` | 2 | 221 |
 | `recall_mcp.compat` | 0 | 0 |
