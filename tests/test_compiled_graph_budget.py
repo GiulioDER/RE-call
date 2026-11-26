@@ -24,7 +24,7 @@ from recall.compiled_graph.budget import Budget
 from recall.compiled_graph.provider import CompiledGraphConfigError, CompileReply
 
 def _budget(max_usd: float) -> Budget:
-    return Budget(max_usd=max_usd, cost_in_per_1k=0.002, cost_out_per_1k=0.008, max_tokens=2_400)
+    return Budget(max_usd=max_usd, cost_in_per_1k=0.002, cost_out_per_1k=0.008)
 
 
 def _reply(tokens_in: int | None, tokens_out: int | None) -> CompileReply:
@@ -113,4 +113,26 @@ def test_from_env_rejects_unusable_cap(value: str) -> None:
         "RECALL_COMPILED_GRAPH_COST_PER_1K_OUTPUT": "0.008",
     }
     with pytest.raises(CompiledGraphConfigError):
+        Budget.from_env(env)
+
+
+def test_output_cap_is_not_a_budget_setting() -> None:
+    """The output reserved is the cap the request sends; no caller can set a smaller one.
+
+    Red proof, 2026-11-26: before the fix ``Budget`` took ``max_tokens`` as a field that
+    ``compile_source`` never sent, so a ``Budget(max_tokens=100)`` under-reserved every call; this
+    fails there on ``pytest.raises`` (DID NOT RAISE).
+    """
+    with pytest.raises(TypeError):
+        Budget(max_usd=1.0, cost_in_per_1k=0.002, cost_out_per_1k=0.008, max_tokens=100)  # type: ignore[call-arg]  # the field is gone; the call is the one a caller could make before
+
+
+def test_negative_price_message_allows_zero() -> None:
+    """Red proof, 2026-11-26: the one message before the fix ("above zero") fails on ``match``."""
+    env = {
+        "RECALL_COMPILED_GRAPH_MAX_USD": "1",
+        "RECALL_COMPILED_GRAPH_COST_PER_1K_INPUT": "-1",
+        "RECALL_COMPILED_GRAPH_COST_PER_1K_OUTPUT": "0",
+    }
+    with pytest.raises(CompiledGraphConfigError, match="zero or above"):
         Budget.from_env(env)

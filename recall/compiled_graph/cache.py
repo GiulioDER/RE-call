@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import sqlite3
 from collections.abc import Collection, Iterator, Sequence
 from contextlib import contextmanager
@@ -20,17 +21,22 @@ from recall.compiled_graph import provider as provider_module
 from recall.compiled_graph import records as records_module
 from recall.compiled_graph.provider import ProviderConfig, url_without_credentials
 from recall.compiled_graph.records import CompiledRecord, prompt_digest
+from recall.state_dir import make_parent
 
 #: Bumped whenever the shape a record is stored or validated in changes.
 PAYLOAD_SCHEMA_VERSION = 1
 
 
 def cache_key(config: ProviderConfig, source: str, body_sha256: str) -> str:
-    """Everything that decides a compile's records, and nothing secret."""
+    """What decides a compile's records, and nothing secret.
+
+    The provider is keyed by scheme, host, port and path; a query string in the base URL is not.
+    """
     identity = {
         "url": url_without_credentials(config.base_url),
         "model": config.model,
         "prompt": prompt_digest(),
+        "request": [provider_module.REQUEST_OPTIONS, provider_module.USER_TEMPLATE],
         "schema": PAYLOAD_SCHEMA_VERSION,
         "anchors": [anchors_module.ANCHOR_CHARS, anchors_module.ANCHOR_OVERLAP_CHARS],
         "validation": [
@@ -106,11 +112,19 @@ class CompileCache:
     def __init__(self, path: Path) -> None:
         self.path = path
         self.write_failures = 0
-        path.parent.mkdir(parents=True, exist_ok=True)
         try:
+            make_parent(path)
+            if os.name == "posix":
+                # SQLite would create the file at the umask, and gives its journals the file's
+                # mode; the rows are quotes from the user's sources.
+                try:
+                    os.close(os.open(path, os.O_CREAT | os.O_EXCL | os.O_RDWR, 0o600))
+                except FileExistsError:
+                    # An existing file keeps its mode, and SQLite may still read it read-only.
+                    pass
             self._create()
             self.usable = True
-        except sqlite3.Error:
+        except (OSError, sqlite3.Error):
             self.usable = False
 
     def _create(self) -> None:
@@ -170,7 +184,8 @@ class CompileCache:
                     conn.execute("DELETE FROM compiled WHERE source = ?", (source,)).rowcount
                     for source in sources
                 )
-        except sqlite3.OperationalError:
+        except (sqlite3.OperationalError, sqlite3.ProgrammingError, sqlite3.InterfaceError):
+            # A lock, or a caller's bad argument: the file is sound and still holds the rows.
             raise
         except sqlite3.DatabaseError:
             self.path.unlink()
