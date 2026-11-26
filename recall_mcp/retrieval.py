@@ -7,6 +7,7 @@ monkeypatch seams keep working.
 
 from __future__ import annotations
 
+import re
 import time
 from contextlib import contextmanager
 from datetime import datetime
@@ -59,12 +60,18 @@ from recall_mcp.factories import (
     _validate_quality_reranker_config,
     resolve_reranker,
 )
-from recall_mcp.settings import runtime_environment, tenant_retrieval_environment
+from recall_mcp.settings import (
+    jira_exact_id_base,
+    jira_exact_id_source_prefix,
+    runtime_environment,
+    tenant_retrieval_environment,
+)
 
 _log = get_logger("mcp.service")
 
 MAX_SEARCH_K = 50
 MAX_QUERY_CHARS = 4096
+_JIRA_ISSUE_KEY = re.compile(r"(?<![\w/-])[A-Za-z][A-Za-z0-9]+-[0-9]+(?![\w/-])")
 #: `recall_evidence`'s depth when the client sets no `k`. Distinct from an explicit `k=5` only in
 #: that it lets `RECALL_PAGED_EVIDENCE=on` widen the depth for paged documents.
 DEFAULT_EVIDENCE_K = 5
@@ -281,25 +288,51 @@ def _retrieve_trusted(
 
                 effective_pre_trust_transform = capture_query_vector
             with _searched_generation(store) as generation:
-                result = search_fn(
-                    store,
-                    timed,
-                    query,
-                    k=k,
-                    source=source,
-                    calibration=calibration,
-                    reranker=reranker_builder(profile, env=values),
-                    candidate_k=profile.candidate_k,
-                    retrieval_profile=profile.name,
-                    index_generation=generation,
-                    policy=policy,
-                    security_policy=security_policy,
-                    access_context=access_context,
-                    ledger=ledger,
-                    env=values,
-                    pre_trust_transform=effective_pre_trust_transform,
-                    candidate_trace_callback=capture_trace if capture_candidate_trace else None,
-                )
+                reranker = reranker_builder(profile, env=values)
+
+                def retrieve(scoped_source: str | None) -> TrustedResult:
+                    return search_fn(
+                        store,
+                        timed,
+                        query,
+                        k=k,
+                        source=scoped_source,
+                        calibration=calibration,
+                        reranker=reranker,
+                        candidate_k=profile.candidate_k,
+                        retrieval_profile=profile.name,
+                        index_generation=generation,
+                        policy=policy,
+                        security_policy=security_policy,
+                        access_context=access_context,
+                        ledger=ledger,
+                        env=values,
+                        pre_trust_transform=effective_pre_trust_transform,
+                        candidate_trace_callback=capture_trace if capture_candidate_trace else None,
+                    )
+
+                jira_source = None
+                if (
+                    source is None and security_policy is not None and access_context is not None
+                    and getattr(store, "tenant", None) == access_context.tenant and pool_k is None
+                    and effective_pre_trust_transform is None and query_vector_callback is None
+                    and not capture_candidate_trace and "://" not in query
+                ):
+                    base = jira_exact_id_base(values.get("RECALL_JIRA_EXACT_ID_BASE_URL", ""))
+                    if base:
+                        keys = {key.upper() for key in _JIRA_ISSUE_KEY.findall(query)}
+                        if len(keys) == 1:
+                            key = next(iter(keys))
+                            prefix = jira_exact_id_source_prefix(values.get("RECALL_JIRA_EXACT_ID_SOURCE_PREFIX", ""))
+                            jira_source = f"{prefix}/{key}.md" if prefix else f"{base}/browse/{key}"
+
+                result = retrieve(jira_source if jira_source is not None else source)
+                if jira_source is not None and (
+                    result.abstained or not result.calibrated or result.staleness.stale
+                    or not any(hit.verdict == "ok" for hit in result.hits)
+                    or any(hit.chunk.source != jira_source for hit in result.hits)
+                ):
+                    result = retrieve(source)
     except RetrievalOverloaded as exc:
         METRICS.increment(
             "recall_retrieval_rejected_total", profile=profile.name, reason=exc.reason
