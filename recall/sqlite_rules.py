@@ -123,6 +123,8 @@ def _check(
     deadline: float,
     observed_formats: dict[tuple[str, str], str | None],
 ) -> tuple[EvidenceItem | None, SnapshotRuleCheck]:
+    # Only an observation made in this transaction may reach the prompt as `snapshot_format`.
+    item = replace(item, snapshot_format=None)
     header, _, body = item.text.partition("\n")
     field = _FIELD.fullmatch(header.strip())
     if field is None or not body.strip():

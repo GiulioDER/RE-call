@@ -61,7 +61,7 @@ class _Plan(TypedDict):
 
 def _unfence(text: str, language: str) -> str:
     text = text.strip()
-    match = re.fullmatch(rf"\x60\x60\x60(?:{language})?\s*(.*?)\s*\x60\x60\x60", text, re.S | re.I)
+    match = re.fullmatch(rf"\x60\x60\x60(?:(?:{language})\b)?\s*(.*?)\s*\x60\x60\x60", text, re.S | re.I)
     return match[1].strip() if match else text
 
 
@@ -78,6 +78,8 @@ def _parse_plan(raw: str) -> _Plan | None:
         return None
     try:
         plan = json.loads(_unfence(raw, "json"))
+        # A JSON escape can decode to a lone surrogate, which sqlite3 cannot bind.
+        json.dumps(plan, ensure_ascii=False).encode("utf-8")
     except (ValueError, RecursionError):
         return None
     if not isinstance(plan, dict) or set(plan) != {"grain", "measure", "fields", "joins", "filters"}:
@@ -187,11 +189,15 @@ def _check_plan(
 
 
 def _read_authorizer(
-    action: int, _arg1: str | None, arg2: str | None, database: str | None, _source: str | None
+    action: int, arg1: str | None, arg2: str | None, database: str | None, _source: str | None
 ) -> int:
     if action not in _READ_ACTIONS:
         return sqlite3.SQLITE_DENY
     if action == sqlite3.SQLITE_READ and database != "main" and not (database is None and arg2 == ""):
+        return sqlite3.SQLITE_DENY
+    # A pragma table-valued function runs its PRAGMA when stepped, never at prepare time, so the
+    # caller's connection would run it unchecked (pragma_optimize writes sqlite_stat1).
+    if action == sqlite3.SQLITE_READ and (arg1 or "").casefold().startswith("pragma_"):
         return sqlite3.SQLITE_DENY
     if action == sqlite3.SQLITE_FUNCTION and (arg2 or "").casefold() in _BLOCKED_FUNCTIONS:
         return sqlite3.SQLITE_DENY
@@ -203,6 +209,10 @@ def _validate_sql(conn: sqlite3.Connection, raw: str, used_plan: bool) -> SQLite
         if clarification[1].strip():
             return SQLiteQueryResult(clarification=clarification[1].strip(), used_checked_plan=used_plan)
     sql = _unfence(raw, "sql|sqlite")
+    try:
+        sql.encode("utf-8")
+    except UnicodeEncodeError:
+        return SQLiteQueryResult(reason_code="invalid_read_only_sql", used_checked_plan=used_plan)
     if not re.match(r"(?:SELECT|WITH)\b", sql, re.I):
         return SQLiteQueryResult(reason_code="invalid_read_only_sql", used_checked_plan=used_plan)
     conn.set_authorizer(_read_authorizer)
@@ -229,6 +239,11 @@ def generate_sql_from_evidence(
     three-note cap applies to both calls. Stored candidate labels are sent only for
     caller-selected code fields. The returned SQL is compiled read-only on the same
     transaction that supplied the checks. The caller owns execution on its snapshot.
+
+    Returns ``sql`` or ``clarification``; otherwise ``reason_code`` says why: the bundle's own
+    failure or reason code, ``sqlite_snapshot_unavailable`` or ``no_verified_database_rules``
+    before any model call, or ``invalid_read_only_sql`` after both calls when the second reply is
+    not one read-only statement that compiles. Callback exceptions propagate.
     """
     if bundle.decision != "answer" or bundle.trust_state != "trusted" or bundle.stale or not bundle.calibrated:
         return SQLiteQueryResult(reason_code=bundle.failure_code or bundle.reason_code or "insufficient_trusted_evidence")

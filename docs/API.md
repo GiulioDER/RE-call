@@ -187,17 +187,27 @@ second call can receive short lists of observed values for those fields.
 Membership and join overlap checks establish facts about the stored data.
 The writer decides how those facts apply to the question.
 
-A malformed plan or failed plan check sends the original inputs to the second
-call. `used_checked_plan` indicates whether that call received a checked plan.
-When evidence is unavailable or the snapshot cannot supply the schema and notes,
-the workflow returns a `reason_code` before calling the model. Callback
-exceptions propagate to the caller. Successful calls return either `sql` or a
-`clarification`.
+A plan that parses is sent to the second call with the result of each check,
+including fields that do not exist and joins that share no stored value. A
+malformed plan, or a SQLite error while checking it, sends the original inputs
+instead. `used_checked_plan` says whether the second call received the checked
+plan, not whether every check passed. When evidence is unavailable or the
+snapshot cannot supply the schema and notes, the workflow returns a
+`reason_code` before calling the model. Callback exceptions propagate to the
+caller. Successful calls return either `sql` or a `clarification`. When the
+second reply is neither a clarification nor one read-only `SELECT` or `WITH`
+statement that compiles, the result carries `reason_code`
+`invalid_read_only_sql` and no SQL.
 
 RE-call compiles SQL under a read-only authorizer on the same transaction
 used for the checks. Run the returned statement against that same version of
 the snapshot. Query execution and the choice of model provider belong to the
-calling application.
+calling application. The read transaction stays open across both model calls.
+In rollback journal mode a process writing to the snapshot file waits, or
+fails with `database is locked`, until the workflow returns. In WAL mode writes
+proceed, but no checkpoint can move past the workflow's read, so the WAL file
+grows and a `FULL`, `RESTART` or `TRUNCATE` checkpoint waits. Use a copy of the
+database that no process writes to.
 
 ### Verified fix selection
 
