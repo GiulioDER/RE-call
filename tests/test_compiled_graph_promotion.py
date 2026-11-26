@@ -1,0 +1,119 @@
+"""Promotion may move at most two linked raw chunks into ranks 9 and 10, and nothing else.
+
+Red proof, recorded 2026-11-26 (production symbols in ``recall.compiled_graph.promotion``):
+
+- ``test_edges_by_offset_overlap``: overlap made inclusive (``start <= chunk_end``) fails on the
+  edge tuple of a span starting at a chunk's end (the touching chunk is linked).
+- ``test_chunk_without_offsets_gets_no_edge``: missing offsets read as ``0`` and ``len(text)`` fails
+  on ``()``.
+- ``test_top_eight_never_move``: protecting only ``pool[:PROTECTED_PREFIX - 1]`` lets rank 8 be
+  promoted again and fails on membership (a duplicate id).
+- ``test_at_most_two_promoted_into_ranks_nine_and_ten``: ``MAX_PROMOTIONS = 3`` fails on
+  ``promoted_count == 2``.
+- ``test_membership_and_scores_unchanged``: a promoted hit rescored to 1.0 fails on the scores.
+- ``test_only_first_twenty_seeds_count``: ``seeds[:SEED_K]`` widened to ``seeds`` fails on
+  ``relation_hits``.
+- ``test_target_outside_pool_ignored``: admitting a target outside the pool as a synthetic hit
+  fails on the returned ids.
+- ``test_membership_and_scores_unchanged`` (scores half): a promoted hit rebuilt with score 1.0
+  fails on the score check.
+- ``test_ties_break_by_baseline_rank_then_id``: sorting by id before baseline rank fails on the
+  promoted order.
+"""
+
+from __future__ import annotations
+
+from recall.compiled_graph.promotion import (
+    MAX_PROMOTIONS,
+    PROTECTED_PREFIX,
+    SEED_K,
+    promote,
+    record_edges,
+)
+from recall.compiled_graph.records import CompiledRecord
+from recall.types import Chunk, ScoredChunk
+
+
+def _chunk(chunk_id: str, start: int | None = None, end: int | None = None) -> Chunk:
+    metadata: dict[str, object] = {"file": "notes/a.md"}
+    if start is not None:
+        metadata["text_start"] = start
+        metadata["text_end"] = end
+    return Chunk(id=chunk_id, source="notes/a.md", text="t", metadata=metadata)
+
+
+def _record(*spans: tuple[int, int]) -> CompiledRecord:
+    return CompiledRecord(kind="fact", fields=("", "x"), entities=(), anchor_ids=("a000_x",), spans=spans)
+
+
+def _pool(n: int = 30) -> list[ScoredChunk]:
+    return [ScoredChunk(chunk=_chunk(f"c{i:02d}"), score=1.0 - i / 100) for i in range(n)]
+
+
+def _ids(hits: list[ScoredChunk]) -> list[str]:
+    return [hit.chunk.id for hit in hits]
+
+
+def test_edges_by_offset_overlap() -> None:
+    chunks = [_chunk("a", 0, 500), _chunk("b", 500, 1_000), _chunk("c", 1_000, 1_500)]
+    assert record_edges(_record((400, 1_000)), chunks) == ("a", "b")
+    assert record_edges(_record((1_200, 1_300), (0, 10)), chunks) == ("a", "c")
+    assert record_edges(_record((1_000, 1_100)), chunks) == ("c",)
+
+
+def test_chunk_without_offsets_gets_no_edge() -> None:
+    assert record_edges(_record((0, 100)), [_chunk("a")]) == ()
+
+
+def test_top_eight_never_move() -> None:
+    pool = _pool()
+    result = promote(pool, [("r0", ("c03", "c07", "c20"))])
+    assert PROTECTED_PREFIX == 8
+    assert _ids(result.hits)[:8] == _ids(pool)[:8]
+    assert sorted(_ids(result.hits)) == sorted(_ids(pool))
+    assert _ids(result.hits)[8] == "c20"
+
+
+def test_at_most_two_promoted_into_ranks_nine_and_ten() -> None:
+    pool = _pool()
+    result = promote(pool, [("r0", ("c20",)), ("r1", ("c21",)), ("r2", ("c22",))])
+    assert MAX_PROMOTIONS == 2
+    assert result.promoted_count == 2
+    assert _ids(result.hits)[8:10] == ["c20", "c21"]
+    assert _ids(result.hits)[10] == "c08"
+
+
+def test_membership_and_scores_unchanged() -> None:
+    pool = _pool()
+    result = promote(pool, [("r0", ("c25",))])
+    assert sorted(_ids(result.hits)) == sorted(_ids(pool))
+    scores = {hit.chunk.id: hit.score for hit in pool}
+    assert all(hit.score == scores[hit.chunk.id] for hit in result.hits)
+
+
+def test_only_first_twenty_seeds_count() -> None:
+    pool = _pool()
+    seeds = [(f"r{i}", ("c25",)) for i in range(25)]
+    result = promote(pool, seeds)
+    assert SEED_K == 20
+    assert result.relation_hits == 20
+
+
+def test_target_outside_pool_ignored() -> None:
+    pool = _pool(12)
+    result = promote(pool, [("r0", ("elsewhere",))])
+    assert _ids(result.hits) == _ids(pool)
+    assert result.promoted_count == 0
+
+
+def test_ties_break_by_baseline_rank_then_id() -> None:
+    pool = _pool()
+    pool = pool[:8] + list(reversed(pool[8:]))
+    result = promote(pool, [("r0", ("c22", "c25", "c27"))])
+    assert _ids(result.hits)[8:10] == ["c27", "c25"]
+
+
+def test_no_seeds_or_empty_pool_is_identity() -> None:
+    pool = _pool()
+    assert _ids(promote(pool, []).hits) == _ids(pool)
+    assert promote([], [("r0", ("c01",))]).hits == []
