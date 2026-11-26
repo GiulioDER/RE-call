@@ -291,7 +291,7 @@ def build_server(settings: Settings | None = None) -> MCPServer:
         )
     runtime_env = dict(runtime_settings.env)
     # Before anything is built: a half-configured assistant surface refuses to start.
-    assistant = assistant_memos_from_env(runtime_env, lite=is_lite_dsn(runtime_settings.serving_dsn))
+    assistant = assistant_memos_from_env(runtime_env)
     verifier, auth_settings, token_registry = build_auth(
         runtime_settings.transport, env=runtime_env
     )
