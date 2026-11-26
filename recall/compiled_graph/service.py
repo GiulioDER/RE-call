@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Literal, Protocol
 
 from recall.compiled_graph.artifact import (
+    ArtifactUnconfigured,
     CompiledGraphArtifact,
     CompiledGraphArtifactError,
     artifact_dir,
@@ -35,6 +36,7 @@ from recall.compiled_graph.provider import (
     Transport,
     urllib_transport,
 )
+from recall._env import modes_by_tenant
 from recall.compiled_graph.records import prompt_digest
 from recall.embedding_core import Embedder
 from recall.types import Chunk
@@ -59,12 +61,15 @@ def _parse_mode(value: str, variable: str) -> Mode:
 
 
 def compiled_graph_mode(env: Mapping[str, str], tenant: str | None) -> Mode:
-    """The mode for ``tenant``: its entry in the per-tenant map, else the global mode."""
-    for entry in env.get(MODE_BY_TENANT_ENV, "").split(","):
-        name, separator, value = entry.strip().partition(":")
-        if separator and name.strip() == tenant:
-            return _parse_mode(value, MODE_BY_TENANT_ENV)
-    return _parse_mode(env.get(MODE_ENV, ""), MODE_ENV)
+    """The mode for ``tenant``: its entry in the per-tenant map, else the global mode.
+
+    The whole map is parsed, so a malformed entry (``memory=off``) raises instead of leaving that
+    tenant on the global mode, which may be ``active``. The MCP server refuses such a value at
+    startup (``recall_mcp.settings``).
+    """
+    by_tenant = modes_by_tenant(env, MODE_BY_TENANT_ENV, MODES)
+    chosen = by_tenant.get(tenant) if tenant is not None else None
+    return _parse_mode(chosen if chosen is not None else env.get(MODE_ENV, ""), MODE_ENV)
 
 
 def artifact_root(env: Mapping[str, str]) -> Path | None:
@@ -204,6 +209,9 @@ def erase_forgotten_sources(sources: Collection[str], *, env: Mapping[str, str])
             if line
         )
         if holds:
+            # The manifest goes first: a load refuses a directory without one, so an rmtree that
+            # stops part way leaves nothing any process (or its cache) can serve.
+            (records.parent / "manifest.json").unlink(missing_ok=True)
             shutil.rmtree(records.parent)
             removed += 1
     return removed
@@ -216,7 +224,9 @@ def load_serving_artifact(
     lineage = serving_lineage(tenant, binding, embedder, env)
     root = artifact_root(env)
     if lineage is None or root is None:
-        raise CompiledGraphArtifactError("no lineage or artifact root to load")
+        raise ArtifactUnconfigured(
+            f"a search needs a generation, {ENV_PREFIX}_MODEL and {ROOT_ENV} to load the graph"
+        )
     return load_artifact(tenant_folder(root, tenant), lineage)
 
 
@@ -236,8 +246,13 @@ class ServingStore(Protocol):
 def ensure_for_store(
     store: ServingStore, embedder: Embedder, env: Mapping[str, str], *, force: bool = False
 ) -> str:
-    """``ensure_compiled_graph`` over the corpus ``store`` serves now."""
-    if compiled_graph_mode(env, store.tenant) == "off" or artifact_root(env) is None:
+    """``ensure_compiled_graph`` over the corpus ``store`` serves now; never raises into the write."""
+    try:
+        mode = compiled_graph_mode(env, store.tenant)
+    except ValueError as exc:
+        # A bad mode value must not fail the Lite write that called this; it reports the line.
+        return f"compiled graph not built: {exc}"
+    if mode == "off" or artifact_root(env) is None:
         return ""
     return ensure_compiled_graph(
         store.tenant,
@@ -305,7 +320,11 @@ def ensure_for_generation(
     env: Mapping[str, str],
 ) -> str:
     """Build ``generation_id``'s artifact before it is promoted; never raises into the promotion."""
-    if compiled_graph_mode(env, tenant) == "off" or artifact_root(env) is None:
+    try:
+        mode = compiled_graph_mode(env, tenant)
+    except ValueError as exc:
+        return f"compiled graph not built: {exc}"
+    if mode == "off" or artifact_root(env) is None:
         return ""
     from recall.generation_store import GenerationStore
 

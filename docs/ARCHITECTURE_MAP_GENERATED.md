@@ -9,7 +9,7 @@ design violation.
 
 Packages: `recall`, `recall_mcp`, `recall_agent`, `recall_hooks`, `recall_interop`, `recall_consistency`
 Modules: 392
-Cross package edges: 470
+Cross package edges: 471
 
 ## Highest fan in modules
 
@@ -544,6 +544,7 @@ They are observations, not automatic failures.
 | `recall_mcp.service` | `recall.types` |
 | `recall_mcp.settings` | `recall._env` |
 | `recall_mcp.settings` | `recall.answer_provider` |
+| `recall_mcp.settings` | `recall.compiled_graph.service` |
 | `recall_mcp.settings` | `recall.constants` |
 | `recall_mcp.settings` | `recall.federation` |
 | `recall_mcp.settings` | `recall.multimodal` |
@@ -640,7 +641,7 @@ They are observations, not automatic failures.
 | `recall.compiled_graph.provider` | 3 | 3 |
 | `recall.compiled_graph.records` | 1 | 1 |
 | `recall.compiled_graph.search` | 5 | 150 |
-| `recall.compiled_graph.service` | 11 | 150 |
+| `recall.compiled_graph.service` | 12 | 150 |
 | `recall.confinement` | 0 | 0 |
 | `recall.constants` | 0 | 0 |
 | `recall.context` | 2 | 14 |
@@ -967,7 +968,7 @@ They are observations, not automatic failures.
 | `recall_mcp.server_reasoning` | 25 | 210 |
 | `recall_mcp.server_search` | 18 | 178 |
 | `recall_mcp.service` | 59 | 201 |
-| `recall_mcp.settings` | 12 | 159 |
+| `recall_mcp.settings` | 13 | 159 |
 | `recall_mcp.stale_reports_api` | 5 | 167 |
 | `recall_mcp.status` | 8 | 151 |
 | `recall_mcp.stores` | 7 | 151 |

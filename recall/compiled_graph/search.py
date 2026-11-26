@@ -17,6 +17,7 @@ import numpy as np
 from recall.compiled_graph.artifact import (
     ArtifactLineageMismatch,
     ArtifactMissing,
+    ArtifactUnconfigured,
     CompiledGraphArtifact,
     CompiledGraphArtifactError,
 )
@@ -75,6 +76,9 @@ def compiled_graph_step(
         return None, outcome
     except ArtifactMissing:
         outcome.note = "skipped:missing"
+        return None, outcome
+    except ArtifactUnconfigured:
+        outcome.note = "skipped:unconfigured"
         return None, outcome
     except CompiledGraphArtifactError:
         outcome.note = "skipped:damaged"

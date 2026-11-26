@@ -19,8 +19,9 @@ turn it to `active`.
    endpoint.
 3. **At search time**, the query is compared with the records. Chunks linked from the 20 nearest
    records may be promoted, at most two of them, into **ranks 9 and 10** of an unscoped search.
-   Ranks 1 to 8, every score, and the set of chunks returned never change. A scoped search is
-   never touched. Search never calls the model.
+   Ranks 1 to 8 and every score never change; the two chunks promoted come from further down the
+   candidate pool, so with 9 or more results they replace the chunks that held ranks 9 and 10. A
+   scoped search is never touched. Search never calls the model.
 4. **For `recall_reasoning_query`**, in `active` mode only, the entities the records copied become
    mentions on the chunks that contain them. Graph expansion may follow them, and every link
    reached that way is labelled `llm_compiled`.
@@ -36,13 +37,19 @@ visible when a caller asks for 9 or more results, and in the reasoning query.
 | `shadow` | builds the artifact | reports `shadow:would_promote=N`, order unchanged |
 | `active` | builds the artifact | promotes, reports `active:promoted=N` |
 
-`RECALL_COMPILED_GRAPH_MODE_BY_TENANT=tenant-a:active,tenant-b:off` overrides the mode per tenant.
+`RECALL_COMPILED_GRAPH_MODE_BY_TENANT=tenant-a:active,tenant-b:off` overrides the mode per tenant;
+each entry splits on its last colon. A malformed entry, a tenant named twice, or an unknown mode in
+any entry is refused: the MCP server does not start, a Lite search raises, and a build reports
+`compiled graph not built` without failing the write or promotion that called it.
 Every search result carries the outcome in its diagnostics as `compiled_graph`, including
-`skipped:` and why (`scoped`, `missing`, `lineage`, `damaged`, `error`).
+`skipped:` and why (`scoped`, `missing`, `unconfigured`, `lineage`, `damaged`, `error`).
 
 ## Configuration
 
-A build needs every one of these; there is no default model and no default price.
+A build needs every one of these; there is no default model and no default price. A search in
+`shadow` or `active` also needs `RECALL_COMPILED_GRAPH_ARTIFACT_ROOT` and the
+`RECALL_COMPILED_GRAPH_MODEL` the artifact was built with; without either it reports
+`skipped:unconfigured`.
 
 | Variable | Meaning |
 |---|---|

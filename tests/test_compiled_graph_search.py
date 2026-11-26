@@ -11,6 +11,10 @@ Red proof, recorded 2026-11-26 (production symbols in ``recall.compiled_graph.se
 - ``test_scoped_search_is_skipped``: the scope check removed fails on ``skipped:scoped``.
 - ``test_missing_and_wrong_lineage_are_reported`` (RF5): every load error read as ``missing``
   fails on ``skipped:lineage``.
+- ``test_unconfigured_search_is_reported_as_such`` (CCA ENV-001): against the pre-fix
+  ``load_serving_artifact`` and step fails on ``skipped:damaged``.
+- ``test_unreadable_artifact_skips_the_graph`` (CCA BUG-001): against the pre-fix
+  ``load_artifact`` fails with the raw ``PermissionError`` out of the step.
 - ``test_step_error_keeps_the_exact_order``: the ``except`` in the transform removed fails with
   the raised error.
 - ``test_retriever_applies_the_graph_after_fusion_and_records_the_stage``: the
@@ -117,6 +121,29 @@ def test_missing_and_wrong_lineage_are_reported(tmp_path: Path) -> None:
     manifest.write_text(manifest.read_text(encoding="utf-8").replace('"cf1"', '"cf0"'), encoding="utf-8")
     step, outcome = compiled_graph_step(Store(), FakeEmbedder(), env, scope_is_empty=True)
     assert step is None and outcome.note == "skipped:lineage"
+
+
+@pytest.mark.parametrize("unset", ["RECALL_COMPILED_GRAPH_MODEL", "RECALL_COMPILED_GRAPH_ARTIFACT_ROOT"])
+def test_unconfigured_search_is_reported_as_such(tmp_path: Path, unset: str) -> None:
+    env = _env(tmp_path)
+    _write(tmp_path, env)
+    del env[unset]
+    step, outcome = compiled_graph_step(Store(), FakeEmbedder(), env, scope_is_empty=True)
+    assert step is None and outcome.note == "skipped:unconfigured"
+
+
+def test_unreadable_artifact_skips_the_graph(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from recall.compiled_graph import artifact as artifact_module
+
+    env = _env(tmp_path)
+    _write(tmp_path, env)
+
+    def unreadable(path: Path) -> str:
+        raise PermissionError(str(path))
+
+    monkeypatch.setattr(artifact_module, "_sha256", unreadable)
+    step, outcome = compiled_graph_step(Store(), FakeEmbedder(), env, scope_is_empty=True)
+    assert step is None and outcome.note == "skipped:damaged"
 
 
 def test_step_error_keeps_the_exact_order(tmp_path: Path) -> None:
