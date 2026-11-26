@@ -287,6 +287,14 @@ had been calling them `DECLARED`.
 | `RECALL_ARBITER_MAX_PAIRS` | `200` | most pairs judged per run, most similar first |
 | `RECALL_ARBITER_CACHE` | platform cache dir | answer cache file, or `off` |
 | `RECALL_ARBITER_DIRECTION_CHECK` | on | ask the model which note is current, and drop a pair it reads the other way |
+| `RECALL_ARBITER_SAME_DAY` | off | judge only pairs whose file names start with the same `YYYY-MM-DD`; the rest are counted and never sent |
+
+⚠️ **`RECALL_ARBITER_SAME_DAY` is a property of how a store names its files.** It helps where file
+names carry a leading date and a replacement is usually written the same day as what it replaces
+(a plan and its result, a handoff and its follow-up). On one such memo store, a private
+measurement found that keeping only pairs that share a date and were stated at 0.97 or more
+removed most of the wrong proposals for a small loss of recall. A store whose replacements cross
+days loses them all, and a store without dated file names gets no proposals.
 
 ⚠️ **Turning it on sends memo text to the endpoint.** Each judged pair sends up to 6,000 characters
 of both memos' bodies (frontmatter and the derived block removed) to `RECALL_ARBITER_BASE_URL`. Point
