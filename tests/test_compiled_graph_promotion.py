@@ -10,7 +10,8 @@ Red proof, recorded 2026-11-26 (production symbols in ``recall.compiled_graph.pr
   promoted again and fails on membership (a duplicate id).
 - ``test_at_most_two_promoted_into_ranks_nine_and_ten``: ``MAX_PROMOTIONS = 3`` fails on
   ``promoted_count == 2``.
-- ``test_membership_and_scores_unchanged``: a promoted hit rescored to 1.0 fails on the scores.
+- ``test_membership_and_scores_unchanged`` (membership half): keeping promoted hits in the tail
+  (the ``if hit.chunk.id not in promoted_set`` filter removed) fails on the sorted ids.
 - ``test_only_first_twenty_seeds_count``: ``seeds[:SEED_K]`` widened to ``seeds`` fails on
   ``relation_hits``.
 - ``test_target_outside_pool_ignored``: admitting a target outside the pool as a synthetic hit

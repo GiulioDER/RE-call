@@ -16,6 +16,8 @@ Red proof, recorded 2026-11-26 (production symbols in ``recall.compiled_graph.re
   anchor (``sent_ids = [anchor.id for anchor in anchors]``) fails on ``resolved_bare_anchor_ids``.
 - ``test_value_recovers_anchor_when_cited_id_unknown``: the recovery branch made ``if False`` fails
   on the recovered anchor ids.
+- ``test_recovery_reads_only_the_entities_that_could_be_kept``: recovery values built from every
+  entity (``*entities`` in place of ``*entities[:MAX_ENTITIES]``) fails on ``records == []``.
 - ``test_more_than_eight_records_truncated``: dropping the ``[:MAX_RECORDS]`` slice fails on
   ``len(records) == 8`` (12).
 - ``test_unknown_kind_dropped``: the kind check made ``if False`` fails on ``records == []``.
@@ -33,6 +35,7 @@ import pytest
 from recall.compiled_graph.anchors import SourceAnchor, build_source_anchors
 from recall.compiled_graph.records import (
     COMPILE_SYSTEM_PROMPT,
+    MAX_ENTITIES,
     MAX_RECORDS,
     RECORD_KINDS,
     prompt_digest,
@@ -157,6 +160,16 @@ def test_value_recovers_anchor_when_cited_id_unknown() -> None:
     records, diagnostics = validate_reply(reply, anchors)
     assert [record.anchor_ids for record in records] == [(anchors[0].id,)]
     assert diagnostics.recovered_anchor_records == 1
+
+
+def test_recovery_reads_only_the_entities_that_could_be_kept() -> None:
+    anchors = _anchors()
+    entities = [f"absent{i}" for i in range(MAX_ENTITIES)] + ["Alice"]
+    reply = {"records": [_record(entities=entities, evidence_anchor_ids=["a777_0000"])]}
+    records, diagnostics = validate_reply(reply, anchors)
+    assert records == []
+    assert diagnostics.recovered_anchor_records == 0
+    assert diagnostics.rejected_anchor_ids == 1
 
 
 def test_more_than_eight_records_truncated() -> None:

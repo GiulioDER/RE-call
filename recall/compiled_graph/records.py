@@ -149,7 +149,7 @@ def validate_reply(
         selected = [anchor_by_id[anchor_id] for anchor_id in anchor_ids if anchor_id in anchor_by_id]
         if unknown:
             before = len(selected)
-            values = [value for value in (summary, detail, *entities) if value]
+            values = [value for value in (summary, detail, *entities[:MAX_ENTITIES]) if value]
             for anchor in anchors:
                 if len(selected) >= MAX_ANCHORS_PER_RECORD:
                     break

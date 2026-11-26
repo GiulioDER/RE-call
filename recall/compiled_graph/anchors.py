@@ -65,9 +65,9 @@ def encode_stored_data(payload: Mapping[str, Any]) -> str:
 def fit_payload(payload: Mapping[str, Any], budget: int) -> dict[str, Any] | None:
     """Keep the first and last anchors that fit ``budget`` encoded characters.
 
-    Returns None when the payload already fits, or when not even one anchor would. Each end gets
-    half of the room and the kept anchors keep their order and ids, which is all the evidence
-    checks after the call rely on.
+    Returns None when the payload already fits, or when not even one anchor would. The head gets up
+    to half of the room and the tail the rest; the kept anchors keep their order and ids, which is
+    all the evidence checks after the call rely on.
     """
     if len(encode_stored_data(payload)) <= budget:
         return None
