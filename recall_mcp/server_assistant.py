@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
-from typing import Annotated, Any, cast
+from typing import Annotated, Any
 
 from mcp.server.auth.middleware.auth_context import get_access_token
 from mcp.server.mcpserver import Context
@@ -17,7 +17,7 @@ from mcp.types import ToolAnnotations
 from pydantic.json_schema import WithJsonSchema
 
 from recall.observability import METRICS
-from recall.lite import LiteStore, LiteWriterBusy
+from recall.lite import LiteWriterBusy
 from recall.lite.refresh import refresh_access_context
 from recall_mcp.assistant import (
     FORGET_DESCRIPTION,
@@ -94,8 +94,7 @@ def _caller_may_read(state: dict) -> bool:
 def _register_assistant_tools(mcp: ToolRegistrar, deps: _ToolDeps, held: _HeldTools) -> None:
     """The assistant surface: `recall_remember`, `recall_forget_memo`, and the compact forms.
 
-    Registered only when RECALL_ASSISTANT_MEMOS names a memo folder on a lite store
-    (`recall_mcp.assistant`). The compact `recall_search` and `recall_evidence` offer only the
+    Registered only when RECALL_ASSISTANT_MEMOS names a memo folder (`recall_mcp.assistant`). The compact `recall_search` and `recall_evidence` offer only the
     parameters an assistant uses; `recall_current_facts` and `recall_apply_fact` keep theirs. All
     seven answer in `assistant_dumps` form except `recall_withdraw`, which answers `WithdrawResult`
     JSON as the plain tool does; their descriptions are the held declarations'.
@@ -142,7 +141,7 @@ def _register_assistant_tools(mcp: ToolRegistrar, deps: _ToolDeps, held: _HeldTo
         with METRICS.timer("recall_tool_latency_ms", tool="remember"):
             result = await _to_thread(
                 lambda: assistant.remember(
-                    cast(LiteStore, store),
+                    store,
                     state["embedder"],
                     text,
                     kind or "note",
@@ -181,7 +180,7 @@ def _register_assistant_tools(mcp: ToolRegistrar, deps: _ToolDeps, held: _HeldTo
             with METRICS.timer("recall_tool_latency_ms", tool="forget_memo"):
                 result = await _to_thread(
                     lambda: assistant.forget(
-                        cast(LiteStore, store),
+                        store,
                         state["embedder"],
                         memo_ref(memo_id) or "",
                         security_policy=refresh["security_policy"],
