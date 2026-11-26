@@ -355,7 +355,11 @@ MAX_CATALOGUE_BYTES = 8 * 1024 * 1024
 
 
 def _fetch(url: str, *, headers: dict[str, str] | None = None) -> bytes:
-    request = urllib.request.Request(url, headers=headers or {})
+    request = urllib.request.Request(url)
+    # Unredirected: urllib copies ordinary headers onto a followed redirect, and the only header
+    # sent here is the provider key.
+    for name, value in (headers or {}).items():
+        request.add_unredirected_header(name, value)
     with urllib.request.urlopen(request, timeout=CATALOGUE_TIMEOUT_SECONDS) as response:  # noqa: S310
         body = response.read(MAX_CATALOGUE_BYTES + 1)
     if len(body) > MAX_CATALOGUE_BYTES:
