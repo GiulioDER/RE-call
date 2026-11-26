@@ -6,6 +6,8 @@ Red proof, recorded 2026-11-26 (production symbols in ``recall.compiled_graph.re
   unconditionally fails on ``records[0].fields``.
 - ``test_entities_kept_only_when_in_quoted_evidence``: keeping every nonempty proposed entity fails
   on ``records[0].entities``.
+- ``test_entity_spanning_two_cited_anchors_dropped``: the pre-fix check against the cited quotes
+  joined by a newline (``e in "\\n".join(quotes)``) fails on ``records[0].entities``.
 - ``test_unknown_anchor_ids_dropped_and_bare_indices_resolved``: never resolving a bare index (the
   ``_BARE_ANCHOR_INDEX`` branch made ``if False``) fails on ``resolved_bare_anchor_ids == 1``.
 - ``test_record_without_valid_anchor_dropped``: an unknown id falling back to the first anchor
@@ -90,6 +92,22 @@ def test_entities_kept_only_when_in_quoted_evidence() -> None:
     records, diagnostics = validate_reply(reply, anchors)
     assert records[0].entities == ("Alice", "release checklist")
     assert diagnostics.removed_entities == 41
+
+
+def test_entity_spanning_two_cited_anchors_dropped() -> None:
+    anchors = _anchors()
+    reply = {
+        "records": [
+            _record(
+                summary="Alice owns the release checklist.",
+                entities=["Alice", "  \n  ", "\n"],
+                evidence_anchor_ids=[anchors[0].id, anchors[1].id],
+            )
+        ]
+    }
+    records, diagnostics = validate_reply(reply, anchors)
+    assert records[0].entities == ("Alice",)
+    assert diagnostics.removed_entities == 2
 
 
 def test_unknown_anchor_ids_dropped_and_bare_indices_resolved() -> None:

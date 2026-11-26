@@ -169,8 +169,9 @@ def validate_reply(
         if not any(grounded):
             grounded = ("", quotes[0][:BACKFILL_CHARS])
             counts["evidence_backfilled_records"] += 1
-        evidence = "\n".join(quotes)
-        kept_entities = list(dict.fromkeys(e for e in entities if e and e in evidence))[:MAX_ENTITIES]
+        kept_entities = list(dict.fromkeys(e for e in entities if _supported_text(e, quotes)))[
+            :MAX_ENTITIES
+        ]
         counts["removed_entities"] += len(entities) - len(kept_entities)
         accepted.append(
             CompiledRecord(

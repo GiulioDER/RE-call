@@ -6,8 +6,9 @@ promotion never moves ranks 1 to 8, moves at most two, and changes no membership
 
 Two differences from the AML code: a (record, target) pair counts once however many of the
 record's spans touch the target, because anchors overlap by 160 characters and AML counted one
-target twice through that overlap; and edges are not re-checked here at query time, because the
-artifact that carries them is refused unless its lineage is the serving one.
+target twice through that overlap; and edges are not re-checked here at query time. Nothing in
+this module checks where the edges came from: a caller must pass only edges built from the chunks
+it is serving.
 """
 
 from __future__ import annotations
