@@ -23,7 +23,8 @@ import pytest
 from recall.compiled_graph.budget import Budget
 from recall.compiled_graph.provider import CompiledGraphConfigError, CompileReply
 
-PRICES = {"cost_in_per_1k": 0.002, "cost_out_per_1k": 0.008}
+def _budget(max_usd: float) -> Budget:
+    return Budget(max_usd=max_usd, cost_in_per_1k=0.002, cost_out_per_1k=0.008, max_tokens=2_400)
 
 
 def _reply(tokens_in: int | None, tokens_out: int | None) -> CompileReply:
@@ -31,14 +32,14 @@ def _reply(tokens_in: int | None, tokens_out: int | None) -> CompileReply:
 
 
 def test_call_refused_when_worst_case_exceeds_remaining() -> None:
-    budget = Budget(max_usd=0.02, max_tokens=2_400, **PRICES)
+    budget = _budget(0.02)
     # Worst case: 1,000 input tokens at 0.002 = 0.002, 2,400 output at 0.008 = 0.0192.
     assert budget.reserve(1_000) is False
     assert budget.reserve(100) is True
 
 
 def test_spend_never_exceeds_cap_over_a_run() -> None:
-    budget = Budget(max_usd=0.5, max_tokens=2_400, **PRICES)
+    budget = _budget(0.5)
     sent = 0
     while budget.reserve(30_000):
         # A token-dense source: one token per byte, every output token used.
@@ -51,14 +52,14 @@ def test_spend_never_exceeds_cap_over_a_run() -> None:
 
 
 def test_settle_uses_reported_usage() -> None:
-    budget = Budget(max_usd=1.0, max_tokens=2_400, **PRICES)
+    budget = _budget(1.0)
     assert budget.reserve(10_000)
     budget.settle(_reply(2_000, 100))
     assert math.isclose(budget.spent_usd, 2 * 0.002 + 0.1 * 0.008)
 
 
 def test_missing_usage_charges_the_reservation() -> None:
-    budget = Budget(max_usd=1.0, max_tokens=2_400, **PRICES)
+    budget = _budget(1.0)
     assert budget.reserve(10_000)
     budget.settle(None)
     assert math.isclose(budget.spent_usd, 10 * 0.002 + 2.4 * 0.008)
@@ -68,7 +69,7 @@ def test_missing_usage_charges_the_reservation() -> None:
 
 
 def test_overrun_exhausts_the_budget() -> None:
-    budget = Budget(max_usd=1.0, max_tokens=2_400, **PRICES)
+    budget = _budget(1.0)
     assert budget.reserve(100)
     # A reasoning model billing past max_tokens: 0.16, under the cap but over the reservation.
     budget.settle(_reply(100, 20_000))
@@ -77,7 +78,7 @@ def test_overrun_exhausts_the_budget() -> None:
 
 
 def test_reserve_without_settle_is_refused() -> None:
-    budget = Budget(max_usd=1.0, max_tokens=2_400, **PRICES)
+    budget = _budget(1.0)
     assert budget.reserve(100)
     with pytest.raises(RuntimeError):
         budget.reserve(100)
