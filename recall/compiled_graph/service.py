@@ -192,6 +192,12 @@ def erase_forgotten_sources(sources: Collection[str], *, env: Mapping[str, str])
 
     Artifacts are immutable, so one holding a forgotten source is removed whole; the tenant then
     searches without the graph until the next build, which no longer sees the source.
+
+    Every holding manifest is unlinked before any directory is removed, since a load refuses a
+    directory without one: a removal that fails part way then leaves nothing servable. Every
+    ``cg-*`` directory without a manifest (a remnant of an earlier failed erase, which may still
+    hold forgotten vectors) is removed too. Removal failures are collected and the first is raised
+    after every directory has been tried, so one held file cannot keep the rest on disk.
     """
     root = artifact_root(env)
     if root is None or not sources or not root.exists():
@@ -199,22 +205,43 @@ def erase_forgotten_sources(sources: Collection[str], *, env: Mapping[str, str])
     wanted = set(sources)
     if (root / CACHE_NAME).exists():
         CompileCache(root / CACHE_NAME).erase_sources(wanted)
-    removed = 0
-    for records in root.glob("tenant-*/cg-*/records.jsonl"):
-        import json
+    holding = [
+        records.parent
+        for records in root.glob("tenant-*/cg-*/records.jsonl")
+        if (records.parent / "manifest.json").is_file() and _holds_any(records, wanted)
+    ]
+    for directory in holding:
+        (directory / "manifest.json").unlink(missing_ok=True)
+    errors: list[OSError] = []
+    for directory in root.glob("tenant-*/cg-*"):
+        if not directory.is_dir() or (directory / "manifest.json").is_file():
+            continue
+        try:
+            shutil.rmtree(directory)
+        except OSError as exc:
+            # A concurrent erase that removed it first is not a failure.
+            if directory.exists():
+                errors.append(exc)
+    if errors:
+        for other in errors[1:]:
+            errors[0].add_note(f"also failed: {other!r}")
+        raise errors[0]
+    return len(holding)
 
-        holds = any(
-            json.loads(line).get("source") in wanted
-            for line in records.read_text(encoding="utf-8").splitlines()
-            if line
-        )
-        if holds:
-            # The manifest goes first: a load refuses a directory without one, so an rmtree that
-            # stops part way leaves nothing any process (or its cache) can serve.
-            (records.parent / "manifest.json").unlink(missing_ok=True)
-            shutil.rmtree(records.parent)
-            removed += 1
-    return removed
+
+def _holds_any(records: Path, wanted: set[str]) -> bool:
+    """Whether a ``records.jsonl`` names a source in ``wanted``; an unreadable one counts as holding.
+
+    Unreadable cannot be shown not to hold the source, and removing a good artifact costs only a
+    rebuild.
+    """
+    import json
+
+    try:
+        lines = records.read_text(encoding="utf-8").splitlines()
+        return any(json.loads(line).get("source") in wanted for line in lines if line)
+    except (OSError, ValueError, AttributeError):
+        return True
 
 
 def load_serving_artifact(

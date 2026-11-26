@@ -15,6 +15,15 @@ in ``recall.compiled_graph.service``):
 - ``test_a_partial_erase_serves_nothing`` (CCA FA-1-3): against the pass-1
   ``erase_forgotten_sources``, which left the manifest, fails with no exception, the cached
   records served.
+- ``test_one_failed_removal_leaves_no_artifact_servable`` (CCA FA-2-2), recorded 2026-11-27 on the
+  testbench: against ``erase_forgotten_sources`` at ``75a8326fe``, whose loop stopped at the first
+  failed rmtree, fails with ``DID NOT RAISE ArtifactMissing``, the second tenant still served.
+- ``test_a_remnant_without_records_is_swept`` (CCA FA-2-3), recorded 2026-11-27 on the testbench: against
+  ``erase_forgotten_sources`` at ``75a8326fe``, which found artifacts only by ``records.jsonl``,
+  fails on ``assert not artifact.exists()``, the forgotten vectors kept.
+- ``test_an_unreadable_records_file_counts_as_holding``, recorded 2026-11-27 on the testbench: with
+  ``_holds_any`` mutated to return ``False`` on a read or parse error, fails on ``assert 0 == 1``,
+  the artifact kept.
 - ``test_body_from_chunks_keeps_offsets``: chunks concatenated without their offsets fails on the
   slice equality.
 - ``test_off_or_rootless_builds_nothing``: the mode check removed fails on the call count.
@@ -38,6 +47,7 @@ in ``recall.compiled_graph.service``):
 from __future__ import annotations
 
 import json
+import shutil
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -173,6 +183,63 @@ def test_a_partial_erase_serves_nothing(tmp_path: Path, monkeypatch: pytest.Monk
         erase_forgotten_sources(["a.md"], env=env)
     with pytest.raises(ArtifactMissing):
         load_artifact(tenant_folder(tmp_path, "t1"), lineage)
+
+
+def test_one_failed_removal_leaves_no_artifact_servable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from recall.compiled_graph import service
+
+    env = _env(tmp_path)
+    lineages: dict[str, Mapping[str, str]] = {}
+    for tenant in ("t1", "t2"):
+        ensure_compiled_graph(tenant, _chunks(), BINDING, FakeEmbedder(), env=env,
+                              transport=Transport(), sleep=lambda _: None)
+        lineage = serving_lineage(tenant, BINDING, FakeEmbedder(), env)
+        assert lineage is not None
+        load_artifact(tenant_folder(tmp_path, tenant), lineage)
+        lineages[tenant] = lineage
+
+    real_rmtree = shutil.rmtree
+    calls: list[Path] = []
+
+    def first_one_fails(path: Path) -> None:
+        calls.append(Path(path))
+        if len(calls) == 1:
+            raise PermissionError("a member is held open")
+        real_rmtree(path)
+
+    monkeypatch.setattr(service.shutil, "rmtree", first_one_fails)
+    with pytest.raises(PermissionError):
+        erase_forgotten_sources(["a.md"], env=env)
+    for tenant, served in lineages.items():
+        with pytest.raises(ArtifactMissing):
+            load_artifact(tenant_folder(tmp_path, tenant), served)
+    assert len(calls) == 2
+    assert not calls[1].exists()
+
+
+def test_a_remnant_without_records_is_swept(tmp_path: Path) -> None:
+    env = _env(tmp_path)
+    _ensure(env, Transport())
+    (artifact,) = tenant_folder(tmp_path, "t1").glob("cg-*")
+    # What an erase that stopped after the manifest and records.jsonl leaves behind.
+    (artifact / "manifest.json").unlink()
+    (artifact / "records.jsonl").unlink()
+    assert (artifact / "vectors.npy").is_file()
+
+    assert erase_forgotten_sources(["unrelated.md"], env=env) == 0
+    assert not artifact.exists()
+
+
+def test_an_unreadable_records_file_counts_as_holding(tmp_path: Path) -> None:
+    env = _env(tmp_path)
+    _ensure(env, Transport())
+    (artifact,) = tenant_folder(tmp_path, "t1").glob("cg-*")
+    (artifact / "records.jsonl").write_text("{not json\n", encoding="utf-8")
+
+    assert erase_forgotten_sources(["a.md"], env=env) == 1
+    assert not artifact.exists()
 
 
 def test_body_from_chunks_keeps_offsets() -> None:
