@@ -53,13 +53,16 @@ def corpus(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, request: pytest.Fixt
     folder stating facts."""
     generations = request.getfixturevalue("manager")
     root = tmp_path / "root"
-    (root / "mem").mkdir(parents=True)
+    for name, data in OTHER.items():
+        # On disk, not only in the first generation: every later build reads the corpus from here.
+        (root / name).parent.mkdir(parents=True, exist_ok=True)
+        (root / name).write_bytes(data)
     monkeypatch.setenv("RECALL_EMBED_CACHE", "off")
     monkeypatch.setenv("RECALL_INDEX_ROOT", str(root))
     monkeypatch.setenv("RECALL_ASSISTANT_MEMOS", str(root / "memos"))
     monkeypatch.setenv(SETTLE_ENV, "1")
     monkeypatch.setenv("RECALL_STATED_FACT_SOURCES", uri(generations, "memos"))
-    promote(generations, OTHER, "corpus-v0")
+    promote(generations, _corpus_files(root), "corpus-v0")
     return generations, root
 
 
@@ -103,6 +106,9 @@ def _build_tea(corpus: tuple[Any, Path]) -> None:
         first = _remember(_tools(store), "tea", "2026-01-01")
     assert first == {"memo_id": "pref-0001", "settle": {"settled": None}}, first
     promote(generations, _corpus_files(root), "corpus-v1")
+    with served(generations) as store:
+        built = listed(store)
+    assert built == [("tea", ("memos/pref-0001.md",))], f"the generation does not name the memo by its file: {built}"
 
 
 def test_q0_a_postgres_server_serves_the_surface(tmp_path: Path) -> None:
