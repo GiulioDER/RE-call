@@ -768,6 +768,11 @@ def _trusted_search(
 
     if atomic_skipped:
         dense_transform = post_fusion_transform = None
+    from recall.compiled_graph.search import compiled_graph_step
+
+    graph_transform, graph_outcome = compiled_graph_step(
+        store, embedder, environment_source, scope_is_empty=atomic_scope_is_empty
+    )
     query_embedder = _RequestQueryMemo(embedder)
     retriever = HybridRetriever(
         store,
@@ -779,6 +784,7 @@ def _trusted_search(
         index_generation=index_generation,
         dense_transform=dense_transform,
         post_fusion_transform=post_fusion_transform,
+        graph_transform=graph_transform,
         env=env,
     )
     # Legacy call shape unless the scope says something a `source=` could not, for the reason
@@ -893,6 +899,8 @@ def _trusted_search(
     trusted = _with_stage_ms(trusted, "trust_evaluation", trust_started)
     if atomic_skipped:
         trusted = replace(trusted, diagnostics=replace(trusted.diagnostics, atomic_rescue_skipped=atomic_skipped))
+    if graph_outcome.note:
+        trusted = replace(trusted, diagnostics=replace(trusted.diagnostics, compiled_graph=graph_outcome.note))
     if successor_expansion is not None and successor_expansion.ordering != "pool":
         # `result` is the POST-expansion pool and is still in pool order here, which is exactly
         # what `order_promoted` needs and what `trusted.hits` no longer carries.

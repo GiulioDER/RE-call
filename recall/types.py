@@ -408,6 +408,9 @@ class RetrievalDiagnostics:
     #: Why an active atomic rescue was not applied under RECALL_ATOMIC_RESCUE_WHEN_MISSING=skip:
     #: `missing`, `lineage`, `damaged` or `uncalibrated`; empty when it was applied or not asked for.
     atomic_rescue_skipped: str = ""
+    #: The compiled graph step on this search (`recall.compiled_graph.search`): `active:promoted=N`,
+    #: `shadow:would_promote=N`, or `skipped:` and the reason; empty when it is off.
+    compiled_graph: str = ""
 
 
 @dataclass(frozen=True)
