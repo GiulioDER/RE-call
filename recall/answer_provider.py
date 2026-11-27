@@ -501,6 +501,21 @@ class _NativeOllamaClient:
         return SimpleNamespace(choices=[choice], usage=usage)
 
 
+class _NoRedirect(request.HTTPRedirectHandler):
+    """Refuse every redirect, so the 30x surfaces as an ``HTTPError``.
+
+    The default handler follows a POST 301/302/303 as a GET and copies every header but
+    Content-Length and Content-Type, the bearer key included, to whatever host and scheme the
+    Location names. A chat completion has no legitimate redirect to follow.
+    """
+
+    def redirect_request(self, *args: object, **kwargs: object) -> None:
+        return None
+
+
+_OPENER = request.build_opener(_NoRedirect)
+
+
 class _OpenRouterClient:
     """Small stdlib client for OpenRouter's OpenAI-compatible chat endpoint."""
 
@@ -536,7 +551,7 @@ class _OpenRouterClient:
             },
             method="POST",
         )
-        with request.urlopen(req, timeout=self.timeout) as response:
+        with _OPENER.open(req, timeout=self.timeout) as response:
             raw = json.loads(response.read().decode("utf-8"))
         choices = raw.get("choices") or []
         first = choices[0] if choices else {}

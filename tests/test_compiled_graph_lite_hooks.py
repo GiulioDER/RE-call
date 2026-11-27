@@ -12,12 +12,15 @@ was built"; with the ``erase_forgotten_sources`` block removed from
 at "an artifact quoting the forgotten memo is left". CLI (``recall.cli_commands.graph_cmd``): the
 off check made ``if False`` fails ``test_cli_compile_refuses_when_off``; the Lite dry-run branch
 removed fails ``test_cli_dry_run_sends_nothing``; the ``compile`` dispatch removed fails
-``test_cli_compile_reports_the_artifact_in_force``.
+``test_cli_compile_reports_the_artifact_in_force``. The active branch of
+``recall.compiled_graph.search.compiled_graph_step`` returning the input order fails
+``test_a_trusted_search_on_lite_reports_the_graph_step`` (CCA CODE-001) on ranks 9 and 10.
 """
 
 from __future__ import annotations
 
 import json
+import threading
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -94,6 +97,202 @@ def test_forget_removes_the_compiled_graph(built) -> None:  # type: ignore[no-un
     assert "compiled graph" in result.message
 
 
+def _memo(store) -> str:  # type: ignore[no-untyped-def]  # store is a LiteStore
+    return next(chunk.source for chunk in store.iter_chunks() if Path(chunk.source).name == "ops-log.md")
+
+
+def test_a_forget_without_the_root_in_its_environment_erases_the_recorded_root(
+    built, monkeypatch: pytest.MonkeyPatch
+) -> None:  # type: ignore[no-untyped-def]  # fixture
+    """SEC-002: the build ran with the root set; the forget runs in a process without it."""
+    store, root = built
+    source = _memo(store)
+    assert any(source in _sources(path) for path in _artifacts(root)), "negative control: no artifact quotes the memo"
+    monkeypatch.delenv("RECALL_COMPILED_GRAPH_ARTIFACT_ROOT")
+    forget_memory(store, [source])
+    assert [path for path in _artifacts(root) if source in _sources(path)] == [], (
+        "a forget whose environment names no root left the artifact a build recorded"
+    )
+
+
+def test_a_rerun_after_a_failed_erasure_erases_the_compiled_graph(built, monkeypatch: pytest.MonkeyPatch) -> None:  # type: ignore[no-untyped-def]  # fixture
+    """SEC-001: the first forget's erasure fails after the rows went; the re-run it advises must work."""
+    store, root = built
+    source = _memo(store)
+    real = service.erase_forgotten_sources
+    failures = [OSError("locked")]
+
+    def flaky(*args: object, **kwargs: object) -> object:
+        if failures:
+            raise failures.pop()
+        return real(*args, **kwargs)  # type: ignore[arg-type]  # forwarding the caller's arguments
+
+    monkeypatch.setattr(service, "erase_forgotten_sources", flaky)
+    first = forget_memory(store, [source])
+    assert "WARNING" in first.message and "compiled graph" in first.message, first.message
+    assert any(source in _sources(path) for path in _artifacts(root)), "negative control: the failed erasure left it"
+    forget_memory(store, [source])
+    assert [path for path in _artifacts(root) if source in _sources(path)] == [], (
+        "the re-run the warning advises left the artifact quoting the forgotten memo"
+    )
+
+
+def test_a_forget_racing_the_publish_leaves_no_artifact_quoting_it(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """STAKES-001: a forget lands after the build's last presence check and before it publishes."""
+    from recall.lite import LiteStore
+
+    monkeypatch.setattr(service, "urllib_transport", _cite_first_anchor)
+    root = tmp_path / "compiled"
+    store, embedder = _certified(tmp_path)
+    env = _compile_env(root)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    source = _memo(store)
+    real_write = service.write_artifact
+    real_erase = service.erase_forgotten_sources
+    errors: list[BaseException] = []
+    erasing = threading.Event()
+
+    def signalled_erase(*args: object, **kwargs: object) -> object:
+        erasing.set()
+        return real_erase(*args, **kwargs)  # type: ignore[arg-type]  # forwarding the caller's arguments
+
+    monkeypatch.setattr(service, "erase_forgotten_sources", signalled_erase)
+
+    def forget_elsewhere() -> None:
+        try:
+            with LiteStore(store.path, dim=store.dim, tenant=store.tenant) as other:
+                forget_memory(other, [source])
+        except BaseException as exc:  # BROAD-CATCH: error-translation  # a thread cannot fail the test; the assertion below reports it
+            errors.append(exc)
+
+    worker = threading.Thread(target=forget_elsewhere)
+
+    def write_after_a_forget(*args: object, **kwargs: object) -> object:
+        # The forget has deleted the rows and reached its erasure before this publish; without
+        # the ordering the erasure finds nothing yet, and this write then publishes the memo.
+        worker.start()
+        assert erasing.wait(timeout=60), "the forget never reached its compiled graph erasure"
+        worker.join(timeout=1)
+        return real_write(*args, **kwargs)  # type: ignore[arg-type]  # forwarding the caller's arguments
+
+    monkeypatch.setattr(service, "write_artifact", write_after_a_forget)
+    try:
+        message = service.ensure_for_store(store, embedder, env)
+        worker.join(timeout=60)
+        assert not worker.is_alive() and not errors, errors
+        assert "built" in message, message
+        assert [path for path in _artifacts(root) if source in _sources(path)] == [], (
+            "the build published an artifact quoting a memo the forget had already erased"
+        )
+    finally:
+        store.close()
+
+
+def test_a_forget_while_a_refit_on_the_same_store_publishes_does_not_deadlock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """FA-1-4: a background refit builds on the same LiteStore object a forget holds the lock of.
+
+    The forget takes the store's lock, then the publish mutex; a build that called the store
+    while holding the mutex waited on that lock until the forget's mutex wait (30 s) ran out, and
+    the forget's erasure failed, leaving the memo quoted on disk.
+    """
+    from contextlib import contextmanager
+
+    monkeypatch.setattr(service, "urllib_transport", _cite_first_anchor)
+    root = tmp_path / "compiled"
+    store, embedder = _certified(tmp_path)
+    env = _compile_env(root)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    source = _memo(store)
+    holding = threading.Event()
+    real_erasing = store.erasing
+    results: list[object] = []
+
+    @contextmanager
+    def erasing_and_signalling(*args: object, **kwargs: object):  # type: ignore[no-untyped-def]  # wraps the store's context manager
+        with real_erasing(*args, **kwargs):
+            holding.set()
+            yield
+
+    monkeypatch.setattr(store, "erasing", erasing_and_signalling)
+    real_lock = service._publish_lock
+    forget: threading.Thread | None = None
+
+    def lock_then_let_the_forget_in(folder: Path):  # type: ignore[no-untyped-def]  # returns the real lock's context manager
+        nonlocal forget
+        lock = real_lock(folder)
+        if forget is None:
+            forget = threading.Thread(target=lambda: results.append(forget_memory(store, [source])))
+
+            @contextmanager
+            def held():  # type: ignore[no-untyped-def]  # a context manager around the real lock
+                with lock:
+                    assert forget is not None
+                    forget.start()
+                    assert holding.wait(timeout=30), "the forget never took the store's lock"
+                    yield
+
+            return held()
+        return lock
+
+    monkeypatch.setattr(service, "_publish_lock", lock_then_let_the_forget_in)
+    try:
+        service.ensure_for_store(store, embedder, env)
+        assert forget is not None
+        forget.join(timeout=120)
+        assert not forget.is_alive()
+        (result,) = results
+        assert "WARNING" not in result.message, result.message  # type: ignore[attr-defined]  # a ForgetResult
+        assert [path for path in _artifacts(root) if source in _sources(path)] == [], (
+            "an artifact quoting the forgotten memo survived the forget"
+        )
+    finally:
+        store.close()
+
+
+def test_a_forget_whose_root_record_cannot_be_read_still_erases_the_configured_root(
+    built, monkeypatch: pytest.MonkeyPatch
+) -> None:  # type: ignore[no-untyped-def]  # fixture
+    """FA-1-3."""
+    store, root = built
+    source = _memo(store)
+
+    def unreadable() -> list[str]:
+        raise OSError("meta row unreadable")
+
+    monkeypatch.setattr(store, "compiled_graph_roots", unreadable)
+    result = forget_memory(store, [source])
+    assert [path for path in _artifacts(root) if source in _sources(path)] == [], (
+        "a failed read of the recorded roots skipped the configured root"
+    )
+    assert "could not be read" in result.message, result.message
+
+
+def test_an_authenticated_forget_names_no_compiled_graph_root_paths(built, monkeypatch: pytest.MonkeyPatch) -> None:  # type: ignore[no-untyped-def]  # fixture
+    """FA-2-4: as for the atomic rescue, host paths stay in the server log."""
+    store, _ = built
+    monkeypatch.setattr(store, "compiled_graph_roots", lambda: ["//fileserver/share/compiled"])
+    shown = forget_memory(store, [_memo(store)], name_rescue_roots=False)
+    assert "fileserver" not in shown.message and "1 root(s) the server log names" in shown.message, shown.message
+
+
+def test_an_authenticated_forget_whose_erasure_fails_names_no_source_paths(built, monkeypatch: pytest.MonkeyPatch) -> None:  # type: ignore[no-untyped-def]  # fixture
+    """L5.5 regression diff: the re-run advice lists resolved host paths only where roots may be named."""
+    store, _ = built
+    source = _memo(store)
+
+    def fails(*args: object, **kwargs: object) -> object:
+        raise OSError("locked")
+
+    monkeypatch.setattr(service, "erase_forgotten_sources", fails)
+    shown = forget_memory(store, [source], name_rescue_roots=False)
+    assert "compiled graph failed" in shown.message, shown.message
+    assert source not in shown.message and "source name(s) the server log names" in shown.message, shown.message
+
+
 def _cli(store, monkeypatch: pytest.MonkeyPatch, *flags: str) -> str:  # type: ignore[no-untyped-def]  # store is a LiteStore
     from tests.lite_cli_support import run_cli
     from tests.test_lite_atomic_rescue import ContentWordEmbedder
@@ -145,5 +344,9 @@ def test_a_trusted_search_on_lite_reports_the_graph_step(built, monkeypatch: pyt
     assert off.diagnostics.compiled_graph == ""
     assert shadow.diagnostics.compiled_graph.startswith("shadow:would_promote=")
     assert active.diagnostics.compiled_graph.startswith("active:promoted=")
+    promoted = int(active.diagnostics.compiled_graph.partition("=")[2])
+    assert promoted >= 1, active.diagnostics.compiled_graph
+    assert shadow.diagnostics.compiled_graph == f"shadow:would_promote={promoted}"
     assert [hit.chunk.id for hit in shadow.hits] == [hit.chunk.id for hit in off.hits]
     assert [hit.chunk.id for hit in active.hits][:8] == [hit.chunk.id for hit in off.hits][:8]
+    assert [hit.chunk.id for hit in active.hits][8:10] != [hit.chunk.id for hit in off.hits][8:10]

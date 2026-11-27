@@ -4,10 +4,13 @@ Ported from ``recall_aml/graph.py`` (``attach_grounded_relations``, ``promote_gr
 edge exists only where a cited anchor window overlaps a chunk's own offsets in the same source;
 promotion never moves ranks 1 to 8, moves at most two, and changes no membership and no score.
 
-Two differences from the AML code: a (record, target) pair counts once however many of the
+Three differences from the AML code: a (record, target) pair counts once however many of the
 record's spans touch the target, because anchors overlap by 160 characters and AML counted one
-target twice through that overlap; and edges are not re-checked here at query time, because the
-artifact that carries them is refused unless its lineage is the serving one.
+target twice through that overlap; a chunk id the baseline repeats is promoted by its first copy
+with every copy kept, where AML moved the last copy and dropped the others; and edges are not
+re-checked here at query time. Nothing in
+this module checks where the edges came from: a caller must pass only edges built from the chunks
+it is serving.
 """
 
 from __future__ import annotations
@@ -64,19 +67,21 @@ def promote(
     ``seeds`` are ``(record_key, edge_chunk_ids)`` in seed rank order, and must include records
     with no edges: every seed takes a rank and one of the ``SEED_K`` slots, as on the AML service.
     Each distinct (record, target) adds ``1 / (RRF_K + seed_rank)`` to the target; ties break by
-    baseline rank, then id.
+    baseline rank, then id. A chunk id the baseline holds twice is promoted by moving its first
+    copy, and every other copy keeps its place in the order of the tail.
     """
     pool = list(baseline)
     if not pool or not seeds:
         return Promotion(pool)
-    raw_by_id = {hit.chunk.id: hit for hit in pool}
-    baseline_rank = {hit.chunk.id: rank for rank, hit in enumerate(pool)}
+    baseline_rank: dict[str, int] = {}
+    for rank, hit in enumerate(pool):
+        baseline_rank.setdefault(hit.chunk.id, rank)
     scores: dict[str, float] = {}
     seen: set[tuple[str, str]] = set()
     relation_hits = 0
     for seed_rank, (record_key, targets) in enumerate(seeds[:SEED_K], start=1):
         for target in targets:
-            if target not in raw_by_id or (record_key, target) in seen:
+            if target not in baseline_rank or (record_key, target) in seen:
                 continue
             seen.add((record_key, target))
             relation_hits += 1
@@ -89,11 +94,15 @@ def promote(
     promoted = candidates[:MAX_PROMOTIONS]
     if not promoted:
         return Promotion(pool, relation_hits=relation_hits, candidate_count=len(candidates))
-    promoted_set = set(promoted)
+    moved_ranks = [baseline_rank[chunk_id] for chunk_id in promoted]
     reordered = [
         *pool[:PROTECTED_PREFIX],
-        *(raw_by_id[chunk_id] for chunk_id in promoted),
-        *(hit for hit in pool[PROTECTED_PREFIX:] if hit.chunk.id not in promoted_set),
+        *(pool[rank] for rank in moved_ranks),
+        *(
+            hit
+            for rank, hit in enumerate(pool)
+            if rank >= PROTECTED_PREFIX and rank not in moved_ranks
+        ),
     ]
     return Promotion(
         reordered,

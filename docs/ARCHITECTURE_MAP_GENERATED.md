@@ -9,7 +9,7 @@ design violation.
 
 Packages: `recall`, `recall_mcp`, `recall_agent`, `recall_hooks`, `recall_interop`, `recall_consistency`
 Modules: 393
-Cross package edges: 471
+Cross package edges: 473
 
 ## Highest fan in modules
 
@@ -74,9 +74,9 @@ Cross package edges: 471
 | 23 | `recall_mcp.reasoning_engine` |
 | 21 | `recall` |
 | 21 | `recall.rewrite` |
+| 21 | `recall.wizard.headless` |
 | 21 | `recall_mcp.server_ingest` |
 | 20 | `recall.cli_commands.setup_wizard` |
-| 20 | `recall.wizard.headless` |
 | 19 | `recall.lite.store` |
 | 19 | `recall_mcp.provenance` |
 | 18 | `recall.cli_commands.calibration_cmd` |
@@ -89,17 +89,17 @@ Cross package edges: 471
 | 17 | `recall_mcp.server_memory_admin` |
 | 16 | `recall.cli_commands.generation_cmd` |
 | 16 | `recall.cli_commands.provenance_cmd` |
+| 16 | `recall_mcp.desktop_ingest` |
+| 15 | `recall.compiled_graph.service` |
 | 15 | `recall.generation_rescue` |
-| 15 | `recall_mcp.desktop_ingest` |
 | 15 | `recall_mcp.graph_first_api` |
 | 15 | `recall_mcp.query_construction_api` |
 | 15 | `recall_mcp.reasoning_diagnostics` |
 | 14 | `recall.calibration_v2` |
+| 14 | `recall.cli_commands.graph_cmd` |
 | 14 | `recall.desktop.main` |
 | 14 | `recall.eval.promotion.__main__` |
 | 14 | `recall.lite.refresh` |
-| 14 | `recall.setup` |
-| 14 | `recall_mcp.reasoning_api` |
 
 ## Cross package edges
 
@@ -183,6 +183,7 @@ They are observations, not automatic failures.
 | `recall_mcp.codex_server` | `recall._env` |
 | `recall_mcp.config_report` | `recall.dsn_security` |
 | `recall_mcp.desktop_ingest` | `recall.calibration_v2` |
+| `recall_mcp.desktop_ingest` | `recall.compiled_graph.service` |
 | `recall_mcp.desktop_ingest` | `recall.embeddings` |
 | `recall_mcp.desktop_ingest` | `recall.generation_build` |
 | `recall_mcp.desktop_ingest` | `recall.generation_rescue` |
@@ -545,6 +546,7 @@ They are observations, not automatic failures.
 | `recall_mcp.service` | `recall.types` |
 | `recall_mcp.settings` | `recall._env` |
 | `recall_mcp.settings` | `recall.answer_provider` |
+| `recall_mcp.settings` | `recall.compiled_graph.service` |
 | `recall_mcp.settings` | `recall.constants` |
 | `recall_mcp.settings` | `recall.federation` |
 | `recall_mcp.settings` | `recall.multimodal` |
@@ -617,7 +619,7 @@ They are observations, not automatic failures.
 | `recall.cli_commands.doctor_cmd` | 1 | 201 |
 | `recall.cli_commands.extract_rewrite` | 12 | 168 |
 | `recall.cli_commands.generation_cmd` | 16 | 156 |
-| `recall.cli_commands.graph_cmd` | 13 | 154 |
+| `recall.cli_commands.graph_cmd` | 14 | 154 |
 | `recall.cli_commands.idempotency_cmd` | 2 | 40 |
 | `recall.cli_commands.index_search` | 31 | 168 |
 | `recall.cli_commands.lint_check` | 8 | 156 |
@@ -633,16 +635,16 @@ They are observations, not automatic failures.
 | `recall.codex` | 4 | 196 |
 | `recall.compiled_graph` | 0 | 0 |
 | `recall.compiled_graph.anchors` | 0 | 0 |
-| `recall.compiled_graph.artifact` | 0 | 0 |
-| `recall.compiled_graph.budget` | 1 | 3 |
-| `recall.compiled_graph.build` | 9 | 24 |
-| `recall.compiled_graph.cache` | 3 | 4 |
+| `recall.compiled_graph.artifact` | 1 | 1 |
+| `recall.compiled_graph.budget` | 1 | 4 |
+| `recall.compiled_graph.build` | 9 | 25 |
+| `recall.compiled_graph.cache` | 4 | 6 |
 | `recall.compiled_graph.mentions` | 5 | 151 |
 | `recall.compiled_graph.promotion` | 2 | 7 |
-| `recall.compiled_graph.provider` | 3 | 3 |
+| `recall.compiled_graph.provider` | 4 | 4 |
 | `recall.compiled_graph.records` | 1 | 1 |
 | `recall.compiled_graph.search` | 5 | 150 |
-| `recall.compiled_graph.service` | 11 | 150 |
+| `recall.compiled_graph.service` | 15 | 150 |
 | `recall.confinement` | 0 | 0 |
 | `recall.constants` | 0 | 0 |
 | `recall.context` | 2 | 14 |
@@ -884,7 +886,7 @@ They are observations, not automatic failures.
 | `recall.wizard.config_lock` | 0 | 0 |
 | `recall.wizard.corpora` | 4 | 152 |
 | `recall.wizard.database` | 2 | 40 |
-| `recall.wizard.headless` | 20 | 196 |
+| `recall.wizard.headless` | 21 | 196 |
 | `recall.wizard.identity` | 1 | 1 |
 | `recall.wizard.interactive` | 5 | 155 |
 | `recall.wizard.inventory` | 2 | 151 |
@@ -932,7 +934,7 @@ They are observations, not automatic failures.
 | `recall_mcp.codex_server` | 2 | 232 |
 | `recall_mcp.compat` | 0 | 0 |
 | `recall_mcp.config_report` | 2 | 161 |
-| `recall_mcp.desktop_ingest` | 15 | 165 |
+| `recall_mcp.desktop_ingest` | 16 | 165 |
 | `recall_mcp.evidence_cards` | 5 | 151 |
 | `recall_mcp.factories` | 6 | 19 |
 | `recall_mcp.federation_adapter` | 9 | 167 |
@@ -969,7 +971,7 @@ They are observations, not automatic failures.
 | `recall_mcp.server_reasoning` | 25 | 211 |
 | `recall_mcp.server_search` | 18 | 179 |
 | `recall_mcp.service` | 59 | 202 |
-| `recall_mcp.settings` | 12 | 160 |
+| `recall_mcp.settings` | 13 | 160 |
 | `recall_mcp.stale_reports_api` | 5 | 167 |
 | `recall_mcp.status` | 8 | 151 |
 | `recall_mcp.stores` | 7 | 151 |

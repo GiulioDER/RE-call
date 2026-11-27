@@ -18,29 +18,35 @@ from recall.compiled_graph.provider import (
     MAX_OUTPUT_TOKENS,
     CompiledGraphConfigError,
     CompileReply,
+    required_env,
 )
 
 
 def _positive_float(env: Mapping[str, str], name: str, *, allow_zero: bool) -> float:
     variable = f"{ENV_PREFIX}_{name}"
-    text = env.get(variable, "").strip()
-    if not text:
-        raise CompiledGraphConfigError(f"{variable} is required for a compile")
+    text = required_env(env, name)
     try:
         value = float(text)
     except ValueError as exc:
         raise CompiledGraphConfigError(f"{variable} must be a number") from exc
     if not math.isfinite(value) or value < 0 or (value == 0 and not allow_zero):
-        raise CompiledGraphConfigError(f"{variable} must be a finite number above zero")
+        bound = "zero or above" if allow_zero else "above zero"
+        raise CompiledGraphConfigError(f"{variable} must be a finite number {bound}")
     return value
 
 
 @dataclass
 class Budget:
+    """One build's spend: ``reserve`` before each attempt, then ``settle`` it exactly once.
+
+    A second ``reserve`` before the ``settle`` raises. ``exhausted`` latches for the rest of the
+    build once the spend reaches ``max_usd`` or a reply's reported usage exceeds its reservation,
+    and every later ``reserve`` then returns False.
+    """
+
     max_usd: float
     cost_in_per_1k: float
     cost_out_per_1k: float
-    max_tokens: int = MAX_OUTPUT_TOKENS
     spent_usd: float = 0.0
     exhausted: bool = False
     _reserved_usd: float | None = field(default=None, repr=False)
@@ -56,11 +62,15 @@ class Budget:
     def _cost(self, tokens_in: int, tokens_out: int) -> float:
         return tokens_in / 1000 * self.cost_in_per_1k + tokens_out / 1000 * self.cost_out_per_1k
 
-    def reserve(self, request_bytes: int) -> bool:
+    def worst_case(self, input_token_bound: int) -> float:
+        """The USD one call is reserved at, given a bound on its input tokens."""
+        return self._cost(input_token_bound, MAX_OUTPUT_TOKENS)
+
+    def reserve(self, input_token_bound: int) -> bool:
         """Hold the worst case of one call; False when it does not fit what is left."""
         if self._reserved_usd is not None:
             raise RuntimeError("settle the previous call before reserving another")
-        worst = self._cost(request_bytes, self.max_tokens)
+        worst = self.worst_case(input_token_bound)
         if self.exhausted or self.spent_usd + worst > self.max_usd:
             return False
         self._reserved_usd = worst

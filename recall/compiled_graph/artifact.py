@@ -13,6 +13,8 @@ import json
 import os
 import shutil
 import tempfile
+import threading
+from collections import OrderedDict
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -20,12 +22,14 @@ from typing import Any
 
 import numpy as np
 
+from recall.errors import RecallError
+
 #: 2 added each record's (chunk id, entity) mentions.
 ARTIFACT_SCHEMA_VERSION = 2
 _MEMBERS = ("records.jsonl", "vectors.npy")
 
 
-class CompiledGraphArtifactError(RuntimeError):
+class CompiledGraphArtifactError(RuntimeError, RecallError):
     """Base of the reasons an artifact cannot serve."""
 
 
@@ -39,6 +43,10 @@ class ArtifactLineageMismatch(CompiledGraphArtifactError):
 
 class ArtifactDamaged(CompiledGraphArtifactError):
     pass
+
+
+class ArtifactUnconfigured(CompiledGraphArtifactError):
+    """The search process lacks the generation, model or root a serving lineage needs."""
 
 
 @dataclass(frozen=True)
@@ -73,11 +81,18 @@ def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def write_artifact(folder: Path, artifact: CompiledGraphArtifact) -> Path:
-    """Write ``artifact`` under ``folder`` and return its directory; an existing one is kept."""
+def write_artifact(folder: Path, artifact: CompiledGraphArtifact, *, owner: str = "") -> Path:
+    """Write ``artifact`` under ``folder`` and return its directory; an existing one is kept.
+
+    ``owner`` names the store that built it, so a prune removes only that store's artifacts.
+    A directory without a manifest is what an erase that stopped part way leaves; it can never
+    serve, so it is replaced rather than kept.
+    """
     target = artifact_dir(folder, artifact.lineage)
-    if target.exists():
+    if (target / "manifest.json").is_file():
         return target
+    if target.exists():
+        shutil.rmtree(target)
     folder.mkdir(parents=True, exist_ok=True)
     staging = Path(tempfile.mkdtemp(prefix=".cg-staging-", dir=folder))
     try:
@@ -106,6 +121,7 @@ def write_artifact(folder: Path, artifact: CompiledGraphArtifact) -> Path:
             "lineage": dict(artifact.lineage),
             "records": len(artifact.records),
             "members": {name: _sha256(staging / name) for name in _MEMBERS},
+            "owner": owner,
         }
         (staging / "manifest.json").write_text(json.dumps(manifest, sort_keys=True), encoding="utf-8")
         os.replace(staging, target)
@@ -132,6 +148,46 @@ def _record(row: object) -> ArtifactRecord:
         raise ArtifactDamaged("a record row lacks a field") from exc
 
 
+_CACHE_MAX_ENTRIES = 2
+# A search loads the artifact on every call, so a verified artifact is kept, stamped with its
+# manifest's bytes: the manifest holds every member's sha256, and a directory removed by a forget
+# has no manifest, so neither a rebuild nor an erase is ever served from memory.
+_CACHE: OrderedDict[Path, tuple[bytes, CompiledGraphArtifact]] = OrderedDict()
+_CACHE_LOCK = threading.Lock()
+
+
+def _manifest(directory: Path) -> dict[str, Any]:
+    try:
+        manifest = json.loads((directory / "manifest.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return manifest if isinstance(manifest, dict) else {}
+
+
+def stored_lineage(directory: Path) -> dict[str, str] | None:
+    """The lineage the manifest in ``directory`` names; None when there is no readable one."""
+    lineage = _manifest(directory).get("lineage")
+    return lineage if isinstance(lineage, dict) else None
+
+
+def stored_owner(directory: Path) -> str | None:
+    """The store the manifest in ``directory`` says built it; None when it names none."""
+    owner = _manifest(directory).get("owner")
+    return owner if isinstance(owner, str) and owner else None
+
+
+def artifact_sources(directory: Path) -> set[str]:
+    """Every source the records in ``directory`` quote; raises ``ArtifactDamaged`` when unreadable."""
+    try:
+        raw = (directory / "records.jsonl").read_bytes()
+    except OSError as exc:
+        raise ArtifactDamaged("records.jsonl is missing or unreadable") from exc
+    try:
+        return {_record(json.loads(row)).source for row in raw.decode("utf-8").splitlines() if row}
+    except ValueError as exc:  # UnicodeDecodeError is a ValueError
+        raise ArtifactDamaged("records.jsonl is not UTF-8 JSON lines") from exc
+
+
 def load_artifact(folder: Path, lineage: Mapping[str, str]) -> CompiledGraphArtifact:
     """The artifact serving ``lineage``; raises Missing, LineageMismatch or Damaged."""
     target = artifact_dir(folder, lineage)
@@ -139,7 +195,29 @@ def load_artifact(folder: Path, lineage: Mapping[str, str]) -> CompiledGraphArti
     if not manifest_path.is_file():
         raise ArtifactMissing(f"no compiled graph artifact for this lineage under {folder}")
     try:
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        stamp = manifest_path.read_bytes()
+        with _CACHE_LOCK:
+            cached = _CACHE.get(target)
+            if cached is not None and cached[0] == stamp:
+                _CACHE.move_to_end(target)
+                return cached[1]
+        artifact = _verified(target, lineage, stamp)
+    except FileNotFoundError as exc:
+        # A forget in another process removed the directory between the check and the read.
+        raise ArtifactMissing(f"the compiled graph artifact under {folder} was removed") from exc
+    except OSError as exc:
+        raise ArtifactDamaged(f"the compiled graph artifact could not be read: {exc}") from exc
+    with _CACHE_LOCK:
+        _CACHE[target] = (stamp, artifact)
+        _CACHE.move_to_end(target)
+        while len(_CACHE) > _CACHE_MAX_ENTRIES:
+            _CACHE.popitem(last=False)
+    return artifact
+
+
+def _verified(target: Path, lineage: Mapping[str, str], stamp: bytes) -> CompiledGraphArtifact:
+    try:
+        manifest = json.loads(stamp.decode("utf-8"))
     except ValueError as exc:
         raise ArtifactDamaged("the manifest is not JSON") from exc
     if not isinstance(manifest, dict) or manifest.get("schema") != ARTIFACT_SCHEMA_VERSION:
@@ -158,7 +236,10 @@ def load_artifact(folder: Path, lineage: Mapping[str, str]) -> CompiledGraphArti
         records = tuple(_record(json.loads(row)) for row in rows if row)
     except ValueError as exc:
         raise ArtifactDamaged("a record row is not JSON") from exc
-    vectors = np.load(target / "vectors.npy", allow_pickle=False)
+    try:
+        vectors = np.load(target / "vectors.npy", allow_pickle=False)
+    except ValueError as exc:
+        raise ArtifactDamaged("vectors.npy is not a numpy array") from exc
     if vectors.ndim != 2 or vectors.shape[0] != len(records) or manifest.get("records") != len(records):
         raise ArtifactDamaged("vectors and records disagree")
     return CompiledGraphArtifact(lineage=dict(lineage), records=records, vectors=vectors)

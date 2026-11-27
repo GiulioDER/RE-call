@@ -15,7 +15,7 @@ from recall.rerank import Reranker
 from recall.scope import Scope, coerce_scope
 from recall.scope_prior import ScopePrior, affinities, apply_scope_prior
 from recall.store import PgVectorStore
-from recall.types import RetrievalDiagnostics, RetrievalResult, ScoredChunk
+from recall.types import GraphTransform, RetrievalDiagnostics, RetrievalResult, ScoredChunk
 
 log = get_logger("retriever")
 
@@ -438,7 +438,7 @@ class HybridRetriever:
         post_fusion_transform: (
             Callable[[list[float], list[ScoredChunk], list[ScoredChunk]], list[ScoredChunk]] | None
         ) = None,
-        graph_transform: Callable[[list[float], list[ScoredChunk]], list[ScoredChunk]] | None = None,
+        graph_transform: GraphTransform | None = None,
     ) -> None:
         if dense_transform is not None and post_fusion_transform is not None:
             # Both would place a rescue: once inside the dense leg and again after fusion. A caller

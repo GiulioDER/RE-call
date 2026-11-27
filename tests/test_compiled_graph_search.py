@@ -11,6 +11,17 @@ Red proof, recorded 2026-11-26 (production symbols in ``recall.compiled_graph.se
 - ``test_scoped_search_is_skipped``: the scope check removed fails on ``skipped:scoped``.
 - ``test_missing_and_wrong_lineage_are_reported`` (RF5): every load error read as ``missing``
   fails on ``skipped:lineage``.
+- ``test_unconfigured_search_is_reported_as_such`` (CCA ENV-001): against the pre-fix
+  ``load_serving_artifact`` and step fails on ``skipped:damaged``.
+- ``test_unreadable_artifact_skips_the_graph`` (CCA BUG-001): against the pre-fix
+  ``load_artifact`` fails with the raw ``PermissionError`` out of the step.
+- ``test_seeds_match_a_stable_full_sort_without_sorting_every_record`` (CCA PERF-002): against
+  the pre-fix ``_seeds``, which sorted all 300 scores, fails on the largest array sorted.
+- ``test_the_graph_and_a_dense_rescue_both_apply`` (CCA CODE-002): the ``graph_transform`` call
+  removed from ``HybridRetriever.search`` fails on ``graph_calls``; it replaces a test that only
+  re-checked the dense and post-fusion refusal.
+- ``test_every_skip_reason_is_documented`` (CCA CODE-003): ``unconfigured`` removed from
+  ``recall_mcp.models._COMPILED_GRAPH_DESCRIPTION`` fails on the description's reasons.
 - ``test_step_error_keeps_the_exact_order``: the ``except`` in the transform removed fails with
   the raised error.
 - ``test_retriever_applies_the_graph_after_fusion_and_records_the_stage``: the
@@ -119,6 +130,29 @@ def test_missing_and_wrong_lineage_are_reported(tmp_path: Path) -> None:
     assert step is None and outcome.note == "skipped:lineage"
 
 
+@pytest.mark.parametrize("unset", ["RECALL_COMPILED_GRAPH_MODEL", "RECALL_COMPILED_GRAPH_ARTIFACT_ROOT"])
+def test_unconfigured_search_is_reported_as_such(tmp_path: Path, unset: str) -> None:
+    env = _env(tmp_path)
+    _write(tmp_path, env)
+    del env[unset]
+    step, outcome = compiled_graph_step(Store(), FakeEmbedder(), env, scope_is_empty=True)
+    assert step is None and outcome.note == "skipped:unconfigured"
+
+
+def test_unreadable_artifact_skips_the_graph(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from recall.compiled_graph import artifact as artifact_module
+
+    env = _env(tmp_path)
+    _write(tmp_path, env)
+
+    def unreadable(path: Path) -> str:
+        raise PermissionError(str(path))
+
+    monkeypatch.setattr(artifact_module, "_sha256", unreadable)
+    step, outcome = compiled_graph_step(Store(), FakeEmbedder(), env, scope_is_empty=True)
+    assert step is None and outcome.note == "skipped:damaged"
+
+
 def test_step_error_keeps_the_exact_order(tmp_path: Path) -> None:
     env = _env(tmp_path)
     _write(tmp_path, env)
@@ -154,11 +188,69 @@ def test_retriever_applies_the_graph_after_fusion_and_records_the_stage(tmp_path
         store.close()
 
 
-def test_graph_transform_coexists_with_a_dense_rescue() -> None:
+def test_the_graph_and_a_dense_rescue_both_apply(tmp_path: Path) -> None:
+    from recall.lite import LiteStore
     from recall.retriever import HybridRetriever
 
-    with pytest.raises(ValueError):
-        HybridRetriever(object(), FakeEmbedder(), dense_transform=lambda q, d: d,  # type: ignore[arg-type]  # store unused
-                        post_fusion_transform=lambda q, d, r: r, env={})
-    HybridRetriever(object(), FakeEmbedder(), dense_transform=lambda q, d: d,  # type: ignore[arg-type]  # store unused
-                    graph_transform=lambda q, r: r, env={})
+    store = LiteStore(tmp_path / "memory.db", dim=4)
+    chunks = [Chunk(id=f"c{i:02d}", source="a.md", text=f"text {i}", metadata={"file": "a.md", "ord": i})
+              for i in range(12)]
+    store.upsert(chunks, [[1.0, i / 10, 0.0, 0.0] for i in range(12)])
+    dense_calls: list[int] = []
+    graph_calls: list[int] = []
+
+    def dense(query_vector: list[float], dense_hits: list[ScoredChunk]) -> list[ScoredChunk]:
+        dense_calls.append(len(dense_hits))
+        return dense_hits
+
+    def graph(query_vector: list[float], ranked: list[ScoredChunk]) -> list[ScoredChunk]:
+        graph_calls.append(len(ranked))
+        return list(reversed(ranked))
+
+    try:
+        retriever = HybridRetriever(cast(Any, store), FakeEmbedder(), use_sparse=False, candidate_k=12,
+                                    dense_transform=dense, graph_transform=graph, env={})
+        result = retriever.search("q", k=12)
+        assert dense_calls and graph_calls
+        assert _ids(result.hits)[0] == "c11"
+    finally:
+        store.close()
+
+
+def test_seeds_match_a_stable_full_sort_without_sorting_every_record(monkeypatch: pytest.MonkeyPatch) -> None:
+    from recall.compiled_graph import search as search_module
+
+    rng = np.random.default_rng(7)
+    # Rounded to one decimal so many records tie, including at the SEED_K-th place.
+    vectors = np.round(rng.random((300, 4)), 1).astype(np.float32)
+    records = tuple(ArtifactRecord(f"a.md#{i}", "a.md", "fact", (), (), (f"c{i}",)) for i in range(300))
+    artifact = CompiledGraphArtifact({}, records, vectors)
+    query = [0.5, 0.25, 0.125, 0.0]
+    # The pre-fix expression exactly: a float32 query over a Python float norm keeps float32.
+    query32 = np.asarray(query, dtype=np.float32)
+    scores = vectors @ (query32 / float(np.linalg.norm(query32)))
+    expected = [records[i].key for i in np.argsort(-scores, kind="stable")[:20]]
+    sorted_sizes: list[int] = []
+    real_argsort = np.argsort
+
+    def recording(values: Any, *args: Any, **kwargs: Any) -> Any:
+        sorted_sizes.append(len(values))
+        return real_argsort(values, *args, **kwargs)
+
+    monkeypatch.setattr(search_module.np, "argsort", recording)
+    assert [key for key, _ in search_module._seeds(artifact, query)] == expected
+    assert max(sorted_sizes) < 300
+
+
+def test_every_skip_reason_is_documented() -> None:
+    import re
+
+    from recall_mcp.models import _COMPILED_GRAPH_DESCRIPTION
+
+    root = Path(__file__).resolve().parents[1]
+    emitted = set(re.findall(r'"skipped:(\w+)"', (root / "recall/compiled_graph/search.py").read_text(encoding="utf-8")))
+    described = re.search(r"skipped: and why \(([^)]*)\)", _COMPILED_GRAPH_DESCRIPTION)
+    documented = re.search(r"`skipped:` and why \(([^)]*)\)", (root / "docs/COMPILED_GRAPH.md").read_text(encoding="utf-8"))
+    assert described is not None and documented is not None
+    assert {reason.strip() for reason in described.group(1).split(",")} == emitted
+    assert {reason.strip(" `") for reason in documented.group(1).split(",")} == emitted

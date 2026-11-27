@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import unicodedata
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal, get_args
@@ -380,6 +380,11 @@ class ScoredChunk:
     first_indexed_at: datetime | None = None
     #: Structural relatedness is not a dense cosine and must not be exposed as one.
     score_kind: Literal["dense_cosine", "structural"] = "dense_cosine"
+
+
+#: A search-time step over the fused ranking (``recall.compiled_graph.search``), applied by
+#: ``HybridRetriever`` before the cut to k: query vector and ranked hits in, ranked hits out.
+GraphTransform = Callable[[list[float], list[ScoredChunk]], list[ScoredChunk]]
 
 
 @dataclass(frozen=True)

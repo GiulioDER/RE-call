@@ -877,14 +877,32 @@ class _RealServices:
         )
 
     def _rescue_builder(self, tenant: str) -> Callable[[str], str | None] | None:
-        """Build a certified generation's atomic rescue under the settings its server gets."""
+        """Build a certified generation's atomic rescue, and its compiled graph when that is on for
+        the tenant, under the settings its server gets."""
+        from recall.compiled_graph.service import compiled_graph_mode
         from recall.lite.atomic import MODE_ENV
 
-        if self.atomic_env.get(MODE_ENV, "").lower() != "active":
+        env = {**_rescue_base_env(), **self.atomic_env}
+        rescue_active = self.atomic_env.get(MODE_ENV, "").lower() == "active"
+        try:
+            graph_on = compiled_graph_mode(env, tenant) != "off"
+        except ValueError:
+            # A malformed mode is reported by the build itself, which never raises.
+            graph_on = True
+        if not rescue_active and not graph_on:
             return None
+        if not rescue_active:
+            # Only the compiled graph: the rescue's own gate would read the process's mode from
+            # `env` and could refuse a rescue that `atomic_env` turned off.
+            from recall.compiled_graph.service import ensure_for_generation
+
+            def compile_only(generation_id: str) -> None:
+                # It never raises and logs its own failure; the promotion goes on either way.
+                ensure_for_generation(self.config.resolved_dsn, tenant, generation_id, self.embedder, env)
+
+            return compile_only
         from recall.generation_rescue import ensure_for_promotion
 
-        env = {**_rescue_base_env(), **self.atomic_env}
         return lambda generation_id: ensure_for_promotion(
             self.config.resolved_dsn, tenant, generation_id, self.embedder, env=env
         )

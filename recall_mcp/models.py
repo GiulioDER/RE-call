@@ -16,7 +16,7 @@ from recall.types import DecisionState
 _COMPILED_GRAPH_DESCRIPTION = (
     "The opt-in compiled graph on this search: active:promoted=N (at most two linked chunks moved "
     "into ranks 9 and 10), shadow:would_promote=N (order unchanged), or skipped: and why (scoped, "
-    "missing, lineage, damaged, error); empty when RECALL_COMPILED_GRAPH_MODE is off."
+    "missing, unconfigured, lineage, damaged, error); empty when RECALL_COMPILED_GRAPH_MODE is off."
 )
 _ATOMIC_RESCUE_SKIPPED_DESCRIPTION = (
     "Why an active atomic rescue was not applied to this search under "
