@@ -36,6 +36,18 @@ restored and the test run green:
   (every chunker called with the text alone); failed on ``assert anchors == expected``. And with
   ``unquote(...)`` removed from the ``file`` argument, failed on the same assertion for
   ``pkg/my mod.py``.
+
+Red proof for the text spans (2026-11-27, deployment host, database container owned by the run):
+
+- `test_every_piece_maps_back_to_its_source_spans` and
+  `test_a_symbol_split_around_a_nested_one_has_a_span_per_run`: in `recall.index._line_spans`,
+  ``if index == previous + 1`` replaced by ``if spans`` (every piece one run); failed on the slice
+  equality for ``python`` and ``crlf-bom`` and on the two ``Pool.lease`` runs. In
+  `recall.index._code_chunks_with_spans`, the text offset ``len(buf) + 2`` replaced by
+  ``len(buf) + 1``; failed on the slice equality for ``not-python`` and ``unparseable``.
+- `test_a_generation_build_stores_the_text_spans_on_every_code_chunk` (database): in
+  `GenerationManager._chunks_for_source`, ``**piece_metadata[ordinal]`` removed from the chunk
+  metadata; failed on the spans list, every row ``None``.
 """
 from __future__ import annotations
 
@@ -48,7 +60,7 @@ from pathlib import Path
 import psycopg
 import pytest
 
-from recall.anchors import code_sha, resolve_symbols, symbol_sha
+from recall.anchors import code_sha, normalize, resolve_symbols, symbol_sha
 from recall.generation_build import BuildRequest, chunker_for
 from recall.index import (
     CODE_ANCHOR_KEY,
@@ -65,6 +77,7 @@ from recall.lineage import (
     ManifestObjectV1,
     PipelineIdentity,
 )
+from recall.types import TEXT_SPANS_KEY
 from tests.conftest import TEST_DSN, _db_available, db_unreachable_reason, requires_db
 
 VECTORS = json.loads(
@@ -126,7 +139,7 @@ def test_each_symbol_gets_its_own_chunk_and_one_anchor() -> None:
     assert got == EXPECTED
     assert {symbol for symbol, _ in got} == {s.symbol for s in resolve_symbols(SOURCE)} | {None}
     for _, meta in pieces:
-        assert set(meta) == {CODE_ANCHOR_KEY}
+        assert set(meta) == {CODE_ANCHOR_KEY, TEXT_SPANS_KEY}
         anchor = meta[CODE_ANCHOR_KEY]
         assert list(anchor) == ["repo", "file", "symbol", "code_sha"]
         assert (anchor["repo"], anchor["file"]) == ("owner/name", "pkg/pool.py")
@@ -180,7 +193,8 @@ def test_a_non_python_file_is_chunked_as_before_with_no_anchor(file: str) -> Non
     # Parseable Python on purpose: only the file name may decide that it is not Python.
     pieces = code_pieces(SOURCE, file=file, repo="owner/name")
 
-    assert pieces == [(piece, {}) for piece in chunk_code(SOURCE)]
+    assert [text for text, _ in pieces] == chunk_code(SOURCE)
+    assert all(set(meta) == {TEXT_SPANS_KEY} for _, meta in pieces)
 
 
 def test_unparseable_python_is_anchored_to_the_whole_file() -> None:
@@ -196,7 +210,52 @@ def test_unparseable_python_is_anchored_to_the_whole_file() -> None:
         "symbol": None,
         "code_sha": code_sha(source),
     }
-    assert metas == [{CODE_ANCHOR_KEY: whole_file}] * len(pieces)
+    assert [meta[CODE_ANCHOR_KEY] for meta in metas] == [whole_file] * len(pieces)
+
+
+#: A class whose methods sit between its own lines, CRLF endings, trailing spaces, a BOM and a line
+#: too long for one chunk: the ways a chunk stops being a plain slice of the file it came from.
+_SPAN_CASES = [
+    pytest.param(SOURCE, "pkg/pool.py", True, id="python"),
+    pytest.param("\ufeffdef first():  \r\n    return 1\r\n\r\n\r\nclass C:\r\n    x = 1\r\n"
+                 "    def m(self):\r\n        pass\r\n    y = 2\r\n", "c.py", True, id="crlf-bom"),
+    pytest.param("def big():\n" + "".join(f"    value_{i} = compute({i})  # pad\n" for i in range(40))
+                 + "    " + "x" * 700 + " " + "y" * 700 + "\n", "big.py", True, id="oversized"),
+    pytest.param(SOURCE, "lib.js", False, id="not-python"),
+    pytest.param("def broken(:\n    pass\n\n\nclass Fine:\n    x = 1\n", "broken.py", False,
+                 id="unparseable"),
+]
+
+
+@pytest.mark.parametrize("source,file,parsed", _SPAN_CASES)
+def test_every_piece_maps_back_to_its_source_spans(source: str, file: str, parsed: bool) -> None:
+    """Each `[source_start, source_end, text_offset]` names the chunk text it covers, exactly, and
+    what no span covers is only the newlines that join the segments."""
+    # A parsed Python file is chunked from its normalised lines with the BOM removed; anything
+    # else from the text as given.
+    text_of = normalize(source).removeprefix("\ufeff") if parsed else source
+    pieces = code_pieces(source, file=file, repo=None, max_chars=1_000)
+    assert pieces
+    for text, meta in pieces:
+        covered = [False] * len(text)
+        for start, end, offset in meta[TEXT_SPANS_KEY]:
+            assert text[offset : offset + end - start] == text_of[start:end], (text, meta)
+            covered[offset : offset + end - start] = [True] * (end - start)
+        assert {char for char, hit in zip(text, covered) if not hit} <= {"\n"}, (text, meta)
+
+
+def test_a_symbol_split_around_a_nested_one_has_a_span_per_run() -> None:
+    """`Pool.lease` keeps its first and last lines while `check` takes the lines between them, so
+    its chunk is two runs of the file, not one."""
+    text_of = normalize(SOURCE)
+    spans = {
+        meta[CODE_ANCHOR_KEY]["symbol"]: meta[TEXT_SPANS_KEY]
+        for _, meta in code_pieces(SOURCE, file="pkg/pool.py", repo=None)
+    }
+    assert [text_of[start:end] for start, end, _ in spans["Pool.lease"]] == [
+        "    def lease(self):",
+        "        return check(self._conn)",
+    ]
 
 
 def test_the_code_chunker_version_moves_the_pipeline_fingerprint() -> None:
@@ -393,6 +452,15 @@ def test_generation_anchors_hash_original_python_source(manager, tmp_path, sourc
     expected = code_pieces(source, file="source.py", repo="owner/name")
     assert [(text, metadata[CODE_ANCHOR_KEY]) for text, metadata in rows] == [
         (text, metadata[CODE_ANCHOR_KEY]) for text, metadata in expected
+    ]
+
+
+@requires_db
+def test_a_generation_build_stores_the_text_spans_on_every_code_chunk(manager, tmp_path):  # type: ignore[no-untyped-def]
+    _, rows = _source_build(manager, tmp_path, SOURCE, "owner/name")
+    expected = code_pieces(SOURCE, file="source.py", repo="owner/name")
+    assert [metadata.get(TEXT_SPANS_KEY) for _, metadata in rows] == [
+        metadata[TEXT_SPANS_KEY] for _, metadata in expected
     ]
 
 

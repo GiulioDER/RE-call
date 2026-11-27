@@ -8,6 +8,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ## [Unreleased]
 
+### Changed
+
+* The `code` chunker (version 4) records `text_spans` on every chunk: where each run of the file
+  the chunk holds starts and ends, and where it sits in the chunk text. The compiled graph reads
+  them, so a code tenant now compiles. The chunk text is unchanged, but the version is part of the
+  pipeline fingerprint, so the next build of a code tenant re-chunks every source and embeds
+  whatever the embedding cache does not already hold.
+
 ### Fixed
 
 * The compiled graph skips a source none of whose chunks carries character offsets (a

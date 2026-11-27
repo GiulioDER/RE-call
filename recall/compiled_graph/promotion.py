@@ -19,7 +19,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 
 from recall.compiled_graph.records import CompiledRecord
-from recall.types import Chunk, ScoredChunk
+from recall.types import TEXT_SPANS_KEY, Chunk, ScoredChunk
 
 #: The AML grounded graph's constants (``recall_aml/graph.py``), unchanged.
 SEED_K = 20
@@ -28,27 +28,37 @@ MAX_PROMOTIONS = 2
 RRF_K = 60
 
 
-def _offsets(chunk: Chunk) -> tuple[int, int] | None:
-    start = chunk.metadata.get("text_start")
-    end = chunk.metadata.get("text_end")
-    if isinstance(start, bool) or isinstance(end, bool):
-        return None
-    if not isinstance(start, int) or not isinstance(end, int) or end <= start:
-        return None
-    return start, end
+def _offset(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
+def placements(chunk: Chunk) -> list[tuple[int, int, int]]:
+    """Where ``chunk``'s text sits in its source, as ``(source_start, source_end, text_offset)``.
+
+    One per run `TEXT_SPANS_KEY` records, which the code chunker writes; otherwise the one
+    ``text_start``/``text_end`` span at text offset 0. Empty when the chunk records neither.
+    """
+    runs = chunk.metadata.get(TEXT_SPANS_KEY)
+    if runs is None:
+        runs = [[chunk.metadata.get("text_start"), chunk.metadata.get("text_end"), 0]]
+    return [
+        (start, end, offset)
+        for start, end, offset in runs
+        if _offset(start) and _offset(end) and _offset(offset) and end > start
+    ]
 
 
 def record_edges(record: CompiledRecord, chunks: Sequence[Chunk]) -> tuple[str, ...]:
     """Ids of ``chunks`` (one source's, in order) that overlap any span of ``record``."""
-    linked: list[str] = []
-    for chunk in chunks:
-        offsets = _offsets(chunk)
-        if offsets is None:
-            continue
-        chunk_start, chunk_end = offsets
-        if any(start < chunk_end and end > chunk_start for start, end in record.spans):
-            linked.append(chunk.id)
-    return tuple(linked)
+    return tuple(
+        chunk.id
+        for chunk in chunks
+        if any(
+            start < chunk_end and end > chunk_start
+            for chunk_start, chunk_end, _ in placements(chunk)
+            for start, end in record.spans
+        )
+    )
 
 
 @dataclass(frozen=True)

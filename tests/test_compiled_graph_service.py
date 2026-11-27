@@ -25,6 +25,11 @@ in ``recall.compiled_graph.service``):
   ``recall.compiled_graph.build.without_offsets`` mutated to ``return False``, both fail on the
   count assertion, the build and the dry run each reporting ``0`` skipped for a source whose only
   chunk has ``text_start=None``. Before the fix such a source was skipped without being counted.
+- ``test_body_from_chunks_places_each_code_span`` and
+  ``test_a_dry_run_counts_a_code_source_as_one_to_compile`` (recorded 2026-11-27):
+  ``recall.compiled_graph.promotion.placements`` ignoring ``TEXT_SPANS_KEY`` fails both, on the
+  empty body slice and on ``0 source(s) to compile``; ``body_from_chunks`` placing
+  ``chunk.text`` instead of ``chunk.text[offset:]`` fails the first on the class chunk's second run.
 - ``test_off_or_rootless_builds_nothing``: the mode check removed fails on the call count.
 - ``test_build_writes_an_artifact_the_loader_serves``: the loader lineage built without the model
   fails with ``ArtifactMissing``.
@@ -65,7 +70,8 @@ from recall.compiled_graph.service import (
     serving_lineage,
     tenant_folder,
 )
-from recall.types import Chunk
+from recall.index import code_pieces
+from recall.types import TEXT_SPANS_KEY, Chunk
 
 BODY = "Alice owns the release checklist. " + "x" * 2_000 + " The deploy uses port 18015."
 BINDING = {"generation_id": "g1", "corpus_fingerprint": "cf1"}
@@ -226,6 +232,30 @@ def test_a_dry_run_reports_sources_without_offsets(tmp_path: Path) -> None:
     estimate = estimate_compile("t1", _chunks_with_an_unplaced_source(), _env(tmp_path))
     assert "1 source(s) to compile" in estimate, estimate
     assert "1 skipped because no chunk carries character offsets" in estimate, estimate
+
+
+CODE_SOURCE = "class C:\n    x = 1\n\n    def m(self):\n        return 1\n\n    y = 2\n"
+
+
+def _code_chunks() -> list[Chunk]:
+    return [
+        Chunk(id=f"c.py:{i}", source="c.py", text=text, metadata=meta)
+        for i, (text, meta) in enumerate(code_pieces(CODE_SOURCE, file="c.py", repo=None))
+    ]
+
+
+def test_body_from_chunks_places_each_code_span() -> None:
+    chunks = _code_chunks()
+    body = body_from_chunks(chunks)
+    for chunk in chunks:
+        for start, end, offset in chunk.metadata[TEXT_SPANS_KEY]:
+            assert body[start:end] == chunk.text[offset : offset + end - start] == CODE_SOURCE[start:end]
+
+
+def test_a_dry_run_counts_a_code_source_as_one_to_compile(tmp_path: Path) -> None:
+    estimate = estimate_compile("t1", _code_chunks(), _env(tmp_path))
+    assert "1 source(s) to compile" in estimate, estimate
+    assert "0 skipped because no chunk carries character offsets" in estimate, estimate
 
 
 def test_off_or_rootless_builds_nothing(tmp_path: Path) -> None:

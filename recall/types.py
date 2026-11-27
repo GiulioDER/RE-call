@@ -116,6 +116,13 @@ Verdict = Literal[
     "unknown_term",
 ]
 
+#: The chunk metadata key the code chunker writes: a list of ``[source_start, source_end,
+#: text_offset]``, one per run of the source the chunk holds, saying that
+#: ``text[text_offset : text_offset + source_end - source_start]`` is that run. A code chunk can
+#: be several runs, a class's lines with its methods' lines taken out, so it has no single
+#: ``text_start`` and ``text_end``. Offsets index the text `recall.index.code_pieces` chunked.
+TEXT_SPANS_KEY = "text_spans"
+
 
 @dataclass(frozen=True)
 class Chunk:

@@ -298,8 +298,8 @@ def test_the_code_chunker_records_no_overlap(
 
     assert chunker.algorithm == "recall.chunk_code"
     # BUG-001 deliberately moves the code fingerprint so transformed v2 anchors cannot be reused.
-    # Red proof: restoring CODE_CHUNKER_VERSION=2 fails this assertion. The text control stays v1.
-    assert chunker.schema_version == 3
+    # Red proof: restoring CODE_CHUNKER_VERSION=3 fails this assertion. The text control stays v1.
+    assert chunker.schema_version == 4
     assert dict(chunker.configuration) == {"max_chars": 300}
 
 

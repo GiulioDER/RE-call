@@ -26,7 +26,7 @@ from recall.compiled_graph.anchors import (
 from recall.compiled_graph.artifact import ArtifactRecord, CompiledGraphArtifact
 from recall.compiled_graph.budget import Budget
 from recall.compiled_graph.cache import CompileCache, cache_key
-from recall.compiled_graph.promotion import _offsets, record_edges
+from recall.compiled_graph.promotion import placements, record_edges
 from recall.compiled_graph.provider import (
     BudgetExhausted,
     CreditStop,
@@ -72,8 +72,8 @@ class BuildReport:
 
 def without_offsets(source: SourceInput) -> bool:
     """True when ``source`` has chunks but none carries character offsets, so no body can be
-    rebuilt from them. The generation build records offsets only for Markdown sources."""
-    return bool(source.chunks) and all(_offsets(chunk) is None for chunk in source.chunks)
+    rebuilt from them. A generation build records offsets for Markdown and code sources only."""
+    return bool(source.chunks) and not any(placements(chunk) for chunk in source.chunks)
 
 
 def _record_text(record: CompiledRecord | ArtifactRecord) -> str:
@@ -187,7 +187,7 @@ def build_compiled_graph(
                 continue
         if records:
             report.edgeless_chunks += sum(
-                1 for chunk in source.chunks if chunk.metadata.get("text_start") is None
+                1 for chunk in source.chunks if not placements(chunk)
             )
         for record in records:
             accepted.append((source, record))

@@ -53,6 +53,7 @@ from recall.compiled_graph.provider import (
     urllib_transport,
 )
 from recall._env import modes_by_tenant
+from recall.compiled_graph.promotion import placements
 from recall.compiled_graph.records import prompt_digest
 from recall.embedding_core import Embedder
 from recall.errors import RecallError
@@ -235,16 +236,16 @@ def serving_lineage(
 
 
 def body_from_chunks(chunks: Iterable[Chunk]) -> str:
-    """The source text as its chunk offsets index it: each chunk at its own ``text_start``.
+    """The source text as its chunk offsets index it: each run of each chunk at its own start
+    (`recall.compiled_graph.promotion.placements`).
 
     A chunker that normalised whitespace stored a chunk shorter or longer than its span, so each
     chunk is padded or clipped to its span. Characters no chunk covers are spaces.
     """
     placed: list[tuple[int, int, str]] = []
     for chunk in chunks:
-        start, end = chunk.metadata.get("text_start"), chunk.metadata.get("text_end")
-        if isinstance(start, int) and isinstance(end, int) and end > start >= 0:
-            placed.append((start, end, chunk.text))
+        for start, end, offset in placements(chunk):
+            placed.append((start, end, chunk.text[offset:]))
     if not placed:
         return ""
     body = [" "] * max(end for _, end, _ in placed)

@@ -89,8 +89,8 @@ Cross package edges: 473
 | 17 | `recall_mcp.server_memory_admin` |
 | 16 | `recall.cli_commands.generation_cmd` |
 | 16 | `recall.cli_commands.provenance_cmd` |
+| 16 | `recall.compiled_graph.service` |
 | 16 | `recall_mcp.desktop_ingest` |
-| 15 | `recall.compiled_graph.service` |
 | 15 | `recall.generation_rescue` |
 | 15 | `recall_mcp.graph_first_api` |
 | 15 | `recall_mcp.query_construction_api` |
@@ -644,7 +644,7 @@ They are observations, not automatic failures.
 | `recall.compiled_graph.provider` | 4 | 4 |
 | `recall.compiled_graph.records` | 1 | 1 |
 | `recall.compiled_graph.search` | 5 | 150 |
-| `recall.compiled_graph.service` | 15 | 150 |
+| `recall.compiled_graph.service` | 16 | 150 |
 | `recall.confinement` | 0 | 0 |
 | `recall.constants` | 0 | 0 |
 | `recall.context` | 2 | 14 |
