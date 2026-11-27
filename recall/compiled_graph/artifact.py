@@ -24,7 +24,8 @@ import numpy as np
 
 from recall.errors import RecallError
 
-ARTIFACT_SCHEMA_VERSION = 1
+#: 2 added each record's (chunk id, entity) mentions.
+ARTIFACT_SCHEMA_VERSION = 2
 _MEMBERS = ("records.jsonl", "vectors.npy")
 
 
@@ -56,6 +57,8 @@ class ArtifactRecord:
     fields: tuple[str, ...]
     entities: tuple[str, ...]
     edges: tuple[str, ...]
+    #: (chunk id, entity) for each linked chunk whose own text holds the entity.
+    mentions: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -67,7 +70,10 @@ class CompiledGraphArtifact:
 
 
 def artifact_dir(folder: Path, lineage: Mapping[str, str]) -> Path:
-    digest = hashlib.sha256(json.dumps(dict(lineage), sort_keys=True).encode("utf-8")).hexdigest()
+    # The schema is part of the identity: a directory an older schema wrote is never mistaken for
+    # this one's, so the next build writes a new directory instead of keeping one it cannot load.
+    identity = {**dict(lineage), "schema": ARTIFACT_SCHEMA_VERSION}
+    digest = hashlib.sha256(json.dumps(identity, sort_keys=True).encode("utf-8")).hexdigest()
     return folder / f"cg-{digest[:24]}"
 
 
@@ -101,6 +107,7 @@ def write_artifact(folder: Path, artifact: CompiledGraphArtifact, *, owner: str 
                             "fields": list(record.fields),
                             "entities": list(record.entities),
                             "edges": list(record.edges),
+                            "mentions": [list(pair) for pair in record.mentions],
                         }
                     )
                     + "\n"
@@ -135,8 +142,9 @@ def _record(row: object) -> ArtifactRecord:
             fields=tuple(str(value) for value in row["fields"]),
             entities=tuple(str(value) for value in row["entities"]),
             edges=tuple(str(value) for value in row["edges"]),
+            mentions=tuple((str(chunk_id), str(entity)) for chunk_id, entity in row["mentions"]),
         )
-    except (KeyError, TypeError) as exc:
+    except (KeyError, TypeError, ValueError) as exc:
         raise ArtifactDamaged("a record row lacks a field") from exc
 
 

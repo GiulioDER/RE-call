@@ -22,20 +22,28 @@ turn it to `active`.
    Ranks 1 to 8 and every score never change; the two chunks promoted come from further down the
    candidate pool, so with 9 or more results they replace the chunks that held ranks 9 and 10. A
    scoped search is never touched. Search never calls the model.
-4. **For `recall_reasoning_query`**, in `active` mode only, the entities the records copied become
-   mentions on the chunks that contain them. Graph expansion may follow them, and every link
-   reached that way is labelled `llm_compiled`.
+4. **For `recall_reasoning_query`**, in `active` mode only, an entity a record copied becomes a
+   mention on each linked chunk whose own text holds it, but only onto an entity the authored graph
+   already has (matched by normalized name, never an ambiguous one). Graph expansion still walks
+   authored relations only, and these mentions only widen which chunks a relation's neighbor
+   reaches: the seed entities, the hub counts and the order in which the candidate budget is spent
+   all come from authored mentions, and a chunk an authored mention reaches keeps only its authored
+   relations. So every candidate `off` admits, `active` admits too, unchanged. Every chunk the
+   expansion adds that no authored mention reaches carries `graph_link: llm_compiled` on its hit; a
+   chunk retrieval already returned is never labelled. Such a chunk still competes on score for the
+   result's limited places. A scoped request admits mentions only on chunks its scoped graph
+   already mentions, which are a subset of the chunks its source policy lets it see.
 
 With the default `k=5`, a plain search returns the same results with the graph on. The effect is
 visible when a caller asks for 9 or more results, and in the reasoning query.
 
 ## Modes
 
-| `RECALL_COMPILED_GRAPH_MODE` | Build | Search |
-|---|---|---|
-| `off` (default) | nothing | nothing |
-| `shadow` | builds the artifact | reports `shadow:would_promote=N`, order unchanged |
-| `active` | builds the artifact | promotes, reports `active:promoted=N` |
+| `RECALL_COMPILED_GRAPH_MODE` | Build | Search | Reasoning query |
+|---|---|---|---|
+| `off` (default) | nothing | nothing | nothing |
+| `shadow` | builds the artifact | reports `shadow:would_promote=N`, order unchanged | nothing |
+| `active` | builds the artifact | promotes, reports `active:promoted=N` | admits LLM mentions in graph expansion |
 
 `RECALL_COMPILED_GRAPH_MODE_BY_TENANT=tenant-a:active,tenant-b:off` overrides the mode per tenant;
 each entry splits on its last colon. A malformed entry, a tenant named twice, or an unknown mode in
@@ -89,9 +97,10 @@ is written once, refused when any of those differ, and refused when a file fails
 
 ## Forget
 
-`recall forget` and `recall withdraw` remove every artifact that quotes a forgotten source, and its
-rows in the compile cache (deleted with SQLite's `secure_delete`). The tenant searches without the
-graph until the next build, which no longer sees the source.
+`recall forget` and `recall withdraw` remove every artifact of the forgetting tenant that quotes a
+forgotten source, and the source's rows in the compile cache (deleted with SQLite's
+`secure_delete`). The tenant searches without the graph until the next build, which no longer sees
+the source. Another tenant's artifacts are kept, even where a source has the same name.
 
 ## Measuring it
 

@@ -30,6 +30,9 @@ in ``recall.compiled_graph.service``):
 - ``test_config_error_is_reported_not_raised``: the error re-raised fails with an exception.
 - ``test_erase_forgotten_sources_removes_artifacts_and_cache``: artifacts kept on forget fails on
   the quote check.
+- ``test_a_forget_keeps_another_tenants_artifacts`` (recorded 2026-11-27): the erase globbing every
+  tenant folder again (``root.glob("tenant-*/cg-*/records.jsonl")``) fails on the other tenant's
+  artifact count.
 - ``test_artifact_dropped_when_a_source_vanished_during_build``: the post-write presence check
   removed fails on ``ArtifactMissing``.
 - ``test_generation_build_fixes_the_generation_first``: ``set_fixed_generation`` removed fails on
@@ -260,6 +263,20 @@ def test_erase_forgotten_sources_removes_artifacts_and_cache(tmp_path: Path) -> 
     for path in tmp_path.rglob("*"):
         if path.is_file():
             assert b"Alice owns the release checklist." not in path.read_bytes(), path
+
+
+def test_a_forget_keeps_another_tenants_artifacts(tmp_path: Path) -> None:
+    import numpy as np
+
+    from recall.compiled_graph.artifact import ArtifactRecord, CompiledGraphArtifact, write_artifact
+
+    record = ArtifactRecord("a.md#0", "a.md", "fact", ("x",), ("Alice",), ("c1",))
+    for tenant in ("t1", "t2"):
+        write_artifact(tenant_folder(tmp_path, tenant),
+                       CompiledGraphArtifact({"tenant": tenant}, (record,), np.ones((1, 4), dtype=np.float32)))
+    assert erase_forgotten_sources(["a.md"], tenant="t1", env=_env(tmp_path)) == (1, [])
+    assert list(tenant_folder(tmp_path, "t1").glob("cg-*")) == []
+    assert len(list(tenant_folder(tmp_path, "t2").glob("cg-*/records.jsonl"))) == 1
 
 
 def test_artifact_dropped_when_a_source_vanished_during_build(tmp_path: Path) -> None:
