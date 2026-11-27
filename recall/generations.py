@@ -110,6 +110,14 @@ DEFAULT_TABLE_OVERLAP = 80
 #: statistics that one more generation of the same corpus barely moves. See
 #: `GenerationManager._refresh_chunk_statistics`.
 CHUNK_STATISTICS_SQL = "ANALYZE recall_chunks_v1 (tenant_id, generation_id)"
+#: The same refresh for the graph tables `_build_semantic_graph` writes. `entity_kind` too, since
+#: the dashboard's corpus graph filters entities on it.
+GRAPH_STATISTICS_SQL = (
+    "ANALYZE recall_graph_entities_v1 (tenant_id, generation_id, entity_kind)",
+    "ANALYZE recall_graph_mentions_v1 (tenant_id, generation_id)",
+    "ANALYZE recall_graph_relations_v1 (tenant_id, generation_id)",
+    "ANALYZE recall_graph_relation_evidence_v1 (tenant_id, generation_id)",
+)
 
 
 def _context_policy_for_pipeline(pipeline: PipelineIdentity) -> ContextPolicy:
@@ -1781,14 +1789,22 @@ class GenerationManager:
         that does not own the table gets `WARNING: permission denied` and a normal return, which
         is the pre-existing behaviour and leaves nothing broken. The ordinary statement timeout
         stays in force, since ANALYZE samples a bounded number of rows whatever the table's size.
+
+        The graph tables have the same problem and get the same refresh, each statement on its
+        own so one failure does not skip the rest. Measured on the serving host on 2026-11-27: the code and
+        docs generations went live after the last autoanalyze of `recall_graph_entities_v1`,
+        the planner estimated 1 entity row for each (they held 4,538 and 3,144), and the
+        dashboard's corpus graph statement ran past 300 s on code; after this ANALYZE, 1.5 s.
         """
-        try:
-            with self._connect() as conn:
-                conn.execute(CHUNK_STATISTICS_SQL)
-            return True
-        except psycopg.Error as exc:
-            _log.warning("could not refresh planner statistics for recall_chunks_v1: %s", exc)
-            return False
+        refreshed = True
+        for statement in (CHUNK_STATISTICS_SQL, *GRAPH_STATISTICS_SQL):
+            try:
+                with self._connect() as conn:
+                    conn.execute(statement)
+            except psycopg.Error as exc:
+                _log.warning("could not refresh planner statistics (%s): %s", statement, exc)
+                refreshed = False
+        return refreshed
 
     def fail(self, generation_id: str, reason: str) -> None:
         with self._connect() as conn, conn.transaction():
