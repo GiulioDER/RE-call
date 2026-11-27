@@ -6,7 +6,14 @@ This file keeps the release surface short. The full historical changelog lives a
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning is pre-1.0
 `0.MINOR.PATCH`, so a minor bump may still break schema or API.
 
-## [Unreleased]
+## [0.17.0] (unreleased)
+
+RE-call 0.17.0 adds the compiled graph: an evidence graph that a model you configure builds from
+your sources, which may promote at most two linked chunks into ranks 9 and 10 of a search and widen
+the reasoning query's graph expansion. It is off by default, calls no model until you turn it on,
+and carries no quality claim; measure it with `shadow` on your own corpus first. The release also
+supports PostgreSQL 19, serves the assistant memo surface on PostgreSQL, and keeps provider keys off
+HTTP redirects.
 
 ### Added
 
