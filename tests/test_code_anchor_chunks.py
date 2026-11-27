@@ -56,9 +56,13 @@ import json
 import uuid
 from io import BytesIO
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import psycopg
 import pytest
+
+if TYPE_CHECKING:
+    from recall.generations import GenerationManager
 
 from recall.anchors import code_sha, normalize, resolve_symbols, symbol_sha
 from recall.generation_build import BuildRequest, chunker_for
@@ -456,7 +460,9 @@ def test_generation_anchors_hash_original_python_source(manager, tmp_path, sourc
 
 
 @requires_db
-def test_a_generation_build_stores_the_text_spans_on_every_code_chunk(manager, tmp_path):  # type: ignore[no-untyped-def]
+def test_a_generation_build_stores_the_text_spans_on_every_code_chunk(
+    manager: GenerationManager, tmp_path: Path
+) -> None:
     _, rows = _source_build(manager, tmp_path, SOURCE, "owner/name")
     expected = code_pieces(SOURCE, file="source.py", repo="owner/name")
     assert [metadata.get(TEXT_SPANS_KEY) for _, metadata in rows] == [
