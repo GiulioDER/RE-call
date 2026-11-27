@@ -15,7 +15,7 @@ import pytest
 
 from recall.compiled_graph import service
 from recall.compiled_graph.budget import Budget
-from recall.compiled_graph.provider import TEMPLATE_SLACK_TOKENS
+from recall.compiled_graph.provider import MAX_OUTPUT_TOKENS, TEMPLATE_SLACK_TOKENS
 from tests.test_compiled_graph_service import BINDING, FakeEmbedder, Transport, _chunks, _ensure, _env
 
 
@@ -238,7 +238,7 @@ def test_the_dry_run_prices_the_request_the_build_reserves(tmp_path: Path) -> No
     estimate = service.estimate_compile("t1", _chunks(), env)
     _ensure(env, Recording())
     budget = Budget.from_env(env)
-    reserved = budget._cost(sent[0] + TEMPLATE_SLACK_TOKENS, budget.max_tokens)
+    reserved = budget._cost(sent[0] + TEMPLATE_SLACK_TOKENS, MAX_OUTPUT_TOKENS)
     assert f"worst case USD {reserved:.4f}" in estimate, (estimate, reserved)
 
 
