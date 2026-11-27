@@ -20,11 +20,13 @@ from typing import Any
 
 import numpy as np
 
+from recall.errors import RecallError
+
 ARTIFACT_SCHEMA_VERSION = 1
 _MEMBERS = ("records.jsonl", "vectors.npy")
 
 
-class CompiledGraphArtifactError(RuntimeError):
+class CompiledGraphArtifactError(RuntimeError, RecallError):
     """Base of the reasons an artifact cannot serve."""
 
 

@@ -633,12 +633,12 @@ They are observations, not automatic failures.
 | `recall.codex` | 4 | 194 |
 | `recall.compiled_graph` | 0 | 0 |
 | `recall.compiled_graph.anchors` | 0 | 0 |
-| `recall.compiled_graph.artifact` | 0 | 0 |
-| `recall.compiled_graph.budget` | 1 | 3 |
+| `recall.compiled_graph.artifact` | 1 | 1 |
+| `recall.compiled_graph.budget` | 1 | 4 |
 | `recall.compiled_graph.build` | 9 | 24 |
-| `recall.compiled_graph.cache` | 3 | 4 |
+| `recall.compiled_graph.cache` | 3 | 5 |
 | `recall.compiled_graph.promotion` | 2 | 7 |
-| `recall.compiled_graph.provider` | 3 | 3 |
+| `recall.compiled_graph.provider` | 4 | 4 |
 | `recall.compiled_graph.records` | 1 | 1 |
 | `recall.compiled_graph.service` | 14 | 149 |
 | `recall.confinement` | 0 | 0 |

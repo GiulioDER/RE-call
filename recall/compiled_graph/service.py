@@ -72,7 +72,7 @@ BACKOFF_STOPS = ("credit", "provider")
 COMMIT_ATTEMPTS = 5
 
 
-class CommitContended(CompiledGraphArtifactError, RecallError):
+class CommitContended(CompiledGraphArtifactError):
     """Forgets kept landing between a build's presence check and its lock; the build stops."""
 
 
