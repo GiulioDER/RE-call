@@ -254,6 +254,14 @@ def body_from_chunks(chunks: Iterable[Chunk]) -> str:
     return "".join(body)
 
 
+def _skipped_without_offsets(count: int) -> str:
+    """The clause the build summary and the dry run add for sources skipped for want of offsets;
+    empty when none was."""
+    if not count:
+        return ""
+    return f", {count} source(s) skipped because no chunk carries character offsets"
+
+
 def _sources(chunks: Iterable[Chunk]) -> list[SourceInput]:
     by_source: dict[str, list[Chunk]] = defaultdict(list)
     for chunk in chunks:
@@ -334,7 +342,8 @@ def ensure_compiled_graph(
             return "compiled graph not built: a source was forgotten during the build"
         return (
             f"compiled graph built for {lineage['generation']}: {len(artifact.records)} record(s), "
-            f"{report.sources_rejected} source(s) rejected, {spent}"
+            f"{report.sources_rejected} source(s) rejected"
+            f"{_skipped_without_offsets(report.sources_without_offsets)}, {spent}"
         )
     except (CompiledGraphConfigError, CompiledGraphArtifactError, ValueError, OSError) as exc:
         # The write or promotion that called this has already succeeded; it reports this line.
@@ -525,7 +534,7 @@ def estimate_compile(
     """What a build would send now, one attempt per uncached source priced as the budget reserves
     it (a source whose refusal is cached only with ``retry_rejected``); sends nothing."""
     from recall.compiled_graph.anchors import build_source_anchors, compile_payload, fit_payload
-    from recall.compiled_graph.build import PAYLOAD_BUDGET_CHARS
+    from recall.compiled_graph.build import PAYLOAD_BUDGET_CHARS, without_offsets
     from recall.compiled_graph.cache import cache_key
     from recall.compiled_graph.provider import TEMPLATE_SLACK_TOKENS, request_body
 
@@ -535,11 +544,13 @@ def estimate_compile(
     config = ProviderConfig.from_env(env)
     budget = Budget.from_env(env)
     cache = CompileCache(tenant_folder(root, tenant) / CACHE_NAME)
-    pending = cached = refused = 0
+    pending = cached = refused = sources_without_offsets = 0
     worst = 0.0
     for source in _sources(chunks):
         anchors = build_source_anchors(source.source, source.body)
         if not anchors:
+            if without_offsets(source):
+                sources_without_offsets += 1
             continue
         key = cache_key(config, source.source, hashlib.sha256(source.body.encode("utf-8")).hexdigest())
         if cache.get(key) is not None:
@@ -554,7 +565,8 @@ def estimate_compile(
         pending += 1
     return (
         f"compiled graph dry run for tenant {tenant!r}: {pending} source(s) to compile, {cached} cached, "
-        f"{refused} refused before (sent again only with --retry-rejected); "
+        f"{refused} refused before (sent again only with --retry-rejected)"
+        f"{_skipped_without_offsets(sources_without_offsets)}; "
         f"worst case USD {worst:.4f} for one attempt each, cap USD {budget.max_usd:.2f}; nothing was sent"
     )
 

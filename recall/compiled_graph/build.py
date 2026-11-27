@@ -65,8 +65,16 @@ class BuildReport:
     sources_cached: int = 0
     sources_rejected: int = 0
     edgeless_chunks: int = 0
+    sources_without_offsets: int = 0
     stopped: Stop = ""
     rejections: list[str] = field(default_factory=list)
+
+
+def without_offsets(source: SourceInput) -> bool:
+    """True when ``source`` has chunks but its body is empty because no chunk carries usable
+    character offsets. Judged from the body ``body_from_chunks`` built, so the count follows the
+    rule that skipped the source. Both builds record offsets only for Markdown sources."""
+    return bool(source.chunks) and not source.body
 
 
 def _record_text(record: CompiledRecord | ArtifactRecord) -> str:
@@ -140,6 +148,8 @@ def build_compiled_graph(
     for source in sources:
         anchors = build_source_anchors(source.source, source.body)
         if not anchors:
+            if without_offsets(source):
+                report.sources_without_offsets += 1
             continue
         key = cache_key(config, source.source, hashlib.sha256(source.body.encode("utf-8")).hexdigest())
         records = cache.get(key)

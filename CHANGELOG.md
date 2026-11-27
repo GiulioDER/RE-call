@@ -6,6 +6,16 @@ This file keeps the release surface short. The full historical changelog lives a
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning is pre-1.0
 `0.MINOR.PATCH`, so a minor bump may still break schema or API.
 
+## [Unreleased]
+
+### Fixed
+
+* The compiled graph skips a source none of whose chunks carries character offsets (Lite
+  and PostgreSQL generation builds record them for Markdown only, so code files have none), and
+  the build summary and `recall graph compile --dry-run` now say how many were skipped and
+  why. They were skipped without a word, so a code tenant's dry run read `0 source(s) to
+  compile`.
+
 ## [0.17.0] (2026-11-27)
 
 RE-call 0.17.0 adds the compiled graph: an evidence graph that a model you configure builds from
