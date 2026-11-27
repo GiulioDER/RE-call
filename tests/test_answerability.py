@@ -27,8 +27,8 @@ file, then reverted; every test below failed in its own assertion:
 - A6 `test_a6_search_and_evidence_carry_the_verdict_only`: the `judged(...)` line in
   `recall_mcp/retrieval.py::search_memory` deleted, and separately the `judge_query_support` line
   in `evidence_memory`.
-- A7 `test_a7_the_decoder_keeps_and_checks_judged_support`: `_query_support_from_dict` dropping
-  `method` and `model` (the pre-change decoder).
+- A7 `test_a7_the_decoder_keeps_and_checks_judged_support`: `_query_support_from_dict` restored to
+  its pre-change body, which refuses any non-null `method`.
 """
 
 from __future__ import annotations
@@ -153,7 +153,10 @@ def test_a7_the_decoder_keeps_and_checks_judged_support() -> None:
     payload = _response().to_dict()
     judged = {"status": "stated", "scope": "returned_evidence", "method": "llm_judge", "model": "m"}
     payload["trusted_evidence"]["query_support"] = judged
-    decoded = reasoning_response_from_dict(payload)
+    try:
+        decoded = reasoning_response_from_dict(payload)
+    except EvidenceValidationError as exc:
+        pytest.fail(f"the decoder refused a judged support: {exc}")
     assert asdict(decoded.trusted_evidence.query_support) == judged
     payload["trusted_evidence"]["query_support"] = {**judged, "method": None}
     with pytest.raises(EvidenceValidationError, match="exactly when a judge ran"):
