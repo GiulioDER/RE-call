@@ -187,6 +187,28 @@ def test_erasure_removes_staging_leftovers_and_unreadable_artifacts(tmp_path: Pa
     assert _quotes(tmp_path) == []
 
 
+def test_an_unrelated_forget_sweeps_an_earlier_erases_remnant(tmp_path: Path) -> None:
+    """A ``cg-*`` directory without a manifest is what an erase that stopped part way leaves, and
+    it may still quote what that erase was forgetting; the next forget removes it whatever it names.
+
+    Red proof, 2026-11-27: with the ``manifest.json`` clause removed from ``holds`` in
+    ``service._erase_folder``, this fails at its first assertion with ``(0, []) == (1, [])``: a
+    forget of ``other.md`` keeps the remnant, which still quotes ``a.md``. Ported from PR 1523.
+    """
+    env = _env(tmp_path)
+    _ensure(env, Transport())
+    folder = service.tenant_folder(tmp_path, "t1")
+    (healthy,) = _artifacts(tmp_path)
+    remnant = folder / "cg-remnant"
+    remnant.mkdir()
+    (remnant / "records.jsonl").write_bytes((healthy / "records.jsonl").read_bytes())
+    (remnant / "vectors.npy").write_bytes((healthy / "vectors.npy").read_bytes())
+    removed, unreached = service.erase_forgotten_sources(["other.md"], tenant="t1", env=env)
+    assert (removed, unreached) == (1, [])
+    assert not remnant.exists()
+    assert healthy.exists(), "a forget of another source removed a servable artifact"
+
+
 # --- PERF-003 and PERF-001: superseded artifacts are pruned, unchanged records are not re-embedded
 
 
