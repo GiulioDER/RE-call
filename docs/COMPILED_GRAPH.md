@@ -81,6 +81,10 @@ A build needs every one of these; there is no default model and no default price
   `recall graph compile --force`.
 - **Other failures.** The same refusal on three sources in a row (an unknown model, an unsupported
   parameter) stops the build. A single rejected source is skipped.
+- **Sources without offsets.** The source text is rebuilt from its chunks' character offsets, and a
+  PostgreSQL generation build records those only for Markdown sources. A source none of whose chunks
+  carries offsets (a code file, for example) is skipped, and the build and `--dry-run` both print
+  how many were skipped this way.
 - **What a stopped build leaves.** No artifact is written. Searches run without the graph and say
   `skipped:missing`. A build never makes a write, an index run or a promotion fail.
 

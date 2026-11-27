@@ -26,7 +26,7 @@ from recall.compiled_graph.anchors import (
 from recall.compiled_graph.artifact import ArtifactRecord, CompiledGraphArtifact
 from recall.compiled_graph.budget import Budget
 from recall.compiled_graph.cache import CompileCache, cache_key
-from recall.compiled_graph.promotion import record_edges
+from recall.compiled_graph.promotion import _offsets, record_edges
 from recall.compiled_graph.provider import (
     BudgetExhausted,
     CreditStop,
@@ -65,8 +65,15 @@ class BuildReport:
     sources_cached: int = 0
     sources_rejected: int = 0
     edgeless_chunks: int = 0
+    sources_without_offsets: int = 0
     stopped: Stop = ""
     rejections: list[str] = field(default_factory=list)
+
+
+def without_offsets(source: SourceInput) -> bool:
+    """True when ``source`` has chunks but none carries character offsets, so no body can be
+    rebuilt from them. The generation build records offsets only for Markdown sources."""
+    return bool(source.chunks) and all(_offsets(chunk) is None for chunk in source.chunks)
 
 
 def _record_text(record: CompiledRecord | ArtifactRecord) -> str:
@@ -140,6 +147,7 @@ def build_compiled_graph(
     for source in sources:
         anchors = build_source_anchors(source.source, source.body)
         if not anchors:
+            report.sources_without_offsets += without_offsets(source)
             continue
         key = cache_key(config, source.source, hashlib.sha256(source.body.encode("utf-8")).hexdigest())
         records = cache.get(key)

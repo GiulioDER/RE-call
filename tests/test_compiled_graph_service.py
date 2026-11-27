@@ -20,6 +20,11 @@ in ``recall.compiled_graph.service``):
   exception.
 - ``test_body_from_chunks_keeps_offsets``: chunks concatenated without their offsets fails on the
   slice equality.
+- ``test_a_build_reports_sources_without_offsets`` and
+  ``test_a_dry_run_reports_sources_without_offsets`` (recorded 2026-11-27): with
+  ``recall.compiled_graph.build.without_offsets`` mutated to ``return False``, both fail on the
+  count assertion, the build and the dry run each reporting ``0`` skipped for a source whose only
+  chunk has ``text_start=None``. Before the fix such a source was skipped without being counted.
 - ``test_off_or_rootless_builds_nothing``: the mode check removed fails on the call count.
 - ``test_build_writes_an_artifact_the_loader_serves``: the loader lineage built without the model
   fails with ``ArtifactMissing``.
@@ -56,6 +61,7 @@ from recall.compiled_graph.service import (
     compiled_graph_mode,
     ensure_compiled_graph,
     erase_forgotten_sources,
+    estimate_compile,
     serving_lineage,
     tenant_folder,
 )
@@ -199,6 +205,27 @@ def test_body_from_chunks_keeps_offsets() -> None:
         assert body[chunk.metadata["text_start"] : chunk.metadata["text_end"]] == chunk.text
     gap = [Chunk(id="g:0", source="g", text="abc", metadata={"text_start": 5, "text_end": 8})]
     assert body_from_chunks(gap) == "     abc"
+
+
+def _chunks_with_an_unplaced_source() -> list[Chunk]:
+    unplaced = Chunk(id="c.py:0", source="c.py", text="def f():\n    return 3",
+                     metadata={"file": "c.py", "text_start": None, "text_end": None})
+    return [*_chunks(), unplaced]
+
+
+def test_a_build_reports_sources_without_offsets(tmp_path: Path) -> None:
+    message = ensure_compiled_graph(
+        "t1", _chunks_with_an_unplaced_source(), BINDING, FakeEmbedder(), env=_env(tmp_path),
+        transport=Transport(), sleep=lambda _: None,
+    )
+    assert "built" in message, message
+    assert "1 source(s) skipped because no chunk carries character offsets" in message, message
+
+
+def test_a_dry_run_reports_sources_without_offsets(tmp_path: Path) -> None:
+    estimate = estimate_compile("t1", _chunks_with_an_unplaced_source(), _env(tmp_path))
+    assert "1 source(s) to compile" in estimate, estimate
+    assert "1 skipped because no chunk carries character offsets" in estimate, estimate
 
 
 def test_off_or_rootless_builds_nothing(tmp_path: Path) -> None:
