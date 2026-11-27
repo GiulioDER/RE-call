@@ -13,7 +13,7 @@ Invariants and the failure each one catches:
   abstention and citable evidence are unchanged.
 - A7 the reasoning response decoder keeps a judged support and refuses an inconsistent one.
 
-Red proof, 2026-11-28, VPS2, each mutation applied alone to `recall/answerability.py` or the named
+Red proof, 2026-11-28, on the remote test host, each mutation applied alone to `recall/answerability.py` or the named
 file, then reverted; every test below failed in its own assertion:
 - A1 `test_a1_off_by_default_and_refuses_a_bad_setting`: `resolve_answerability_judge` returning
   None without reading the key (the `raise ValueError` for an empty key deleted).
