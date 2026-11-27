@@ -26,7 +26,7 @@ from recall.compiled_graph.anchors import (
 from recall.compiled_graph.artifact import ArtifactRecord, CompiledGraphArtifact
 from recall.compiled_graph.budget import Budget
 from recall.compiled_graph.cache import CompileCache, cache_key
-from recall.compiled_graph.promotion import _offsets, record_edges
+from recall.compiled_graph.promotion import record_edges
 from recall.compiled_graph.provider import (
     BudgetExhausted,
     CreditStop,
@@ -71,9 +71,10 @@ class BuildReport:
 
 
 def without_offsets(source: SourceInput) -> bool:
-    """True when ``source`` has chunks but none carries character offsets, so no body can be
-    rebuilt from them. The generation build records offsets only for Markdown sources."""
-    return bool(source.chunks) and all(_offsets(chunk) is None for chunk in source.chunks)
+    """True when ``source`` has chunks but its body is empty because no chunk carries usable
+    character offsets. Judged from the body ``body_from_chunks`` built, so the count follows the
+    rule that skipped the source. Both builds record offsets only for Markdown sources."""
+    return bool(source.chunks) and not source.body
 
 
 def _record_text(record: CompiledRecord | ArtifactRecord) -> str:

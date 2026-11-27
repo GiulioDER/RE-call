@@ -10,8 +10,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ### Fixed
 
-* The compiled graph skips a source none of whose chunks carries character offsets (a
-  PostgreSQL generation build records them for Markdown only, so code files have none), and
+* The compiled graph skips a source none of whose chunks carries character offsets (Lite
+  and PostgreSQL generation builds record them for Markdown only, so code files have none), and
   the build summary and `recall graph compile --dry-run` now say how many were skipped and
   why. They were skipped without a word, so a code tenant's dry run read `0 source(s) to
   compile`.

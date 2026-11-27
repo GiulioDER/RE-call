@@ -25,6 +25,10 @@ in ``recall.compiled_graph.service``):
   ``recall.compiled_graph.build.without_offsets`` mutated to ``return False``, both fail on the
   count assertion, the build and the dry run each reporting ``0`` skipped for a source whose only
   chunk has ``text_start=None``. Before the fix such a source was skipped without being counted.
+- ``test_a_source_whose_offsets_place_nothing_is_counted`` (recorded 2026-11-27, CCA CODE-001):
+  against ``without_offsets`` judged by ``promotion._offsets`` (commit adce9b281), it fails on the
+  count assertion: ``text_start=-1`` passes ``_offsets`` but ``body_from_chunks`` places nothing,
+  so the source was skipped and reported as ``0`` skipped.
 - ``test_off_or_rootless_builds_nothing``: the mode check removed fails on the call count.
 - ``test_build_writes_an_artifact_the_loader_serves``: the loader lineage built without the model
   fails with ``ArtifactMissing``.
@@ -225,6 +229,13 @@ def test_a_build_reports_sources_without_offsets(tmp_path: Path) -> None:
 def test_a_dry_run_reports_sources_without_offsets(tmp_path: Path) -> None:
     estimate = estimate_compile("t1", _chunks_with_an_unplaced_source(), _env(tmp_path))
     assert "1 source(s) to compile" in estimate, estimate
+    assert "1 skipped because no chunk carries character offsets" in estimate, estimate
+
+
+def test_a_source_whose_offsets_place_nothing_is_counted(tmp_path: Path) -> None:
+    unplaceable = Chunk(id="d.md:0", source="d.md", text="hello",
+                        metadata={"file": "d.md", "text_start": -1, "text_end": 5})
+    estimate = estimate_compile("t1", [*_chunks(), unplaceable], _env(tmp_path))
     assert "1 skipped because no chunk carries character offsets" in estimate, estimate
 
 
