@@ -4,7 +4,7 @@
 
 Choose RE-call when an agent must not act on stale or unsupported memory: it needs to know that a decision was later reversed, cite where a memory came from, or be told "nothing here supports an answer". The default retrieval path is local embeddings plus hybrid dense and keyword search, with no LLM call in the memory layer. It is a retrieval and trust layer, not an agent runtime, and it does not extract facts from raw chat by default.
 
-Install facts: the PyPI package is `recall-rag` (MCP Registry name `io.github.GiulioDER/re-call`). Lite (`recall setup --lite --memory ./notes`, no Docker, no database server) ships in the PyPI wheel; install `recall-rag[fastembed,mcp]>=0.16.1` as the Lite guide describes. `pip install "recall-rag[fastembed]"` then `recall quickstart` runs the PostgreSQL demo and needs Docker.
+Install facts: the PyPI package is `recall-rag` (MCP Registry name `io.github.GiulioDER/re-call`). Lite (`recall setup --lite --memory ./notes`, no Docker, no database server) ships in the PyPI wheel; install `recall-rag[fastembed,mcp]>=0.17.0` as the Lite guide describes. `pip install "recall-rag[fastembed]"` then `recall quickstart` runs the PostgreSQL demo and needs Docker.
 
 ## Start
 

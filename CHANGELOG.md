@@ -6,7 +6,14 @@ This file keeps the release surface short. The full historical changelog lives a
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning is pre-1.0
 `0.MINOR.PATCH`, so a minor bump may still break schema or API.
 
-## [Unreleased]
+## [0.17.0] (2026-11-27)
+
+RE-call 0.17.0 adds the compiled graph: an evidence graph that a model you configure builds from
+your sources, which may promote at most two linked chunks into ranks 9 and 10 of a search and widen
+the reasoning query's graph expansion. It is off by default, calls no model until you turn it on,
+and carries no quality claim; measure it with `shadow` on your own corpus first. The release also
+supports PostgreSQL 19, serves the assistant memo surface on PostgreSQL, and keeps provider keys off
+HTTP redirects.
 
 ### Added
 
@@ -14,16 +21,38 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   names start with the same date. The other pairs are counted in the run summary and never sent
   to the model. It is off by default, because it drops every replacement written on a different
   day; see [TRUTH_EXTRACTION_DESIGN.md](docs/TRUTH_EXTRACTION_DESIGN.md).
-
 * The compiled graph, opt-in and off by default: a model you configure
   (`RECALL_COMPILED_GRAPH_MODEL`, for example `openai/gpt-6-luna-pro`) compiles each source into
   typed records that keep only text copied verbatim from the excerpts they cite, and the server
   links them to the chunks those excerpts overlap. With `RECALL_COMPILED_GRAPH_MODE=active` an
   unscoped search may move at most two linked chunks into ranks 9 and 10; ranks 1 to 8 and every
-  score never change, and `shadow` only reports. It is built on every Lite write and before every
-  PostgreSQL promotion, or with `recall graph compile`, within a required USD cap per build, and
-  stops on a credit refusal without writing anything. Forget removes every artifact quoting a
-  forgotten source. It carries no quality claim. See [COMPILED_GRAPH.md](docs/COMPILED_GRAPH.md).
+  score never change, and `shadow` only reports. In `active` mode `recall_reasoning_query` also
+  admits the entities a record copied as mentions on the chunks that hold them, onto entities the
+  authored graph already has; expansion still walks authored relations only, and a chunk reached
+  only this way carries `graph_link: llm_compiled`. It is built on every Lite write and before
+  every PostgreSQL promotion, or with `recall graph compile`, within a required USD cap per build,
+  and stops on a credit refusal without writing anything. With the mode `off` nothing is built and
+  no model is called. Forget removes every artifact quoting a forgotten source, and the remnant of
+  an earlier erase that stopped part way. It carries no quality claim. See
+  [COMPILED_GRAPH.md](docs/COMPILED_GRAPH.md).
+* `recall records --repo owner/name --select-fix request.json` selects one proved fix from a
+  shortlist the caller supplies, for a bug-fix agent. It checks the exact pre-fix revision, the
+  reported symptoms and the observed regression diagnostic, and never serves a record with an
+  active supersession, even when its successor is outside the request or withheld by the source
+  policy; otherwise it abstains and says why (`superseded_fix`, `no_relevant_candidates`). Standard
+  input (`-`) is read as UTF-8, with or without a BOM, on every platform. Ordinary retrieval is
+  unchanged; see [API.md](docs/API.md#verified-fix-selection).
+* `recall repair-checks` (`prompt`, `resolve`, `feedback`) lets a caller choose, after a failed
+  repair, one diagnostic and one preservation check from a fixed menu, optionally guided by a
+  citable earlier repair. RE-call validates the choice against each check's role and packages only
+  the selected checks and their observed outcomes for the retry. The caller supplies the model and
+  runs the checks; see [API.md](docs/API.md#repair-check-selection).
+* Opt-in exact Jira issue routing: with `RECALL_JIRA_EXACT_ID_BASE_URL` (and, for a generation
+  built from Jira exports, `RECALL_JIRA_EXACT_ID_SOURCE_PREFIX`), a query naming one unambiguous
+  Jira key, with a source policy and caller context, first searches that issue's source on the
+  same pinned generation, with the same authorization and trust checks, and falls back to ordinary
+  retrieval when that finds no current, trusted hit. An explicit source filter takes precedence;
+  see [API.md](docs/API.md).
 * `recall.sqlite_planning.generate_sql_from_evidence` drafts one read-only SQLite query from
   trusted evidence in two calls to a model callback the caller supplies. The first call plans
   fields, joins and filters; RE-call checks the plan against the snapshot, and the second call
@@ -98,6 +127,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   instead of being refused or contested, and `recall_remember(settle=true)` never settles it.
   Because current facts are projected when read, two such values already in a ledger stop being
   reported as contested; a supersession already recorded stays as recorded.
+* The assistant memo surface (`RECALL_ASSISTANT_MEMOS`) is served on PostgreSQL as well as Lite.
+  PostgreSQL indexes nothing at write time, so `recall_remember` writes the memo and answers
+  `index_state: "pending"`; the next corpus build indexes it, and `settle=true` reads what the
+  served generation holds, so a second value of the same key inside one build interval is not
+  settled. `recall_forget_memo` and `recall_withdraw` by memo id erase the memo by its file under
+  `RECALL_INDEX_ROOT` and delete the file so the next build leaves it out. `RECALL_INDEX_ROOT` must
+  be the folder the manifest is built from, and `RECALL_STATED_FACT_SOURCES` must name the memo
+  folder.
 
 ### Fixed
 
@@ -106,6 +143,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   the build instead of copying the earlier generation's. A copy carried an old server's stemming
   through every rebuild after a PostgreSQL major upgrade, while the generation recorded the new
   server's stemmer, so the stemmer check passed on stale lexemes.
+
+### Security
+
+* A provider key no longer follows an HTTP redirect. urllib's default opener resent a POST that
+  answered 301, 302 or 303 as a GET to the host the `Location` named, with the
+  `Authorization: Bearer` header. The OpenRouter and OpenAI-compatible answer client now refuses
+  redirects, and the setup wizard's model catalogue and the restore smoke check keep the key on the
+  first hop only.
 
 ## [0.16.1] (2026-11-23)
 
