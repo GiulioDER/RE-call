@@ -15,6 +15,20 @@ Red proof, recorded 2026-11-26 (production symbols in ``recall.compiled_graph.me
   ``test_candidate_reached_through_an_llm_mention_is_labelled``.
 - ``test_build_records_mentions_only_where_the_chunk_holds_the_entity``: every edge chunk paired
   with every entity fails on the mention pairs.
+
+Red proof, recorded 2026-11-27 on the remote test host by mutating the fixed line and restoring it (CCA run
+20261127T110213Z); each failed on its own assertion and passed once restored:
+
+- ``test_an_older_schema_directory_is_replaced_not_kept``: ``artifact_dir`` digesting the lineage
+  without the schema fails on ``written != old`` (the schema 1 directory is kept).
+- ``test_a_chunk_also_reached_through_an_authored_relation_is_not_labelled``: ``all`` replaced by
+  ``any`` in ``llm_dependent_chunks`` fails on the label set (``c9`` labelled).
+- ``test_a_scoped_request_admits_mentions_only_on_chunks_its_graph_holds``: the
+  ``visible_chunks`` check removed from ``merge_llm_mentions`` fails on the scoped pair set.
+- ``test_a_cache_hit_does_not_load_the_artifact_again``: the cache hit branch of
+  ``admit_llm_mentions`` disabled fails on the returned projection identity.
+- ``test_the_cache_tells_a_relation_control_copy_from_its_graph``: the ``_MERGED`` key back on
+  ``(graph_id, fingerprint, lineage)`` without the identity check fails on the relations.
 """
 
 from __future__ import annotations
@@ -97,13 +111,14 @@ def test_admission_requires_active(tmp_path: Path) -> None:
     assert lineage is not None
     artifact = _artifact(("c2", "Alice"))
     write_artifact(tenant_folder(tmp_path, "t1"), CompiledGraphArtifact(lineage, artifact.records, artifact.vectors))
-    merged, pairs = admit_llm_mentions(_store(), _graph(), _Embedder(), env)
+    merged, pairs = admit_llm_mentions(_store(), _graph(), _Embedder(), env, scoped=False)
     assert pairs == frozenset({("c2", "e-alice")}) and len(merged.mentions) == 2
     for mode in ("shadow", "off"):
         graph = _graph()
-        same, none = admit_llm_mentions(_store(), graph, _Embedder(), {**env, "RECALL_COMPILED_GRAPH_MODE": mode})
+        same, none = admit_llm_mentions(_store(), graph, _Embedder(), {**env, "RECALL_COMPILED_GRAPH_MODE": mode}, scoped=False)
         assert same is graph and none == frozenset()
-    missing, none = admit_llm_mentions(_store(), _graph(), _Embedder(), {**env, "RECALL_COMPILED_GRAPH_MODEL": "other"})
+    missing, none = admit_llm_mentions(_store(), _graph(), _Embedder(), {**env, "RECALL_COMPILED_GRAPH_MODEL": "other"},
+                                       scoped=False)
     assert none == frozenset()
 
 
@@ -112,16 +127,19 @@ def test_candidate_reached_through_an_llm_mention_is_labelled() -> None:
     candidates = {"c9": (relation,), "c8": (relation,)}
     mentions_by_chunk = {"c1": frozenset({"e-alice"})}
     # Neighbor side: c9 holds the neighbor e-bob1 only through an LLM mention.
-    labels = llm_dependent_chunks(candidates, {"e-alice"}, {"c1"}, set(), mentions_by_chunk,
-                                  frozenset({("c9", "e-bob1")}))
+    labels = llm_dependent_chunks(candidates, seed_entities={"e-alice"}, trusted_seed_ids={"c1"},
+                                  resolved_query_entities=set(), mentions_by_chunk=mentions_by_chunk,
+                                  llm_pairs=frozenset({("c9", "e-bob1")}))
     assert labels == frozenset({"c9"})
     # Seed side: the seed chunk c1 holds e-alice only through an LLM mention, so both are labelled.
-    labels = llm_dependent_chunks(candidates, {"e-alice"}, {"c1"}, set(), mentions_by_chunk,
-                                  frozenset({("c1", "e-alice")}))
+    labels = llm_dependent_chunks(candidates, seed_entities={"e-alice"}, trusted_seed_ids={"c1"},
+                                  resolved_query_entities=set(), mentions_by_chunk=mentions_by_chunk,
+                                  llm_pairs=frozenset({("c1", "e-alice")}))
     assert labels == frozenset({"c8", "c9"})
     # A query that names the entity makes the seed side authored again.
-    labels = llm_dependent_chunks(candidates, {"e-alice"}, {"c1"}, {"e-alice"}, mentions_by_chunk,
-                                  frozenset({("c1", "e-alice")}))
+    labels = llm_dependent_chunks(candidates, seed_entities={"e-alice"}, trusted_seed_ids={"c1"},
+                                  resolved_query_entities={"e-alice"}, mentions_by_chunk=mentions_by_chunk,
+                                  llm_pairs=frozenset({("c1", "e-alice")}))
     assert labels == frozenset()
 
 
@@ -163,3 +181,89 @@ def test_build_records_mentions_only_where_the_chunk_holds_the_entity(tmp_path: 
     (built,) = artifact.records
     assert built.edges == ("a:0", "a:1")
     assert set(built.mentions) == {("a:0", "Alice"), ("a:1", "Bob")}
+
+
+def _active_env(root: Path) -> dict[str, str]:
+    return {"RECALL_COMPILED_GRAPH_MODE": "active", "RECALL_COMPILED_GRAPH_ARTIFACT_ROOT": str(root),
+            "RECALL_COMPILED_GRAPH_MODEL": "m"}
+
+
+def _write_served(root: Path, *mentions: tuple[str, str]) -> None:
+    lineage = serving_lineage("t1", _store().generation_binding(), _Embedder(), _active_env(root))
+    assert lineage is not None
+    artifact = _artifact(*mentions)
+    write_artifact(tenant_folder(root, "t1"), CompiledGraphArtifact(lineage, artifact.records, artifact.vectors))
+
+
+def test_an_older_schema_directory_is_replaced_not_kept(tmp_path: Path) -> None:
+    import hashlib
+    import json
+
+    from recall.compiled_graph.artifact import load_artifact
+
+    lineage = {"tenant": "t1", "generation": "g1"}
+    folder = tmp_path / "f"
+    # The directory a schema 1 build wrote: named from the lineage alone, with a schema 1 manifest.
+    old = folder / f"cg-{hashlib.sha256(json.dumps(lineage, sort_keys=True).encode()).hexdigest()[:24]}"
+    old.mkdir(parents=True)
+    (old / "manifest.json").write_text(json.dumps({"schema": 1, "lineage": lineage}), encoding="utf-8")
+    artifact = _artifact(("c2", "Alice"))
+    written = write_artifact(folder, CompiledGraphArtifact(lineage, artifact.records, artifact.vectors))
+    assert written != old
+    assert load_artifact(folder, lineage).records[0].mentions == (("c2", "Alice"),)
+
+
+def test_a_chunk_also_reached_through_an_authored_relation_is_not_labelled() -> None:
+    through_llm = SimpleNamespace(subject_id="e-alice", object_id="e-bob1")
+    authored = SimpleNamespace(subject_id="e-alice", object_id="e-carol")
+    labels = llm_dependent_chunks(
+        {"c9": (through_llm, authored), "c8": (through_llm,)},
+        seed_entities={"e-alice"}, trusted_seed_ids={"c1"}, resolved_query_entities=set(),
+        mentions_by_chunk={"c1": frozenset({"e-alice"})}, llm_pairs=frozenset({("c9", "e-bob1"), ("c8", "e-bob1")}),
+    )
+    assert labels == frozenset({"c8"})
+
+
+def test_a_scoped_request_admits_mentions_only_on_chunks_its_graph_holds(tmp_path: Path) -> None:
+    _write_served(tmp_path, ("c2", "Alice"))
+    graph = _graph()  # authored mention on c1 only; c2 is a chunk the policy hid from this graph
+    _, scoped = admit_llm_mentions(_store(), graph, _Embedder(), _active_env(tmp_path), scoped=True)
+    _, unscoped = admit_llm_mentions(_store(), graph, _Embedder(), _active_env(tmp_path), scoped=False)
+    assert scoped == frozenset()
+    assert unscoped == frozenset({("c2", "e-alice")})
+
+
+def test_the_cache_tells_a_relation_control_copy_from_its_graph(tmp_path: Path) -> None:
+    from dataclasses import replace
+
+    from recall.semantic_graph import SemanticRelation
+
+    _write_served(tmp_path, ("c2", "Alice"))
+    relation = SemanticRelation(id="r1", tenant_id="t1", generation_id="g1", subject_id="e-alice",
+                                object_id="e-bob1", relation="references", evidence_chunk_ids=("c1",),
+                                extraction_method="explicit_relation", confidence=1.0)
+    graph = replace(_graph(), relations=(relation,))
+    shuffled = replace(graph, relations=(replace(relation, subject_id="e-bob1", object_id="e-alice"),))
+    assert shuffled.fingerprint == graph.fingerprint and shuffled.graph_id == graph.graph_id
+    admit_llm_mentions(_store(), graph, _Embedder(), _active_env(tmp_path), scoped=False)
+    merged, _ = admit_llm_mentions(_store(), shuffled, _Embedder(), _active_env(tmp_path), scoped=False)
+    assert merged.relations == shuffled.relations
+
+
+def test_a_cache_hit_does_not_load_the_artifact_again(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]  # pytest fixture
+    from recall.compiled_graph import mentions
+
+    _write_served(tmp_path, ("c2", "Alice"))
+    loads: list[str] = []
+    real = mentions.load_serving_artifact
+
+    def counting(*args, **kwargs):  # type: ignore[no-untyped-def]  # wraps the real loader
+        loads.append("load")
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(mentions, "load_serving_artifact", counting)
+    graph = _graph()
+    first = admit_llm_mentions(_store(), graph, _Embedder(), _active_env(tmp_path), scoped=False)
+    second = admit_llm_mentions(_store(), graph, _Embedder(), _active_env(tmp_path), scoped=False)
+    assert second[0] is first[0] and second[1] == frozenset({("c2", "e-alice")})
+    assert loads == ["load"]

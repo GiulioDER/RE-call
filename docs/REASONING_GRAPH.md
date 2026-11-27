@@ -95,7 +95,11 @@ fingerprints, and authored or candidate status.
 Extraction is deterministic. It reads filenames, headings, frontmatter, explicit metadata, and
 explicit relation declarations. Exact Unicode normalized aliases are resolved; fuzzy merging and
 embeddings are deliberately absent. Ambiguous candidates remain separate and produce diagnostics.
-Model extraction remains an ingest proposal path and cannot drive V1 graph expansion.
+Model extraction remains an ingest proposal path and cannot drive V1 graph expansion. The one
+exception is a tenant whose compiled graph mode is `active`: mentions an LLM-compiled record copied
+are merged into the projection at query time, onto entities the stored graph already has, and the
+chunks reached only through them are labelled `graph_link: llm_compiled` (see
+[COMPILED_GRAPH.md](COMPILED_GRAPH.md)). The stored graph itself stays deterministic.
 
 ### Authoring deterministic relations
 

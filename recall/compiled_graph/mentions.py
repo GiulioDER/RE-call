@@ -12,15 +12,21 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import weakref
 from collections import OrderedDict
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import replace
-from typing import Any, TypeVar
+from typing import TypeVar
 
 from recall.compiled_graph.artifact import CompiledGraphArtifact, CompiledGraphArtifactError
-from recall.compiled_graph.service import compiled_graph_mode, load_serving_artifact
+from recall.compiled_graph.service import compiled_graph_mode, load_serving_artifact, serving_lineage
 from recall.embedding_core import Embedder
-from recall.semantic_graph import SemanticGraphProjection, SemanticMention, normalize_entity_name
+from recall.semantic_graph import (
+    SemanticGraphProjection,
+    SemanticMention,
+    SemanticRelation,
+    normalize_entity_name,
+)
 from recall.types import ScoredChunk, TrustedHit
 
 _log = logging.getLogger("recall.compiled_graph")
@@ -29,15 +35,26 @@ Hit = TypeVar("Hit", ScoredChunk, TrustedHit)
 
 LABEL_KEY = "graph_link"
 LABEL_VALUE = "llm_compiled"
+_Merged = tuple[SemanticGraphProjection, frozenset[tuple[str, str]]]
 #: Merged projections kept alive, so the expansion's adjacency cache (keyed by object) can hit.
+#: Keyed by the identity of the projection merged into, as the relation-control cache is: a
+#: shuffled control copy keeps the graph id and every relation id, so no content key tells it
+#: from the graph it was copied from.
 _MERGED_MAX = 4
-_MERGED: OrderedDict[tuple[str, str, str], tuple[SemanticGraphProjection, frozenset[tuple[str, str]]]] = OrderedDict()
+_MERGED: OrderedDict[tuple[int, str, bool], tuple[weakref.ref[SemanticGraphProjection], _Merged]] = OrderedDict()
 
 
 def merge_llm_mentions(
-    semantic: SemanticGraphProjection, artifact: CompiledGraphArtifact
-) -> tuple[SemanticGraphProjection, frozenset[tuple[str, str]]]:
-    """``semantic`` with the artifact's mentions added, and the (chunk, entity) pairs only they hold."""
+    semantic: SemanticGraphProjection,
+    artifact: CompiledGraphArtifact,
+    *,
+    visible_chunks: Collection[str] | None = None,
+) -> _Merged:
+    """``semantic`` with the artifact's mentions added, and the (chunk, entity) pairs only they hold.
+
+    The artifact is built over the whole tenant; ``visible_chunks``, when given, keeps only the
+    mentions on those chunks, so a chunk a source policy denies never enters the graph.
+    """
     by_name: dict[str, list[str]] = {}
     for entity in semantic.entities:
         by_name.setdefault(entity.normalized_name, []).append(entity.id)
@@ -46,6 +63,8 @@ def merge_llm_mentions(
     pairs: set[tuple[str, str]] = set()
     for record in artifact.records:
         for chunk_id, name in record.mentions:
+            if visible_chunks is not None and chunk_id not in visible_chunks:
+                continue
             matches = by_name.get(normalize_entity_name(name), [])
             if len(matches) != 1:
                 continue
@@ -72,42 +91,58 @@ def merge_llm_mentions(
 
 
 def admit_llm_mentions(
-    store: object, semantic: SemanticGraphProjection, embedder: Embedder, env: Mapping[str, str]
-) -> tuple[SemanticGraphProjection, frozenset[tuple[str, str]]]:
-    """The graph expansion walks: ``semantic`` itself unless the tenant's mode is ``active``."""
+    store: object,
+    semantic: SemanticGraphProjection,
+    embedder: Embedder,
+    env: Mapping[str, str],
+    *,
+    scoped: bool,
+) -> _Merged:
+    """The graph expansion walks: ``semantic`` itself unless the tenant's mode is ``active``.
+
+    ``scoped`` says ``semantic`` was rebuilt from the chunks a source policy lets the caller see;
+    mentions are then admitted only on chunks that graph already holds.
+    """
     tenant = getattr(store, "tenant", None)
     binding_reader = getattr(store, "generation_binding", None)
     if not isinstance(tenant, str) or not callable(binding_reader):
         return semantic, frozenset()
     if compiled_graph_mode(env, tenant) != "active":
         return semantic, frozenset()
+    binding = binding_reader()
+    lineage = serving_lineage(tenant, binding, embedder, env)
+    if lineage is None:
+        return semantic, frozenset()
+    # The artifact at a lineage never changes, so a hit needs no load and no checksum pass.
+    key = (id(semantic), repr(sorted(lineage.items())), scoped)
+    entry = _MERGED.get(key)
+    if entry is not None and entry[0]() is semantic:
+        _MERGED.move_to_end(key)
+        return entry[1]
     try:
-        artifact = load_serving_artifact(tenant, binding_reader(), embedder, env)
+        artifact = load_serving_artifact(tenant, binding, embedder, env)
     except CompiledGraphArtifactError as exc:
-        # No artifact for this corpus yet: expansion walks the authored graph alone.
+        # Missing, built for another lineage or schema, or damaged: walk the authored graph alone.
         _log.info("compiled graph mentions not admitted for tenant %r: %s", tenant, exc)
         return semantic, frozenset()
-    key = (semantic.graph_id, semantic.fingerprint, repr(sorted(artifact.lineage.items())))
-    cached = _MERGED.get(key)
-    if cached is not None:
-        _MERGED.move_to_end(key)
-        return cached
-    merged = merge_llm_mentions(semantic, artifact)
-    _MERGED[key] = merged
+    visible = {mention.chunk_id for mention in semantic.mentions} if scoped else None
+    merged = merge_llm_mentions(semantic, artifact, visible_chunks=visible)
+    _MERGED[key] = (weakref.ref(semantic), merged)
     while len(_MERGED) > _MERGED_MAX:
         _MERGED.popitem(last=False)
     return merged
 
 
 def llm_dependent_chunks(
-    candidate_relations_by_chunk: Mapping[str, Sequence[Any]],
+    candidate_relations_by_chunk: Mapping[str, Sequence[SemanticRelation]],
+    *,
     seed_entities: Collection[str],
     trusted_seed_ids: Collection[str],
     resolved_query_entities: Collection[str],
     mentions_by_chunk: Mapping[str, Collection[str]],
     llm_pairs: frozenset[tuple[str, str]],
 ) -> frozenset[str]:
-    """Candidates whose link to a seed exists only through an LLM mention, on either end."""
+    """Candidates whose every link to a seed exists only through an LLM mention, on either end."""
     if not llm_pairs:
         return frozenset()
     llm_only_seeds = {
@@ -120,15 +155,17 @@ def llm_dependent_chunks(
             if entity in mentions_by_chunk.get(chunk_id, ())
         )
     }
-    labelled: set[str] = set()
-    for chunk_id, relations in candidate_relations_by_chunk.items():
-        for relation in relations:
-            seed_side = relation.subject_id if relation.subject_id in seed_entities else relation.object_id
-            neighbor = relation.object_id if seed_side == relation.subject_id else relation.subject_id
-            if seed_side in llm_only_seeds or (chunk_id, neighbor) in llm_pairs:
-                labelled.add(chunk_id)
-                break
-    return frozenset(labelled)
+
+    def through_llm(chunk_id: str, relation: SemanticRelation) -> bool:
+        seed_side = relation.subject_id if relation.subject_id in seed_entities else relation.object_id
+        neighbor = relation.object_id if seed_side == relation.subject_id else relation.subject_id
+        return seed_side in llm_only_seeds or (chunk_id, neighbor) in llm_pairs
+
+    return frozenset(
+        chunk_id
+        for chunk_id, relations in candidate_relations_by_chunk.items()
+        if relations and all(through_llm(chunk_id, relation) for relation in relations)
+    )
 
 
 def label_hits(hits: Sequence[Hit], labelled: frozenset[str]) -> list[Hit]:

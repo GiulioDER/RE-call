@@ -1241,7 +1241,9 @@ def expand_semantic_graph(
     semantic = _controlled_semantic_graph(semantic, relation_control, relation_control_seed)
     from recall_mcp.settings import runtime_environment
 
-    semantic, llm_pairs = admit_llm_mentions(store, semantic, embedder, runtime_environment())
+    semantic, llm_pairs = admit_llm_mentions(
+        store, semantic, embedder, runtime_environment(), scoped=security_policy is not None
+    )
     indexes = _semantic_graph_indexes(semantic)
     mentions_by_chunk = indexes.mentions_by_chunk
     ambiguous_entities = indexes.ambiguous_entities
@@ -1287,14 +1289,15 @@ def expand_semantic_graph(
         stats=stats,
     )
     candidate_relations_by_chunk = admission.candidate_relations_by_chunk
+    # A chunk retrieval already returned was not reached through the graph, whatever its relations.
     llm_labels = llm_dependent_chunks(
         candidate_relations_by_chunk,
-        seed_entities,
-        trusted_seed_ids,
-        resolved_query_entities,
-        indexes.mentions_by_chunk,
-        llm_pairs,
-    )
+        seed_entities=seed_entities,
+        trusted_seed_ids=trusted_seed_ids,
+        resolved_query_entities=resolved_query_entities,
+        mentions_by_chunk=indexes.mentions_by_chunk,
+        llm_pairs=llm_pairs,
+    ) - {hit.chunk.id for hit in retrieval.hits}
     relation_count = admission.relation_count
     supersession = dict(admission.supersession)
     unresolved = admission.unresolved

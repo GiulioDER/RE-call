@@ -9,6 +9,11 @@ Red proof, recorded 2026-11-26: with the ``admit_llm_mentions`` call removed fro
 ``recall_mcp.graph_expansion.expand_semantic_graph``, ``test_active_follows_the_llm_mention`` fails
 on the candidate ids; with the ``label_hits`` call removed from its ``finish``, it fails on the
 label.
+
+Red proof, recorded 2026-11-27 on the remote test host (CCA run 20261127T110213Z): with the retrieval hit ids no
+longer subtracted from ``llm_labels`` in ``expand_semantic_graph``,
+``test_a_hit_retrieval_returned_is_never_labelled`` fails on the label of the returned
+``llm-chunk`` hit, and passes once restored.
 """
 
 from __future__ import annotations
@@ -49,10 +54,11 @@ def _env(root: Path, mode: str) -> dict[str, str]:
             "RECALL_COMPILED_GRAPH_MODEL": "openai/gpt-6-luna-pro"}
 
 
-def _expand(store: _BoundStore, monkeypatch: pytest.MonkeyPatch, env: dict[str, str]):  # type: ignore[no-untyped-def]  # returns the expansion result
+def _expand(store: _BoundStore, monkeypatch: pytest.MonkeyPatch, env: dict[str, str], retrieval=None):  # type: ignore[no-untyped-def]  # returns the expansion result
     monkeypatch.setattr("recall_mcp.settings.runtime_environment", lambda: env)
     service._reset_graph_projection_cache()
-    retrieval, _ = _retrieval()
+    if retrieval is None:
+        retrieval, _ = _retrieval()
     request = ReasoningRequest(
         query="q",
         tenant_id="tenant-a",
@@ -89,3 +95,20 @@ def test_off_and_shadow_reach_nothing(store_with_artifact: _BoundStore, tmp_path
                                       monkeypatch: pytest.MonkeyPatch, mode: str) -> None:
     result = _expand(store_with_artifact, monkeypatch, _env(tmp_path, mode))
     assert [hit.chunk.id for hit in result.retrieval.hits if hit.chunk.id != "seed"] == []
+
+
+def test_a_hit_retrieval_returned_is_never_labelled(store_with_artifact: _BoundStore, tmp_path: Path,
+                                                   monkeypatch: pytest.MonkeyPatch) -> None:
+    from dataclasses import replace
+
+    from recall.types import Chunk
+
+    retrieval, _ = _retrieval()
+    (seed,) = retrieval.hits
+    # Retrieval itself returned llm-chunk, untrusted, so it is a graph candidate as well.
+    untrusted = replace(seed, chunk=Chunk("llm-chunk", "n.md", "n", {"file": "n.md"}), verdict="low_confidence")
+    result = _expand(store_with_artifact, monkeypatch, _env(tmp_path, "active"),
+                     replace(retrieval, hits=[seed, untrusted]))
+    returned = [hit for hit in result.retrieval.hits if hit.chunk.id == "llm-chunk"]
+    assert returned
+    assert all(hit.chunk.metadata.get(LABEL_KEY) is None for hit in returned)

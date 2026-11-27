@@ -62,7 +62,10 @@ class CompiledGraphArtifact:
 
 
 def artifact_dir(folder: Path, lineage: Mapping[str, str]) -> Path:
-    digest = hashlib.sha256(json.dumps(dict(lineage), sort_keys=True).encode("utf-8")).hexdigest()
+    # The schema is part of the identity: a directory an older schema wrote is never mistaken for
+    # this one's, so the next build writes a new directory instead of keeping one it cannot load.
+    identity = {**dict(lineage), "schema": ARTIFACT_SCHEMA_VERSION}
+    digest = hashlib.sha256(json.dumps(identity, sort_keys=True).encode("utf-8")).hexdigest()
     return folder / f"cg-{digest[:24]}"
 
 
