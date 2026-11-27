@@ -30,11 +30,13 @@ in ``recall.compiled_graph.service``):
   count assertion: ``text_start=-1`` passes ``_offsets`` but ``body_from_chunks`` places nothing,
   so the source was skipped and reported as ``0`` skipped.
 - ``test_a_dry_run_reports_sources_without_offsets`` again (recorded 2026-11-27, CCA CODE-004): it
-  now asserts the build's phrasing, ``1 source(s) skipped``; against the dry run of 8e78286cf,
+  now asserts the build's phrasing, ``1 source(s) skipped``; against the dry run of d48d393a0,
   which said ``1 skipped``, it fails on that assertion.
 - ``test_no_skip_clause_when_every_source_has_offsets`` (recorded 2026-11-27, CCA CODE-006):
-  against 8e78286cf, which printed ``0 source(s) skipped because ...`` on every build, it fails on
-  the build-message assertion.
+  against d48d393a0, which printed ``0 source(s) skipped because ...`` on every build, it fails on
+  the build-message assertion. Its first assertion requires the success line (CCA FA-1-1): with
+  ``ensure_compiled_graph``'s publish step mutated to ``if True:``, so the build returns ``not
+  built: a source was forgotten``, it fails on that assertion, where ``"built" in message`` passed.
 - ``test_off_or_rootless_builds_nothing``: the mode check removed fails on the call count.
 - ``test_build_writes_an_artifact_the_loader_serves``: the loader lineage built without the model
   fails with ``ArtifactMissing``.
@@ -251,7 +253,7 @@ def test_no_skip_clause_when_every_source_has_offsets(tmp_path: Path) -> None:
         transport=Transport(), sleep=lambda _: None,
     )
     estimate = estimate_compile("t1", _chunks(), _env(tmp_path / "dry"))
-    assert "built" in message, message
+    assert message.startswith("compiled graph built for "), message
     assert "skipped because" not in message, message
     assert "skipped because" not in estimate, estimate
 
