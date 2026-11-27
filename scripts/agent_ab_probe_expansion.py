@@ -68,8 +68,9 @@ def expand(query: str, key: str) -> list[str]:
     request = urllib.request.Request(
         "https://openrouter.ai/api/v1/chat/completions",
         data=body,
-        headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+        headers={"Content-Type": "application/json"},
     )
+    request.add_unredirected_header("Authorization", f"Bearer {key}")
     with urllib.request.urlopen(request, timeout=120) as response:  # noqa: S310 - fixed https URL
         payload = json.loads(response.read().decode("utf-8"))
     text = payload["choices"][0]["message"]["content"]

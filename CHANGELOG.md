@@ -10,6 +10,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ### Added
 
+* `RECALL_ARBITER_SAME_DAY=1` makes the supersession arbiter judge only memo pairs whose file
+  names start with the same date. The other pairs are counted in the run summary and never sent
+  to the model. It is off by default, because it drops every replacement written on a different
+  day; see [TRUTH_EXTRACTION_DESIGN.md](docs/TRUTH_EXTRACTION_DESIGN.md).
+
 * `recall.sqlite_planning.generate_sql_from_evidence` drafts one read-only SQLite query from
   trusted evidence in two calls to a model callback the caller supplies. The first call plans
   fields, joins and filters; RE-call checks the plan against the snapshot, and the second call

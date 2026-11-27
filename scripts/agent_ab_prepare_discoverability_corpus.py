@@ -224,8 +224,9 @@ def generate_rewrite(text: str, key: str) -> dict:
     request = urllib.request.Request(
         "https://openrouter.ai/api/v1/chat/completions",
         data=body,
-        headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+        headers={"Content-Type": "application/json"},
     )
+    request.add_unredirected_header("Authorization", f"Bearer {key}")
     last_error: Exception | None = None
     for attempt in range(4):
         # Transport retries only: the prompt, model and inputs never change between attempts.

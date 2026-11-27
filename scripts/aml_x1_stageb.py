@@ -65,7 +65,8 @@ def call(port: int, path: str, payload: dict[str, Any], token: str, attempts: in
     last = Reply(0, {"error": "not sent"}, 0.0)
     for attempt in range(1, attempts + 1):
         request = Request(f"http://127.0.0.1:{port}{path}", data=data, method="POST",
-                          headers={"Content-Type": "application/json", "Authorization": f"Bearer {token}"})
+                          headers={"Content-Type": "application/json"})
+        request.add_unredirected_header("Authorization", f"Bearer {token}")
         started = time.perf_counter()
         try:
             with urlopen(request, timeout=900) as response:  # noqa: S310, localhost only

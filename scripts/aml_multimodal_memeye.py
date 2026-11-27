@@ -233,8 +233,6 @@ class JsonClient:
     def call(self, path: str, payload: dict[str, Any] | None = None) -> HttpResult:
         body = None if payload is None else canonical_json(payload)
         headers = {"Accept": "application/json"}
-        if self.token:
-            headers["Authorization"] = f"Bearer {self.token}"
         if body is not None:
             headers["Content-Type"] = "application/json"
         last: HttpResult | None = None
@@ -245,6 +243,8 @@ class JsonClient:
                 method="GET" if body is None else "POST",
                 headers=headers,
             )
+            if self.token:
+                request.add_unredirected_header("Authorization", f"Bearer {self.token}")
             started = time.perf_counter()
             try:
                 with urlopen(request, timeout=self.timeout) as response:  # noqa: S310

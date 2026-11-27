@@ -19,6 +19,9 @@ missing edges and asks a model to judge them. It never writes one: what it produ
    thing: the same leading `YYYY-MM-DD`, or slug-word Jaccard of at least `SLUG_JACCARD`. Metadata
    only, and it is what makes the model gate affordable: without it, a model sees every neighbour
    pair, and on these stores most neighbours are related work rather than a replacement.
+   `RECALL_ARBITER_SAME_DAY=1` narrows it to the shared date alone, for a store whose file names
+   are dated and whose replacements are mostly written the same day; it is off by default because
+   it drops every replacement that crosses a day.
 3. *Direction.* Decided from metadata, never from the model: a frontmatter `modified:` stamp when
    both memos carry one, else the leading file-name date. A pair whose direction cannot be read
    is dropped BEFORE any call, because an undirected supersession is a proposal nobody can apply,
@@ -118,6 +121,7 @@ ENV_ENABLED = "RECALL_SUPERSESSION_ARBITER"
 ENV_PREFIX = "RECALL_ARBITER"
 ENV_CACHE_PATH = "RECALL_ARBITER_CACHE"
 ENV_DIRECTION_CHECK = "RECALL_ARBITER_DIRECTION_CHECK"
+ENV_SAME_DAY = "RECALL_ARBITER_SAME_DAY"
 
 _TRUE = frozenset({"1", "true", "yes", "on"})
 _FALSE = frozenset({"", "0", "false", "no", "off"})
@@ -429,6 +433,7 @@ class ArbiterSettings:
     neighbours: int
     max_pairs: int
     direction_check: bool = True
+    same_day: bool = False
 
 
 def _bounded(source: Mapping[str, str], name: str, default: str, kind: type, low: float, high: float) -> Any:
@@ -462,6 +467,7 @@ def arbiter_settings(env: Mapping[str, str] | None = None) -> ArbiterSettings | 
         neighbours=_bounded(source, f"{ENV_PREFIX}_NEIGHBOURS", str(DEFAULT_NEIGHBOURS), int, 1, 100),
         max_pairs=_bounded(source, f"{ENV_PREFIX}_MAX_PAIRS", str(DEFAULT_MAX_PAIRS), int, 1, 100_000),
         direction_check=_switch(source, ENV_DIRECTION_CHECK, default=True),
+        same_day=_switch(source, ENV_SAME_DAY, default=False),
     )
 
 
@@ -565,11 +571,15 @@ class ArbiterRun:
     direction_dropped: int = 0
     #: Pairs a cache-only run skipped because no answer was cached; nothing was spent on them.
     uncached: int = 0
+    #: Pairs `same_day` skipped, before any call, because their file-name dates differ or are absent.
+    other_day: int = 0
 
     def summary(self) -> str:
         return (
             f"arbiter: {self.candidates} candidate pair(s); {self.already_declared} already "
-            f"declared, {self.undirected} without a readable direction, {self.over_budget} over "
+            f"declared, "
+            + (f"{self.other_day} on different file-name dates, " if self.other_day else "")
+            + f"{self.undirected} without a readable direction, {self.over_budget} over "
             f"the {ENV_PREFIX}_MAX_PAIRS budget; judged {self.cached} from cache and "
             f"{self.called} by the model, {self.failed} failed; "
             f"{self.direction_dropped} dropped by the direction check; "
@@ -603,6 +613,7 @@ class SupersessionArbiter:
         self.provider_revision = (
             f"{settings.revision}+{PROMPT_REVISION}+threshold={settings.threshold:g}"
             + (f"+{DIRECTION_PROMPT_REVISION}" if settings.direction_check else "")
+            + ("+same-day" if settings.same_day else "")
         )
 
     def close(self) -> None:
@@ -647,11 +658,14 @@ class SupersessionArbiter:
             (pair for pair in similar if triggered(*pair)),
             key=lambda pair: (-similar[pair], pair),
         )
-        declared = undirected = 0
+        declared = undirected = other_day = 0
         jobs: list[tuple[Note, Note, str]] = []
         for left, right in candidates:
             if declared_pair(notes[left], notes[right]):
                 declared += 1
+                continue
+            if self.settings.same_day and (notes[left].day is None or notes[left].day != notes[right].day):
+                other_day += 1
                 continue
             oriented = orient(notes[left], notes[right])
             if oriented is None:
@@ -724,6 +738,7 @@ class SupersessionArbiter:
             failed=failed,
             direction_dropped=dropped,
             uncached=uncached,
+            other_day=other_day,
         )
 
     def _answers(

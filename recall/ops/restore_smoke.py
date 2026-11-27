@@ -41,9 +41,10 @@ def _http_json(
     request = Request(
         url,
         data=None if body is None else json.dumps(body).encode("utf-8"),
-        headers=headers or {},
         method="GET" if body is None else "POST",
     )
+    for name, value in (headers or {}).items():
+        request.add_unredirected_header(name, value)
     try:
         with urlopen(request, timeout=timeout) as response:
             return response.status, dict(response.headers.items()), response.read()

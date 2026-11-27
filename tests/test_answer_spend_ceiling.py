@@ -16,8 +16,9 @@ there, as it must, and its red proof is by mutation: with `off` parsed as the de
 failed on the 31st call. Production symbols targeted: `OllamaAnswerProvider.__call__` and
 `resolve_answer_provider`.
 
-The transport is faked at `urllib.request.urlopen` as the module calls it, so both clients run
-their real code and no request leaves the process.
+The transport is faked where the module calls it, `urllib.request.urlopen` for Ollama and
+`_OPENER.open` for OpenRouter, so both clients run their real code and no request leaves the
+process.
 """
 
 from __future__ import annotations
@@ -63,6 +64,7 @@ def transport(monkeypatch: pytest.MonkeyPatch) -> Iterator[list[str]]:
         return io.BytesIO(json.dumps(raw).encode("utf-8"))
 
     monkeypatch.setattr(ap.request, "urlopen", _urlopen)
+    monkeypatch.setattr(ap._OPENER, "open", _urlopen)
     yield sent
     # The ceiling is process-wide by design, so leave it unconfigured for the next test.
     ap.resolve_answer_provider({**_LOCAL, "RECALL_REASONING_ANSWER_MAX_CALLS_PER_MIN": "off"})

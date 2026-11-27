@@ -58,12 +58,12 @@ def _post_json(
 ) -> tuple[dict[str, Any], int]:
     body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     headers = {
-        "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
         "HTTP-Referer": "https://github.com/openai/recall",
         "X-Title": "RE-call graph answer model replay",
     }
     req = request.Request(url, data=body, headers=headers, method="POST")
+    req.add_unredirected_header("Authorization", f"Bearer {api_key}")
     with request.urlopen(req, timeout=timeout) as response:
         response_body = json.loads(response.read().decode("utf-8"))
         if not isinstance(response_body, dict):
