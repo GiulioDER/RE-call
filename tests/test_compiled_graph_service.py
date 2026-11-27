@@ -231,20 +231,20 @@ def test_a_build_reports_sources_without_offsets(tmp_path: Path) -> None:
         transport=Transport(), sleep=lambda _: None,
     )
     assert "built" in message, message
-    assert "1 source(s) skipped because no chunk carries character offsets" in message, message
+    assert "1 source(s) skipped because no chunk carries usable character offsets" in message, message
 
 
 def test_a_dry_run_reports_sources_without_offsets(tmp_path: Path) -> None:
     estimate = estimate_compile("t1", _chunks_with_an_unplaced_source(), _env(tmp_path))
     assert "1 source(s) to compile" in estimate, estimate
-    assert "1 source(s) skipped because no chunk carries character offsets" in estimate, estimate
+    assert "1 source(s) skipped because no chunk carries usable character offsets" in estimate, estimate
 
 
 def test_a_source_whose_offsets_place_nothing_is_counted(tmp_path: Path) -> None:
     unplaceable = Chunk(id="d.md:0", source="d.md", text="hello",
                         metadata={"file": "d.md", "text_start": -1, "text_end": 5})
     estimate = estimate_compile("t1", [*_chunks(), unplaceable], _env(tmp_path))
-    assert "1 source(s) skipped because no chunk carries character offsets" in estimate, estimate
+    assert "1 source(s) skipped because no chunk carries usable character offsets" in estimate, estimate
 
 
 def test_no_skip_clause_when_every_source_has_offsets(tmp_path: Path) -> None:

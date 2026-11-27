@@ -82,9 +82,10 @@ A build needs every one of these; there is no default model and no default price
 - **Other failures.** The same refusal on three sources in a row (an unknown model, an unsupported
   parameter) stops the build. A single rejected source is skipped.
 - **Sources without offsets.** The source text is rebuilt from its chunks' character offsets, and
-  both Lite and PostgreSQL generation builds record those only for Markdown sources. A source none
-  of whose chunks carries offsets (a code file, for example) is skipped. When any was, the summary
-  of a completed build and `--dry-run` both print how many; a stopped build's line does not.
+  every indexing path (a Lite write, `recall index` and a PostgreSQL generation build) records
+  those only for Markdown sources. A source none of whose chunks carries usable offsets (a code
+  file, for example) is skipped. When any was, the summary of a completed build and `--dry-run`
+  both print how many; a stopped build's line does not.
 - **What a stopped build leaves.** No artifact is written. Searches run without the graph and say
   `skipped:missing`. A build never makes a write, an index run or a promotion fail.
 
