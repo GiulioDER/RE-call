@@ -73,8 +73,14 @@ def compiled_graph_mode(env: Mapping[str, str], tenant: str | None) -> Mode:
 
 
 def artifact_root(env: Mapping[str, str]) -> Path | None:
+    """The configured root, or None; a relative one is refused, as each process has its own cwd."""
     value = env.get(ROOT_ENV, "").strip()
-    return Path(value).expanduser() if value else None
+    if not value:
+        return None
+    root = Path(value).expanduser()
+    if not root.is_absolute():
+        raise ValueError(f"{ROOT_ENV} must be an absolute path, not {value!r}")
+    return root
 
 
 def tenant_folder(root: Path, tenant: str) -> Path:
@@ -249,10 +255,11 @@ def ensure_for_store(
     """``ensure_compiled_graph`` over the corpus ``store`` serves now; never raises into the write."""
     try:
         mode = compiled_graph_mode(env, store.tenant)
+        root = artifact_root(env)
     except ValueError as exc:
-        # A bad mode value must not fail the Lite write that called this; it reports the line.
+        # A bad mode or root must not fail the Lite write that called this; it reports the line.
         return f"compiled graph not built: {exc}"
-    if mode == "off" or artifact_root(env) is None:
+    if mode == "off" or root is None:
         return ""
     return ensure_compiled_graph(
         store.tenant,
@@ -322,9 +329,10 @@ def ensure_for_generation(
     """Build ``generation_id``'s artifact before it is promoted; never raises into the promotion."""
     try:
         mode = compiled_graph_mode(env, tenant)
+        root = artifact_root(env)
     except ValueError as exc:
         return f"compiled graph not built: {exc}"
-    if mode == "off" or artifact_root(env) is None:
+    if mode == "off" or root is None:
         return ""
     from recall.generation_store import GenerationStore
 

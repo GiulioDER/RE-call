@@ -441,11 +441,12 @@ def _validate_runtime_options(source: Mapping[str, str]) -> None:
     if atomic_mode not in _ATOMIC_RESCUE_MODES:
         raise ValueError("RECALL_ATOMIC_RESCUE_MODE must be off, shadow, or active")
     tenant_modes = atomic_rescue_modes_by_tenant(source)
-    from recall.compiled_graph.service import compiled_graph_mode
+    from recall.compiled_graph.service import artifact_root, compiled_graph_mode
 
-    # The request path's own parser over the whole per-tenant map, so a bad entry stops startup
-    # instead of failing every search.
+    # The request path's own parsers over the whole per-tenant map and the root, so a bad value
+    # stops startup instead of failing every search.
     compiled_graph_mode(source, None)
+    artifact_root(source)
     if "active" in {atomic_mode, *tenant_modes.values()} and not source.get(
         "RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT", ""
     ).strip():

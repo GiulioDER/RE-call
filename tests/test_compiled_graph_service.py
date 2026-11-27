@@ -15,6 +15,9 @@ in ``recall.compiled_graph.service``):
 - ``test_a_partial_erase_serves_nothing`` (CCA FA-1-3): against the pass-1
   ``erase_forgotten_sources``, which left the manifest, fails with no exception, the cached
   records served.
+- ``test_a_relative_artifact_root_is_refused`` (CCA ENV-003): against the pre-fix
+  ``artifact_root``, which resolved a relative root against each process's cwd, fails with no
+  exception.
 - ``test_body_from_chunks_keeps_offsets``: chunks concatenated without their offsets fails on the
   slice equality.
 - ``test_off_or_rootless_builds_nothing``: the mode check removed fails on the call count.
@@ -173,6 +176,21 @@ def test_a_partial_erase_serves_nothing(tmp_path: Path, monkeypatch: pytest.Monk
         erase_forgotten_sources(["a.md"], env=env)
     with pytest.raises(ArtifactMissing):
         load_artifact(tenant_folder(tmp_path, "t1"), lineage)
+
+
+def test_a_relative_artifact_root_is_refused(tmp_path: Path) -> None:
+    from recall.compiled_graph import service
+    from recall_mcp.settings import _validate_runtime_options
+
+    class Store:
+        tenant = "t1"
+
+    env = {**_env(tmp_path), "RECALL_COMPILED_GRAPH_ARTIFACT_ROOT": "graphs"}
+    with pytest.raises(ValueError, match="RECALL_COMPILED_GRAPH_ARTIFACT_ROOT"):
+        service.artifact_root(env)
+    with pytest.raises(ValueError, match="RECALL_COMPILED_GRAPH_ARTIFACT_ROOT"):
+        _validate_runtime_options({"RECALL_COMPILED_GRAPH_ARTIFACT_ROOT": "graphs"})
+    assert service.ensure_for_store(Store(), FakeEmbedder(), env).startswith("compiled graph not built")  # type: ignore[arg-type]  # only the tenant is read before the refusal
 
 
 def test_body_from_chunks_keeps_offsets() -> None:

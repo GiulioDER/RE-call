@@ -9,7 +9,7 @@ ranks 9 and 10. Search never calls a model.
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass
 
 import numpy as np
@@ -24,11 +24,9 @@ from recall.compiled_graph.artifact import (
 from recall.compiled_graph.promotion import SEED_K, promote
 from recall.compiled_graph.service import compiled_graph_mode, load_serving_artifact
 from recall.embedding_core import Embedder
-from recall.types import ScoredChunk
+from recall.types import GraphTransform, ScoredChunk
 
 _log = logging.getLogger("recall.compiled_graph")
-
-GraphTransform = Callable[[list[float], list[ScoredChunk]], list[ScoredChunk]]
 
 
 @dataclass
@@ -43,8 +41,12 @@ def _seeds(artifact: CompiledGraphArtifact, query_vector: list[float]) -> list[t
     norm = float(np.linalg.norm(query))
     if not len(artifact.records) or norm == 0.0:
         return []
-    scores = artifact.vectors @ (query / norm)
-    order = np.argsort(-scores, kind="stable")[:SEED_K]
+    negated = -(artifact.vectors @ (query / norm))
+    # The top SEED_K in the order a stable full sort gives, without sorting every record: every
+    # record tied with the SEED_K-th is kept before the stable sort, so ties break by index.
+    cut = negated[np.argpartition(negated, min(SEED_K, len(negated)) - 1)[:SEED_K]].max()
+    candidates = np.flatnonzero(negated <= cut)
+    order = candidates[np.argsort(negated[candidates], kind="stable")][:SEED_K]
     return [(artifact.records[i].key, artifact.records[i].edges) for i in order]
 
 
