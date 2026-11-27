@@ -280,35 +280,42 @@ def _split_oversized(block: str, max_chars: int, overlap: int) -> list[str]:
     return [p for p in (p.strip() for p in pieces) if p]
 
 
-def _pack(
-    blocks: list[str], max_chars: int, hard_split: bool = False, overlap: int = DEFAULT_OVERLAP_CHARS
-) -> list[str]:
+_BLOCK_SEP = "\n\n"
+
+
+def _pack_groups(blocks: list[str], max_chars: int) -> list[list[int]]:
+    """Indices of ``blocks``, greedily grouped into chunks of at most max_chars once joined by
+    `_BLOCK_SEP`. A block larger than max_chars on its own is kept whole in a group of one."""
+    groups: list[list[int]] = []
+    size = 0
+    for index, b in enumerate(blocks):
+        if groups and size + len(_BLOCK_SEP) + len(b) <= max_chars:
+            groups[-1].append(index)
+            size += len(_BLOCK_SEP) + len(b)
+        else:
+            groups.append([index])
+            size = len(b)
+    return groups
+
+
+def _pack(blocks: list[str], max_chars: int, overlap: int = DEFAULT_OVERLAP_CHARS) -> list[str]:
     """Greedily pack pre-split blocks into chunks no larger than max_chars.
 
-    Blocks are kept whole when they fit. When ``hard_split`` is set, a block that is itself larger
-    than max_chars is force-split (with overlap) before packing, so no single chunk can exceed the
-    cap; without it an oversized block is preserved intact (the code chunker keeps functions whole).
+    Blocks are kept whole when they fit. A block that is itself larger than max_chars is
+    force-split (with overlap) before packing, so no single chunk can exceed the cap.
     """
     prepared: list[str] = []
     for b in blocks:
         b = b.strip()
         if not b:
             continue
-        if hard_split and len(b) > max_chars:
+        if len(b) > max_chars:
             prepared.extend(_split_oversized(b, max_chars, overlap))
         else:
             prepared.append(b)
-    chunks: list[str] = []
-    buf = ""
-    for b in prepared:
-        if buf and len(buf) + len(b) + 2 > max_chars:
-            chunks.append(buf)
-            buf = b
-        else:
-            buf = f"{buf}\n\n{b}" if buf else b
-    if buf:
-        chunks.append(buf)
-    return chunks
+    return [
+        _BLOCK_SEP.join(prepared[i] for i in group) for group in _pack_groups(prepared, max_chars)
+    ]
 
 
 def chunk_text(
@@ -318,7 +325,7 @@ def chunk_text(
 
     A paragraph longer than max_chars on its own is force-split with overlap so it is never
     handed to the embedder oversized (which would truncate it silently)."""
-    return _pack(text.split("\n\n"), max_chars, hard_split=True, overlap=overlap)
+    return _pack(text.split("\n\n"), max_chars, overlap=overlap)
 
 
 def chunk_code(text: str, max_chars: int = DEFAULT_MAX_CHARS) -> list[str]:
@@ -335,8 +342,8 @@ def chunk_code(text: str, max_chars: int = DEFAULT_MAX_CHARS) -> list[str]:
 def _code_chunks_with_spans(text: str, max_chars: int) -> list[tuple[str, list[list[int]]]]:
     """`chunk_code`'s chunks, each with its `TEXT_SPANS_KEY` entries over ``text``.
 
-    Packs as `_pack` does without ``hard_split``: each block stripped, an empty one dropped, and
-    blocks joined by a blank line while the chunk stays within max_chars.
+    Each block is stripped, an empty one dropped, and the rest grouped by `_pack_groups`, so an
+    oversized block (a long function) is kept whole rather than force-split.
     """
     blocks: list[tuple[int, str]] = []
     cur: list[str] = []
@@ -353,21 +360,19 @@ def _code_chunks_with_spans(text: str, max_chars: int) -> list[tuple[str, list[l
         position += len(line) + 1
     if cur:
         blocks.append((cur_start, "\n".join(cur)))
+    kept = [
+        (start + len(block) - len(block.lstrip()), block.strip())
+        for start, block in blocks
+        if block.strip()
+    ]
     chunks: list[tuple[str, list[list[int]]]] = []
-    buf = ""
-    spans: list[list[int]] = []
-    for start, block in blocks:
-        stripped = block.strip()
-        if not stripped:
-            continue
-        if buf and len(buf) + len(stripped) + 2 > max_chars:
-            chunks.append((buf, spans))
-            buf, spans = "", []
-        source_start = start + len(block) - len(block.lstrip())
-        spans.append([source_start, source_start + len(stripped), len(buf) + 2 if buf else 0])
-        buf = f"{buf}\n\n{stripped}" if buf else stripped
-    if buf:
-        chunks.append((buf, spans))
+    for group in _pack_groups([text for _, text in kept], max_chars):
+        spans: list[list[int]] = []
+        offset = 0
+        for at, piece in (kept[i] for i in group):
+            spans.append([at, at + len(piece), offset])
+            offset += len(piece) + len(_BLOCK_SEP)
+        chunks.append((_BLOCK_SEP.join(piece for _, piece in (kept[i] for i in group)), spans))
     return chunks
 
 
