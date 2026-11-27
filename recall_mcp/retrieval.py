@@ -27,6 +27,7 @@ from recall.related import RelatedEvidenceResult, trusted_related
 from recall.rerank import COREB_CODE_RERANKER_MODEL
 from recall.store import PgVectorStore
 from recall.timing import TimedEmbedder
+from recall.answerability import judge_query_support, judged, resolve_answerability_judge
 from recall.support import ELIGIBILITY_NOTE
 from recall.trust import decision_state_for, trusted_search
 from recall.trust_policy import TrustPolicy, TrustRefusal
@@ -736,6 +737,7 @@ def search_memory(
     result, timed = retrieval.result, retrieval.timed
     route = route_query(query)
     values = dict(runtime_environment() if env is None else env)
+    result = judged(result, resolve_answerability_judge(values))
     active_routing = routing_mode(values.get("RECALL_ROUTING_MODE", "shadow")) == "active"
     # `evidence_assembly` is the last stage and the one the surface did not carry. It brackets
     # turning trusted hits into the client-facing evidence: provenance, validity, verdicts and
@@ -954,6 +956,10 @@ def evidence_memory(
         except ValueError as exc:
             related_diagnostics.append(f"related_refused:{type(exc).__name__}")
     bundle = build_evidence_bundle(result, EvidencePolicy(max_items=limit))
+    judge = resolve_answerability_judge(values)
+    if judge is not None:
+        cited = [{"chunk_id": item.chunk_id, "source": item.source, "text": item.text} for item in bundle.items]
+        bundle = replace(bundle, query_support=judge_query_support(query, cited, judge))
     register_evidence_cards_fn(bundle.cards, store=store)
     system, user = render_evidence_prompt(bundle)
     items = [_evidence_item_model_fn(item, related_ids) for item in bundle.items]

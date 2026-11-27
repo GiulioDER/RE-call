@@ -216,6 +216,14 @@ OPENROUTER_API_KEY=
 #                                                      # `recall setup` registers does not read
 #                                                      # .env: set it in that server's environment.
 #
+# Optional answerability judge for `recall_search`, `recall_evidence` and `recall search`. Off
+# unless RECALL_ANSWERABILITY_JUDGE=1. When on, each search with citable evidence makes one paid
+# OpenRouter call (deepseek/deepseek-v4-pro-0813, about USD 0.0023 and 1.4 s median per query as
+# measured on 2026-11-28) and query_support reports its verdict: stated or not_stated, or failed
+# or unparsed when it gave none. It annotates only: verdicts, abstention and citable evidence are
+# unchanged. Needs OPENROUTER_API_KEY; the server refuses to start when the judge is on without it.
+# RECALL_ANSWERABILITY_JUDGE=0
+#
 # Optional answer provider for `recall_reasoning_query`. Disabled unless
 # RECALL_REASONING_ANSWER_ENABLED=1; with it unset the tool abstains with
 # refusal_reason="no_answer_provider", which is the shipped default. Provider failures are

@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from dataclasses import asdict
 from pathlib import Path
 from typing import cast
 
+from recall.answerability import judged, resolve_answerability_judge
 from recall.cache import default_cache
 from recall.context import context_policy_for_profile
 from recall.embeddings import embedding_profile_id
@@ -972,6 +974,7 @@ def _cmd_search(args: argparse.Namespace) -> None:
             )
         except TrustRefusal as exc:
             raise SystemExit(refusal_message(exc)) from exc
+        result = judged(result, resolve_answerability_judge(os.environ))
         if sqlite_snapshot is not None:
             _print_evidence(
                 result, max_items=args.k, document_mode=args.expand_documents,

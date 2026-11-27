@@ -17,8 +17,6 @@ Red proof, 2026-10-28, on this workstation, CCA deferred run 20261028T185351Z, b
 
 from __future__ import annotations
 
-from typing import Any, cast
-
 import pytest
 
 from recall.evidence import EvidenceValidationError
@@ -50,7 +48,8 @@ def test_q3_the_cli_prints_the_carried_support_status(capsys) -> None:
     from recall.cli_commands._shared import _print_result
     from tests.test_cli_terminal_injection import _result_with
 
-    result = replace(_result_with("notes.md"), query_support=QuerySupport(status=cast(Any, "checked")))
+    support = QuerySupport(status="not_stated", method="llm_judge", model="m")
+    result = replace(_result_with("notes.md"), query_support=support)
     _print_result(result)
     out = capsys.readouterr().out
-    assert "query support: checked" in out, "the CLI printed a fixed support status"
+    assert "query support: not_stated" in out, "the CLI printed a fixed support status"

@@ -19,8 +19,11 @@ MIN_PROBES = 10
 CLASSES = ("unknown_entity", "in_vocabulary")
 #: The vocabularies of the support and coverage diagnostics, read by the dataclasses below, the
 #: report validator and the reasoning response decoder, so a new state cannot reach one of them only.
-SupportStatus = Literal["not_checked"]
+#: `stated` and `not_stated` are a judge's verdict; `failed` (the call raised) and `unparsed` (no
+#: reply passed the strict parser) mean the judge ran and gave none, never that support holds.
+SupportStatus = Literal["not_checked", "stated", "not_stated", "failed", "unparsed"]
 SupportScope = Literal["returned_evidence"]
+SupportMethod = Literal["llm_judge"]
 CoverageStatus = Literal["measured", "unmeasured", "unavailable"]
 CoverageMethod = Literal["synthetic_corpus_probes"]
 UnknownTermGate = Literal["checked", "unavailable", "disabled", "not_run"]
@@ -54,18 +57,28 @@ def latest_calibration_event(
 
 ELIGIBILITY_NOTE = (
     " Citable passages passed retrieval trust checks; this does not establish that they "
-    "answer the question. query_support is not_checked: establish that each cited passage "
+    "answer the question. Unless query_support is stated, establish that each cited passage "
     "supports the claim before answering. Retrieval confidence is not answer correctness."
 )
 
 
 @dataclass(frozen=True)
 class QuerySupport:
-    """No semantic verifier runs in this release, including on empty or certified results."""
+    """Whether a judge checked that the returned evidence states the answer.
+
+    `not_checked` unless the opt-in judge (`recall.answerability`) ran; a verdict here never
+    changes retrieval verdicts. `method` and `model` are set exactly when a judge ran.
+    """
 
     status: SupportStatus = "not_checked"
     scope: SupportScope = "returned_evidence"
-    method: None = None
+    method: SupportMethod | None = None
+    model: str | None = None
+
+    def __post_init__(self) -> None:
+        judged = self.status != "not_checked"
+        if judged != (self.method is not None) or judged != (self.model is not None):
+            raise ValueError("query_support method and model are set exactly when a judge ran")
 
 
 @dataclass(frozen=True)

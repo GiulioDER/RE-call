@@ -53,7 +53,7 @@ from recall_mcp.models import EvidenceResult, SearchResult
 from recall_agent._descriptions import RECALL_EVIDENCE_DESCRIPTION, RECALL_SEARCH_DESCRIPTION
 from tests.test_lite_calibration import ContentWordEmbedder, _store, _strict
 
-EXPECTED = {"status": "not_checked", "scope": "returned_evidence", "method": None}
+EXPECTED = {"status": "not_checked", "scope": "returned_evidence", "method": None, "model": None}
 
 
 @pytest.fixture
