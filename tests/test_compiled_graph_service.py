@@ -29,6 +29,12 @@ in ``recall.compiled_graph.service``):
   against ``without_offsets`` judged by ``promotion._offsets`` (commit adce9b281), it fails on the
   count assertion: ``text_start=-1`` passes ``_offsets`` but ``body_from_chunks`` places nothing,
   so the source was skipped and reported as ``0`` skipped.
+- ``test_a_dry_run_reports_sources_without_offsets`` again (recorded 2026-11-27, CCA CODE-004): it
+  now asserts the build's phrasing, ``1 source(s) skipped``; against the dry run of 8e78286cf,
+  which said ``1 skipped``, it fails on that assertion.
+- ``test_no_skip_clause_when_every_source_has_offsets`` (recorded 2026-11-27, CCA CODE-006):
+  against 8e78286cf, which printed ``0 source(s) skipped because ...`` on every build, it fails on
+  the build-message assertion.
 - ``test_off_or_rootless_builds_nothing``: the mode check removed fails on the call count.
 - ``test_build_writes_an_artifact_the_loader_serves``: the loader lineage built without the model
   fails with ``ArtifactMissing``.
@@ -229,14 +235,25 @@ def test_a_build_reports_sources_without_offsets(tmp_path: Path) -> None:
 def test_a_dry_run_reports_sources_without_offsets(tmp_path: Path) -> None:
     estimate = estimate_compile("t1", _chunks_with_an_unplaced_source(), _env(tmp_path))
     assert "1 source(s) to compile" in estimate, estimate
-    assert "1 skipped because no chunk carries character offsets" in estimate, estimate
+    assert "1 source(s) skipped because no chunk carries character offsets" in estimate, estimate
 
 
 def test_a_source_whose_offsets_place_nothing_is_counted(tmp_path: Path) -> None:
     unplaceable = Chunk(id="d.md:0", source="d.md", text="hello",
                         metadata={"file": "d.md", "text_start": -1, "text_end": 5})
     estimate = estimate_compile("t1", [*_chunks(), unplaceable], _env(tmp_path))
-    assert "1 skipped because no chunk carries character offsets" in estimate, estimate
+    assert "1 source(s) skipped because no chunk carries character offsets" in estimate, estimate
+
+
+def test_no_skip_clause_when_every_source_has_offsets(tmp_path: Path) -> None:
+    message = ensure_compiled_graph(
+        "t1", _chunks(), BINDING, FakeEmbedder(), env=_env(tmp_path),
+        transport=Transport(), sleep=lambda _: None,
+    )
+    estimate = estimate_compile("t1", _chunks(), _env(tmp_path / "dry"))
+    assert "built" in message, message
+    assert "skipped because" not in message, message
+    assert "skipped because" not in estimate, estimate
 
 
 def test_off_or_rootless_builds_nothing(tmp_path: Path) -> None:

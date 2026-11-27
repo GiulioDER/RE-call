@@ -148,7 +148,8 @@ def build_compiled_graph(
     for source in sources:
         anchors = build_source_anchors(source.source, source.body)
         if not anchors:
-            report.sources_without_offsets += without_offsets(source)
+            if without_offsets(source):
+                report.sources_without_offsets += 1
             continue
         key = cache_key(config, source.source, hashlib.sha256(source.body.encode("utf-8")).hexdigest())
         records = cache.get(key)
