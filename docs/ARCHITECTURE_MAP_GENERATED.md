@@ -8,7 +8,7 @@ design violation.
 ## Scope
 
 Packages: `recall`, `recall_mcp`, `recall_agent`, `recall_hooks`, `recall_interop`, `recall_consistency`
-Modules: 385
+Modules: 388
 Cross package edges: 469
 
 ## Highest fan in modules
@@ -631,7 +631,10 @@ They are observations, not automatic failures.
 | `recall.codex` | 4 | 185 |
 | `recall.compiled_graph` | 0 | 0 |
 | `recall.compiled_graph.anchors` | 0 | 0 |
+| `recall.compiled_graph.budget` | 1 | 4 |
+| `recall.compiled_graph.cache` | 4 | 6 |
 | `recall.compiled_graph.promotion` | 2 | 7 |
+| `recall.compiled_graph.provider` | 4 | 4 |
 | `recall.compiled_graph.records` | 1 | 1 |
 | `recall.confinement` | 0 | 0 |
 | `recall.constants` | 0 | 0 |
