@@ -22,7 +22,9 @@ Red proof, recorded 2026-11-26 (production symbols in ``recall.compiled_graph.ca
 
 from __future__ import annotations
 
+import os
 import sqlite3
+import stat
 
 import pytest
 from pathlib import Path
@@ -119,6 +121,8 @@ def test_key_covers_every_constant_that_shapes_records(monkeypatch: pytest.Monke
         ("recall.compiled_graph.records", "MAX_ENTITIES"),
         ("recall.compiled_graph.records", "BACKFILL_CHARS"),
         ("recall.compiled_graph.provider", "MAX_OUTPUT_TOKENS"),
+        ("recall.compiled_graph.provider", "REQUEST_OPTIONS"),
+        ("recall.compiled_graph.provider", "USER_TEMPLATE"),
     ):
         with monkeypatch.context() as patch:
             patch.setattr(f"{module}.{name}", 7)
@@ -139,3 +143,49 @@ def test_erased_rows_leave_no_bytes_in_the_file(tmp_path: Path) -> None:
     cache.put(cache_key(CONFIG, "notes/a.md", "0" * 64), "notes/a.md", [RECORD])
     cache.erase_sources(["notes/a.md"])
     assert b"Alice owns it." not in path.read_bytes()
+
+
+def test_unmakeable_directory_degrades_instead_of_raising(tmp_path: Path) -> None:
+    """Red proof, 2026-11-26: with ``mkdir`` outside the guarded block (before the fix) the
+    constructor raises (``FileExistsError`` or ``NotADirectoryError``) instead of degrading."""
+    (tmp_path / "taken").write_text("a file where the directory should be", encoding="utf-8")
+    cache = CompileCache(tmp_path / "taken" / "compile-cache.sqlite")
+    assert cache.usable is False
+    assert cache.get(cache_key(CONFIG, "notes/a.md", "0" * 64)) is None
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX file modes; Windows keeps the folder's ACL")
+def test_cache_file_is_private(tmp_path: Path) -> None:
+    """Red proof, 2026-11-26: before the fix SQLite created the file at the umask, and this fails
+    on the mode (0o644 at the usual 022)."""
+    path = tmp_path / "compile-cache.sqlite"
+    CompileCache(path).put(cache_key(CONFIG, "notes/a.md", "0" * 64), "notes/a.md", [RECORD])
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+
+
+def test_bad_argument_to_erase_keeps_the_file(tmp_path: Path) -> None:
+    """A caller's bad argument is not a damaged file: nothing is deleted.
+
+    Red proof, 2026-11-26: with only ``OperationalError`` re-raised (before the fix) the
+    ``ProgrammingError`` deleted the whole cache, and this fails on ``pytest.raises``.
+    """
+    path = tmp_path / "compile-cache.sqlite"
+    cache = CompileCache(path)
+    cache.put(cache_key(CONFIG, "notes/a.md", "0" * 64), "notes/a.md", [RECORD])
+    with pytest.raises(sqlite3.ProgrammingError):
+        cache.erase_sources([Path("notes/a.md")])  # type: ignore[list-item]  # the wrong type is the case under test
+    assert path.exists()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX file modes; Windows keeps the folder's ACL")
+def test_read_only_cache_file_is_still_served(tmp_path: Path) -> None:
+    """Red proof, 2026-11-26: with the private create opening an existing file for writing (the
+    first form of the F-19 fix) a 0444 cache became unusable, and this fails on ``== [RECORD]``."""
+    path = tmp_path / "compile-cache.sqlite"
+    key = cache_key(CONFIG, "notes/a.md", "0" * 64)
+    CompileCache(path).put(key, "notes/a.md", [RECORD])
+    path.chmod(0o444)
+    try:
+        assert CompileCache(path).get(key) == [RECORD]
+    finally:
+        path.chmod(0o600)

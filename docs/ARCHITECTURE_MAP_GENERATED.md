@@ -636,8 +636,8 @@ They are observations, not automatic failures.
 | `recall.compiled_graph.anchors` | 0 | 0 |
 | `recall.compiled_graph.artifact` | 1 | 1 |
 | `recall.compiled_graph.budget` | 1 | 4 |
-| `recall.compiled_graph.build` | 9 | 24 |
-| `recall.compiled_graph.cache` | 3 | 5 |
+| `recall.compiled_graph.build` | 9 | 25 |
+| `recall.compiled_graph.cache` | 4 | 6 |
 | `recall.compiled_graph.promotion` | 2 | 7 |
 | `recall.compiled_graph.provider` | 4 | 4 |
 | `recall.compiled_graph.records` | 1 | 1 |

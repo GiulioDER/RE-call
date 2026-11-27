@@ -41,10 +41,10 @@ class Client:
             data=body,
             method="POST" if body is not None else "GET",
             headers={
-                "Authorization": f"Bearer {self._api_key}",
                 "Content-Type": "application/json",
             },
         )
+        request.add_unredirected_header("Authorization", f"Bearer {self._api_key}")
         try:
             with urlopen(request, timeout=60) as response:  # noqa: S310
                 return Call(

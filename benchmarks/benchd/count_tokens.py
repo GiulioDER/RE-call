@@ -146,8 +146,8 @@ def cmd_openrouter(_args: argparse.Namespace) -> int:
         return 1
     req = urllib.request.Request(
         "https://openrouter.ai/api/v1/auth/key",
-        headers={"Authorization": f"Bearer {key}"},
     )
+    req.add_unredirected_header("Authorization", f"Bearer {key}")
     with urllib.request.urlopen(req, timeout=30) as resp:
         body = json.loads(resp.read())
     info = body.get("data", body)

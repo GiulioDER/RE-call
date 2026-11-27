@@ -10,6 +10,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ### Added
 
+* `RECALL_ARBITER_SAME_DAY=1` makes the supersession arbiter judge only memo pairs whose file
+  names start with the same date. The other pairs are counted in the run summary and never sent
+  to the model. It is off by default, because it drops every replacement written on a different
+  day; see [TRUTH_EXTRACTION_DESIGN.md](docs/TRUTH_EXTRACTION_DESIGN.md).
+
 * The compiled graph, opt-in and off by default: a model you configure
   (`RECALL_COMPILED_GRAPH_MODEL`, for example `openai/gpt-6-luna-pro`) compiles each source into
   typed records that keep only text copied verbatim from the excerpts they cite, and the server

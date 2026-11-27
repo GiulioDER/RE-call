@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import http.client
 import json
+import math
 import re
 import time
 from collections.abc import Callable, Mapping
@@ -48,22 +49,30 @@ _SIZE_BODY = re.compile(
 )
 _FENCED = re.compile(r"^\s*```[a-zA-Z]*\s*\n(.*)\n\s*```\s*$", re.DOTALL)
 
+#: The request fields besides model, cap and messages; part of the compile cache key.
+REQUEST_OPTIONS: Mapping[str, Any] = {"temperature": 0, "response_format": {"type": "json_object"}}
+#: The user message around the encoded source; part of the compile cache key.
+USER_TEMPLATE = "<stored_data>{}</stored_data>"
+
+#: ``(url, body, headers, timeout) -> (status, headers, body)``. Every HTTP status comes back as a
+#: value, an error status included; ``OSError`` or ``HTTPException`` means no status arrived (the
+#: attempt is retried), and ``ReplyLost`` means a success status arrived without its body.
 Transport = Callable[[str, bytes, Mapping[str, str], float], tuple[int, Mapping[str, str], bytes]]
 
 
-class CompiledGraphConfigError(ValueError, RecallError):
+class CompiledGraphConfigError(RecallError, ValueError):
     """A required ``RECALL_COMPILED_GRAPH_*`` variable is missing or invalid."""
 
 
-class CreditStop(RuntimeError, RecallError):
+class CreditStop(RecallError, RuntimeError):
     """The provider refused for credit or authorization: the whole build stops."""
 
 
-class BudgetExhausted(RuntimeError, RecallError):
+class BudgetExhausted(RecallError, RuntimeError):
     """The next attempt's worst case does not fit what is left: the whole build stops."""
 
 
-class SourceRejected(RuntimeError, RecallError):
+class SourceRejected(RecallError, RuntimeError):
     """This source gets no records; the build goes on with the next one."""
 
     def __init__(self, message: str, status: int | None = None, *, repeatable: bool = False) -> None:
@@ -75,11 +84,28 @@ class SourceRejected(RuntimeError, RecallError):
         self.repeatable = repeatable
 
 
-class PayloadTooLarge(RuntimeError, RecallError):
+class PayloadTooLarge(RecallError, RuntimeError):
     """The provider refused the request's size; the caller may refit it once."""
 
 
+class ReplyLost(RecallError, RuntimeError):
+    """A transport received a success status but lost the body: the reply was billed."""
+
+    def __init__(self, status: int) -> None:
+        super().__init__(f"HTTP {status} body was lost after the status arrived")
+        self.status = status
+
+
+def required_env(env: Mapping[str, str], name: str) -> str:
+    variable = f"{ENV_PREFIX}_{name}"
+    value = env.get(variable, "").strip()
+    if not value:
+        raise CompiledGraphConfigError(f"{variable} is required for a compile")
+    return value
+
+
 def url_without_credentials(url: str) -> str:
+    """Scheme, host, port and path of ``url``: userinfo, query and fragment are dropped."""
     parts = urlsplit(url)
     host = parts.hostname or ""
     netloc = f"{host}:{parts.port}" if parts.port else host
@@ -98,20 +124,15 @@ class ProviderConfig:
 
     @classmethod
     def from_env(cls, env: Mapping[str, str]) -> ProviderConfig:
-        def required(name: str) -> str:
-            value = env.get(f"{ENV_PREFIX}_{name}", "").strip()
-            if not value:
-                raise CompiledGraphConfigError(f"{ENV_PREFIX}_{name} is required for a compile")
-            return value
-
-        api_key, model = required("API_KEY"), required("MODEL")
+        api_key, model = required_env(env, "API_KEY"), required_env(env, "MODEL")
         timeout_text = env.get(f"{ENV_PREFIX}_TIMEOUT", "").strip()
         try:
             timeout = float(timeout_text) if timeout_text else DEFAULT_TIMEOUT_SECONDS
         except ValueError as exc:
             raise CompiledGraphConfigError(f"{ENV_PREFIX}_TIMEOUT must be a number") from exc
-        if not timeout > 0:
-            raise CompiledGraphConfigError(f"{ENV_PREFIX}_TIMEOUT must be positive")
+        # A socket refuses an infinite timeout with OverflowError, after the attempt is reserved.
+        if not (math.isfinite(timeout) and timeout > 0):
+            raise CompiledGraphConfigError(f"{ENV_PREFIX}_TIMEOUT must be a finite number above zero")
         base_url = env.get(f"{ENV_PREFIX}_BASE_URL", "").strip() or DEFAULT_BASE_URL
         return cls(api_key=api_key, model=model, base_url=base_url, timeout=timeout)
 
@@ -123,13 +144,27 @@ class CompileReply:
     output_tokens: int | None
 
 
+class _RefuseRedirect(request.HTTPRedirectHandler):
+    # urllib re-sends every header but the content ones to a redirect's target, the bearer key
+    # included, to any host and over plain http; a refused redirect reaches the caller as its 3xx.
+    def redirect_request(self, *args: Any, **kwargs: Any) -> None:
+        return None
+
+
+_OPENER = request.build_opener(_RefuseRedirect)
+
+
 def urllib_transport(
     url: str, body: bytes, headers: Mapping[str, str], timeout: float
 ) -> tuple[int, Mapping[str, str], bytes]:
     req = request.Request(url, data=body, headers=dict(headers), method="POST")
     try:
-        with request.urlopen(req, timeout=timeout) as response:
-            return response.status, dict(response.headers), response.read()
+        with _OPENER.open(req, timeout=timeout) as response:
+            status, response_headers = response.status, dict(response.headers)
+            try:
+                return status, response_headers, response.read()
+            except (OSError, http.client.HTTPException) as exc:
+                raise ReplyLost(status) from exc
     except error.HTTPError as exc:
         return exc.code, dict(exc.headers or {}), exc.read()
 
@@ -138,9 +173,13 @@ def _retry_delay(headers: Mapping[str, str], attempt: int) -> float:
     for name, value in headers.items():
         if name.lower() == "retry-after":
             try:
-                return min(max(float(value), 0.0), RETRY_AFTER_CAP_SECONDS)
+                seconds = float(value)
             except ValueError:
                 break
+            # NaN passes min and max unchanged, and time.sleep refuses it.
+            if math.isnan(seconds):
+                break
+            return min(max(seconds, 0.0), RETRY_AFTER_CAP_SECONDS)
     return min(float(2 ** (attempt - 1)), RETRY_AFTER_CAP_SECONDS)
 
 
@@ -159,7 +198,8 @@ def _parse_ok(text: str) -> CompileReply:
     """Read a 200 reply; raises CreditStop or SourceRejected, never asks for a resend."""
     try:
         reply = json.loads(text)
-    except ValueError as exc:
+    # json raises RecursionError, not ValueError, for nesting deeper than it can read.
+    except (ValueError, RecursionError) as exc:
         raise SourceRejected("reply body was not JSON", 200) from exc
     if not isinstance(reply, dict):
         raise SourceRejected("reply body was not a JSON object", 200)
@@ -191,7 +231,8 @@ def _parse_ok(text: str) -> CompileReply:
     fenced = _FENCED.match(content_text)
     try:
         content = json.loads(fenced.group(1) if fenced else content_text)
-    except ValueError as exc:
+    # json raises RecursionError, not ValueError, for nesting deeper than it can read.
+    except (ValueError, RecursionError) as exc:
         raise SourceRejected("reply content was not a JSON object", 200, repeatable=finished) from exc
     if not isinstance(content, dict):
         raise SourceRejected("reply content was not a JSON object", 200, repeatable=finished)
@@ -207,15 +248,11 @@ def request_body(config: ProviderConfig, payload: Mapping[str, Any]) -> bytes:
     return json.dumps(
         {
             "model": config.model,
-            "temperature": 0,
+            **REQUEST_OPTIONS,
             "max_tokens": MAX_OUTPUT_TOKENS,
-            "response_format": {"type": "json_object"},
             "messages": [
                 {"role": "system", "content": COMPILE_SYSTEM_PROMPT},
-                {
-                    "role": "user",
-                    "content": f"<stored_data>{encode_stored_data(payload)}</stored_data>",
-                },
+                {"role": "user", "content": USER_TEMPLATE.format(encode_stored_data(payload))},
             ],
         }
     ).encode("utf-8")
@@ -229,7 +266,18 @@ def compile_source(
     *,
     sleep: Callable[[float], None] = time.sleep,
 ) -> CompileReply:
-    """Send one compile within ``budget``; return the parsed JSON object and its usage."""
+    """Send one compile within ``budget``; return the parsed JSON object and its usage.
+
+    Every attempt is reserved before it is sent and settled once, at its whole reservation unless
+    a 200 reports usage, on every way out, an unexpected exception included.
+
+    Raises:
+        BudgetExhausted: the next attempt's worst case does not fit; the build stops.
+        CreditStop: 401, 402, or a credit or key-limit refusal (also inside a 200); the build stops.
+        PayloadTooLarge: 413, or a 400 naming the request size; the caller may refit once.
+        SourceRejected: any other refusal, a 200 that cannot be read (never resent), or
+            ``ATTEMPTS`` failed attempts of 408, 409, 429, 5xx or a network error.
+    """
     body = request_body(config, payload)
     headers = {"Content-Type": "application/json", "Authorization": f"Bearer {config.api_key}"}
     url = f"{config.base_url.rstrip('/')}/chat/completions"
@@ -239,16 +287,23 @@ def compile_source(
             raise BudgetExhausted("the next compile attempt does not fit the remaining budget")
         try:
             status, response_headers, raw = transport(url, body, headers, config.timeout)
+        except ReplyLost as exc:
+            budget.settle(None)
+            raise SourceRejected("the reply body was lost; a billed reply is not sent again",
+                                 exc.status) from exc
         except (OSError, http.client.HTTPException) as exc:
             budget.settle(None)
             reason = f"network error {type(exc).__name__}"
             if attempt < ATTEMPTS:
                 sleep(_retry_delay({}, attempt))
             continue
+        except BaseException:
+            budget.settle(None)
+            raise
         if status == 200:
             try:
                 reply = _parse_ok(raw.decode("utf-8", errors="replace"))
-            except (CreditStop, SourceRejected):
+            except BaseException:
                 budget.settle(None)
                 raise
             budget.settle(reply)
