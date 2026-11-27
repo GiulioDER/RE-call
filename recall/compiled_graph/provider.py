@@ -176,22 +176,24 @@ def _parse_ok(text: str) -> CompileReply:
         if choice.get("finish_reason") == "length":
             raise SourceRejected("compile output was cut off at the output token cap", 200, repeatable=True)
         content_text = choice["message"]["content"]
+        finished = choice.get("finish_reason") == "stop"
     except SourceRejected:
         raise
     except (KeyError, IndexError, TypeError, AttributeError) as exc:
         # The envelope itself is not the provider's shape: possibly an intermediary's, so not cached.
         raise SourceRejected("reply carried no choice message", 200) from exc
-    # From here the model answered inside a well-formed, billed envelope; at temperature 0 the same
-    # request gets the same answer, so these refusals are repeatable.
+    # A model that finished on its own ("stop") gives the same answer at temperature 0, so a refusal
+    # of its content is repeatable. Any other finish ("error", or none reported) means generation
+    # was cut short upstream, which the next request may not repeat, so it is not cached.
     if not isinstance(content_text, str):
-        raise SourceRejected("reply carried no text content", 200, repeatable=True)
+        raise SourceRejected("reply carried no text content", 200, repeatable=finished)
     fenced = _FENCED.match(content_text)
     try:
         content = json.loads(fenced.group(1) if fenced else content_text)
     except ValueError as exc:
-        raise SourceRejected("reply content was not a JSON object", 200, repeatable=True) from exc
+        raise SourceRejected("reply content was not a JSON object", 200, repeatable=finished) from exc
     if not isinstance(content, dict):
-        raise SourceRejected("reply content was not a JSON object", 200, repeatable=True)
+        raise SourceRejected("reply content was not a JSON object", 200, repeatable=finished)
     return CompileReply(
         content=content,
         input_tokens=_usage(reply, "prompt_tokens"),

@@ -412,6 +412,32 @@ def test_a_billed_prose_reply_is_not_paid_for_again(tmp_path: Path) -> None:
     assert again.calls == 0, "a billed prose reply was paid for again on the next build"
 
 
+class _UpstreamError(Transport):
+    """Generation was cut short upstream: a 200 whose choice ends with finish_reason "error"."""
+
+    def __call__(self, url: str, body: bytes, headers: Mapping[str, str], timeout: float):  # type: ignore[no-untyped-def]  # matches provider.Transport
+        self.calls += 1
+        reply = {"choices": [{"message": {"content": ""}, "finish_reason": "error"}],
+                 "usage": {"prompt_tokens": 100, "completion_tokens": 0}}
+        return 200, {}, json.dumps(reply).encode()
+
+
+def test_a_reply_cut_short_upstream_is_not_cached_as_a_refusal(tmp_path: Path) -> None:
+    """FA-3-1, owner decision 2026-11-27: only a model that finished ("stop") is a repeatable refusal.
+
+    Red proof: against 909cd5632, which cached every content refusal inside a parsed envelope,
+    the second build made 0 calls.
+    """
+    env = _env(tmp_path)
+    _ensure(env, _UpstreamError())
+    again = _UpstreamError()
+    service.ensure_compiled_graph(
+        "t1", _chunks(), {"generation_id": "g2", "corpus_fingerprint": "cf2"}, FakeEmbedder(),
+        env=env, transport=again, sleep=lambda _: None,
+    )
+    assert again.calls == 1, "a reply cut short upstream was cached as the source's permanent refusal"
+
+
 def test_a_failed_erasure_still_names_the_roots_it_could_not_use(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """FA-2-12 and FA-2-6: the failure keeps the unreached roots, and an OSError from the cache
     erase does not stop the folder's artifacts being removed."""
