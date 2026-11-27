@@ -417,7 +417,13 @@ def _erase_folder(folder: Path, wanted: set[str], failures: list[str]) -> int:
                 failures.append(f"{folder / CACHE_NAME}: {type(exc).__name__}: {exc}")
         for directory in [*_artifact_dirs(folder), *folder.glob(".cg-staging-*")]:
             try:
-                holds = directory.name.startswith(".") or bool(artifact_sources(directory) & wanted)
+                # No manifest is an earlier erase that stopped part way (a write publishes one
+                # by rename), and its text may be what that erase was forgetting.
+                holds = (
+                    directory.name.startswith(".")
+                    or not (directory / "manifest.json").is_file()
+                    or bool(artifact_sources(directory) & wanted)
+                )
             except ArtifactDamaged:
                 holds = True
             if not holds:
