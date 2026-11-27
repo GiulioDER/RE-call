@@ -358,6 +358,14 @@ def generation_ingest(
                         store._dsn, store.tenant, generation.generation_id, lambda: embedder,
                         env=values,
                     )
+            else:
+                # Without required certification no rescue is built, but the compiled graph is
+                # still built before the promotion, as `ensure_for_promotion` does above.
+                from recall.compiled_graph.service import ensure_for_generation
+
+                ensure_for_generation(
+                    store._dsn, store.tenant, generation.generation_id, lambda: embedder, values
+                )
             try:
                 manager.promote(
                     generation.generation_id,

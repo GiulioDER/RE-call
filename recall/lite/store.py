@@ -158,6 +158,8 @@ _UNCERTIFIED_FIT_CHUNKS = "uncertified_fit_chunks"
 #: The `meta` key listing every root an atomic rescue build of this store wrote under, which a
 #: forget erases whatever root its own process names (CCA SEC-001).
 _RESCUE_ROOTS = "atomic_rescue_roots"
+#: The same list for the compiled graph's artifact roots (`recall.compiled_graph.service`).
+_COMPILED_GRAPH_ROOTS = "compiled_graph_roots"
 #: The oldest SQLite the schema runs on: UPSERT is 3.24, the window functions of the
 #: supersession scan 3.25.
 _MIN_SQLITE = (3, 25, 0)
@@ -1853,19 +1855,33 @@ class LiteStore:
         """Keep a root an atomic rescue build writes under (`recall.lite.atomic`). The root is set
         in the building process's environment only, so without this a forget run from another
         process (a CLI shell) would erase nothing there (CCA SEC-001)."""
-        with self._write():
-            row = self._conn.execute("SELECT value FROM meta WHERE key = ?", (_RESCUE_ROOTS,)).fetchone()
-            roots = set(json.loads(row[0])) if row else set()
-            if str(root) not in roots:
-                self._conn.execute(
-                    "INSERT INTO meta(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-                    (_RESCUE_ROOTS, json.dumps(sorted(roots | {str(root)}))),
-                )
+        self._record_root(_RESCUE_ROOTS, root)
 
     def rescue_roots(self) -> list[str]:
         """Every absolute root `record_rescue_root` kept, sorted. A relative one, which no build
         writes under, would resolve against the reading process's directory, so it is skipped."""
-        rows = self._metadata_values("SELECT value FROM meta WHERE key = ?", (_RESCUE_ROOTS,))
+        return self._recorded_roots(_RESCUE_ROOTS)
+
+    def record_compiled_graph_root(self, root: Path) -> None:
+        """`record_rescue_root` for the compiled graph (`recall.compiled_graph.service`)."""
+        self._record_root(_COMPILED_GRAPH_ROOTS, root)
+
+    def compiled_graph_roots(self) -> list[str]:
+        """Every absolute root `record_compiled_graph_root` kept, sorted."""
+        return self._recorded_roots(_COMPILED_GRAPH_ROOTS)
+
+    def _record_root(self, key: str, root: Path) -> None:
+        with self._write():
+            row = self._conn.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
+            roots = set(json.loads(row[0])) if row else set()
+            if str(root) not in roots:
+                self._conn.execute(
+                    "INSERT INTO meta(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                    (key, json.dumps(sorted(roots | {str(root)}))),
+                )
+
+    def _recorded_roots(self, key: str) -> list[str]:
+        rows = self._metadata_values("SELECT value FROM meta WHERE key = ?", (key,))
         return [root for root in json.loads(rows[0][0]) if Path(root).is_absolute()] if rows else []
 
     def save_near_miss_coverage(self, calibration_id: str, report: dict[str, Any]) -> None:

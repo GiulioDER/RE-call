@@ -65,9 +65,13 @@ class BudgetExhausted(RuntimeError):
 class SourceRejected(RuntimeError):
     """This source gets no records; the build goes on with the next one."""
 
-    def __init__(self, message: str, status: int | None = None) -> None:
+    def __init__(self, message: str, status: int | None = None, *, repeatable: bool = False) -> None:
         super().__init__(message)
         self.status = status
+        #: The same request would be refused the same way again (a billed reply cut off at the
+        #: output cap or failing validation, a source too large for the context), so a build may
+        #: cache the refusal rather than pay for it twice. A malformed body may be a proxy's.
+        self.repeatable = repeatable
 
 
 class PayloadTooLarge(RuntimeError):
@@ -170,18 +174,24 @@ def _parse_ok(text: str) -> CompileReply:
     try:
         choice = reply["choices"][0]
         if choice.get("finish_reason") == "length":
-            raise SourceRejected("compile output was cut off at the output token cap", 200)
+            raise SourceRejected("compile output was cut off at the output token cap", 200, repeatable=True)
         content_text = choice["message"]["content"]
-        if not isinstance(content_text, str):
-            raise SourceRejected("reply carried no text content", 200)
-        fenced = _FENCED.match(content_text)
-        content = json.loads(fenced.group(1) if fenced else content_text)
     except SourceRejected:
         raise
-    except (ValueError, KeyError, IndexError, TypeError, AttributeError) as exc:
-        raise SourceRejected("reply content was not a JSON object", 200) from exc
+    except (KeyError, IndexError, TypeError, AttributeError) as exc:
+        # The envelope itself is not the provider's shape: possibly an intermediary's, so not cached.
+        raise SourceRejected("reply carried no choice message", 200) from exc
+    # From here the model answered inside a well-formed, billed envelope; at temperature 0 the same
+    # request gets the same answer, so these refusals are repeatable.
+    if not isinstance(content_text, str):
+        raise SourceRejected("reply carried no text content", 200, repeatable=True)
+    fenced = _FENCED.match(content_text)
+    try:
+        content = json.loads(fenced.group(1) if fenced else content_text)
+    except ValueError as exc:
+        raise SourceRejected("reply content was not a JSON object", 200, repeatable=True) from exc
     if not isinstance(content, dict):
-        raise SourceRejected("reply content was not a JSON object", 200)
+        raise SourceRejected("reply content was not a JSON object", 200, repeatable=True)
     return CompileReply(
         content=content,
         input_tokens=_usage(reply, "prompt_tokens"),
@@ -189,16 +199,9 @@ def _parse_ok(text: str) -> CompileReply:
     )
 
 
-def compile_source(
-    config: ProviderConfig,
-    transport: Transport,
-    payload: Mapping[str, Any],
-    budget: Budget,
-    *,
-    sleep: Callable[[float], None] = time.sleep,
-) -> CompileReply:
-    """Send one compile within ``budget``; return the parsed JSON object and its usage."""
-    body = json.dumps(
+def request_body(config: ProviderConfig, payload: Mapping[str, Any]) -> bytes:
+    """The bytes one compile sends, which the budget reserves and a dry run prices."""
+    return json.dumps(
         {
             "model": config.model,
             "temperature": 0,
@@ -213,6 +216,18 @@ def compile_source(
             ],
         }
     ).encode("utf-8")
+
+
+def compile_source(
+    config: ProviderConfig,
+    transport: Transport,
+    payload: Mapping[str, Any],
+    budget: Budget,
+    *,
+    sleep: Callable[[float], None] = time.sleep,
+) -> CompileReply:
+    """Send one compile within ``budget``; return the parsed JSON object and its usage."""
+    body = request_body(config, payload)
     headers = {"Content-Type": "application/json", "Authorization": f"Bearer {config.api_key}"}
     url = f"{config.base_url.rstrip('/')}/chat/completions"
     reason = "no attempt made"

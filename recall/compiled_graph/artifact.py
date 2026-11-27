@@ -67,8 +67,11 @@ def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def write_artifact(folder: Path, artifact: CompiledGraphArtifact) -> Path:
-    """Write ``artifact`` under ``folder`` and return its directory; an existing one is kept."""
+def write_artifact(folder: Path, artifact: CompiledGraphArtifact, *, owner: str = "") -> Path:
+    """Write ``artifact`` under ``folder`` and return its directory; an existing one is kept.
+
+    ``owner`` names the store that built it, so a prune removes only that store's artifacts.
+    """
     target = artifact_dir(folder, artifact.lineage)
     if target.exists():
         return target
@@ -99,6 +102,7 @@ def write_artifact(folder: Path, artifact: CompiledGraphArtifact) -> Path:
             "lineage": dict(artifact.lineage),
             "records": len(artifact.records),
             "members": {name: _sha256(staging / name) for name in _MEMBERS},
+            "owner": owner,
         }
         (staging / "manifest.json").write_text(json.dumps(manifest, sort_keys=True), encoding="utf-8")
         os.replace(staging, target)
@@ -122,6 +126,38 @@ def _record(row: object) -> ArtifactRecord:
         )
     except (KeyError, TypeError) as exc:
         raise ArtifactDamaged("a record row lacks a field") from exc
+
+
+def _manifest(directory: Path) -> dict[str, Any]:
+    try:
+        manifest = json.loads((directory / "manifest.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return manifest if isinstance(manifest, dict) else {}
+
+
+def stored_lineage(directory: Path) -> dict[str, str] | None:
+    """The lineage the manifest in ``directory`` names; None when there is no readable one."""
+    lineage = _manifest(directory).get("lineage")
+    return lineage if isinstance(lineage, dict) else None
+
+
+def stored_owner(directory: Path) -> str | None:
+    """The store the manifest in ``directory`` says built it; None when it names none."""
+    owner = _manifest(directory).get("owner")
+    return owner if isinstance(owner, str) and owner else None
+
+
+def artifact_sources(directory: Path) -> set[str]:
+    """Every source the records in ``directory`` quote; raises ``ArtifactDamaged`` when unreadable."""
+    try:
+        raw = (directory / "records.jsonl").read_bytes()
+    except OSError as exc:
+        raise ArtifactDamaged("records.jsonl is missing or unreadable") from exc
+    try:
+        return {_record(json.loads(row)).source for row in raw.decode("utf-8").splitlines() if row}
+    except ValueError as exc:  # UnicodeDecodeError is a ValueError
+        raise ArtifactDamaged("records.jsonl is not UTF-8 JSON lines") from exc
 
 
 def load_artifact(folder: Path, lineage: Mapping[str, str]) -> CompiledGraphArtifact:
