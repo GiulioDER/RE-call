@@ -6,7 +6,7 @@ This file keeps the release surface short. The full historical changelog lives a
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning is pre-1.0
 `0.MINOR.PATCH`, so a minor bump may still break schema or API.
 
-## [0.17.0] (unreleased)
+## [0.17.0] (2026-11-27)
 
 RE-call 0.17.0 adds the compiled graph: an evidence graph that a model you configure builds from
 your sources, which may promote at most two linked chunks into ranks 9 and 10 of a search and widen
