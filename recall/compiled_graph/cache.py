@@ -171,6 +171,36 @@ class CompileCache:
         except sqlite3.Error:
             self.write_failures += 1
 
+    def rejection(self, key: str) -> str | None:
+        """Why the provider's answer for ``key`` was refused, when that refusal is cached."""
+        if not self.usable:
+            return None
+        try:
+            with self._connect() as conn:
+                row = conn.execute("SELECT records FROM compiled WHERE key = ?", (key,)).fetchone()
+        except sqlite3.Error:
+            return None
+        try:
+            value = json.loads(row[0]) if row is not None and isinstance(row[0], str) else None
+        except ValueError:
+            return None
+        reason = value.get("rejected") if isinstance(value, dict) else None
+        return reason if isinstance(reason, str) else None
+
+    def put_rejection(self, key: str, source: str, reason: str) -> None:
+        """Keep a refusal that the same request would get again, so it is not paid for twice."""
+        if not self.usable:
+            self.write_failures += 1
+            return
+        try:
+            with self._connect() as conn:
+                conn.execute(
+                    "INSERT OR REPLACE INTO compiled (key, source, records) VALUES (?, ?, ?)",
+                    (key, source, json.dumps({"rejected": reason})),
+                )
+        except sqlite3.Error:
+            self.write_failures += 1
+
     def erase_sources(self, sources: Collection[str]) -> int:
         """Delete every row of ``sources``; a forget must not leave their quotes here.
 

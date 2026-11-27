@@ -62,11 +62,15 @@ class Budget:
     def _cost(self, tokens_in: int, tokens_out: int) -> float:
         return tokens_in / 1000 * self.cost_in_per_1k + tokens_out / 1000 * self.cost_out_per_1k
 
+    def worst_case(self, input_token_bound: int) -> float:
+        """The USD one call is reserved at, given a bound on its input tokens."""
+        return self._cost(input_token_bound, MAX_OUTPUT_TOKENS)
+
     def reserve(self, input_token_bound: int) -> bool:
         """Hold the worst case of one call; False when it does not fit what is left."""
         if self._reserved_usd is not None:
             raise RuntimeError("settle the previous call before reserving another")
-        worst = self._cost(input_token_bound, MAX_OUTPUT_TOKENS)
+        worst = self.worst_case(input_token_bound)
         if self.exhausted or self.spent_usd + worst > self.max_usd:
             return False
         self._reserved_usd = worst

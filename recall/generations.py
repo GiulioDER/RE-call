@@ -96,6 +96,8 @@ Chunker = Callable[[str], list[str]]
 _log = get_logger("generations")
 #: The audit event a rescue build records its root under, read back by `rescue_roots` (CCA CODE-016).
 RESCUE_BUILT_EVENT = "atomic_rescue_built"
+#: The same for a compiled graph build (`recall.compiled_graph.service`), read by `compiled_graph_roots`.
+COMPILED_GRAPH_BUILT_EVENT = "compiled_graph_built"
 
 DEFAULT_RETENTION_DAYS = 7
 DEFAULT_RETAIN_PREVIOUS = 2
@@ -2585,13 +2587,25 @@ class GenerationManager:
 
     def rescue_roots(self) -> set[str]:
         """Every root an atomic rescue of this tenant was built under, read from the audit trail."""
+        return self._recorded_roots(RESCUE_BUILT_EVENT)
+
+    def record_compiled_graph_root(self, root: str) -> None:
+        """`record_rescue_root` for the compiled graph, whose artifacts are not per generation."""
+        with self._connect() as conn:
+            self._audit(conn, COMPILED_GRAPH_BUILT_EVENT, payload={"root": root})
+
+    def compiled_graph_roots(self) -> set[str]:
+        """Every root a compiled graph of this tenant was built under, read from the audit trail."""
+        return self._recorded_roots(COMPILED_GRAPH_BUILT_EVENT)
+
+    def _recorded_roots(self, event_type: str) -> set[str]:
         with self._connect() as conn:
             return {
                 str(root)
                 for (root,) in conn.execute(
                     "SELECT DISTINCT payload->>'root' FROM recall_audit_events "
                     "WHERE tenant_id = %s AND event_type = %s",
-                    (self.tenant_id, RESCUE_BUILT_EVENT),
+                    (self.tenant_id, event_type),
                 ).fetchall()
                 if root
             }

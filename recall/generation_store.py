@@ -832,6 +832,18 @@ class GenerationStore(PgVectorStore):
         )
         return {str(source): str(digest) for source, digest in rows}
 
+    def record_compiled_graph_root(self, root: Path) -> None:
+        """Keep a root a compiled graph build writes under, so a forget in any process finds it."""
+        from recall.generations import GenerationManager
+
+        GenerationManager(self._dsn, self._tenant, actor="recall-compiled-graph").record_compiled_graph_root(str(root))
+
+    def compiled_graph_roots(self) -> list[str]:
+        """Every root `record_compiled_graph_root` kept, sorted."""
+        from recall.generations import GenerationManager
+
+        return sorted(GenerationManager(self._dsn, self._tenant, actor="recall-compiled-graph").compiled_graph_roots())
+
     def sources_present(self, sources: Sequence[str]) -> set[str]:
         """Which of `sources` the ACTIVE generation holds, the scope `source_content_hashes` has.
 

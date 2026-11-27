@@ -75,9 +75,13 @@ class BudgetExhausted(RecallError, RuntimeError):
 class SourceRejected(RecallError, RuntimeError):
     """This source gets no records; the build goes on with the next one."""
 
-    def __init__(self, message: str, status: int | None = None) -> None:
+    def __init__(self, message: str, status: int | None = None, *, repeatable: bool = False) -> None:
         super().__init__(message)
         self.status = status
+        #: The same request would be refused the same way again (a billed reply cut off at the
+        #: output cap or failing validation, a source too large for the context), so a build may
+        #: cache the refusal rather than pay for it twice. A malformed body may be a proxy's.
+        self.repeatable = repeatable
 
 
 class PayloadTooLarge(RecallError, RuntimeError):
@@ -211,23 +215,47 @@ def _parse_ok(text: str) -> CompileReply:
     try:
         choice = reply["choices"][0]
         if choice.get("finish_reason") == "length":
-            raise SourceRejected("compile output was cut off at the output token cap", 200)
+            raise SourceRejected("compile output was cut off at the output token cap", 200, repeatable=True)
         content_text = choice["message"]["content"]
-        if not isinstance(content_text, str):
-            raise SourceRejected("reply carried no text content", 200)
-        fenced = _FENCED.match(content_text)
-        content = json.loads(fenced.group(1) if fenced else content_text)
+        finished = choice.get("finish_reason") == "stop"
     except SourceRejected:
         raise
-    except (ValueError, RecursionError, KeyError, IndexError, TypeError, AttributeError) as exc:
-        raise SourceRejected("reply content was not a JSON object", 200) from exc
+    except (KeyError, IndexError, TypeError, AttributeError) as exc:
+        # The envelope itself is not the provider's shape: possibly an intermediary's, so not cached.
+        raise SourceRejected("reply carried no choice message", 200) from exc
+    # A model that finished on its own ("stop") gives the same answer at temperature 0, so a refusal
+    # of its content is repeatable. Any other finish ("error", or none reported) means generation
+    # was cut short upstream, which the next request may not repeat, so it is not cached.
+    if not isinstance(content_text, str):
+        raise SourceRejected("reply carried no text content", 200, repeatable=finished)
+    fenced = _FENCED.match(content_text)
+    try:
+        content = json.loads(fenced.group(1) if fenced else content_text)
+    # json raises RecursionError, not ValueError, for nesting deeper than it can read.
+    except (ValueError, RecursionError) as exc:
+        raise SourceRejected("reply content was not a JSON object", 200, repeatable=finished) from exc
     if not isinstance(content, dict):
-        raise SourceRejected("reply content was not a JSON object", 200)
+        raise SourceRejected("reply content was not a JSON object", 200, repeatable=finished)
     return CompileReply(
         content=content,
         input_tokens=_usage(reply, "prompt_tokens"),
         output_tokens=_usage(reply, "completion_tokens"),
     )
+
+
+def request_body(config: ProviderConfig, payload: Mapping[str, Any]) -> bytes:
+    """The bytes one compile sends, which the budget reserves and a dry run prices."""
+    return json.dumps(
+        {
+            "model": config.model,
+            **REQUEST_OPTIONS,
+            "max_tokens": MAX_OUTPUT_TOKENS,
+            "messages": [
+                {"role": "system", "content": COMPILE_SYSTEM_PROMPT},
+                {"role": "user", "content": USER_TEMPLATE.format(encode_stored_data(payload))},
+            ],
+        }
+    ).encode("utf-8")
 
 
 def compile_source(
@@ -250,17 +278,7 @@ def compile_source(
         SourceRejected: any other refusal, a 200 that cannot be read (never resent), or
             ``ATTEMPTS`` failed attempts of 408, 409, 429, 5xx or a network error.
     """
-    body = json.dumps(
-        {
-            "model": config.model,
-            **REQUEST_OPTIONS,
-            "max_tokens": MAX_OUTPUT_TOKENS,
-            "messages": [
-                {"role": "system", "content": COMPILE_SYSTEM_PROMPT},
-                {"role": "user", "content": USER_TEMPLATE.format(encode_stored_data(payload))},
-            ],
-        }
-    ).encode("utf-8")
+    body = request_body(config, payload)
     headers = {"Content-Type": "application/json", "Authorization": f"Bearer {config.api_key}"}
     url = f"{config.base_url.rstrip('/')}/chat/completions"
     reason = "no attempt made"
