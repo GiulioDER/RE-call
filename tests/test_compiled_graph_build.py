@@ -17,7 +17,8 @@ Every test drives a fake transport and a fake embedder. Red proof, recorded 2026
 - ``test_chunks_without_offsets_are_counted_once_per_source``: counting inside the record loop
   fails on ``edgeless_chunks == 1`` (2).
 - ``test_source_forgotten_during_compile_is_not_cached``: the ``still_present`` check removed
-  fails on the cache row.
+  fails on the cache row (recorded before CCA run 20261126T220805Z replaced that check with
+  ``commit``, which the test now refuses).
 """
 
 from __future__ import annotations
@@ -200,7 +201,7 @@ def test_source_forgotten_during_compile_is_not_cached(tmp_path: Path) -> None:
     cache = CompileCache(tmp_path / "compile-cache.sqlite")
     transport = Transport({"a.md": _ok([])})
     artifact, _ = _run([SourceInput("a.md", BODY_A, _chunks("a.md", BODY_A))], transport, tmp_path,
-                       cache=cache, still_present=lambda source: False)
+                       cache=cache, commit=lambda sources, action: False)
     assert cache.get(cache_key(CONFIG, "a.md", hashlib.sha256(BODY_A.encode()).hexdigest())) is None
     assert artifact is not None and artifact.records == ()
 

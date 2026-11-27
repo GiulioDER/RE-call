@@ -90,13 +90,15 @@ def ensure_for_promotion(
     Raises when it cannot, an active rescue with no root included, so the caller refuses the
     promotion: promoted without one, the
     generation would refuse every unscoped search. `env` is the environment the server resolves
-    its mode from; the default is this process's. `make_embedder` is called only when a build runs, so
-    a promotion with the rescue off loads no model.
+    its mode from; the default is this process's. The compiled graph, when it is on for `tenant`, is
+    built first, which may call the paid compile provider; that build never raises. `make_embedder`
+    is called only when one of the two builds runs, so a promotion with both off loads no model.
     """
     from recall.compiled_graph.service import ensure_for_generation
 
-    # Every promotion passes here, so the compiled graph is built before the generation serves,
-    # whether or not the rescue is on. It never raises into the promotion.
+    # The CLI promotion and rollback, the wizard and desktop uploads pass here (an upload without
+    # required certification calls `ensure_for_generation` itself), so the compiled graph is built
+    # before the generation serves, whether or not the rescue is on.
     compiled = ensure_for_generation(
         dsn, tenant, generation_id, make_embedder, os.environ if env is None else env
     )

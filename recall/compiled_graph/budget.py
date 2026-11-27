@@ -56,11 +56,15 @@ class Budget:
     def _cost(self, tokens_in: int, tokens_out: int) -> float:
         return tokens_in / 1000 * self.cost_in_per_1k + tokens_out / 1000 * self.cost_out_per_1k
 
+    def worst_case(self, request_bytes: int) -> float:
+        """The USD one call of ``request_bytes`` is reserved at."""
+        return self._cost(request_bytes, self.max_tokens)
+
     def reserve(self, request_bytes: int) -> bool:
         """Hold the worst case of one call; False when it does not fit what is left."""
         if self._reserved_usd is not None:
             raise RuntimeError("settle the previous call before reserving another")
-        worst = self._cost(request_bytes, self.max_tokens)
+        worst = self.worst_case(request_bytes)
         if self.exhausted or self.spent_usd + worst > self.max_usd:
             return False
         self._reserved_usd = worst

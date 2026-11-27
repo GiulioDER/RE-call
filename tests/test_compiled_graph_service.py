@@ -172,8 +172,8 @@ def test_a_partial_erase_serves_nothing(tmp_path: Path, monkeypatch: pytest.Monk
         raise PermissionError("a member is held open")
 
     monkeypatch.setattr(service.shutil, "rmtree", stops_part_way)
-    with pytest.raises(PermissionError):
-        erase_forgotten_sources(["a.md"], env=env)
+    with pytest.raises(service.CompiledGraphErasureIncomplete):
+        erase_forgotten_sources(["a.md"], tenant="t1", env=env)
     with pytest.raises(ArtifactMissing):
         load_artifact(tenant_folder(tmp_path, "t1"), lineage)
 
@@ -182,15 +182,11 @@ def test_a_relative_artifact_root_is_refused(tmp_path: Path) -> None:
     from recall.compiled_graph import service
     from recall_mcp.settings import _validate_runtime_options
 
-    class Store:
-        tenant = "t1"
-
     env = {**_env(tmp_path), "RECALL_COMPILED_GRAPH_ARTIFACT_ROOT": "graphs"}
     with pytest.raises(ValueError, match="RECALL_COMPILED_GRAPH_ARTIFACT_ROOT"):
         service.artifact_root(env)
     with pytest.raises(ValueError, match="RECALL_COMPILED_GRAPH_ARTIFACT_ROOT"):
         _validate_runtime_options({"RECALL_COMPILED_GRAPH_ARTIFACT_ROOT": "graphs"})
-    assert service.ensure_for_store(Store(), FakeEmbedder(), env).startswith("compiled graph not built")  # type: ignore[arg-type]  # only the tenant is read before the refusal
 
 
 def test_body_from_chunks_keeps_offsets() -> None:
@@ -207,7 +203,7 @@ def test_off_or_rootless_builds_nothing(tmp_path: Path) -> None:
     assert _ensure(_env(tmp_path, "off"), transport) == ""
     env = _env(tmp_path)
     del env["RECALL_COMPILED_GRAPH_ARTIFACT_ROOT"]
-    assert _ensure(env, transport) == ""
+    assert "RECALL_COMPILED_GRAPH_ARTIFACT_ROOT is not set" in _ensure(env, transport)
     assert transport.calls == 0
 
 
@@ -259,7 +255,8 @@ def test_config_error_is_reported_not_raised(tmp_path: Path) -> None:
 def test_erase_forgotten_sources_removes_artifacts_and_cache(tmp_path: Path) -> None:
     env = _env(tmp_path)
     _ensure(env, Transport())
-    assert erase_forgotten_sources(["a.md"], env=env) >= 1
+    removed, unreached = erase_forgotten_sources(["a.md"], tenant="t1", env=env)
+    assert removed >= 1 and unreached == []
     for path in tmp_path.rglob("*"):
         if path.is_file():
             assert b"Alice owns the release checklist." not in path.read_bytes(), path
@@ -267,7 +264,7 @@ def test_erase_forgotten_sources_removes_artifacts_and_cache(tmp_path: Path) -> 
 
 def test_artifact_dropped_when_a_source_vanished_during_build(tmp_path: Path) -> None:
     env = _env(tmp_path)
-    message = _ensure(env, Transport(), still_present=lambda source: False)
+    message = _ensure(env, Transport(), all_present=lambda sources: False)
     assert "not built" in message
     lineage = serving_lineage("t1", BINDING, FakeEmbedder(), env)
     assert lineage is not None
@@ -304,6 +301,9 @@ class _GenerationStoreDouble:
 
     def sources_present(self, sources: list[str]) -> set[str]:
         return set(sources)
+
+    def record_compiled_graph_root(self, root: Path) -> None:
+        return None
 
 
 def test_generation_build_fixes_the_generation_first(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -38,8 +38,19 @@ def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
         help="build the opt-in LLM-compiled graph (RECALL_COMPILED_GRAPH_*) for the corpus in force",
     )
     compile_.add_argument("--generation", help="PostgreSQL: the generation to compile, the active one by default")
-    compile_.add_argument("--force", action="store_true", help="clear a credit backoff and build")
-    compile_.add_argument("--dry-run", action="store_true", help="print the worst-case spend and send nothing")
+    compile_.add_argument(
+        "--force", action="store_true", help="clear the backoff a credit or provider stop set, and build"
+    )
+    compile_.add_argument(
+        "--retry-rejected",
+        action="store_true",
+        help="also send again the sources whose refusal is cached (each is paid for again)",
+    )
+    compile_.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="print the reserved cost of one attempt per uncached source, and the cap; send nothing",
+    )
 
 
 def _cmd_graph(args: argparse.Namespace) -> None:
@@ -132,14 +143,30 @@ def _compile(args: argparse.Namespace) -> None:
     import os
 
     from recall.cli_commands._shared import _make_embedder
-    from recall.compiled_graph.service import compiled_graph_mode, ensure_for_store, estimate_compile
+    from recall.compiled_graph.provider import CompiledGraphConfigError
+    from recall.compiled_graph.service import (
+        MODE_BY_TENANT_ENV,
+        MODE_ENV,
+        ROOT_ENV,
+        active_binding,
+        artifact_root,
+        compiled_graph_mode,
+        ensure_for_store,
+        estimate_compile,
+    )
 
     env = dict(os.environ)
-    if compiled_graph_mode(env, args.tenant) == "off":
+    try:
+        mode, root = compiled_graph_mode(env, args.tenant), artifact_root(env)
+    except (CompiledGraphConfigError, ValueError) as exc:
+        raise SystemExit(f"recall graph compile: {exc}") from None
+    if mode == "off":
         raise SystemExit(
             f"recall graph compile: the compiled graph is off for tenant {args.tenant!r}; set "
-            "RECALL_COMPILED_GRAPH_MODE (or RECALL_COMPILED_GRAPH_MODE_BY_TENANT) to shadow or active"
+            f"{MODE_ENV} (or {MODE_BY_TENANT_ENV}) to shadow or active"
         )
+    if root is None:
+        raise SystemExit(f"recall graph compile: {ROOT_ENV} is not set, so there is nowhere to build")
     embedder = _make_embedder(args.embedder)
     if is_lite_dsn(args.dsn):
         from recall.backends import write_session
@@ -147,21 +174,27 @@ def _compile(args: argparse.Namespace) -> None:
 
         with LiteStore.from_dsn(args.dsn, dim=embedder.dim, tenant=args.tenant) as store:
             if args.dry_run:
-                print(estimate_compile(args.tenant, store.iter_chunks(), env))
+                print(estimate_compile(args.tenant, store.iter_chunks(), env, retry_rejected=args.retry_rejected))
                 return
             # The write lane, so a forget cannot run while this build reads the corpus.
             with write_session(store, "graph compile"):
-                message = ensure_for_store(store, embedder, env, force=args.force)
+                message = ensure_for_store(
+                    store, embedder, env, force=args.force, retry_rejected=args.retry_rejected
+                )
     else:
         from recall.generation_store import GenerationStore
 
         generations = GenerationStore(args.dsn, embedder.dim, tenant=args.tenant)
         try:
+            serving = active_binding(generations)
             generations.set_fixed_generation(args.generation or generations.active_generation_id())
             if args.dry_run:
-                print(estimate_compile(args.tenant, generations.iter_chunks(), env))
+                print(estimate_compile(args.tenant, generations.iter_chunks(), env, retry_rejected=args.retry_rejected))
                 return
-            message = ensure_for_store(generations, embedder, env, force=args.force)
+            message = ensure_for_store(
+                generations, embedder, env, force=args.force, retry_rejected=args.retry_rejected,
+                serving_binding=serving,
+            )
         finally:
             generations.close()
     print(message)

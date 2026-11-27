@@ -435,6 +435,31 @@ def _embedded_text_digests(stores: tuple[Any, ...], sources: list[str]) -> set[s
     return digests
 
 
+def _erase_compiled_graph(store: PgVectorStore, sources: list[str]) -> tuple[int, list[str]]:
+    """Erase `sources` from the tenant's compiled graph under the configured root and every root a
+    build of this store recorded; the artifacts removed and the roots not usable. On a failure the
+    `CompiledGraphErasureIncomplete` raised carries those roots too."""
+    from recall.compiled_graph.service import CompiledGraphErasureIncomplete, erase_forgotten_sources
+    from recall_mcp.settings import runtime_environment
+
+    read = getattr(store, "compiled_graph_roots", None)
+    recorded: list[str] = []
+    unread: list[str] = []
+    try:
+        recorded = list(read()) if callable(read) else []
+    except Exception:  # BROAD-CATCH: fail-closed  # the configured root is still erased, and the message names the unread record
+        _log.exception("the compiled graph roots of tenant %r could not be read", store.tenant)
+        unread = ["(the roots its builds recorded could not be read)"]
+    try:
+        removed, unreached = erase_forgotten_sources(
+            sources, tenant=store.tenant, env=runtime_environment(), recorded_roots=recorded
+        )
+    except CompiledGraphErasureIncomplete as exc:
+        exc.unreached.extend(unread)
+        raise
+    return removed, [*unreached, *unread]
+
+
 def _erase_generation_rescue(
     store: PgVectorStore, texts: list[str], sources: list[str], roots: list[Path],
 ) -> tuple[int, int, list[str]]:
@@ -576,6 +601,10 @@ def _forget_memory_unlocked(
                     _erase_generation_rescue(store, [text for text, _ in erased_texts], to_delete, rescue_roots)
                 except Exception:  # BROAD-CATCH: error-translation
                     _log.exception("atomic rescue cleanup failed after partial deletion for tenant %r", store.tenant)
+                try:
+                    _erase_compiled_graph(store, to_delete)
+                except Exception:  # BROAD-CATCH: error-translation
+                    _log.exception("compiled graph cleanup failed after partial deletion for tenant %r", store.tenant)
             raise
         # A build can commit while deletion waits for its source lock. Purge those actual rows.
         cached_digests.update(text_digests(erased_texts))
@@ -667,17 +696,16 @@ def _forget_memory_unlocked(
                 "atomic rescue erasure failed after chunk deletion for tenant %r", store.tenant
             )
             rescue_views_erased = -1
-    compiled_graph_removed = 0
-    if chunks_removed:
-        from recall.compiled_graph.service import erase_forgotten_sources
-
-        try:
-            compiled_graph_removed = erase_forgotten_sources(to_delete, env=runtime_environment())
-        except Exception:  # BROAD-CATCH: error-translation  # the chunks are gone; the message names what is left
-            _log.exception(
-                "compiled graph erasure failed after chunk deletion for tenant %r", store.tenant
-            )
-            compiled_graph_removed = -1
+    # Whether or not rows went now: a re-run after a failed erasure finds none, and the requested
+    # names are how it still reaches what the compiled graph kept of them.
+    compiled_graph_names = sorted({*requested, *to_delete})
+    compiled_graph_removed, compiled_graph_unreached = 0, list[str]()
+    try:
+        compiled_graph_removed, compiled_graph_unreached = _erase_compiled_graph(store, compiled_graph_names)
+    except Exception as exc:  # BROAD-CATCH: error-translation  # the chunks are gone; the message names what is left
+        _log.exception("compiled graph erasure failed after chunk deletion for tenant %r", store.tenant)
+        compiled_graph_removed = -1
+        compiled_graph_unreached = list(getattr(exc, "unreached", []))
     memo_requests_erased = 0
     if erase_memo_requests:
         from recall.lite.assistant_memos import forget_memo_requests
@@ -757,13 +785,37 @@ def _forget_memory_unlocked(
             "a re-embed."
         )
     if compiled_graph_removed < 0:
+        from recall.compiled_graph.service import ROOT_ENV as COMPILED_GRAPH_ROOT_ENV
+
+        if name_rescue_roots:
+            names = ", ".join(compiled_graph_names)
+        else:
+            # The resolved names are host paths, which stay in the server log (CCA SEC-002, #1379).
+            _log.warning(
+                "compiled graph erasure to re-run for tenant %r: %s", store.tenant, compiled_graph_names
+            )
+            names = f"the {len(compiled_graph_names)} source name(s) the server log names"
         message += (
             " WARNING: the chunk deletion succeeded but erasing them from the compiled graph failed, "
-            "so records quoting them may remain under RECALL_COMPILED_GRAPH_ARTIFACT_ROOT; "
-            "re-run this forget."
+            f"so records quoting them may remain under {COMPILED_GRAPH_ROOT_ENV}; re-run this forget "
+            f"naming {names}."
         )
     elif compiled_graph_removed:
         message += f" Removed {compiled_graph_removed} compiled graph artifact(s) quoting the deleted text."
+    if compiled_graph_unreached:
+        if name_rescue_roots:
+            where = ", ".join(compiled_graph_unreached)
+        else:
+            # Host paths stay on the host, as for the rescue roots below (CCA SEC-002, #1379).
+            _log.warning(
+                "compiled graph roots left unerased for tenant %r: %s", store.tenant, compiled_graph_unreached
+            )
+            where = f"{len(compiled_graph_unreached)} root(s) the server log names"
+        message += (
+            " WARNING: compiled graph roots that are not usable or not reachable from this host "
+            f"(configured or recorded by a build) were not erased, so records quoting the deleted "
+            f"text may remain there: {where}."
+        )
     if rescue_views_erased < 0:
         message += (
             " WARNING: the chunk deletion succeeded but erasing them from the atomic rescue failed, "
