@@ -8,19 +8,19 @@
     "url": "https://github.com/GiulioDER/RE-call",
     "source": "github"
   },
-  "version": "0.16.1",
+  "version": "0.17.0",
   "packages": [
     {
       "registryType": "pypi",
       "registryBaseUrl": "https://pypi.org",
       "identifier": "recall-rag",
-      "version": "0.16.1",
+      "version": "0.17.0",
       "runtimeHint": "uvx",
       "runtimeArguments": [
         {
           "type": "named",
           "name": "--from",
-          "value": "recall-rag[mcp,fastembed]==0.16.1"
+          "value": "recall-rag[mcp,fastembed]==0.17.0"
         },
         {
           "type": "positional",

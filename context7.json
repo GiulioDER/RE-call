@@ -9,7 +9,7 @@
     "docs/research"
   ],
   "rules": [
-    "The PyPI package is recall-rag. Install it with: pip install \"recall-rag[fastembed,mcp]>=0.16.1\"",
+    "The PyPI package is recall-rag. Install it with: pip install \"recall-rag[fastembed,mcp]>=0.17.0\"",
     "For local memory with no database server, use Lite: recall setup --lite. PostgreSQL with pgvector is the team option.",
     "Before acting, call recall_search for earlier decisions and failures; before answering from memory, call recall_evidence and cite only passages it returns.",
     "Treat abstained: true as no supported answer, not as an empty result. Do not answer from the nearest passage instead.",
