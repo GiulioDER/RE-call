@@ -15,7 +15,7 @@ from recall.rerank import Reranker
 from recall.scope import Scope, coerce_scope
 from recall.scope_prior import ScopePrior, affinities, apply_scope_prior
 from recall.store import PgVectorStore
-from recall.types import RetrievalDiagnostics, RetrievalResult, ScoredChunk
+from recall.types import GraphTransform, RetrievalDiagnostics, RetrievalResult, ScoredChunk
 
 log = get_logger("retriever")
 
@@ -438,6 +438,7 @@ class HybridRetriever:
         post_fusion_transform: (
             Callable[[list[float], list[ScoredChunk], list[ScoredChunk]], list[ScoredChunk]] | None
         ) = None,
+        graph_transform: GraphTransform | None = None,
     ) -> None:
         if dense_transform is not None and post_fusion_transform is not None:
             # Both would place a rescue: once inside the dense leg and again after fusion. A caller
@@ -485,6 +486,7 @@ class HybridRetriever:
         self._scope_prior = scope_prior or ScopePrior()
         self._dense_transform = dense_transform
         self._post_fusion_transform = post_fusion_transform
+        self._graph_transform = graph_transform
         #: Centroids are a property of the corpus, not of the query, so they are fetched once per
         #: retriever and reused. `None` means "not fetched yet"; an empty list means "fetched, and
         #: this corpus has no folder worth a centroid", which must not be retried on every query.
@@ -699,6 +701,12 @@ class HybridRetriever:
             started = time.perf_counter()
             hits = self._post_fusion_transform(legs.qvec, list(dense), hits)
             timings["atomic_rescue"] = (time.perf_counter() - started) * 1000.0
+        # The compiled graph runs on the final order, after any rescue placement, so its protected
+        # ranks 1 to 8 are the ranks the caller receives (`recall.compiled_graph.search`).
+        if self._graph_transform is not None and effective.is_empty:
+            started = time.perf_counter()
+            hits = self._graph_transform(legs.qvec, hits)
+            timings["compiled_graph"] = (time.perf_counter() - started) * 1000.0
         gap = gap_warning(list(dense_score.values()), self._gap_threshold)
         stale = staleness(
             self._store.newest_indexed_at(), datetime.now(timezone.utc), self._max_age

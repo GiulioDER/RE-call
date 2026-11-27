@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import unicodedata
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal, get_args
@@ -382,6 +382,11 @@ class ScoredChunk:
     score_kind: Literal["dense_cosine", "structural"] = "dense_cosine"
 
 
+#: A search-time step over the fused ranking (``recall.compiled_graph.search``), applied by
+#: ``HybridRetriever`` before the cut to k: query vector and ranked hits in, ranked hits out.
+GraphTransform = Callable[[list[float], list[ScoredChunk]], list[ScoredChunk]]
+
+
 @dataclass(frozen=True)
 class StalenessReport:
     stale: bool
@@ -408,6 +413,9 @@ class RetrievalDiagnostics:
     #: Why an active atomic rescue was not applied under RECALL_ATOMIC_RESCUE_WHEN_MISSING=skip:
     #: `missing`, `lineage`, `damaged` or `uncalibrated`; empty when it was applied or not asked for.
     atomic_rescue_skipped: str = ""
+    #: The compiled graph step on this search (`recall.compiled_graph.search`): `active:promoted=N`,
+    #: `shadow:would_promote=N`, or `skipped:` and the reason; empty when it is off.
+    compiled_graph: str = ""
 
 
 @dataclass(frozen=True)

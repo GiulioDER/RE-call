@@ -12,7 +12,9 @@ was built"; with the ``erase_forgotten_sources`` block removed from
 at "an artifact quoting the forgotten memo is left". CLI (``recall.cli_commands.graph_cmd``): the
 off check made ``if False`` fails ``test_cli_compile_refuses_when_off``; the Lite dry-run branch
 removed fails ``test_cli_dry_run_sends_nothing``; the ``compile`` dispatch removed fails
-``test_cli_compile_reports_the_artifact_in_force``.
+``test_cli_compile_reports_the_artifact_in_force``. The active branch of
+``recall.compiled_graph.search.compiled_graph_step`` returning the input order fails
+``test_a_trusted_search_on_lite_reports_the_graph_step`` (CCA CODE-001) on ranks 9 and 10.
 """
 
 from __future__ import annotations
@@ -323,3 +325,28 @@ def test_cli_compile_reports_the_artifact_in_force(built, monkeypatch: pytest.Mo
     store, _ = built
     out = _cli(store, monkeypatch)
     assert "compiled graph in force" in out, out
+
+
+def test_a_trusted_search_on_lite_reports_the_graph_step(built, monkeypatch: pytest.MonkeyPatch) -> None:  # type: ignore[no-untyped-def]  # fixture
+    """The real trust path loads the artifact the write built: active reports, off and shadow keep order."""
+    from typing import Any, cast
+
+    from recall.trust import trusted_search
+    from tests.test_lite_atomic_rescue import ContentWordEmbedder
+
+    store, root = built
+    env = _compile_env(root)
+    off = trusted_search(cast(Any, store), ContentWordEmbedder(), "ops log incident", k=12,
+                         env={**env, "RECALL_COMPILED_GRAPH_MODE": "off"})
+    shadow = trusted_search(cast(Any, store), ContentWordEmbedder(), "ops log incident", k=12,
+                            env={**env, "RECALL_COMPILED_GRAPH_MODE": "shadow"})
+    active = trusted_search(cast(Any, store), ContentWordEmbedder(), "ops log incident", k=12, env=env)
+    assert off.diagnostics.compiled_graph == ""
+    assert shadow.diagnostics.compiled_graph.startswith("shadow:would_promote=")
+    assert active.diagnostics.compiled_graph.startswith("active:promoted=")
+    promoted = int(active.diagnostics.compiled_graph.partition("=")[2])
+    assert promoted >= 1, active.diagnostics.compiled_graph
+    assert shadow.diagnostics.compiled_graph == f"shadow:would_promote={promoted}"
+    assert [hit.chunk.id for hit in shadow.hits] == [hit.chunk.id for hit in off.hits]
+    assert [hit.chunk.id for hit in active.hits][:8] == [hit.chunk.id for hit in off.hits][:8]
+    assert [hit.chunk.id for hit in active.hits][8:10] != [hit.chunk.id for hit in off.hits][8:10]

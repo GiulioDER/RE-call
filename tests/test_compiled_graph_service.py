@@ -4,6 +4,20 @@ Fake transport and fake embedder; no network. Red proof, recorded 2026-11-26 (pr
 in ``recall.compiled_graph.service``):
 
 - ``test_mode_by_tenant_overrides``: the per-tenant map ignored fails on the override.
+- ``test_a_malformed_tenant_entry_is_refused`` (CCA ENV-002): against the pre-fix
+  ``compiled_graph_mode`` fails with no exception, the tenant served the global ``active``.
+- ``test_a_tenant_name_may_hold_a_colon`` (CCA FA-1-2): against the pass-1 parser, which split on
+  the first colon, fails with ``ValueError`` on ``team:active``.
+- ``test_a_bad_mode_never_fails_the_write_or_the_promotion`` (CCA FA-1-1): against the pass-1
+  ``ensure_for_store`` and ``ensure_for_generation`` fails with the raised ``ValueError``.
+- ``test_the_server_refuses_a_bad_tenant_map_at_startup`` (CCA FA-1-1): against the pass-1
+  ``_validate_runtime_options`` fails with no exception.
+- ``test_a_partial_erase_serves_nothing`` (CCA FA-1-3): against the pass-1
+  ``erase_forgotten_sources``, which left the manifest, fails with no exception, the cached
+  records served.
+- ``test_a_relative_artifact_root_is_refused`` (CCA ENV-003): against the pre-fix
+  ``artifact_root``, which resolved a relative root against each process's cwd, fails with no
+  exception.
 - ``test_body_from_chunks_keeps_offsets``: chunks concatenated without their offsets fails on the
   slice equality.
 - ``test_off_or_rootless_builds_nothing``: the mode check removed fails on the call count.
@@ -110,6 +124,69 @@ def test_mode_by_tenant_overrides() -> None:
     assert compiled_graph_mode({}, "t1") == "off"
     with pytest.raises(ValueError):
         compiled_graph_mode({"RECALL_COMPILED_GRAPH_MODE": "on"}, "t1")
+
+
+@pytest.mark.parametrize("entries", ["t1=off", "t1 off", ":off", "t2:on, t1:off"])
+def test_a_malformed_tenant_entry_is_refused(entries: str) -> None:
+    env = {"RECALL_COMPILED_GRAPH_MODE": "active", "RECALL_COMPILED_GRAPH_MODE_BY_TENANT": entries}
+    with pytest.raises(ValueError, match="RECALL_COMPILED_GRAPH_MODE_BY_TENANT"):
+        compiled_graph_mode(env, "t1")
+
+
+def test_a_tenant_name_may_hold_a_colon() -> None:
+    env = {"RECALL_COMPILED_GRAPH_MODE_BY_TENANT": "org:team:active, t2:off"}
+    assert compiled_graph_mode(env, "org:team") == "active"
+    assert compiled_graph_mode(env, "t2") == "off"
+
+
+def test_a_bad_mode_never_fails_the_write_or_the_promotion(tmp_path: Path) -> None:
+    from recall.compiled_graph import service
+
+    class Store:
+        tenant = "t1"
+
+    env = {**_env(tmp_path), "RECALL_COMPILED_GRAPH_MODE_BY_TENANT": "t2=off"}
+    assert service.ensure_for_store(Store(), FakeEmbedder(), env).startswith("compiled graph not built")  # type: ignore[arg-type]  # only the tenant is read before the refusal
+    message = service.ensure_for_generation("postgresql://x", "t1", "g7", FakeEmbedder, env)
+    assert message.startswith("compiled graph not built")
+
+
+def test_the_server_refuses_a_bad_tenant_map_at_startup() -> None:
+    from recall_mcp.settings import _validate_runtime_options
+
+    with pytest.raises(ValueError, match="RECALL_COMPILED_GRAPH_MODE_BY_TENANT"):
+        _validate_runtime_options({"RECALL_COMPILED_GRAPH_MODE_BY_TENANT": "t2=off"})
+
+
+def test_a_partial_erase_serves_nothing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from recall.compiled_graph import service
+
+    env = _env(tmp_path)
+    _ensure(env, Transport())
+    lineage = serving_lineage("t1", BINDING, FakeEmbedder(), env)
+    assert lineage is not None
+    load_artifact(tenant_folder(tmp_path, "t1"), lineage)
+
+    def stops_part_way(path: Path) -> None:
+        (Path(path) / "records.jsonl").unlink()
+        raise PermissionError("a member is held open")
+
+    monkeypatch.setattr(service.shutil, "rmtree", stops_part_way)
+    with pytest.raises(service.CompiledGraphErasureIncomplete):
+        erase_forgotten_sources(["a.md"], tenant="t1", env=env)
+    with pytest.raises(ArtifactMissing):
+        load_artifact(tenant_folder(tmp_path, "t1"), lineage)
+
+
+def test_a_relative_artifact_root_is_refused(tmp_path: Path) -> None:
+    from recall.compiled_graph import service
+    from recall_mcp.settings import _validate_runtime_options
+
+    env = {**_env(tmp_path), "RECALL_COMPILED_GRAPH_ARTIFACT_ROOT": "graphs"}
+    with pytest.raises(ValueError, match="RECALL_COMPILED_GRAPH_ARTIFACT_ROOT"):
+        service.artifact_root(env)
+    with pytest.raises(ValueError, match="RECALL_COMPILED_GRAPH_ARTIFACT_ROOT"):
+        _validate_runtime_options({"RECALL_COMPILED_GRAPH_ARTIFACT_ROOT": "graphs"})
 
 
 def test_body_from_chunks_keeps_offsets() -> None:

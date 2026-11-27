@@ -13,6 +13,11 @@ from pydantic import BaseModel, Field
 from recall.support import CalibrationCoverage, QuerySupport
 from recall.types import DecisionState
 
+_COMPILED_GRAPH_DESCRIPTION = (
+    "The opt-in compiled graph on this search: active:promoted=N (at most two linked chunks moved "
+    "into ranks 9 and 10), shadow:would_promote=N (order unchanged), or skipped: and why (scoped, "
+    "missing, unconfigured, lineage, damaged, error); empty when RECALL_COMPILED_GRAPH_MODE is off."
+)
 _ATOMIC_RESCUE_SKIPPED_DESCRIPTION = (
     "Why an active atomic rescue was not applied to this search under "
     "RECALL_ATOMIC_RESCUE_WHEN_MISSING=skip: missing, lineage, damaged or uncalibrated (a "
@@ -158,6 +163,7 @@ class SearchResult(BaseModel):
     query_set_digest: str | None = None
     unknown_term_check: str = Field(default="not_run", description=_UNKNOWN_TERM_CHECK_DESCRIPTION)
     atomic_rescue_skipped: str = Field(default="", description=_ATOMIC_RESCUE_SKIPPED_DESCRIPTION)
+    compiled_graph: str = Field(default="", description=_COMPILED_GRAPH_DESCRIPTION)
     unknown_terms: list[str] = Field(
         default_factory=list, description="Entity-like query tokens the completed vocabulary check found absent."
     )
@@ -363,6 +369,7 @@ class EvidenceResult(BaseModel):
     )
     unknown_term_check: str = Field(default="not_run", description=_UNKNOWN_TERM_CHECK_DESCRIPTION)
     atomic_rescue_skipped: str = Field(default="", description=_ATOMIC_RESCUE_SKIPPED_DESCRIPTION)
+    compiled_graph: str = Field(default="", description=_COMPILED_GRAPH_DESCRIPTION)
     unknown_terms: list[str] = Field(
         default_factory=list, description="Entity-like query tokens the completed vocabulary check found absent."
     )

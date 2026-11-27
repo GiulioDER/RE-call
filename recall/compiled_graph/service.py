@@ -31,6 +31,7 @@ from typing import Literal, Protocol
 import numpy as np
 
 from recall.compiled_graph.artifact import (
+    ArtifactUnconfigured,
     ArtifactDamaged,
     CompiledGraphArtifact,
     CompiledGraphArtifactError,
@@ -51,6 +52,7 @@ from recall.compiled_graph.provider import (
     Transport,
     urllib_transport,
 )
+from recall._env import modes_by_tenant
 from recall.compiled_graph.records import prompt_digest
 from recall.embedding_core import Embedder
 from recall.errors import RecallError
@@ -94,12 +96,15 @@ def _parse_mode(value: str, variable: str) -> Mode:
 
 
 def compiled_graph_mode(env: Mapping[str, str], tenant: str | None) -> Mode:
-    """The mode for ``tenant``: its entry in the per-tenant map, else the global mode."""
-    for entry in env.get(MODE_BY_TENANT_ENV, "").split(","):
-        name, separator, value = entry.strip().partition(":")
-        if separator and name.strip() == tenant:
-            return _parse_mode(value, MODE_BY_TENANT_ENV)
-    return _parse_mode(env.get(MODE_ENV, ""), MODE_ENV)
+    """The mode for ``tenant``: its entry in the per-tenant map, else the global mode.
+
+    The whole map is parsed, so a malformed entry (``memory=off``) raises instead of leaving that
+    tenant on the global mode, which may be ``active``. The MCP server refuses such a value at
+    startup (``recall_mcp.settings``).
+    """
+    by_tenant = modes_by_tenant(env, MODE_BY_TENANT_ENV, MODES)
+    chosen = by_tenant.get(tenant) if tenant is not None else None
+    return _parse_mode(chosen if chosen is not None else env.get(MODE_ENV, ""), MODE_ENV)
 
 
 def artifact_root(env: Mapping[str, str]) -> Path | None:
@@ -418,6 +423,9 @@ def _erase_folder(folder: Path, wanted: set[str], failures: list[str]) -> int:
             if not holds:
                 continue
             try:
+                # The manifest goes first: a load refuses a directory without one, so an rmtree
+                # that stops part way leaves nothing any process (or its cache) can serve.
+                (directory / "manifest.json").unlink(missing_ok=True)
                 shutil.rmtree(directory)
             except OSError as exc:
                 failures.append(f"{directory}: {exc}")
@@ -433,7 +441,9 @@ def load_serving_artifact(
     lineage = serving_lineage(tenant, binding, embedder, env)
     root = artifact_root(env)
     if lineage is None or root is None:
-        raise CompiledGraphArtifactError("no lineage or artifact root to load")
+        raise ArtifactUnconfigured(
+            f"a search needs a generation, {ENV_PREFIX}_MODEL and {ROOT_ENV} to load the graph"
+        )
     return load_artifact(tenant_folder(root, tenant), lineage)
 
 

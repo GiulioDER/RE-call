@@ -179,7 +179,7 @@ modules = [
     "recall_mcp/semantic_graph_cache.py", "recall_mcp/related_api.py",
 ]
 tests = ["tests/test_graph*.py", "tests/test_related*.py", "tests/test_compiled_graph*.py"]
-docs = ["docs/REASONING_GRAPH.md"]
+docs = ["docs/REASONING_GRAPH.md", "docs/COMPILED_GRAPH.md"]
 
 [[feature]]
 id = "reasoning"

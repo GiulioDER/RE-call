@@ -15,6 +15,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   to the model. It is off by default, because it drops every replacement written on a different
   day; see [TRUTH_EXTRACTION_DESIGN.md](docs/TRUTH_EXTRACTION_DESIGN.md).
 
+* The compiled graph, opt-in and off by default: a model you configure
+  (`RECALL_COMPILED_GRAPH_MODEL`, for example `openai/gpt-6-luna-pro`) compiles each source into
+  typed records that keep only text copied verbatim from the excerpts they cite, and the server
+  links them to the chunks those excerpts overlap. With `RECALL_COMPILED_GRAPH_MODE=active` an
+  unscoped search may move at most two linked chunks into ranks 9 and 10; ranks 1 to 8 and every
+  score never change, and `shadow` only reports. It is built on every Lite write and before every
+  PostgreSQL promotion, or with `recall graph compile`, within a required USD cap per build, and
+  stops on a credit refusal without writing anything. Forget removes every artifact quoting a
+  forgotten source. It carries no quality claim. See [COMPILED_GRAPH.md](docs/COMPILED_GRAPH.md).
 * `recall.sqlite_planning.generate_sql_from_evidence` drafts one read-only SQLite query from
   trusted evidence in two calls to a model callback the caller supplies. The first call plans
   fields, joins and filters; RE-call checks the plan against the snapshot, and the second call

@@ -236,17 +236,22 @@ def atomic_rescue_modes_by_tenant(source: Mapping[str, str]) -> dict[str, str]:
     single-tenant servers; the server warns about it at startup instead
     (`unserved_atomic_rescue_tenants`).
     """
-    name = "RECALL_ATOMIC_RESCUE_MODE_BY_TENANT"
+    return modes_by_tenant(source, "RECALL_ATOMIC_RESCUE_MODE_BY_TENANT", ("off", "shadow", "active"))
+
+
+def modes_by_tenant(source: Mapping[str, str], name: str, allowed: tuple[str, ...]) -> dict[str, str]:
+    """Parse the `tenant:mode,...` variable `name`; a malformed or repeated entry raises.
+
+    Each entry splits on its LAST colon, because a tenant name may contain one.
+    """
     modes: dict[str, str] = {}
     for entry in (item.strip() for item in source.get(name, "").split(",")):
         if not entry:
             continue
         tenant, _, mode = entry.rpartition(":")
         tenant, mode = tenant.strip(), mode.strip().lower()
-        if not tenant or mode not in _ATOMIC_RESCUE_MODES:
-            raise ValueError(
-                f"{name} entry {entry!r} is malformed; expected tenant:off|shadow|active"
-            )
+        if not tenant or mode not in allowed:
+            raise ValueError(f"{name} entry {entry!r} is malformed; expected tenant:{'|'.join(allowed)}")
         if tenant in modes:
             raise ValueError(f"{name} names tenant {tenant!r} twice")
         modes[tenant] = mode

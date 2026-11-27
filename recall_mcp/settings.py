@@ -286,6 +286,9 @@ ENVIRONMENT_SCHEMA: tuple[EnvironmentSpec, ...] = (
     EnvironmentSpec("RECALL_SHADOW_MODEL_CACHE", "Retrieval", "shadow model cache"),
     EnvironmentSpec("RECALL_SHADOW_MODEL_SHA256", "Retrieval", "shadow model digest"),
     EnvironmentSpec("RECALL_SHADOW_QWEN_MODEL_PATH", "Retrieval", "shadow Qwen model path"),
+    EnvironmentSpec("RECALL_COMPILED_GRAPH_MODE", "Compiled graph", "off, shadow (report what the LLM-compiled graph would promote) or active (promote at most two linked chunks into ranks 9 and 10)", "off"),
+    EnvironmentSpec("RECALL_COMPILED_GRAPH_MODE_BY_TENANT", "Compiled graph", "per-tenant compiled graph mode, tenant:mode comma separated; overrides RECALL_COMPILED_GRAPH_MODE for that tenant"),
+    EnvironmentSpec("RECALL_COMPILED_GRAPH_ARTIFACT_ROOT", "Compiled graph", "absolute folder holding compiled graph artifacts and the compile cache; nothing is built without it"),
     EnvironmentSpec("RECALL_COMPILED_GRAPH_API_KEY", "Compiled graph", "API key of the provider that compiles sources into graph records; required for a compile", secret=True),
     EnvironmentSpec("RECALL_COMPILED_GRAPH_MODEL", "Compiled graph", "model that compiles sources, for example openai/gpt-6-luna-pro; required, there is no default"),
     EnvironmentSpec("RECALL_COMPILED_GRAPH_BASE_URL", "Compiled graph", "OpenAI-compatible base URL of the compile provider", "https://openrouter.ai/api/v1"),
@@ -438,6 +441,12 @@ def _validate_runtime_options(source: Mapping[str, str]) -> None:
     if atomic_mode not in _ATOMIC_RESCUE_MODES:
         raise ValueError("RECALL_ATOMIC_RESCUE_MODE must be off, shadow, or active")
     tenant_modes = atomic_rescue_modes_by_tenant(source)
+    from recall.compiled_graph.service import artifact_root, compiled_graph_mode
+
+    # The request path's own parsers over the whole per-tenant map and the root, so a bad value
+    # stops startup instead of failing every search.
+    compiled_graph_mode(source, None)
+    artifact_root(source)
     if "active" in {atomic_mode, *tenant_modes.values()} and not source.get(
         "RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT", ""
     ).strip():
