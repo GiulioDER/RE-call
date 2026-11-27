@@ -672,7 +672,9 @@ def _forget_memory_unlocked(
         from recall.compiled_graph.service import erase_forgotten_sources
 
         try:
-            compiled_graph_removed = erase_forgotten_sources(to_delete, env=runtime_environment())
+            compiled_graph_removed = erase_forgotten_sources(
+                to_delete, tenant=store.tenant, env=runtime_environment()
+            )
         except Exception:  # BROAD-CATCH: error-translation  # the chunks are gone; the message names what is left
             _log.exception(
                 "compiled graph erasure failed after chunk deletion for tenant %r", store.tenant

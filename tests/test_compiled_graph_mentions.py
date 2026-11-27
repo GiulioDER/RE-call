@@ -273,7 +273,7 @@ def test_a_cache_hit_does_not_load_the_artifact_again(tmp_path: Path, monkeypatc
 
 
 def test_a_cache_hit_sees_an_artifact_removed_since(tmp_path: Path) -> None:
-    """A forget erases every artifact holding the source, in any tenant, with the lineage unchanged."""
+    """An artifact removed while its lineage stays the same (by hand, say) is no longer served."""
     import shutil
 
     _write_served(tmp_path, ("c2", "Alice"))

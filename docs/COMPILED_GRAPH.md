@@ -89,9 +89,10 @@ is written once, refused when any of those differ, and refused when a file fails
 
 ## Forget
 
-`recall forget` and `recall withdraw` remove every artifact that quotes a forgotten source, and its
-rows in the compile cache (deleted with SQLite's `secure_delete`). The tenant searches without the
-graph until the next build, which no longer sees the source.
+`recall forget` and `recall withdraw` remove every artifact of the forgetting tenant that quotes a
+forgotten source, and the source's rows in the compile cache (deleted with SQLite's
+`secure_delete`). The tenant searches without the graph until the next build, which no longer sees
+the source. Another tenant's artifacts are kept, even where a source has the same name.
 
 ## Measuring it
 

@@ -119,9 +119,8 @@ def admit_llm_mentions(
     lineage = serving_lineage(tenant, binding, embedder, env)
     if lineage is None:
         return semantic, frozenset()
-    # An artifact is never rewritten at its lineage, only removed whole (a forget erases every
-    # artifact holding the source, in any tenant), so a hit needs no load and no checksum pass,
-    # only proof that the artifact is still there.
+    # An artifact is never rewritten at its lineage, only removed whole (by a forget, or by hand),
+    # so a hit needs no load and no checksum pass, only proof that the artifact is still there.
     key = (id(semantic), repr(sorted(lineage.items())), scoped)
     entry = _MERGED.get(key)
     root = artifact_root(env)

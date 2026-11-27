@@ -182,11 +182,14 @@ def ensure_compiled_graph(
         return f"compiled graph not built: {exc}"
 
 
-def erase_forgotten_sources(sources: Collection[str], *, env: Mapping[str, str]) -> int:
-    """Remove every artifact and cache row holding ``sources``; the number of artifacts removed.
+def erase_forgotten_sources(sources: Collection[str], *, tenant: str, env: Mapping[str, str]) -> int:
+    """Remove ``tenant``'s artifacts and every cache row holding ``sources``; the artifacts removed.
 
     Artifacts are immutable, so one holding a forgotten source is removed whole; the tenant then
-    searches without the graph until the next build, which no longer sees the source.
+    searches without the graph until the next build, which no longer sees the source. Another
+    tenant's artifacts are left alone: a source of the same name there is that tenant's own text.
+    Cache rows are keyed by source name and body, not by tenant, so one tenant's row can hold the
+    forgotten text of another; they are erased by name in every tenant.
     """
     root = artifact_root(env)
     if root is None or not sources or not root.exists():
@@ -195,7 +198,7 @@ def erase_forgotten_sources(sources: Collection[str], *, env: Mapping[str, str])
     if (root / CACHE_NAME).exists():
         CompileCache(root / CACHE_NAME).erase_sources(wanted)
     removed = 0
-    for records in root.glob("tenant-*/cg-*/records.jsonl"):
+    for records in tenant_folder(root, tenant).glob("cg-*/records.jsonl"):
         import json
 
         holds = any(
