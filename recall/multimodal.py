@@ -437,6 +437,15 @@ def _decoded_path(path: str, error: str) -> tuple[str, str]:
         if next_decoded == decoded:
             break
         decoded = next_decoded
+    # DAT-002, owner decision 2026-11-06: a consumer decodes once, so a path whose single decode
+    # differs from its fixpoint names one object to the checks below and another to the fetch
+    # ('me%2564ia' passes as 'media' and is fetched as 'me%64ia'). It is refused, at the cost of
+    # keys whose literal name holds '%' and two hex digits.
+    if unquote(path) != decoded:
+        raise MediaValidationError(
+            f"{error}: the path is percent-encoded more than once, or its name holds a literal "
+            "'%' followed by two hex digits"
+        )
     # A path still changing after the last pass would hide its remaining encodings from the
     # checks below, and a backslash is a separator to a Windows consumer but not to posixpath.
     # A leading empty segment is refused because normpath folds it away and the '//' left in the
