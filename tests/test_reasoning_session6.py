@@ -277,6 +277,8 @@ def test_reasoning_session6_proposal_precision_is_case_scoped(tmp_path: Path) ->
 
 
 @given(copies=st.integers(min_value=2, max_value=20))
+# Each example loads the fixture from disk: same first-run deadline flake as above (#1449).
+@settings(deadline=None)
 def test_reasoning_session6_precision_ignores_duplicate_relations(copies: int) -> None:
     """NUM-001: repeating a correct relation must not inflate pair-set precision.
 

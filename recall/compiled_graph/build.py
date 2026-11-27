@@ -71,9 +71,11 @@ class BuildReport:
 
 
 def without_offsets(source: SourceInput) -> bool:
-    """True when ``source`` has chunks but none carries character offsets, so no body can be
-    rebuilt from them. A generation build records offsets for Markdown and code sources only."""
-    return bool(source.chunks) and not any(placements(chunk) for chunk in source.chunks)
+    """True when ``source`` has chunks but its body is empty because no chunk carries usable
+    character offsets. Judged from the body ``body_from_chunks`` built, so the count follows the
+    rule that skipped the source. Both builds record ``text_start`` and ``text_end`` only for
+    Markdown sources; a generation build's ``code`` chunker records ``text_spans`` instead."""
+    return bool(source.chunks) and not source.body
 
 
 def _record_text(record: CompiledRecord | ArtifactRecord) -> str:
@@ -147,7 +149,8 @@ def build_compiled_graph(
     for source in sources:
         anchors = build_source_anchors(source.source, source.body)
         if not anchors:
-            report.sources_without_offsets += without_offsets(source)
+            if without_offsets(source):
+                report.sources_without_offsets += 1
             continue
         key = cache_key(config, source.source, hashlib.sha256(source.body.encode("utf-8")).hexdigest())
         records = cache.get(key)
