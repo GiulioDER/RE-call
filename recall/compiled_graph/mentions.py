@@ -18,8 +18,14 @@ from collections.abc import Collection, Mapping, Sequence
 from dataclasses import replace
 from typing import TypeVar
 
-from recall.compiled_graph.artifact import CompiledGraphArtifact, CompiledGraphArtifactError
-from recall.compiled_graph.service import compiled_graph_mode, load_serving_artifact, serving_lineage
+from recall.compiled_graph.artifact import CompiledGraphArtifact, CompiledGraphArtifactError, artifact_dir
+from recall.compiled_graph.service import (
+    artifact_root,
+    compiled_graph_mode,
+    load_serving_artifact,
+    serving_lineage,
+    tenant_folder,
+)
 from recall.embedding_core import Embedder
 from recall.semantic_graph import (
     SemanticGraphProjection,
@@ -113,10 +119,18 @@ def admit_llm_mentions(
     lineage = serving_lineage(tenant, binding, embedder, env)
     if lineage is None:
         return semantic, frozenset()
-    # The artifact at a lineage never changes, so a hit needs no load and no checksum pass.
+    # An artifact is never rewritten at its lineage, only removed whole (a forget erases every
+    # artifact holding the source, in any tenant), so a hit needs no load and no checksum pass,
+    # only proof that the artifact is still there.
     key = (id(semantic), repr(sorted(lineage.items())), scoped)
     entry = _MERGED.get(key)
-    if entry is not None and entry[0]() is semantic:
+    root = artifact_root(env)
+    if (
+        entry is not None
+        and entry[0]() is semantic
+        and root is not None
+        and (artifact_dir(tenant_folder(root, tenant), lineage) / "manifest.json").is_file()
+    ):
         _MERGED.move_to_end(key)
         return entry[1]
     try:

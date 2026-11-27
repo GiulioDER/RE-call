@@ -29,6 +29,9 @@ Red proof, recorded 2026-11-27 on the remote test host by mutating the fixed lin
   ``admit_llm_mentions`` disabled fails on the returned projection identity.
 - ``test_the_cache_tells_a_relation_control_copy_from_its_graph``: the ``_MERGED`` key back on
   ``(graph_id, fingerprint, lineage)`` without the identity check fails on the relations.
+- ``test_a_cache_hit_sees_an_artifact_removed_since``: the manifest check dropped from the cache
+  hit branch of ``admit_llm_mentions`` fails on the pair set (the removed artifact's mentions
+  are still admitted).
 """
 
 from __future__ import annotations
@@ -267,3 +270,17 @@ def test_a_cache_hit_does_not_load_the_artifact_again(tmp_path: Path, monkeypatc
     second = admit_llm_mentions(_store(), graph, _Embedder(), _active_env(tmp_path), scoped=False)
     assert second[0] is first[0] and second[1] == frozenset({("c2", "e-alice")})
     assert loads == ["load"]
+
+
+def test_a_cache_hit_sees_an_artifact_removed_since(tmp_path: Path) -> None:
+    """A forget erases every artifact holding the source, in any tenant, with the lineage unchanged."""
+    import shutil
+
+    _write_served(tmp_path, ("c2", "Alice"))
+    graph = _graph()
+    _, before = admit_llm_mentions(_store(), graph, _Embedder(), _active_env(tmp_path), scoped=False)
+    assert before == frozenset({("c2", "e-alice")})
+    shutil.rmtree(tenant_folder(tmp_path, "t1"))
+    after_graph, after = admit_llm_mentions(_store(), graph, _Embedder(), _active_env(tmp_path), scoped=False)
+    assert after == frozenset()
+    assert after_graph is graph
