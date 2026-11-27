@@ -24,13 +24,14 @@ turn it to `active`.
 4. **For `recall_reasoning_query`**, in `active` mode only, an entity a record copied becomes a
    mention on each linked chunk whose own text holds it, but only onto an entity the authored graph
    already has (matched by normalized name, never an ambiguous one). Graph expansion still walks
-   authored relations only, and every chunk the expansion adds whose every link to a seed runs
-   through such a mention carries `graph_link: llm_compiled` on its hit; a chunk retrieval already
-   returned is never labelled. A scoped request admits mentions only on chunks its scoped graph
-   already mentions, which are a subset of the chunks its source policy lets it see. The mentions
-   do more than widen which chunks a relation reaches: one on a trusted seed chunk adds a seed
-   entity, and they count toward the hub threshold and the graph budgets, so `active` can also
-   drop an authored neighbor that `off` returns.
+   authored relations only, and these mentions only widen which chunks a relation's neighbor
+   reaches: the seed entities, the hub counts and the order in which the candidate budget is spent
+   all come from authored mentions, and a chunk an authored mention reaches keeps only its authored
+   relations. So every candidate `off` admits, `active` admits too, unchanged. Every chunk the
+   expansion adds that no authored mention reaches carries `graph_link: llm_compiled` on its hit; a
+   chunk retrieval already returned is never labelled. Such a chunk still competes on score for the
+   result's limited places. A scoped request admits mentions only on chunks its scoped graph
+   already mentions, which are a subset of the chunks its source policy lets it see.
 
 With the default `k=5`, a plain search returns the same results with the graph on. The effect is
 visible when a caller asks for 9 or more results, and in the reasoning query.

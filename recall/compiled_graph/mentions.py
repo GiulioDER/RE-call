@@ -4,8 +4,10 @@ Graph expansion walks authored relations from the entities a trusted seed mentio
 that mention the neighbor. An entity a compiled record copied verbatim becomes a mention on each
 linked chunk whose own text holds it, but only onto an entity the authored graph already has
 (matched by normalized name, never an ambiguous one): a new entity would have no relation to walk.
-Mentions are merged at load time, so the stored graph and its validation never change. Every chunk
-that expansion reaches only through such a mention is labelled ``llm_compiled`` on its hit.
+Mentions are merged at load time, so the stored graph and its validation never change. They only
+add the chunks a neighbor reaches: seeds, hub counts and the candidate budget's order stay authored
+(``recall_mcp.graph_expansion._admit_relations``). Every chunk that expansion reaches only through
+such a mention is labelled ``llm_compiled`` on its hit.
 """
 
 from __future__ import annotations
@@ -30,7 +32,6 @@ from recall.embedding_core import Embedder
 from recall.semantic_graph import (
     SemanticGraphProjection,
     SemanticMention,
-    SemanticRelation,
     normalize_entity_name,
 )
 from recall.types import ScoredChunk, TrustedHit
@@ -144,41 +145,6 @@ def admit_llm_mentions(
     while len(_MERGED) > _MERGED_MAX:
         _MERGED.popitem(last=False)
     return merged
-
-
-def llm_dependent_chunks(
-    candidate_relations_by_chunk: Mapping[str, Sequence[SemanticRelation]],
-    *,
-    seed_entities: Collection[str],
-    trusted_seed_ids: Collection[str],
-    resolved_query_entities: Collection[str],
-    mentions_by_chunk: Mapping[str, Collection[str]],
-    llm_pairs: frozenset[tuple[str, str]],
-) -> frozenset[str]:
-    """Candidates whose every link to a seed exists only through an LLM mention, on either end."""
-    if not llm_pairs:
-        return frozenset()
-    llm_only_seeds = {
-        entity
-        for entity in seed_entities
-        if entity not in resolved_query_entities
-        and all(
-            (chunk_id, entity) in llm_pairs
-            for chunk_id in trusted_seed_ids
-            if entity in mentions_by_chunk.get(chunk_id, ())
-        )
-    }
-
-    def through_llm(chunk_id: str, relation: SemanticRelation) -> bool:
-        seed_side = relation.subject_id if relation.subject_id in seed_entities else relation.object_id
-        neighbor = relation.object_id if seed_side == relation.subject_id else relation.subject_id
-        return seed_side in llm_only_seeds or (chunk_id, neighbor) in llm_pairs
-
-    return frozenset(
-        chunk_id
-        for chunk_id, relations in candidate_relations_by_chunk.items()
-        if relations and all(through_llm(chunk_id, relation) for relation in relations)
-    )
 
 
 def label_hits(hits: Sequence[Hit], labelled: frozenset[str]) -> list[Hit]:

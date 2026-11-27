@@ -13,7 +13,7 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from typing import Any, Callable, Mapping, Sequence
 
-from recall.compiled_graph.mentions import admit_llm_mentions, label_hits, llm_dependent_chunks
+from recall.compiled_graph.mentions import admit_llm_mentions, label_hits
 from recall.calibration import Calibration
 from recall.reasoning import ReasoningRequest, SemanticGraphExpansionResult
 from recall.security_policy import AccessContext, SourceSecurityPolicy
@@ -369,6 +369,8 @@ class RelationAdmission:
     edge_candidates: EdgeCandidates
     relation_count: int
     graph: SupersessionGraph = field(default_factory=SupersessionGraph)
+    #: Candidates that no relation reaches through an authored mention, only through an LLM one.
+    llm_only_chunk_ids: frozenset[str] = frozenset()
 
 
 def _admit_relations(
@@ -376,6 +378,7 @@ def _admit_relations(
     store: PgVectorStore,
     semantic: Any,
     indexes: Any,
+    authored_indexes: Any,
     seed_entities: set[str],
     resolved_query_entities: set[str],
     trusted_seed_ids: set[str],
@@ -388,8 +391,15 @@ def _admit_relations(
     hub_threshold: int,
     stats: ExpansionStats,
 ) -> RelationAdmission:
-    """Admit authored relation neighbors while applying graph safety and budget rules."""
+    """Admit authored relation neighbors while applying graph safety and budget rules.
+
+    ``indexes`` may hold LLM-compiled mentions (``recall.compiled_graph.mentions``) on top of the
+    authored ones in ``authored_indexes``. They only add the chunks a neighbor reaches: hub counts
+    are authored, and a chunk an authored mention reaches keeps only its authored relations, so an
+    authored candidate looks exactly as it does without them.
+    """
     candidate_relations_by_chunk: dict[str, list[Any]] = {}
+    llm_relations_by_chunk: dict[str, list[Any]] = {}
     neighboring_entities: set[str] = set()
     relation_count = 0
     graph = store_supersession_graph(store)
@@ -399,6 +409,7 @@ def _admit_relations(
 
     ambiguous_entities = indexes.ambiguous_entities
     chunks_by_entity = indexes.chunks_by_entity
+    authored_chunks_by_entity = authored_indexes.chunks_by_entity
     relation_indexes = sorted(
         {
             relation_index
@@ -454,7 +465,7 @@ def _admit_relations(
         if (
             use_hub_suppression
             and seed_entity_for_relation is not None
-            and len(chunks_by_entity.get(seed_entity_for_relation, set())) > hub_threshold
+            and len(authored_chunks_by_entity.get(seed_entity_for_relation, set())) > hub_threshold
             and seed_entity_for_relation not in resolved_query_entities
         ):
             stats.reject("hub_entity")
@@ -469,10 +480,15 @@ def _admit_relations(
                 stats.reject("entity_budget")
                 continue
             neighboring_entities.add(neighbor)
+        authored_chunks = authored_chunks_by_entity.get(neighbor, frozenset())
         for chunk_id in sorted(chunks_by_entity.get(neighbor, frozenset())):
             if chunk_id not in trusted_seed_ids:
-                candidate_relations_by_chunk.setdefault(chunk_id, []).append(relation)
+                reached = candidate_relations_by_chunk if chunk_id in authored_chunks else llm_relations_by_chunk
+                reached.setdefault(chunk_id, []).append(relation)
 
+    llm_only = frozenset(llm_relations_by_chunk) - frozenset(candidate_relations_by_chunk)
+    for chunk_id in llm_only:
+        candidate_relations_by_chunk[chunk_id] = llm_relations_by_chunk[chunk_id]
     return RelationAdmission(
         candidate_relations_by_chunk={
             chunk_id: tuple(relations)
@@ -483,6 +499,7 @@ def _admit_relations(
         edge_candidates=edge_candidates,
         relation_count=relation_count,
         graph=graph,
+        llm_only_chunk_ids=llm_only,
     )
 
 
@@ -881,6 +898,7 @@ def _materialize_candidates(
     excluded_chunk_ids: frozenset[str],
     graph: SupersessionGraph | None = None,
     source: str | None = None,
+    llm_only_chunk_ids: frozenset[str] = frozenset(),
 ) -> CandidateMaterialization:
     """Filter graph metadata, fetch only bounded text, authorize it, and build candidate state."""
     if graph is None:
@@ -920,7 +938,8 @@ def _materialize_candidates(
             if graph.edges and _chunk_is_superseded(chunk, graph, as_of, request.known_as_of):
                 superseded_ids.add(chunk.id)
     candidate_ids: list[str] = []
-    for chunk_id in sorted(candidate_relations_by_chunk):
+    # Authored candidates first, so the budget below cuts LLM-only ones before any authored one.
+    for chunk_id in sorted(candidate_relations_by_chunk, key=lambda c: (c in llm_only_chunk_ids, c)):
         if in_scope_ids is not None and chunk_id not in in_scope_ids:
             continue
         window = indexes.validity_by_chunk.get(chunk_id)
@@ -1241,15 +1260,19 @@ def expand_semantic_graph(
     semantic = _controlled_semantic_graph(semantic, relation_control, relation_control_seed)
     from recall_mcp.settings import runtime_environment
 
-    semantic, llm_pairs = admit_llm_mentions(
+    authored = semantic
+    authored_indexes = _semantic_graph_indexes(authored)
+    # Seeds, hub counts and the candidate budget's order come from the authored graph alone; the
+    # LLM-compiled mentions only add the chunks a neighbor reaches (see `_admit_relations`).
+    semantic, _ = admit_llm_mentions(
         store, semantic, embedder, runtime_environment(), scoped=security_policy is not None
     )
     indexes = _semantic_graph_indexes(semantic)
-    mentions_by_chunk = indexes.mentions_by_chunk
+    mentions_by_chunk = authored_indexes.mentions_by_chunk
     ambiguous_entities = indexes.ambiguous_entities
     as_of = request.as_of or datetime.now(UTC)
     query_resolution = resolve_query_entities(
-        semantic,
+        authored,
         request.query,
         reference_time=as_of,
     )
@@ -1276,6 +1299,7 @@ def expand_semantic_graph(
         store=store,
         semantic=semantic,
         indexes=indexes,
+        authored_indexes=authored_indexes,
         seed_entities=seed_entities,
         resolved_query_entities=resolved_query_entities,
         trusted_seed_ids=trusted_seed_ids,
@@ -1290,14 +1314,7 @@ def expand_semantic_graph(
     )
     candidate_relations_by_chunk = admission.candidate_relations_by_chunk
     # A chunk retrieval already returned was not reached through the graph, whatever its relations.
-    llm_labels = llm_dependent_chunks(
-        candidate_relations_by_chunk,
-        seed_entities=seed_entities,
-        trusted_seed_ids=trusted_seed_ids,
-        resolved_query_entities=resolved_query_entities,
-        mentions_by_chunk=indexes.mentions_by_chunk,
-        llm_pairs=llm_pairs,
-    ) - {hit.chunk.id for hit in retrieval.hits}
+    llm_labels = admission.llm_only_chunk_ids - {hit.chunk.id for hit in retrieval.hits}
     relation_count = admission.relation_count
     supersession = dict(admission.supersession)
     unresolved = admission.unresolved
@@ -1308,7 +1325,7 @@ def expand_semantic_graph(
         store=store,
         request=request,
         candidate_relations_by_chunk=candidate_relations_by_chunk,
-        indexes=indexes,
+        indexes=authored_indexes,
         seed_entities=seed_entities,
         trusted_seed_ids=trusted_seed_ids,
         as_of=as_of,
@@ -1327,6 +1344,7 @@ def expand_semantic_graph(
         excluded_chunk_ids=excluded_chunk_ids,
         graph=supersession_graph,
         source=source,
+        llm_only_chunk_ids=admission.llm_only_chunk_ids,
     )
     candidates_by_chunk = dict(materialized.candidates_by_chunk)
     chunks_by_id = dict(materialized.chunks_by_id)

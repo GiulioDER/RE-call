@@ -1,5 +1,8 @@
 """LLM mentions in graph expansion: admitted only when active, only onto existing entities, labelled.
 
+Which candidates are labelled is decided by graph expansion and tested in
+``tests/test_compiled_graph_expansion.py``.
+
 Red proof, recorded 2026-11-26 (production symbols in ``recall.compiled_graph.mentions`` and
 ``recall.compiled_graph.build``):
 
@@ -8,11 +11,7 @@ Red proof, recorded 2026-11-26 (production symbols in ``recall.compiled_graph.me
 - ``test_existing_authored_mentions_are_not_duplicated``: the existing-pair check removed fails
   on the mention count and ``llm_pairs``.
 - ``test_admission_requires_active``: admitting in every mode but ``off`` fails on the shadow case.
-- ``test_candidate_reached_through_an_llm_mention_is_labelled``: the neighbor-side check removed
-  fails on the label set; the seed-side check removed fails on the seed case.
 - ``test_label_marks_hits``: ``label_hits`` returning hits unchanged fails on the metadata.
-- Each of the two halves of the labelling condition removed in turn fails
-  ``test_candidate_reached_through_an_llm_mention_is_labelled``.
 - ``test_build_records_mentions_only_where_the_chunk_holds_the_entity``: every edge chunk paired
   with every entity fails on the mention pairs.
 
@@ -21,8 +20,6 @@ Red proof, recorded 2026-11-27 on the remote test host by mutating the fixed lin
 
 - ``test_an_older_schema_directory_is_replaced_not_kept``: ``artifact_dir`` digesting the lineage
   without the schema fails on ``written != old`` (the schema 1 directory is kept).
-- ``test_a_chunk_also_reached_through_an_authored_relation_is_not_labelled``: ``all`` replaced by
-  ``any`` in ``llm_dependent_chunks`` fails on the label set (``c9`` labelled).
 - ``test_a_scoped_request_admits_mentions_only_on_chunks_its_graph_holds``: the
   ``visible_chunks`` check removed from ``merge_llm_mentions`` fails on the scoped pair set.
 - ``test_a_cache_hit_does_not_load_the_artifact_again``: the cache hit branch of
@@ -47,7 +44,6 @@ from recall.compiled_graph.mentions import (
     LABEL_VALUE,
     admit_llm_mentions,
     label_hits,
-    llm_dependent_chunks,
     merge_llm_mentions,
 )
 from recall.compiled_graph.service import serving_lineage, tenant_folder
@@ -125,27 +121,6 @@ def test_admission_requires_active(tmp_path: Path) -> None:
     assert none == frozenset()
 
 
-def test_candidate_reached_through_an_llm_mention_is_labelled() -> None:
-    relation = SimpleNamespace(subject_id="e-alice", object_id="e-bob1")
-    candidates = {"c9": (relation,), "c8": (relation,)}
-    mentions_by_chunk = {"c1": frozenset({"e-alice"})}
-    # Neighbor side: c9 holds the neighbor e-bob1 only through an LLM mention.
-    labels = llm_dependent_chunks(candidates, seed_entities={"e-alice"}, trusted_seed_ids={"c1"},
-                                  resolved_query_entities=set(), mentions_by_chunk=mentions_by_chunk,
-                                  llm_pairs=frozenset({("c9", "e-bob1")}))
-    assert labels == frozenset({"c9"})
-    # Seed side: the seed chunk c1 holds e-alice only through an LLM mention, so both are labelled.
-    labels = llm_dependent_chunks(candidates, seed_entities={"e-alice"}, trusted_seed_ids={"c1"},
-                                  resolved_query_entities=set(), mentions_by_chunk=mentions_by_chunk,
-                                  llm_pairs=frozenset({("c1", "e-alice")}))
-    assert labels == frozenset({"c8", "c9"})
-    # A query that names the entity makes the seed side authored again.
-    labels = llm_dependent_chunks(candidates, seed_entities={"e-alice"}, trusted_seed_ids={"c1"},
-                                  resolved_query_entities={"e-alice"}, mentions_by_chunk=mentions_by_chunk,
-                                  llm_pairs=frozenset({("c1", "e-alice")}))
-    assert labels == frozenset()
-
-
 def test_label_marks_hits() -> None:
     hits = [ScoredChunk(chunk=Chunk(id=f"c{i}", source="a.md", text="t", metadata={"file": "a.md"}), score=0.5)
             for i in range(3)]
@@ -214,17 +189,6 @@ def test_an_older_schema_directory_is_replaced_not_kept(tmp_path: Path) -> None:
     written = write_artifact(folder, CompiledGraphArtifact(lineage, artifact.records, artifact.vectors))
     assert written != old
     assert load_artifact(folder, lineage).records[0].mentions == (("c2", "Alice"),)
-
-
-def test_a_chunk_also_reached_through_an_authored_relation_is_not_labelled() -> None:
-    through_llm = SimpleNamespace(subject_id="e-alice", object_id="e-bob1")
-    authored = SimpleNamespace(subject_id="e-alice", object_id="e-carol")
-    labels = llm_dependent_chunks(
-        {"c9": (through_llm, authored), "c8": (through_llm,)},
-        seed_entities={"e-alice"}, trusted_seed_ids={"c1"}, resolved_query_entities=set(),
-        mentions_by_chunk={"c1": frozenset({"e-alice"})}, llm_pairs=frozenset({("c9", "e-bob1"), ("c8", "e-bob1")}),
-    )
-    assert labels == frozenset({"c8"})
 
 
 def test_a_scoped_request_admits_mentions_only_on_chunks_its_graph_holds(tmp_path: Path) -> None:

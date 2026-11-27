@@ -14,6 +14,19 @@ Red proof, recorded 2026-11-27 on the remote test host (CCA run 20261127T110213Z
 longer subtracted from ``llm_labels`` in ``expand_semantic_graph``,
 ``test_a_hit_retrieval_returned_is_never_labelled`` fails on the label of the returned
 ``llm-chunk`` hit, and passes once restored.
+
+LLM mentions only widen the chunks a neighbor reaches (owner's choice, 2026-11-27). Red proof,
+recorded 2026-11-27 on the remote test host by mutating ``recall_mcp/graph_expansion.py`` and
+restoring it; each failed on its own assertion and passed once restored:
+
+- ``test_an_llm_mention_on_the_seed_chunk_starts_no_relation``: seeds read from the merged
+  ``indexes.mentions_by_chunk`` fails on ``target-chunk`` being reached.
+- ``test_llm_mentions_do_not_make_a_seed_a_hub``: the hub count read from the merged
+  ``chunks_by_entity`` fails on ``llm-chunk`` no longer being reached.
+- ``test_the_budget_is_spent_on_authored_candidates_first``: the candidates sorted by id alone
+  fails on the authored set ``off`` returns not being a subset of what ``active`` returns.
+- ``test_a_candidate_an_authored_mention_reaches_is_not_labelled``: ``llm_only`` taken as every
+  chunk with an LLM relation fails on the label of ``candidate-000000``.
 """
 
 from __future__ import annotations
@@ -70,16 +83,20 @@ def _expand(store: _BoundStore, monkeypatch: pytest.MonkeyPatch, env: dict[str, 
     return service._expand_semantic_graph(cast(Any, store), request, retrieval, None, cast(Any, _Embedder()))
 
 
-@pytest.fixture
-def store_with_artifact(tmp_path: Path) -> _BoundStore:
-    store = _BoundStore(_semantic_graph(0))
-    lineage = serving_lineage("tenant-a", store.generation_binding(), _Embedder(), _env(tmp_path, "active"))
+def _store_with(root: Path, semantic, *mentions: tuple[str, str]) -> _BoundStore:  # type: ignore[no-untyped-def]  # semantic is a SemanticGraphProjection
+    store = _BoundStore(semantic)
+    lineage = serving_lineage("tenant-a", store.generation_binding(), _Embedder(), _env(root, "active"))
     assert lineage is not None
-    record = ArtifactRecord("n.md#0", "n.md", "fact", ("x",), ("Neighbor",), ("llm-chunk",),
-                            mentions=(("llm-chunk", "Neighbor"),))
-    write_artifact(tenant_folder(tmp_path, "tenant-a"),
+    record = ArtifactRecord("n.md#0", "n.md", "fact", ("x",), tuple({name for _, name in mentions}),
+                            tuple(sorted({chunk for chunk, _ in mentions})), mentions=mentions)
+    write_artifact(tenant_folder(root, "tenant-a"),
                    CompiledGraphArtifact(lineage, (record,), np.ones((1, 1), dtype=np.float32)))
     return store
+
+
+@pytest.fixture
+def store_with_artifact(tmp_path: Path) -> _BoundStore:
+    return _store_with(tmp_path, _semantic_graph(0), ("llm-chunk", "Neighbor"))
 
 
 def test_active_follows_the_llm_mention(store_with_artifact: _BoundStore, tmp_path: Path,
@@ -112,3 +129,79 @@ def test_a_hit_retrieval_returned_is_never_labelled(store_with_artifact: _BoundS
     returned = [hit for hit in result.retrieval.hits if hit.chunk.id == "llm-chunk"]
     assert returned
     assert all(hit.chunk.metadata.get(LABEL_KEY) is None for hit in returned)
+
+
+def _entity(entity_id: str, name: str):  # type: ignore[no-untyped-def]  # returns a SemanticEntity
+    from recall.semantic_graph import SemanticEntity
+
+    return SemanticEntity(id=entity_id, tenant_id="tenant-a", generation_id=GENERATION,
+                          canonical_name=name, normalized_name=name.casefold(), kind="service")
+
+
+def _relation(relation_id: str, subject: str, obj: str):  # type: ignore[no-untyped-def]  # returns a SemanticRelation
+    from recall.semantic_graph import SemanticRelation
+
+    return SemanticRelation(id=relation_id, tenant_id="tenant-a", generation_id=GENERATION,
+                            subject_id=subject, object_id=obj, relation="supports",
+                            evidence_chunk_ids=("seed",), extraction_method="explicit_relation",
+                            confidence=1.0)
+
+
+def _reached(result) -> set[str]:  # type: ignore[no-untyped-def]  # result is the expansion result
+    return {hit.chunk.id for hit in result.retrieval.hits if hit.chunk.id != "seed"}
+
+
+def test_an_llm_mention_on_the_seed_chunk_starts_no_relation(tmp_path: Path,
+                                                             monkeypatch: pytest.MonkeyPatch) -> None:
+    from dataclasses import replace
+
+    from recall.semantic_graph import SemanticMention
+
+    base = _semantic_graph(0)
+    # Other -> Target is authored, with evidence in the seed chunk; only an LLM mention says the
+    # seed chunk names Other, so Other may widen nothing and must not become a seed.
+    semantic = replace(
+        base,
+        graph_id="semantic-graph-seed-side",
+        entities=(*base.entities, _entity("entity-other", "Other"), _entity("entity-target", "Target")),
+        mentions=(*base.mentions, SemanticMention(
+            id="mention-target", tenant_id="tenant-a", generation_id=GENERATION, entity_id="entity-target",
+            chunk_id="target-chunk", mention_text="Target", extraction_method="metadata")),
+        relations=(*base.relations, _relation("relation-other-target", "entity-other", "entity-target")),
+    )
+    store = _store_with(tmp_path, semantic, ("seed", "Other"))
+    assert "target-chunk" not in _reached(_expand(store, monkeypatch, _env(tmp_path, "active")))
+
+
+def test_llm_mentions_do_not_make_a_seed_a_hub(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    seed_copies = tuple((f"seed-copy-{index:03d}", "Seed") for index in range(40))
+    store = _store_with(tmp_path, _semantic_graph(0), ("llm-chunk", "Neighbor"), *seed_copies)
+    assert "llm-chunk" in _reached(_expand(store, monkeypatch, _env(tmp_path, "active")))
+
+
+def test_the_budget_is_spent_on_authored_candidates_first(tmp_path: Path,
+                                                          monkeypatch: pytest.MonkeyPatch) -> None:
+    # Six authored candidates fill the budget; two LLM-only ones sort before them by chunk id.
+    store = _store_with(tmp_path, _semantic_graph(6), ("a-llm-0", "Neighbor"), ("a-llm-1", "Neighbor"))
+    authored_off = _reached(_expand(store, monkeypatch, _env(tmp_path, "off")))
+    assert authored_off
+    assert authored_off <= _reached(_expand(store, monkeypatch, _env(tmp_path, "active")))
+
+
+def test_a_candidate_an_authored_mention_reaches_is_not_labelled(tmp_path: Path,
+                                                                 monkeypatch: pytest.MonkeyPatch) -> None:
+    from dataclasses import replace
+
+    base = _semantic_graph(1)
+    # candidate-000000 holds Neighbor through an authored mention, and Extra only through an LLM one.
+    semantic = replace(
+        base,
+        graph_id="semantic-graph-mixed",
+        entities=(*base.entities, _entity("entity-extra", "Extra")),
+        relations=(*base.relations, _relation("relation-seed-extra", "entity-seed", "entity-extra")),
+    )
+    store = _store_with(tmp_path, semantic, ("candidate-000000", "Extra"))
+    result = _expand(store, monkeypatch, _env(tmp_path, "active"))
+    hits = {hit.chunk.id: hit for hit in result.retrieval.hits}
+    assert "candidate-000000" in hits
+    assert hits["candidate-000000"].chunk.metadata.get(LABEL_KEY) is None
