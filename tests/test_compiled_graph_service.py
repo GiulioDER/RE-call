@@ -56,6 +56,25 @@ in ``recall.compiled_graph.service``):
   ``store.fixed``.
 - ``test_generation_build_never_raises_into_the_promotion``: the broad catch narrowed to
   ``KeyError`` fails with ``RuntimeError``.
+
+The source policy decides what is compiled (SEC-001), recorded 2026-11-28. Before the fix (the
+build ignored the policy), every test below except
+``test_a_source_with_the_compile_purpose_is_compiled``, the positive control, failed on its call
+count or its withheld clause. Mutations of ``recall.compiled_graph.service``, each failing on the
+same assertions:
+
+- ``_admitted`` returning every chunk (``if True: return list(chunks), 0``):
+  ``test_a_source_without_the_compile_purpose_is_withheld``,
+  ``test_a_chunk_under_an_older_policy_withholds_its_source``,
+  ``test_an_egress_restricted_source_needs_egress_permission``,
+  ``test_a_principal_the_rule_does_not_list_is_withheld`` and
+  ``test_the_dry_run_counts_withheld_sources_as_the_build_does`` fail.
+- ``_admitted`` letting a source's last chunk decide instead of any chunk:
+  ``test_a_chunk_under_an_older_policy_withholds_its_source`` fails on ``assert 1 == 0``.
+- The context built with ``purpose="retrieval"``: ``test_a_source_without_the_compile_purpose_is_withheld``
+  and the dry run test fail.
+- ``test_an_unreadable_policy_builds_nothing_and_never_raises`` failed before the fix with the
+  artifact built (the missing file was never read).
 """
 
 from __future__ import annotations
@@ -77,6 +96,7 @@ from recall.compiled_graph.service import (
     serving_lineage,
     tenant_folder,
 )
+from recall.security_policy import SourceSecurityPolicy, load_source_policy
 from recall.types import Chunk
 
 BODY = "Alice owns the release checklist. " + "x" * 2_000 + " The deploy uses port 18015."
@@ -401,3 +421,99 @@ def test_generation_build_never_raises_into_the_promotion(tmp_path: Path) -> Non
     message = service.ensure_for_generation("postgresql://x", "t1", "g7", broken, _env(tmp_path))
     assert message == "compiled graph not built for g7: RuntimeError"
     assert service.ensure_for_generation("postgresql://x", "t1", "g7", broken, _env(tmp_path, "off")) == ""
+
+
+# --- The source policy decides what is compiled (SEC-001) ---
+
+RETRIEVAL_ONLY = {"prefix": "a.md", "principals": [], "purposes": ["retrieval"], "redactions": []}
+COMPILE = {**RETRIEVAL_ONLY, "purposes": ["retrieval", "compile"]}
+WITHHELD = "1 source(s) withheld by the source policy for purpose compile"
+
+
+def _policy_env(
+    tmp_path: Path, rules: list[dict[str, object]], **extra: str
+) -> tuple[dict[str, str], SourceSecurityPolicy]:
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    path = tmp_path / "policy.json"
+    path.write_text(json.dumps({"default_deny": True, "rules": rules}), encoding="utf-8")
+    env = {**_env(tmp_path / "cg"), "RECALL_SOURCE_POLICY_FILE": str(path), **extra}
+    policy = load_source_policy(env)
+    assert policy is not None
+    return env, policy
+
+
+def _stamped(chunks: list[Chunk], digest: str) -> list[Chunk]:
+    return [
+        Chunk(id=chunk.id, source=chunk.source, text=chunk.text,
+              metadata={**chunk.metadata, "security_policy_digest": digest})
+        for chunk in chunks
+    ]
+
+
+def _build(env: Mapping[str, str], chunks: list[Chunk], transport: Transport) -> str:
+    return ensure_compiled_graph(
+        "t1", chunks, BINDING, FakeEmbedder(), env=env, transport=transport, sleep=lambda _: None,
+    )
+
+
+def test_a_source_without_the_compile_purpose_is_withheld(tmp_path: Path) -> None:
+    env, policy = _policy_env(tmp_path, [RETRIEVAL_ONLY])
+    transport = Transport()
+    message = _build(env, _stamped(_chunks(), policy.digest), transport)
+    assert transport.calls == 0, message
+    assert WITHHELD in message, message
+
+
+def test_a_source_with_the_compile_purpose_is_compiled(tmp_path: Path) -> None:
+    env, policy = _policy_env(tmp_path, [COMPILE])
+    transport = Transport()
+    message = _build(env, _stamped(_chunks(), policy.digest), transport)
+    assert transport.calls >= 1, message
+    assert message.startswith("compiled graph built for "), message
+    assert "withheld" not in message, message
+
+
+def test_a_chunk_under_an_older_policy_withholds_its_source(tmp_path: Path) -> None:
+    env, policy = _policy_env(tmp_path, [COMPILE])
+    first, *rest = _stamped(_chunks(), policy.digest)
+    stale = _stamped([first], "0" * 64)
+    transport = Transport()
+    message = _build(env, [*stale, *rest], transport)
+    assert transport.calls == 0, message
+    assert WITHHELD in message, message
+
+
+def test_an_egress_restricted_source_needs_egress_permission(tmp_path: Path) -> None:
+    rule = {**COMPILE, "allow_egress": True}
+    env, policy = _policy_env(tmp_path / "denied", [rule])
+    transport = Transport()
+    message = _build(env, _stamped(_chunks(), policy.digest), transport)
+    assert transport.calls == 0, message
+    assert WITHHELD in message, message
+    env, policy = _policy_env(tmp_path / "allowed", [rule], RECALL_EGRESS_ALLOWED="1")
+    transport = Transport()
+    message = _build(env, _stamped(_chunks(), policy.digest), transport)
+    assert transport.calls >= 1, message
+
+
+def test_a_principal_the_rule_does_not_list_is_withheld(tmp_path: Path) -> None:
+    env, policy = _policy_env(tmp_path, [{**COMPILE, "principals": ["local"]}])
+    transport = Transport()
+    message = _build(env, _stamped(_chunks(), policy.digest), transport)
+    assert transport.calls == 0, message
+    assert WITHHELD in message, message
+
+
+def test_the_dry_run_counts_withheld_sources_as_the_build_does(tmp_path: Path) -> None:
+    env, policy = _policy_env(tmp_path, [RETRIEVAL_ONLY])
+    estimate = estimate_compile("t1", _stamped(_chunks(), policy.digest), env)
+    assert "0 source(s) to compile" in estimate, estimate
+    assert WITHHELD in estimate, estimate
+
+
+def test_an_unreadable_policy_builds_nothing_and_never_raises(tmp_path: Path) -> None:
+    env = {**_env(tmp_path), "RECALL_SOURCE_POLICY_FILE": str(tmp_path / "missing.json")}
+    transport = Transport()
+    message = _build(env, _chunks(), transport)
+    assert message.startswith("compiled graph not built"), message
+    assert transport.calls == 0, message

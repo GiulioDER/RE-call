@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import os
 import shutil
 import sqlite3
 import time
@@ -56,6 +57,7 @@ from recall._env import modes_by_tenant
 from recall.compiled_graph.records import prompt_digest
 from recall.embedding_core import Embedder
 from recall.errors import RecallError
+from recall.security_policy import SourceSecurityPolicy, access_context_from_environment, load_source_policy
 from recall.types import Chunk
 
 _log = logging.getLogger("recall.compiled_graph")
@@ -262,6 +264,57 @@ def _skipped_without_offsets(count: int) -> str:
     return f", {count} source(s) skipped because no chunk carries usable character offsets"
 
 
+#: The last policy file read, keyed on its path, mtime and size: a search reads the lineage on
+#: every query, and the policy is part of it.
+_POLICY_MEMO: dict[tuple[str, int, int], SourceSecurityPolicy] = {}
+
+
+def _source_policy(env: Mapping[str, str]) -> SourceSecurityPolicy | None:
+    """The configured source policy, None without one; an unreadable one is ``ArtifactUnconfigured``,
+    which a build reports and a search skips the graph on."""
+    path = env.get("RECALL_SOURCE_POLICY_FILE", "").strip()
+    if not path:
+        return None
+    try:
+        stat = os.stat(path)
+        key = (path, stat.st_mtime_ns, stat.st_size)
+        policy = _POLICY_MEMO.get(key)
+        if policy is None:
+            policy = load_source_policy(dict(env))
+            assert policy is not None
+            _POLICY_MEMO.clear()
+            _POLICY_MEMO[key] = policy
+    except (OSError, ValueError) as exc:
+        raise ArtifactUnconfigured(f"the source policy could not be read: {exc}") from exc
+    return policy
+
+
+def _admitted(chunks: Iterable[Chunk], tenant: str, env: Mapping[str, str]) -> tuple[list[Chunk], int]:
+    """The chunks of the sources the policy admits for purpose ``compile``, and how many sources
+    it withheld. A source is withheld whole when any one of its chunks is refused, a chunk stored
+    under an older policy included: a partial body would give the model anchors over a gap."""
+    policy = _source_policy(env)
+    if policy is None:
+        return list(chunks), 0
+    context = access_context_from_environment(tenant, dict(env), purpose="compile")
+    by_source: dict[str, list[Chunk]] = defaultdict(list)
+    refused: set[str] = set()
+    for chunk in chunks:
+        by_source[chunk.source].append(chunk)
+        if chunk.source not in refused and not policy.allows_stored_chunk(chunk, context):
+            refused.add(chunk.source)
+    admitted = [chunk for source, group in by_source.items() if source not in refused for chunk in group]
+    return admitted, len(refused)
+
+
+def _withheld_by_policy(count: int) -> str:
+    """The clause the build summary and the dry run add for sources the policy withheld; empty
+    when none was."""
+    if not count:
+        return ""
+    return f", {count} source(s) withheld by the source policy for purpose compile"
+
+
 def _sources(chunks: Iterable[Chunk]) -> list[SourceInput]:
     by_source: dict[str, list[Chunk]] = defaultdict(list)
     for chunk in chunks:
@@ -320,7 +373,8 @@ def ensure_compiled_graph(
         config = ProviderConfig.from_env(env)
         budget = Budget.from_env(env)
         base = {key: value for key, value in lineage.items() if key not in ("model", "prompt")}
-        sources = _sources(chunks)
+        admitted, withheld = _admitted(chunks, tenant, env)
+        sources = _sources(admitted)
         record_root(root)
         commit = _committer(folder, all_present)
         artifact, report = build_compiled_graph(
@@ -333,7 +387,10 @@ def ensure_compiled_graph(
             if report.stopped in BACKOFF_STOPS:
                 folder.mkdir(parents=True, exist_ok=True)
                 backoff.write_text(f"a {report.stopped} stop\n", encoding="utf-8")
-            return f"compiled graph not built: stopped on {report.stopped} after {spent}"
+            return (
+                f"compiled graph not built: stopped on {report.stopped} after {spent}"
+                f"{_withheld_by_policy(withheld)}"
+            )
         def publish() -> None:
             published = write_artifact(folder, artifact, owner=owner)
             _prune_superseded(folder, owner, published, serving_binding)
@@ -343,7 +400,8 @@ def ensure_compiled_graph(
         return (
             f"compiled graph built for {lineage['generation']}: {len(artifact.records)} record(s), "
             f"{report.sources_rejected} source(s) rejected"
-            f"{_skipped_without_offsets(report.sources_without_offsets)}, {spent}"
+            f"{_skipped_without_offsets(report.sources_without_offsets)}"
+            f"{_withheld_by_policy(withheld)}, {spent}"
         )
     except (CompiledGraphConfigError, CompiledGraphArtifactError, ValueError, OSError) as exc:
         # The write or promotion that called this has already succeeded; it reports this line.
@@ -546,7 +604,8 @@ def estimate_compile(
     cache = CompileCache(tenant_folder(root, tenant) / CACHE_NAME)
     pending = cached = refused = sources_without_offsets = 0
     worst = 0.0
-    for source in _sources(chunks):
+    admitted, withheld = _admitted(chunks, tenant, env)
+    for source in _sources(admitted):
         anchors = build_source_anchors(source.source, source.body)
         if not anchors:
             if without_offsets(source):
@@ -566,7 +625,7 @@ def estimate_compile(
     return (
         f"compiled graph dry run for tenant {tenant!r}: {pending} source(s) to compile, {cached} cached, "
         f"{refused} refused before (sent again only with --retry-rejected)"
-        f"{_skipped_without_offsets(sources_without_offsets)}; "
+        f"{_skipped_without_offsets(sources_without_offsets)}{_withheld_by_policy(withheld)}; "
         f"worst case USD {worst:.4f} for one attempt each, cap USD {budget.max_usd:.2f}; nothing was sent"
     )
 
