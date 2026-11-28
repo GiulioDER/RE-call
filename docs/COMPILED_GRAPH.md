@@ -67,6 +67,8 @@ A build needs every one of these; there is no default model and no default price
 | `RECALL_COMPILED_GRAPH_BASE_URL` | OpenAI-compatible endpoint, default `https://openrouter.ai/api/v1` |
 | `RECALL_COMPILED_GRAPH_MAX_USD` | USD cap of one build |
 | `RECALL_COMPILED_GRAPH_COST_PER_1K_INPUT`, `_OUTPUT` | the model's prices, which the cap is computed from |
+| `RECALL_COMPILED_GRAPH_RESERVE_EXTRA_INPUT_TOKENS` | input tokens the model bills per call beyond the request, default 0 |
+| `RECALL_COMPILED_GRAPH_RESERVE_OUTPUT_TOKENS` | output tokens reserved per call, default and minimum 2,400 |
 | `RECALL_COMPILED_GRAPH_TIMEOUT` | seconds per request, default 60 |
 
 ## Cost and failure
@@ -74,6 +76,14 @@ A build needs every one of these; there is no default model and no default price
 - **The cap.** Before every attempt, its worst case (one token per request byte, plus the 2,400
   token output cap) must fit what is left of `RECALL_COMPILED_GRAPH_MAX_USD`, or nothing is sent and
   the build stops. A reply that was billed is never sent again.
+- **A model that bills more than the request carries.** A reply billed above its reservation stops
+  the build, because the worst case was then not a bound. Some models always do this:
+  `openai/gpt-6-luna-pro` through OpenRouter billed up to 2,344 prompt tokens beyond the request
+  and up to 3,076 completion tokens against the 2,400 cap (measured 2026-11-27, three sources). For
+  such a model, state its figures in the two `RESERVE` variables: the extra input tokens are added
+  to every reservation and the output tokens replace the 2,400, in the dry run's worst case too.
+  The cache keeps what a stopped build paid for, so
+  raising them and building again resumes where it stopped.
 - **The cache.** Accepted records are cached by provider, model, prompt and source content, so an
   unchanged source is never sent twice and a stopped build resumes where it stopped.
 - **Credit.** A credit or authorization refusal (401, 402, a spending or key limit) stops the build

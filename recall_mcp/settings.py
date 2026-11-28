@@ -296,6 +296,8 @@ ENVIRONMENT_SCHEMA: tuple[EnvironmentSpec, ...] = (
     EnvironmentSpec("RECALL_COMPILED_GRAPH_MAX_USD", "Compiled graph", "USD cap of one compile build; required, a call whose worst case does not fit is not sent"),
     EnvironmentSpec("RECALL_COMPILED_GRAPH_COST_PER_1K_INPUT", "Compiled graph", "USD per 1,000 input tokens of the compile model; required"),
     EnvironmentSpec("RECALL_COMPILED_GRAPH_COST_PER_1K_OUTPUT", "Compiled graph", "USD per 1,000 output tokens of the compile model; required"),
+    EnvironmentSpec("RECALL_COMPILED_GRAPH_RESERVE_EXTRA_INPUT_TOKENS", "Compiled graph", "input tokens the compile model bills per call beyond the request itself, added to each reservation", "0"),
+    EnvironmentSpec("RECALL_COMPILED_GRAPH_RESERVE_OUTPUT_TOKENS", "Compiled graph", "output tokens reserved per call; at least the request's max_tokens (2400), higher for a model that bills reasoning past it", "2400"),
 )
 
 
