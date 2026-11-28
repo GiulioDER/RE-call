@@ -53,7 +53,7 @@ from recall_mcp.models import EvidenceResult, SearchResult
 from recall_agent._descriptions import RECALL_EVIDENCE_DESCRIPTION, RECALL_SEARCH_DESCRIPTION
 from tests.test_lite_calibration import ContentWordEmbedder, _store, _strict
 
-EXPECTED = {"status": "not_checked", "scope": "returned_evidence", "method": None}
+EXPECTED = {"status": "not_checked", "scope": "returned_evidence", "method": None, "model": None}
 
 
 @pytest.fixture
@@ -262,3 +262,25 @@ def test_cca945_every_probe_class_decides_measured(monkeypatch):
                "report": _three_class_report("fit-1")}
     with pytest.raises(EvidenceValidationError, match="disagrees"):
         _coverage_from_dict(payload)
+
+
+@pytest.mark.parametrize("name", ["ELIGIBILITY_NOTE", "search", "evidence"])
+def test_no_judge_verdict_waives_the_per_claim_check(name):
+    """STAKES-001 (CCA run 20261128T104334Z): the per-claim support check holds whatever the
+    opt-in judge says. A judge reads corpus-controlled text, so a wrong or injected `stated` that
+    released the client from checking claims would turn evidence text into a trust bypass.
+
+    Red proof, 2026-11-28, on the remote test host: `cca_checks tautology verify` with
+    `recall/support.py` and `recall_agent/_descriptions.py` restored to their pre-fix content,
+    which said "Unless query_support is stated" and "Unless it is `stated`"; each case failed in
+    the assertion below.
+    """
+    from recall.support import ELIGIBILITY_NOTE
+
+    text = {"ELIGIBILITY_NOTE": ELIGIBILITY_NOTE, "search": RECALL_SEARCH_DESCRIPTION,
+            "evidence": RECALL_EVIDENCE_DESCRIPTION}[name]
+    flat = " ".join(text.split()).lower()
+    assert "unless it is `stated`" not in flat and "unless query_support is stated" not in flat, (
+        "a judge verdict waives the per-claim support check"
+    )
+    assert "whatever" in flat and "before answering" in flat, "the per-claim check is not unconditional"

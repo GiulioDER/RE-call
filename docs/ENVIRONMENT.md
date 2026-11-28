@@ -216,6 +216,22 @@ OPENROUTER_API_KEY=
 #                                                      # `recall setup` registers does not read
 #                                                      # .env: set it in that server's environment.
 #
+# Optional answerability judge for `recall_search`, `recall_evidence` and `recall search`. Off
+# unless RECALL_ANSWERABILITY_JUDGE=1. When on, each search with citable evidence SENDS THE QUERY
+# AND THE FULL TEXT AND SOURCE OF EVERY CITED PASSAGE TO OPENROUTER, a third party (see
+# docs/SECURITY_MODEL.md), in up to three paid calls when replies fail to parse
+# (deepseek/deepseek-v4-pro-0813, about USD 0.0023 and 1.4 s median per query as measured on
+# 2026-11-28). query_support reports its verdict: stated or not_stated, or failed or unparsed when
+# it gave none. It annotates only: verdicts, abstention and citable evidence are unchanged. A
+# search waits at most 60 s for a verdict over all attempts, then reports failed; a call still
+# running then finishes in the background, holding one of the 4 slots judge calls may use at once
+# per process, and a search that finds all 4 busy reports failed. Needs OPENROUTER_API_KEY; the
+# server refuses to start when the judge is on without it.
+# RECALL_ANSWERABILITY_JUDGE=0
+# RECALL_ANSWERABILITY_JUDGE_MAX_CALLS_PER_MIN=30      # ceiling on PAID judge calls, per PROCESS,
+#                                                      # in any 60 second span; over it a search
+#                                                      # reports failed. `off` removes it, never 0.
+#
 # Optional answer provider for `recall_reasoning_query`. Disabled unless
 # RECALL_REASONING_ANSWER_ENABLED=1; with it unset the tool abstains with
 # refusal_reason="no_answer_provider", which is the shipped default. Provider failures are

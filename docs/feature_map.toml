@@ -127,7 +127,7 @@ mcp = ["recall_search", "recall_evidence"]
 modules = [
     "recall/retriever.py", "recall/rerank.py", "recall/guards.py", "recall/trust.py",
     "recall/trust_gate.py", "recall/trust_policy.py", "recall/trust_verdicts.py", "recall/evidence.py",
-    "recall/paged_evidence.py", "recall/explanations.py", "recall/support.py", "recall/unknown_terms.py",
+    "recall/paged_evidence.py", "recall/explanations.py", "recall/support.py", "recall/answerability.py", "recall/unknown_terms.py",
     "recall/scope.py", "recall/scope_prior.py", "recall/retrieval_plan.py", "recall/query_class.py",
     "recall/query_anchor_admission.py", "recall/profiles.py", "recall/retrieval_slo.py",
     "recall/federation.py", "recall/sqlite_rules.py", "recall/sqlite_planning.py", "recall/cli_commands/index_search.py",

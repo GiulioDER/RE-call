@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from dataclasses import asdict
 from pathlib import Path
 from typing import cast
 
+from recall.answerability import Transport, judged, judged_bundle, resolve_answerability_judge
 from recall.cache import default_cache
 from recall.context import context_policy_for_profile
 from recall.embeddings import embedding_profile_id
@@ -346,7 +348,7 @@ def _print_localized_result(result: TrustedResult, locale: str) -> None:
 
 def _print_evidence(
     result: TrustedResult, max_items: int, *, document_mode: bool = False,
-    sqlite_snapshot: Path | None = None,
+    sqlite_snapshot: Path | None = None, judge: Transport | None = None,
 ) -> None:
     """Print the generator-neutral evidence bundle and the exact prompt it renders to.
 
@@ -391,6 +393,9 @@ def _print_evidence(
         except (OSError, SQLiteError) as exc:
             raise SystemExit(f"recall search: SQLite snapshot verification could not complete: {exc}") from exc
         payload["snapshot_rule_checks"] = [asdict(check) for check in checks]
+    # Judged last, on exactly the items printed: the cap, document selection and snapshot rule
+    # checks all change which passages the bundle holds.
+    bundle = judged_bundle(bundle, result.query, judge)
     render = render_evidence_prompt if sqlite_snapshot is None else render_snapshot_evidence_prompt
     system, user = render(bundle)
     payload.update(bundle=asdict(bundle), prompt={"system": system, "user": user})
@@ -972,12 +977,17 @@ def _cmd_search(args: argparse.Namespace) -> None:
             )
         except TrustRefusal as exc:
             raise SystemExit(refusal_message(exc)) from exc
+        judge = resolve_answerability_judge(os.environ)
         if sqlite_snapshot is not None:
             _print_evidence(
                 result, max_items=args.k, document_mode=args.expand_documents,
-                sqlite_snapshot=sqlite_snapshot,
+                sqlite_snapshot=sqlite_snapshot, judge=judge,
             )
             return
+        # The listing's verdict covers what a retrieval bundle of `-k` cites; `--evidence` prints
+        # that same bundle, except in document mode, which selects other passages and is judged
+        # again on them.
+        result = judged(result, max(1, args.k), judge)
         print(f"  route: {route.describe()}")
         _print_result(result)
         if args.locale:
@@ -987,6 +997,7 @@ def _cmd_search(args: argparse.Namespace) -> None:
                 result,
                 max_items=args.k,
                 document_mode=args.expand_documents,
+                judge=judge if args.expand_documents else None,
             )
 
 

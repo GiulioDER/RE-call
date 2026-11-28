@@ -27,6 +27,7 @@ from recall.related import RelatedEvidenceResult, trusted_related
 from recall.rerank import COREB_CODE_RERANKER_MODEL
 from recall.store import PgVectorStore
 from recall.timing import TimedEmbedder
+from recall.answerability import judged, judged_bundle, resolve_answerability_judge
 from recall.support import ELIGIBILITY_NOTE
 from recall.trust import decision_state_for, trusted_search
 from recall.trust_policy import TrustPolicy, TrustRefusal
@@ -363,16 +364,25 @@ def _retrieve_trusted(
 
 
 def _cost_surface(
-    retrieval: _Retrieval, assembly_started: float
+    retrieval: _Retrieval, assembly_started: float, judge_ms: float | None = None
 ) -> tuple[dict[str, float], float, bool]:
-    """Return retrieval stage timings, total latency, and the budget verdict."""
+    """Return retrieval stage timings, total latency, and the budget verdict.
+
+    `judge_ms` is the opt-in answerability judge's time inside evidence assembly. It is a hosted
+    call, not retrieval work: it gets its own stage and is left out of the retrieval budget.
+    """
     profile = retrieval.profile
+    now = time.perf_counter()
     stage_ms = dict(retrieval.result.diagnostics.stage_ms)
     stage_ms["admission_wait"] = round(retrieval.admission_wait_ms, 3)
-    stage_ms["evidence_assembly"] = round((time.perf_counter() - assembly_started) * 1000.0, 3)
-    elapsed_ms = (time.perf_counter() - retrieval.request_started) * 1000.0
+    assembly_ms = (now - assembly_started) * 1000.0
+    if judge_ms is not None:
+        stage_ms["answerability_judge"] = round(judge_ms, 3)
+        assembly_ms -= judge_ms
+    stage_ms["evidence_assembly"] = round(assembly_ms, 3)
+    elapsed_ms = (now - retrieval.request_started) * 1000.0
     total_ms = round(elapsed_ms, 3)
-    served_ms = elapsed_ms - retrieval.admission_wait_ms
+    served_ms = elapsed_ms - retrieval.admission_wait_ms - (judge_ms or 0.0)
     budget = profile.enforced_budget_ms
     budget_exceeded = budget is not None and served_ms > budget
     for stage, value in stage_ms.items():
@@ -551,6 +561,11 @@ def search_evidence_enabled(env: Mapping[str, str]) -> bool:
     return env.get("RECALL_SEARCH_EVIDENCE", "on").strip().lower() not in {"off", "0", "false", "no"}
 
 
+def _search_evidence_limit(effective_k: int) -> int:
+    """How many items `recall_search` cites, and so how many the answerability judge reads."""
+    return max(1, min(effective_k, MAX_SEARCH_K))
+
+
 def _search_evidence(result: TrustedResult, effective_k: int) -> SearchEvidence:
     """The citable part of `recall_evidence`'s bundle, from the trusted result search already has.
 
@@ -560,7 +575,8 @@ def _search_evidence(result: TrustedResult, effective_k: int) -> SearchEvidence:
     and no explicit `k`, retrieves deeper into paged documents. No cards are registered here:
     that is a write, and search is read only.
     """
-    bundle = build_evidence_bundle(result, EvidencePolicy(max_items=max(1, min(effective_k, MAX_SEARCH_K))))
+    policy = EvidencePolicy(max_items=_search_evidence_limit(effective_k))
+    bundle = build_evidence_bundle(result, policy)
     return SearchEvidence(decision=bundle.decision, reason_code=bundle.reason_code,
                           citable=[item.chunk_id for item in bundle.items])
 
@@ -702,7 +718,9 @@ def search_memory(
     _retrieve_trusted_fn: Callable[..., _Retrieval] = _retrieve_trusted,
     _search_hit_model_fn: Callable[..., SearchHit] = _search_hit_model,
     _search_advice_fn: Callable[[TrustedResult, Sequence[SearchHit], bool], str] = _search_advice,
-    _cost_surface_fn: Callable[[_Retrieval, float], tuple[dict[str, float], float, bool]] = _cost_surface,
+    _cost_surface_fn: Callable[
+        [_Retrieval, float, float | None], tuple[dict[str, float], float, bool]
+    ] = _cost_surface,
     trusted_related_fn: Callable[..., RelatedEvidenceResult] = trusted_related,
 ) -> SearchResult:
     """Run a trust-evaluated hybrid search and format it into actionable self-recall guidance.
@@ -742,6 +760,10 @@ def search_memory(
     # the library-authored advice. It is small, and that is the point — a stage nobody measures
     # is a stage nobody can rule out when a p95 moves.
     assembly_started = time.perf_counter()
+    judge = resolve_answerability_judge(values)
+    judge_started = time.perf_counter()
+    result = judged(result, _search_evidence_limit(retrieval.effective_k), judge)
+    judge_ms = None if judge is None else (time.perf_counter() - judge_started) * 1000.0
     hits = [_search_hit_model_fn(hit, include_scores=True) for hit in result.hits]
     related_items: list[SearchHit] = []
     related_diagnostics: list[str] = []
@@ -781,7 +803,7 @@ def search_memory(
     if historical is not None:
         advice += HISTORICAL_RECORD_NOTE
 
-    stage_ms, total_ms, budget_exceeded = _cost_surface_fn(retrieval, assembly_started)
+    stage_ms, total_ms, budget_exceeded = _cost_surface_fn(retrieval, assembly_started, judge_ms)
     explanation = None
     if explain:
         explanation = RetrievalExplanation(
@@ -867,7 +889,9 @@ def evidence_memory(
     _retrieve_trusted_fn: Callable[..., _Retrieval] = _retrieve_trusted,
     _evidence_item_model_fn: Callable[[EvidenceItem, set[str]], EvidenceItemModel] = _evidence_item_model,
     _evidence_advice_fn: Callable[[EvidenceBundle], str] = _evidence_advice,
-    _cost_surface_fn: Callable[[_Retrieval, float], tuple[dict[str, float], float, bool]] = _cost_surface,
+    _cost_surface_fn: Callable[
+        [_Retrieval, float, float | None], tuple[dict[str, float], float, bool]
+    ] = _cost_surface,
     _trusted_evidence_item_model_fn: Callable[[TrustedHit], EvidenceItemModel] = _trusted_evidence_item_model,
     _evidence_card_model_fn: Callable[[EvidenceCard], EvidenceCardModel] = _evidence_card_model,
     trusted_related_fn: Callable[..., RelatedEvidenceResult] = trusted_related,
@@ -954,11 +978,15 @@ def evidence_memory(
         except ValueError as exc:
             related_diagnostics.append(f"related_refused:{type(exc).__name__}")
     bundle = build_evidence_bundle(result, EvidencePolicy(max_items=limit))
+    judge = resolve_answerability_judge(values)
+    judge_started = time.perf_counter()
+    bundle = judged_bundle(bundle, query, judge)
+    judge_ms = None if judge is None else (time.perf_counter() - judge_started) * 1000.0
     register_evidence_cards_fn(bundle.cards, store=store)
     system, user = render_evidence_prompt(bundle)
     items = [_evidence_item_model_fn(item, related_ids) for item in bundle.items]
     advice = _evidence_advice_fn(bundle) + ELIGIBILITY_NOTE
-    stage_ms, total_ms, budget_exceeded = _cost_surface_fn(retrieval, assembly_started)
+    stage_ms, total_ms, budget_exceeded = _cost_surface_fn(retrieval, assembly_started, judge_ms)
     explanation = None
     if explain:
         explanation = RetrievalExplanation(

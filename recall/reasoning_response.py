@@ -56,6 +56,7 @@ from recall.support import (
     CalibrationCoverage,
     CoverageStatus,
     QuerySupport,
+    SupportMethod,
     SupportScope,
     SupportStatus,
     coverage_status,
@@ -437,9 +438,14 @@ def _query_support_from_dict(payload: Mapping[str, object]) -> QuerySupport:
     scope = _checked_literal(
         payload.get("scope", "returned_evidence"), get_args(SupportScope), "query_support.scope",
     )
-    if payload.get("method") is not None:
-        raise EvidenceValidationError("query_support.method must be null")
-    return QuerySupport(status=status, scope=scope)
+    method = payload.get("method")
+    if method is not None:
+        method = _checked_literal(method, get_args(SupportMethod), "query_support.method")
+    model = _optional_str(payload.get("model"))
+    try:
+        return QuerySupport(status=status, scope=scope, method=method, model=model)
+    except ValueError as exc:
+        raise EvidenceValidationError(str(exc)) from None
 
 
 def _coverage_from_dict(payload: Mapping[str, object]) -> CalibrationCoverage:

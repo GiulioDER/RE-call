@@ -236,6 +236,12 @@ a caller. Private media additionally requires a non empty authenticated principa
 public media use their documented policy boundaries. It does not share vectors, calibration,
 or trust state with `memory`, `re-call-code-gen`, or `re-call-docs`.
 
+The opt-in answerability judge (`recall.answerability`, `RECALL_ANSWERABILITY_JUDGE=1`) is a
+third. On every `recall_search`, `recall_evidence` and `recall search` with citable evidence it
+sends the query and the chunk id, source label and full text of each passage the response cites to
+OpenRouter (`OPENROUTER_API_KEY`), which routes it to the judge model with no provider pin. It is
+process wide, for every tenant the process serves. Off by default.
+
 For a sensitive corpus, use `recall.embeddings.FastEmbedEmbedder` instead: it runs the embedding
 model locally (`pip install "recall-rag[fastembed]"`) and never makes a network call with
 chunk text. This is the default. The MCP server's lifespan (`recall_mcp/server_lifespan.py`) now accepts the same
