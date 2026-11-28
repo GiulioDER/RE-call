@@ -220,13 +220,18 @@ def _prune_superseded(folder: Path, owner: str, keep: Path, serving: Mapping[str
 def serving_lineage(
     tenant: str, binding: Mapping[str, str], embedder: Embedder, env: Mapping[str, str]
 ) -> dict[str, str] | None:
-    """The lineage a search of this corpus loads; None without a generation or a model."""
+    """The lineage a search of this corpus loads; None without a generation or a model.
+
+    With a source policy configured it names the policy's digest, so a policy change builds a new
+    artifact and a search under another policy loads none; an unreadable policy raises
+    ``ArtifactUnconfigured``.
+    """
     from recall.embeddings import embedding_profile_id
 
     generation, model = binding.get("generation_id"), env.get(f"{ENV_PREFIX}_MODEL", "").strip()
     if not generation or not model:
         return None
-    return {
+    lineage = {
         "tenant": tenant,
         "generation": str(generation),
         "corpus": str(binding.get("corpus_fingerprint", "")),
@@ -234,6 +239,10 @@ def serving_lineage(
         "model": model,
         "prompt": prompt_digest(),
     }
+    policy = _source_policy(env)
+    if policy is not None:
+        lineage["policy"] = policy.digest
+    return lineage
 
 
 def body_from_chunks(chunks: Iterable[Chunk]) -> str:

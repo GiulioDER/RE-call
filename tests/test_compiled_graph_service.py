@@ -75,6 +75,12 @@ same assertions:
   and the dry run test fail.
 - ``test_an_unreadable_policy_builds_nothing_and_never_raises`` failed before the fix with the
   artifact built (the missing file was never read).
+- ``test_a_policy_change_rebuilds_the_artifact``: before the policy digest joined the lineage, and
+  with ``lineage["policy"] = policy.digest`` mutated to ``pass``, it fails on the second build
+  returning ``compiled graph in force for g1``.
+- ``test_the_policy_is_parsed_once_per_file_version``: before the fix it failed on ``0 == 1`` (the
+  lineage never read the policy); with the memo lookup mutated to ``policy = None`` it fails on
+  ``2 == 1``. ``test_without_a_policy_the_lineage_is_unchanged`` is the control and passed both.
 """
 
 from __future__ import annotations
@@ -87,6 +93,7 @@ import pytest
 
 from recall.compiled_graph.anchors import build_source_anchors
 from recall.compiled_graph.artifact import ArtifactMissing, load_artifact
+from recall.compiled_graph import service
 from recall.compiled_graph.service import (
     body_from_chunks,
     compiled_graph_mode,
@@ -517,3 +524,43 @@ def test_an_unreadable_policy_builds_nothing_and_never_raises(tmp_path: Path) ->
     message = _build(env, _chunks(), transport)
     assert message.startswith("compiled graph not built"), message
     assert transport.calls == 0, message
+
+
+def test_without_a_policy_the_lineage_is_unchanged(tmp_path: Path) -> None:
+    lineage = serving_lineage("t1", BINDING, FakeEmbedder(), _env(tmp_path))
+    assert lineage is not None
+    assert "policy" not in lineage
+
+
+def test_a_policy_change_rebuilds_the_artifact(tmp_path: Path) -> None:
+    env, first = _policy_env(tmp_path, [COMPILE])
+    assert _build(env, _stamped(_chunks(), first.digest), Transport()).startswith("compiled graph built for ")
+    before = serving_lineage("t1", BINDING, FakeEmbedder(), env)
+    other = {**RETRIEVAL_ONLY, "prefix": "b.md"}
+    _, second = _policy_env(tmp_path, [COMPILE, other])
+    assert second.digest != first.digest
+    message = _build(env, _stamped(_chunks(), second.digest), Transport())
+    after = serving_lineage("t1", BINDING, FakeEmbedder(), env)
+    assert message.startswith("compiled graph built for "), message
+    assert after is not None and after != before
+    assert after["policy"] == second.digest
+    load_artifact(tenant_folder(tmp_path / "cg", "t1"), after)
+
+
+def test_the_policy_is_parsed_once_per_file_version(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    env, _ = _policy_env(tmp_path, [COMPILE])
+    monkeypatch.setattr(service, "_POLICY_MEMO", {})
+    reads: list[object] = []
+    real = service.load_source_policy
+
+    def counting(values: dict[str, str] | None = None) -> SourceSecurityPolicy | None:
+        reads.append(values)
+        return real(values)
+
+    monkeypatch.setattr(service, "load_source_policy", counting)
+    serving_lineage("t1", BINDING, FakeEmbedder(), env)
+    serving_lineage("t1", BINDING, FakeEmbedder(), env)
+    assert len(reads) == 1
+    _policy_env(tmp_path, [COMPILE, {**RETRIEVAL_ONLY, "prefix": "b.md"}])
+    serving_lineage("t1", BINDING, FakeEmbedder(), env)
+    assert len(reads) == 2
