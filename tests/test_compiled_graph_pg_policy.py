@@ -4,11 +4,12 @@ Invariant: a generation built under a source policy stamps its digest on every c
 compiled graph built for that generation before promotion (``ensure_for_generation``) sends only
 the sources whose rule lists ``compile``. The provider is a fake transport.
 
-Red proof is NOT recorded yet. The mutation to run is ``recall.compiled_graph.service._admitted``
-returning every chunk, which should fail on the withheld-count assertion. The test needs a
-database, and neither the author's workstation (which runs no tests) nor the remote test host
-(which has none) could run it on 2026-11-28; the Lite twin in ``tests/test_compiled_graph_lite_hooks.py`` carries the
-same invariant with its red proof recorded.
+Red proof, recorded 2026-11-28 against a throwaway PostgreSQL container on the remote test host,
+at commit 7a8525fdb: ``tests/test_compiled_graph_pg_policy.py::test_a_generation_compiles_only_policy_admitted_sources``
+passed; with ``recall.compiled_graph.service._admitted`` mutated to return every chunk
+(``if policy is None:`` made ``if True:``) it failed on the withheld-count assertion, the build
+reporting ``2 record(s), 0 source(s) rejected, 2 call(s)``: both sources were sent. Restored, it
+passed again.
 """
 
 from __future__ import annotations
