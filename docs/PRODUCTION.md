@@ -309,3 +309,9 @@ matching accepts `name`, `name.md`, `[name]` and `[[name]]`, so previously-dangl
 applying and memories served as `ok` can correctly come back `superseded`.
 
 0.5.2 (LOCOMO benchmark) and 0.5.3 (LangChain / LlamaIndex retrievers) are purely additive.
+
+## Native Jira related evidence
+
+For a dedicated Jira connector, `RECALL_JIRA_LINK_FOLLOW=on` enables one-hop native link expansion in both search and evidence. Supply `RECALL_JIRA_NATIVE_LINKS_FILE` as a local, operator-managed JSON object with `site`, `tenant_id`, `generation_id`, and `links`. Map each seed issue key to its Jira-native destination keys. Generate a new export when the certified generation changes.
+
+The route uses up to eight trusted seeds and four independently authorized destinations. It sends bounded text and one linking seed title to Voyage `rerank-3` only when the caller is authorized for egress. Ranked destinations appear in `related_items`. Scoped and explicit Jira ID queries use their established lookup path. A missing export, missing or restricted target, or unavailable Voyage service leaves primary retrieval intact.

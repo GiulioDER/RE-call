@@ -48,6 +48,7 @@ from recall_mcp.models import (
     SearchResult,
 )
 from recall_mcp.evidence_cards import register_evidence_cards
+from recall_mcp.jira_native import native_jira_related
 from recall.decision_ledger import DecisionLedger
 from recall.observability import METRICS, get_logger
 from recall.paged_evidence import PagedDepthDecision, decide_depth, paged_evidence_enabled
@@ -100,6 +101,7 @@ class _Retrieval:
     #: False when the first served hit came from another federation leg: related expansion looks
     #: the seed up in the serving store, which does not hold that leg's chunks.
     related_seed_in_store: bool = True
+    native_jira_items: tuple[TrustedHit, ...] = ()
 
 
 class _ServedDepthLedger(DecisionLedger):
@@ -257,6 +259,7 @@ def _retrieve_trusted(
     request_started = time.perf_counter()
     admission_wait_ms = 0.0
     candidate_traces: list[tuple[RetrievalCandidateTrace, TrustedResult, Calibration]] = []
+    native_jira_items: tuple[TrustedHit, ...] = ()
 
     def capture_trace(
         raw: RetrievalCandidateTrace,
@@ -333,6 +336,16 @@ def _retrieve_trusted(
                     or any(hit.chunk.source != jira_source for hit in result.hits)
                 ):
                     result = retrieve(source)
+                if (
+                    values.get("RECALL_JIRA_LINK_FOLLOW", "").strip().lower() == "on"
+                    and source is None and security_policy is not None and access_context is not None
+                    and pool_k is None and effective_pre_trust_transform is None and query_vector_callback is None
+                    and not capture_candidate_trace and not _JIRA_ISSUE_KEY.search(query) and "://" not in query
+                ):
+                    linked, tokens = native_jira_related(store, result, security_policy, access_context, values)
+                    native_jira_items = tuple(linked)
+                    if tokens:
+                        _log.info("native Jira Voyage usage tokens=%d", tokens)
     except RetrievalOverloaded as exc:
         METRICS.increment(
             "recall_retrieval_rejected_total", profile=profile.name, reason=exc.reason
@@ -359,6 +372,7 @@ def _retrieve_trusted(
         query_vector=timed.last_query_vector,
         candidate_trace=candidate_traces[0] if candidate_traces else None,
         paged_depth=depth_decision,
+        native_jira_items=native_jira_items,
     )
 
 
@@ -768,6 +782,11 @@ def search_memory(
             related_diagnostics.append(f"rejected_related:{related_result.rejected_count}")
         except ValueError as exc:
             related_diagnostics.append(f"related_refused:{type(exc).__name__}")
+    existing_related = {item.chunk_id for item in related_items}
+    related_items.extend(
+        _search_hit_model_fn(item, include_scores=False)
+        for item in retrieval.native_jira_items if item.chunk.id not in existing_related
+    )
     advice = _search_advice_fn(result, hits, reasoning_available) + ELIGIBILITY_NOTE
     evidence_enabled = search_evidence_enabled(values)
     evidence = _search_evidence(result, retrieval.effective_k) if evidence_enabled else None
@@ -993,6 +1012,11 @@ def evidence_memory(
     related_items = []
     if related_result is not None:
         related_items = [_trusted_evidence_item_model_fn(item) for item in related_result.items]
+    existing_related = {item.chunk_id for item in related_items}
+    related_items.extend(
+        _trusted_evidence_item_model_fn(item)
+        for item in retrieval.native_jira_items if item.chunk.id not in existing_related
+    )
     return EvidenceResult(
         query=query,
         decision_state=bundle.decision_state,

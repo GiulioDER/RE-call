@@ -540,7 +540,7 @@ source_modules = [
     "recall_mcp.config_report", "recall_mcp.desktop_ingest", "recall_mcp.evidence_cards",
     "recall_mcp.factories", "recall_mcp.federation_adapter", "recall_mcp.generation_admin",
     "recall_mcp.graph_expansion", "recall_mcp.graph_first_api", "recall_mcp.graph_projection",
-    "recall_mcp.indexing", "recall_mcp.lifecycle", "recall_mcp.limits", "recall_mcp.lite_refresh",
+    "recall_mcp.indexing", "recall_mcp.jira_native", "recall_mcp.lifecycle", "recall_mcp.limits", "recall_mcp.lite_refresh",
     "recall_mcp.models", "recall_mcp.oidc", "recall_mcp.provenance",
     "recall_mcp.query_construction_api", "recall_mcp.reasoning_admin", "recall_mcp.reasoning_api",
     "recall_mcp.reasoning_common", "recall_mcp.reasoning_diagnostics",
