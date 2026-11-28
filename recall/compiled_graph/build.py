@@ -26,7 +26,7 @@ from recall.compiled_graph.anchors import (
 from recall.compiled_graph.artifact import ArtifactRecord, CompiledGraphArtifact
 from recall.compiled_graph.budget import Budget
 from recall.compiled_graph.cache import CompileCache, cache_key
-from recall.compiled_graph.promotion import record_edges
+from recall.compiled_graph.promotion import placements, record_edges
 from recall.compiled_graph.provider import (
     BudgetExhausted,
     CreditStop,
@@ -74,7 +74,8 @@ def without_offsets(source: SourceInput) -> bool:
     """True when ``source`` has chunks but its body is empty because no chunk carries usable
     character offsets. Judged from the body ``body_from_chunks`` built, so the count follows the
     rule that skipped the source. Every indexing path (a Lite write, ``recall index`` and a
-    generation build) records offsets only for Markdown sources."""
+    generation build) records ``text_start`` and ``text_end`` only for Markdown sources; a
+    generation build's ``code`` chunker records ``text_spans`` instead."""
     return bool(source.chunks) and not source.body
 
 
@@ -190,7 +191,7 @@ def build_compiled_graph(
                 continue
         if records:
             report.edgeless_chunks += sum(
-                1 for chunk in source.chunks if chunk.metadata.get("text_start") is None
+                1 for chunk in source.chunks if not placements(chunk)
             )
         for record in records:
             accepted.append((source, record))

@@ -96,9 +96,9 @@ def _validate_request(chunker: object, max_chars: object, overlap: object) -> No
     `max_chars=True` was accepted and recorded as `True` while the effective size was 1.
 
     `max_chars < 1` matters because it fails differently on the two paths, which is why neither
-    caught it. `chunk_code(text, max_chars=0)` returns the whole text as a SINGLE chunk, since it
-    reaches `_pack` with `hard_split=False` and never meets `recall.index`'s own `max_chars < 1`
-    guard, whose purpose is to stop silent embedder truncation.
+    caught it. `chunk_code(text, max_chars=0)` returns each block as its own chunk at full size,
+    since it keeps an oversized block whole (`recall.index._pack_groups`) and never meets
+    `recall.index`'s own `max_chars < 1` guard, whose purpose is to stop silent embedder truncation.
 
     An overlap ABOVE the clamp is not refused here, because it is not an error: it is recorded
     correctly instead. See `effective_overlap`.

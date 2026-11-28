@@ -7,6 +7,7 @@ import stat as stat_module
 from collections.abc import Callable, Iterable, Mapping, Set as AbstractSet
 from dataclasses import dataclass, replace
 from fnmatch import fnmatch
+from itertools import accumulate
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal
 from uuid import uuid4
@@ -48,7 +49,7 @@ from recall.records import admit_record
 from recall.sparse import SparseEncoderProtocol, store_sparse_vectors
 from recall.store import PgVectorStore
 from recall.security_policy import AccessContext, SourceRule, SourceSecurityPolicy
-from recall.types import Chunk
+from recall.types import TEXT_SPANS_KEY, Chunk
 from recall.errors import RecallError
 
 DEFAULT_MAX_CHARS = 800  # target chunk size in characters; paragraphs are packed up to this
@@ -279,35 +280,42 @@ def _split_oversized(block: str, max_chars: int, overlap: int) -> list[str]:
     return [p for p in (p.strip() for p in pieces) if p]
 
 
-def _pack(
-    blocks: list[str], max_chars: int, hard_split: bool = False, overlap: int = DEFAULT_OVERLAP_CHARS
-) -> list[str]:
+_BLOCK_SEP = "\n\n"
+
+
+def _pack_groups(blocks: list[str], max_chars: int) -> list[list[int]]:
+    """Indices of ``blocks``, greedily grouped into chunks of at most max_chars once joined by
+    `_BLOCK_SEP`. A block larger than max_chars on its own is kept whole in a group of one."""
+    groups: list[list[int]] = []
+    size = 0
+    for index, b in enumerate(blocks):
+        if groups and size + len(_BLOCK_SEP) + len(b) <= max_chars:
+            groups[-1].append(index)
+            size += len(_BLOCK_SEP) + len(b)
+        else:
+            groups.append([index])
+            size = len(b)
+    return groups
+
+
+def _pack(blocks: list[str], max_chars: int, overlap: int = DEFAULT_OVERLAP_CHARS) -> list[str]:
     """Greedily pack pre-split blocks into chunks no larger than max_chars.
 
-    Blocks are kept whole when they fit. When ``hard_split`` is set, a block that is itself larger
-    than max_chars is force-split (with overlap) before packing, so no single chunk can exceed the
-    cap; without it an oversized block is preserved intact (the code chunker keeps functions whole).
+    Blocks are kept whole when they fit. A block that is itself larger than max_chars is
+    force-split (with overlap) before packing, so no single chunk can exceed the cap.
     """
     prepared: list[str] = []
     for b in blocks:
         b = b.strip()
         if not b:
             continue
-        if hard_split and len(b) > max_chars:
+        if len(b) > max_chars:
             prepared.extend(_split_oversized(b, max_chars, overlap))
         else:
             prepared.append(b)
-    chunks: list[str] = []
-    buf = ""
-    for b in prepared:
-        if buf and len(buf) + len(b) + 2 > max_chars:
-            chunks.append(buf)
-            buf = b
-        else:
-            buf = f"{buf}\n\n{b}" if buf else b
-    if buf:
-        chunks.append(buf)
-    return chunks
+    return [
+        _BLOCK_SEP.join(prepared[i] for i in group) for group in _pack_groups(prepared, max_chars)
+    ]
 
 
 def chunk_text(
@@ -317,7 +325,7 @@ def chunk_text(
 
     A paragraph longer than max_chars on its own is force-split with overlap so it is never
     handed to the embedder oversized (which would truncate it silently)."""
-    return _pack(text.split("\n\n"), max_chars, hard_split=True, overlap=overlap)
+    return _pack(text.split("\n\n"), max_chars, overlap=overlap)
 
 
 def chunk_code(text: str, max_chars: int = DEFAULT_MAX_CHARS) -> list[str]:
@@ -328,20 +336,44 @@ def chunk_code(text: str, max_chars: int = DEFAULT_MAX_CHARS) -> list[str]:
     Module preamble (imports, constants) forms the first block. Blocks are then packed up to
     max_chars. Better retrieval than blank-line packing on code, without a language-specific parser.
     """
-    blocks: list[str] = []
+    return [chunk for chunk, _ in _code_chunks_with_spans(text, max_chars)]
+
+
+def _code_chunks_with_spans(text: str, max_chars: int) -> list[tuple[str, list[list[int]]]]:
+    """`chunk_code`'s chunks, each with its `TEXT_SPANS_KEY` entries over ``text``.
+
+    Each block is stripped, an empty one dropped, and the rest grouped by `_pack_groups`, so an
+    oversized block (a long function) is kept whole rather than force-split.
+    """
+    blocks: list[tuple[int, str]] = []
     cur: list[str] = []
+    cur_start = position = 0
     for line in text.split("\n"):
         starts_block = line[:1] not in (" ", "\t") and (
             line.startswith(("def ", "class ", "@", "async def "))
         )
         if cur and starts_block:
-            blocks.append("\n".join(cur))
-            cur = [line]
+            blocks.append((cur_start, "\n".join(cur)))
+            cur, cur_start = [line], position
         else:
             cur.append(line)
+        position += len(line) + 1
     if cur:
-        blocks.append("\n".join(cur))
-    return _pack(blocks, max_chars)
+        blocks.append((cur_start, "\n".join(cur)))
+    kept = [
+        (start + len(block) - len(block.lstrip()), block.strip())
+        for start, block in blocks
+        if block.strip()
+    ]
+    chunks: list[tuple[str, list[list[int]]]] = []
+    for group in _pack_groups([text for _, text in kept], max_chars):
+        spans: list[list[int]] = []
+        offset = 0
+        for at, piece in (kept[i] for i in group):
+            spans.append([at, at + len(piece), offset])
+            offset += len(piece) + len(_BLOCK_SEP)
+        chunks.append((_BLOCK_SEP.join(piece for _, piece in (kept[i] for i in group)), spans))
+    return chunks
 
 
 #: The version recorded in the code chunker's `ChunkerIdentity`. Version 3 preserves the original
@@ -350,7 +382,8 @@ def chunk_code(text: str, max_chars: int = DEFAULT_MAX_CHARS) -> list[str]:
 #: a Python file splits on the symbols `ast` reports and every chunk carries a `code_anchor`. The
 #: identity is part of the pipeline fingerprint and generation reuse is keyed on that, so raising
 #: this makes the next build of every code tenant re-chunk every source. Text tenants are untouched.
-CODE_CHUNKER_VERSION = 3
+#: Version 4 records `recall.types.TEXT_SPANS_KEY` on every chunk, with the chunk text unchanged.
+CODE_CHUNKER_VERSION = 4
 #: The chunk metadata key holding a Python chunk's anchor, `{"repo", "file", "symbol", "code_sha"}`:
 #: the triple a `recall_record` anchor carries, plus the repository, so a record joins to the
 #: current code by equality (`docs/AUDIT_MEMORY_DESIGN.md`, "Code join").
@@ -361,24 +394,49 @@ def _code_anchor(repo: str | None, file: str, symbol: str | None, sha: str) -> d
     return {"repo": repo, "file": file, "symbol": symbol, "code_sha": sha}
 
 
-def _pack_lines(owned: list[tuple[int, str]], max_chars: int) -> list[tuple[int, str]]:
+_LINE_SEP = "\n"
+
+
+def _line_spans(lines: list[tuple[int, str]], starts: list[int]) -> list[list[int]]:
+    """`TEXT_SPANS_KEY` entries for lines joined by `_LINE_SEP`: one per run of consecutive line
+    indices, since a run is a slice of the text whose line ``i`` begins at ``starts[i]``."""
+    spans: list[list[int]] = []
+    previous: int | None = None
+    for index, line in lines:
+        end = starts[index] + len(line)
+        if previous is not None and index == previous + 1:
+            spans[-1][1] = end
+        else:
+            offset = spans[-1][2] + spans[-1][1] - spans[-1][0] + len(_LINE_SEP) if spans else 0
+            spans.append([starts[index], end, offset])
+        previous = index
+    return spans
+
+
+def _pack_lines(
+    owned: list[tuple[int, str]], max_chars: int, starts: list[int]
+) -> list[tuple[int, str, list[list[int]]]]:
     """One symbol's lines, as pieces of at most max_chars that cut only between lines.
 
     `owned` is `(line index, line)` in source order. A single line longer than the cap is
     force-split on whitespace, as `chunk_text` does, because exceeding the cap means the embedder
     truncates the tail silently. Blank lines never open a piece and never repeat, so the gaps left
     where another symbol's lines were taken out read as one blank line. Returns
-    `(first line index, piece)`.
+    `(first line index, piece, spans)`, the spans over the text whose line ``i`` begins at
+    ``starts[i]``.
     """
-    pieces: list[tuple[int, str]] = []
+    pieces: list[tuple[int, str, list[list[int]]]] = []
     buf: list[tuple[int, str]] = []
     size = 0
 
     def flush() -> None:
         nonlocal size
-        text = "\n".join(line for _, line in buf).strip("\n")
-        if text:
-            pieces.append((buf[0][0], text))
+        # A blank line never opens a piece, so only trailing ones are dropped from it.
+        while buf and not buf[-1][1]:
+            buf.pop()
+        if buf:
+            text = _LINE_SEP.join(line for _, line in buf)
+            pieces.append((buf[0][0], text, _line_spans(buf, starts)))
         buf.clear()
         size = 0
 
@@ -387,11 +445,16 @@ def _pack_lines(owned: list[tuple[int, str]], max_chars: int) -> list[tuple[int,
             continue
         if len(line) > max_chars:
             flush()
-            pieces.extend((index, part) for part in _split_oversized(line, max_chars, 0))
+            cursor = 0
+            for part in _split_oversized(line, max_chars, 0):
+                at = line.index(part, cursor)
+                begin = starts[index] + at
+                pieces.append((index, part, [[begin, begin + len(part), 0]]))
+                cursor = at + len(part)
             continue
-        if buf and size + 1 + len(line) > max_chars:
+        if buf and size + len(_LINE_SEP) + len(line) > max_chars:
             flush()
-        size += len(line) + (1 if buf else 0)
+        size += len(line) + (len(_LINE_SEP) if buf else 0)
         buf.append((index, line))
     flush()
     return pieces
@@ -402,7 +465,9 @@ def code_pieces(
 ) -> list[tuple[str, dict[str, Any]]]:
     """The chunks of one source file, each with the metadata it adds to its chunk.
 
-    A file whose name does not end in ``.py`` gets exactly `chunk_code`'s chunks and no metadata.
+    A file whose name does not end in ``.py`` gets exactly `chunk_code`'s chunks and no anchor.
+    Every chunk carries `recall.types.TEXT_SPANS_KEY`, over the normalised lines with a leading
+    byte order mark removed for a parsed Python file, and over ``text`` as given otherwise.
 
     A Python file gets one chunk per symbol `recall.anchors.resolve_symbols` reports, plus the
     module-level lines, and every chunk carries `CODE_ANCHOR_KEY`. Each line belongs to the
@@ -421,25 +486,30 @@ def code_pieces(
     identity, both written into the anchor as given. Neither is derived here.
     """
     if PurePosixPath(file).suffix != ".py":
-        return [(piece, {}) for piece in chunk_code(text, max_chars)]
+        return [
+            (piece, {TEXT_SPANS_KEY: runs})
+            for piece, runs in _code_chunks_with_spans(text, max_chars)
+        ]
     try:
         spans = resolve_symbols(text)
     except (SyntaxError, ValueError, RecursionError):
         whole_file = _code_anchor(repo, file, None, code_sha(text))
         return [
-            (piece, {CODE_ANCHOR_KEY: dict(whole_file)}) for piece in chunk_code(text, max_chars)
+            (piece, {CODE_ANCHOR_KEY: dict(whole_file), TEXT_SPANS_KEY: runs})
+            for piece, runs in _code_chunks_with_spans(text, max_chars)
         ]
     # The same normalised lines `recall.anchors` slices and hashes, so a span's line numbers index
     # them directly. The chunk text drops a leading byte order mark; the hash does not.
     lines = normalize(text).split("\n")
     shown = [lines[0].removeprefix("﻿"), *lines[1:]]
+    starts = list(accumulate((len(line) + 1 for line in shown[:-1]), initial=0))
     owners: list[int | None] = [None] * len(lines)
     for index, span in enumerate(spans):  # parents precede children, so the innermost one wins
         owners[span.start_line - 1 : span.end_line] = [index] * (span.end_line - span.start_line + 1)
     owned: dict[int | None, list[tuple[int, str]]] = {}
     for index, owner in enumerate(owners):
         owned.setdefault(owner, []).append((index, shown[index]))
-    placed: list[tuple[int, str, dict[str, Any]]] = []
+    placed: list[tuple[int, str, dict[str, Any], list[list[int]]]] = []
     for owner, owner_lines in owned.items():
         if owner is None:
             anchor = _code_anchor(repo, file, None, code_sha(text))
@@ -448,10 +518,14 @@ def code_pieces(
             body = "\n".join(lines[span.start_line - 1 : span.end_line])
             anchor = _code_anchor(repo, file, span.symbol, code_sha(body))
         placed.extend(
-            (first, piece, anchor) for first, piece in _pack_lines(owner_lines, max_chars)
+            (first, piece, anchor, runs)
+            for first, piece, runs in _pack_lines(owner_lines, max_chars, starts)
         )
     placed.sort(key=lambda item: item[0])
-    return [(piece, {CODE_ANCHOR_KEY: dict(anchor)}) for _, piece, anchor in placed]
+    return [
+        (piece, {CODE_ANCHOR_KEY: dict(anchor), TEXT_SPANS_KEY: runs})
+        for _, piece, anchor, runs in placed
+    ]
 
 
 @dataclass(frozen=True)

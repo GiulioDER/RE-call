@@ -159,8 +159,9 @@ every block, so chunk text is whitespace-invariant at block boundaries either wa
 
 **That is true of the prefix invariant only, not of the chunker contract.** Every body is now
 rstripped, block or not — the no-fence branch's `.rstrip()` runs unconditionally. It is free for
-`chunk_text` and `chunk_code` today only because `_pack` (in `recall/index.py`) strips each block
-before chunking, so a chunker that itself preserved trailing whitespace would never see the
+`chunk_text` and `chunk_code` today only because `_pack` (for `chunk_text`) and
+`_code_chunks_with_spans` (for `chunk_code`), both in `recall/index.py`, strip each block before
+chunking, so a chunker that itself preserved trailing whitespace would never see the
 difference. A future chunker that preserves trailing whitespace would silently change its output
 for the entire corpus the day it lands, not just for files with a block. And in
 `recall/generations.py`, chunk ids are a hash of the piece text, so that change would rotate every

@@ -6,6 +6,17 @@ Red proof, recorded 2026-11-26 (production symbols in ``recall.compiled_graph.pr
   edge tuple of a span starting at a chunk's end (the touching chunk is linked).
 - ``test_chunk_without_offsets_gets_no_edge``: missing offsets read as ``0`` and ``len(text)`` fails
   on ``()``.
+- ``test_edges_follow_each_span_of_a_code_chunk`` (recorded 2026-11-27): ``placements`` ignoring
+  ``TEXT_SPANS_KEY`` fails on ``() == ("C.m",)``; and with ``recall.index._line_spans`` making each
+  piece one run, the class chunk covers its method and the test fails on ``("C", "C.m")``.
+- ``test_malformed_text_spans_place_nothing`` (recorded 2026-11-28, CCA run 20261128T105336Z): the
+  pre-fix ``placements`` (one comprehension unpacking every run as ``start, end, offset``, no
+  shape check) fails inside ``placements`` with ``ValueError: not enough values to unpack``
+  (``promotion.py:46``) on the first malformed value, which is the defect itself, a crash where an
+  unplaced chunk belongs; the fixed code passes.
+- ``test_text_spans_held_in_a_tuple_are_placed`` (recorded 2026-11-28, CCA FA-1-5): with
+  ``placements``'s container check back to ``isinstance(runs, list)`` (commit 7206f0d5f), it fails
+  on ``assert [] == [(0, 3, 0), (5, 7, 3)]``: a tuple of valid runs placed nothing.
 - ``test_top_eight_never_move``: protecting only ``pool[:PROTECTED_PREFIX - 1]`` lets rank 8 be
   promoted again and fails on membership (a duplicate id).
 - ``test_at_most_two_promoted_into_ranks_nine_and_ten``: ``MAX_PROMOTIONS = 3`` fails on
@@ -39,11 +50,13 @@ from recall.compiled_graph.promotion import (
     MAX_PROMOTIONS,
     PROTECTED_PREFIX,
     SEED_K,
+    placements,
     promote,
     record_edges,
 )
 from recall.compiled_graph.records import CompiledRecord
-from recall.types import Chunk, ScoredChunk
+from recall.index import CODE_ANCHOR_KEY, code_pieces
+from recall.types import TEXT_SPANS_KEY, Chunk, ScoredChunk
 
 
 def _chunk(chunk_id: str, start: int | None = None, end: int | None = None) -> Chunk:
@@ -75,6 +88,40 @@ def test_edges_by_offset_overlap() -> None:
 
 def test_chunk_without_offsets_gets_no_edge() -> None:
     assert record_edges(_record((0, 100)), [_chunk("a")]) == ()
+
+
+def test_edges_follow_each_span_of_a_code_chunk() -> None:
+    """The class chunk holds the lines before and after its method, and only those: a record on
+    the method links the method's chunk alone, one on ``y = 2`` the class's chunk alone."""
+    source = "class C:\n    x = 1\n\n    def m(self):\n        return 1\n\n    y = 2\n"
+    chunks = [
+        Chunk(id=meta[CODE_ANCHOR_KEY]["symbol"], source="c.py", text=text, metadata=meta)
+        for text, meta in code_pieces(source, file="c.py", repo=None)
+    ]
+    method = source.index("        return 1")
+    after = source.index("    y = 2")
+    assert record_edges(_record((method, method + 5)), chunks) == ("C.m",)
+    assert record_edges(_record((after, after + 5)), chunks) == ("C",)
+
+
+def test_malformed_text_spans_place_nothing() -> None:
+    """A stored ``text_spans`` value of the wrong shape leaves the chunk unplaced, as a missing one
+    does, and a well-formed run beside a malformed one is still placed."""
+    for runs in ("abc", 5, [[1, 2]], [None], [[0, 3, 0, 1]]):
+        chunk = Chunk(id="m", source="m.py", text="abc", metadata={TEXT_SPANS_KEY: runs})
+        assert placements(chunk) == [], runs
+        assert record_edges(_record((0, 3)), [chunk]) == (), runs
+    mixed = Chunk(id="m", source="m.py", text="abc", metadata={TEXT_SPANS_KEY: [[0, 3, 0], [1, 2]]})
+    assert placements(mixed) == [(0, 3, 0)]
+
+
+def test_text_spans_held_in_a_tuple_are_placed() -> None:
+    """A ``text_spans`` value held as a tuple of runs is placed as the same runs in a list are:
+    the shape check accepts a tuple for the container as it does for each run."""
+    runs = [(0, 3, 0), (5, 7, 3)]
+    as_list = Chunk(id="m", source="m.py", text="abcde", metadata={TEXT_SPANS_KEY: runs})
+    as_tuple = Chunk(id="m", source="m.py", text="abcde", metadata={TEXT_SPANS_KEY: tuple(runs)})
+    assert placements(as_tuple) == placements(as_list) == runs
 
 
 def test_top_eight_never_move() -> None:

@@ -96,11 +96,16 @@ says which checks apply and what a policy change costs.
   `recall graph compile --force`.
 - **Other failures.** The same refusal on three sources in a row (an unknown model, an unsupported
   parameter) stops the build. A single rejected source is skipped.
-- **Sources without offsets.** The source text is rebuilt from its chunks' character offsets, and
-  every indexing path (a Lite write, `recall index` and a PostgreSQL generation build) records
-  those only for Markdown sources. A source none of whose chunks carries usable offsets (a code
-  file, for example) is skipped. When any was, the summary of a completed build and `--dry-run`
-  both print how many; a stopped build's line does not.
+- **Sources without offsets.** The source text is rebuilt from its chunks' character offsets.
+  Every indexing path (a Lite write, `recall index` and a PostgreSQL generation build) records
+  `text_start` and `text_end` for Markdown sources, and a generation build's `code` chunker
+  records `text_spans` on every chunk, one per run of the file the chunk holds, since a class's
+  chunk is its own lines with its methods' lines taken out. A source none of whose chunks carries
+  usable offsets of either kind (a code file indexed by `recall index` or by MCP ingest on the
+  legacy route, a code tenant built before chunker version 4, or any other source that is not
+  Markdown) is skipped.
+  When any was, the summary of a completed build and `--dry-run` both print how many; a stopped
+  build's line does not.
 - **What a stopped build leaves.** No artifact is written. Searches run without the graph and say
   `skipped:missing`. A build never makes a write, an index run or a promotion fail.
 

@@ -8,6 +8,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ## [Unreleased]
 
+### Changed
+
+* The `code` chunker (version 4) records `text_spans` on every chunk: where each run of the file
+  the chunk holds starts and ends, and where it sits in the chunk text. The compiled graph reads
+  them, so a code tenant built by a generation build, MCP ingest on the generation route included,
+  now compiles; code indexed by `recall index`, or by MCP ingest on the legacy route, still records
+  no offsets and is skipped. The chunk text is unchanged, but the version is part of the pipeline
+  fingerprint, so the next build of a code tenant re-chunks every source and embeds whatever the
+  embedding cache does not already hold. Every code chunk id changes with the fingerprint, and a
+  calibration cannot be carried forward across a pipeline change, so the rebuilt generation must
+  be calibrated afresh before it is promoted.
+
 ### Security
 
 * With a source policy configured, the compiled graph sends a source to its hosted model only when
@@ -21,7 +33,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 * The compiled graph skips a source none of whose chunks carries usable character offsets
   (every indexing path, a Lite write, `recall index` and a PostgreSQL generation build, records
-  them for Markdown only, so code files have none), and
+  `text_start` and `text_end` for Markdown only, and a code file has offsets only as the
+  `text_spans` a generation build's `code` chunker records from version 4), and
   the build summary and `recall graph compile --dry-run` now say how many were skipped and
   why. They were skipped without a word, so a code tenant's dry run read `0 source(s) to
   compile`.

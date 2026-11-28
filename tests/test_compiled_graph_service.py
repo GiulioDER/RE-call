@@ -25,6 +25,11 @@ in ``recall.compiled_graph.service``):
   ``recall.compiled_graph.build.without_offsets`` mutated to ``return False``, both fail on the
   count assertion, the build and the dry run each reporting ``0`` skipped for a source whose only
   chunk has ``text_start=None``. Before the fix such a source was skipped without being counted.
+- ``test_body_from_chunks_places_each_code_span`` and
+  ``test_a_dry_run_counts_a_code_source_as_one_to_compile`` (recorded 2026-11-27):
+  ``recall.compiled_graph.promotion.placements`` ignoring ``TEXT_SPANS_KEY`` fails both, on the
+  empty body slice and on ``0 source(s) to compile``; ``body_from_chunks`` placing
+  ``chunk.text`` instead of ``chunk.text[offset:]`` fails the first on the class chunk's second run.
 - ``test_a_source_whose_offsets_place_nothing_is_counted`` (recorded 2026-11-27, CCA CODE-001):
   against ``without_offsets`` judged by ``promotion._offsets`` (commit adce9b281), it fails on the
   count assertion: ``text_start=-1`` passes ``_offsets`` but ``body_from_chunks`` places nothing,
@@ -37,6 +42,13 @@ in ``recall.compiled_graph.service``):
   the build-message assertion. Its first assertion requires the success line (CCA FA-1-1): with
   ``ensure_compiled_graph``'s publish step mutated to ``if True:``, so the build returns ``not
   built: a source was forgotten``, it fails on that assertion, where ``"built" in message`` passed.
+- ``test_the_offset_docs_name_the_mcp_ingest_route`` (recorded 2026-11-28, CCA FA-1-1..3 of run
+  20261128T105336Z; re-proved 2026-11-28 for FA-3-3, since the wording that first failed it was
+  never committed): with " on the legacy route" deleted from ``docs/COMPILED_GRAPH.md``'s "a code
+  file indexed by `recall index` or by MCP ingest on the legacy route", it fails on ``assert not
+  unqualified``, naming that passage. It fails the same way with "MCP ingest" in that mutated
+  phrase replaced by "the MCP write path", and again by "`recall_ingest`", so each name of the
+  route is checked (FA-3-4).
 - ``test_off_or_rootless_builds_nothing``: the mode check removed fails on the call count.
 - ``test_build_writes_an_artifact_the_loader_serves``: the loader lineage built without the model
   fails with ``ArtifactMissing``.
@@ -92,6 +104,7 @@ same assertions:
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -109,8 +122,9 @@ from recall.compiled_graph.service import (
     serving_lineage,
     tenant_folder,
 )
+from recall.index import code_pieces
 from recall.security_policy import SourceSecurityPolicy, load_source_policy
-from recall.types import Chunk
+from recall.types import TEXT_SPANS_KEY, Chunk
 
 BODY = "Alice owns the release checklist. " + "x" * 2_000 + " The deploy uses port 18015."
 BINDING = {"generation_id": "g1", "corpus_fingerprint": "cf1"}
@@ -289,6 +303,55 @@ def test_no_skip_clause_when_every_source_has_offsets(tmp_path: Path) -> None:
     assert message.startswith("compiled graph built for "), message
     assert "skipped because" not in message, message
     assert "skipped because" not in estimate, estimate
+
+
+CODE_SOURCE = "class C:\n    x = 1\n\n    def m(self):\n        return 1\n\n    y = 2\n"
+
+
+def _code_chunks() -> list[Chunk]:
+    return [
+        Chunk(id=f"c.py:{i}", source="c.py", text=text, metadata=meta)
+        for i, (text, meta) in enumerate(code_pieces(CODE_SOURCE, file="c.py", repo=None))
+    ]
+
+
+def test_body_from_chunks_places_each_code_span() -> None:
+    chunks = _code_chunks()
+    body = body_from_chunks(chunks)
+    for chunk in chunks:
+        for start, end, offset in chunk.metadata[TEXT_SPANS_KEY]:
+            assert body[start:end] == chunk.text[offset : offset + end - start]
+            assert body[start:end] == CODE_SOURCE[start:end]
+
+
+def test_a_dry_run_counts_a_code_source_as_one_to_compile(tmp_path: Path) -> None:
+    estimate = estimate_compile("t1", _code_chunks(), _env(tmp_path))
+    assert "1 source(s) to compile" in estimate, estimate
+    assert "skipped because" not in estimate, estimate
+
+
+def test_the_offset_docs_name_the_mcp_ingest_route() -> None:
+    """Whether MCP ingest records offsets depends on its route: the generation route chunks with
+    ``CodeChunker`` and records ``text_spans`` (``recall_mcp/server_ingest.py``, the
+    ``route.uses_generation`` branch), the legacy route with ``chunk_code`` and records none. So
+    the guide and the Unreleased changelog may name MCP ingest only together with its route. This
+    pins prose, not behaviour, and knows the route by three names: MCP ingest, the MCP write path
+    and the ``recall_ingest`` tool."""
+    root = Path(__file__).resolve().parents[1]
+    changelog = (root / "CHANGELOG.md").read_text(encoding="utf-8")
+    unreleased = re.search(r"^## \[Unreleased\]\n(.*?)(?=^## \[)", changelog, re.M | re.S)
+    assert unreleased is not None
+    texts = {
+        "CHANGELOG.md": unreleased.group(1),
+        "docs/COMPILED_GRAPH.md": (root / "docs/COMPILED_GRAPH.md").read_text(encoding="utf-8"),
+    }
+    route_names = r"(?:MCP ingest|MCP write path|recall_ingest`?)"
+    unqualified = []
+    for name, text in texts.items():
+        flat = " ".join(text.split())
+        for match in re.finditer(route_names + r"(?! on the (?:legacy|generation) route)", flat):
+            unqualified.append((name, flat[max(0, match.start() - 60) : match.end() + 60]))
+    assert not unqualified, unqualified
 
 
 def test_off_or_rootless_builds_nothing(tmp_path: Path) -> None:
