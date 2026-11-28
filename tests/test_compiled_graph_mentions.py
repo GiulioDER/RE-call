@@ -29,10 +29,14 @@ Red proof, recorded 2026-11-27 on the remote test host by mutating the fixed lin
 - ``test_a_cache_hit_sees_an_artifact_removed_since``: the manifest check dropped from the cache
   hit branch of ``admit_llm_mentions`` fails on the pair set (the removed artifact's mentions
   are still admitted).
+- ``test_an_unreadable_policy_admits_no_mentions`` (recorded 2026-11-28, SEC-001): before the
+  policy digest joined the lineage it failed on the pair set (the artifact still served); with the
+  catch in ``admit_llm_mentions`` narrowed to ``KeyError`` it fails with ``ArtifactUnconfigured``.
 """
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -248,3 +252,21 @@ def test_a_cache_hit_sees_an_artifact_removed_since(tmp_path: Path) -> None:
     after_graph, after = admit_llm_mentions(_store(), graph, _Embedder(), _active_env(tmp_path), scoped=False)
     assert after == frozenset()
     assert after_graph is graph
+
+
+def test_an_unreadable_policy_admits_no_mentions(tmp_path: Path) -> None:
+    policy = tmp_path / "policy.json"
+    rule = {"prefix": "a.md", "principals": [], "purposes": ["retrieval", "compile"], "redactions": []}
+    policy.write_text(json.dumps({"default_deny": True, "rules": [rule]}), encoding="utf-8")
+    env = {"RECALL_COMPILED_GRAPH_MODE": "active", "RECALL_COMPILED_GRAPH_ARTIFACT_ROOT": str(tmp_path),
+           "RECALL_COMPILED_GRAPH_MODEL": "m", "RECALL_SOURCE_POLICY_FILE": str(policy)}
+    lineage = serving_lineage("t1", _store().generation_binding(), _Embedder(), env)
+    assert lineage is not None
+    artifact = _artifact(("c2", "Alice"))
+    write_artifact(tenant_folder(tmp_path, "t1"), CompiledGraphArtifact(lineage, artifact.records, artifact.vectors))
+    _, pairs = admit_llm_mentions(_store(), _graph(), _Embedder(), env, scoped=False)
+    assert pairs == frozenset({("c2", "e-alice")})
+    graph = _graph()
+    gone = {**env, "RECALL_SOURCE_POLICY_FILE": str(tmp_path / "missing.json")}
+    same, none = admit_llm_mentions(_store(), graph, _Embedder(), gone, scoped=False)
+    assert same is graph and none == frozenset()

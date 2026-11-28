@@ -88,6 +88,7 @@ Cross package edges: 473
 | 17 | `recall_mcp.semantic_graph_cache` |
 | 17 | `recall_mcp.server_memory_admin` |
 | 16 | `recall.cli_commands.generation_cmd` |
+| 16 | `recall.cli_commands.graph_cmd` |
 | 16 | `recall.cli_commands.provenance_cmd` |
 | 16 | `recall.compiled_graph.service` |
 | 16 | `recall_mcp.desktop_ingest` |
@@ -96,7 +97,6 @@ Cross package edges: 473
 | 15 | `recall_mcp.query_construction_api` |
 | 15 | `recall_mcp.reasoning_diagnostics` |
 | 14 | `recall.calibration_v2` |
-| 14 | `recall.cli_commands.graph_cmd` |
 | 14 | `recall.desktop.main` |
 | 14 | `recall.eval.promotion.__main__` |
 | 14 | `recall.lite.refresh` |
@@ -619,7 +619,7 @@ They are observations, not automatic failures.
 | `recall.cli_commands.doctor_cmd` | 1 | 201 |
 | `recall.cli_commands.extract_rewrite` | 12 | 168 |
 | `recall.cli_commands.generation_cmd` | 16 | 156 |
-| `recall.cli_commands.graph_cmd` | 14 | 154 |
+| `recall.cli_commands.graph_cmd` | 16 | 154 |
 | `recall.cli_commands.idempotency_cmd` | 2 | 40 |
 | `recall.cli_commands.index_search` | 31 | 168 |
 | `recall.cli_commands.lint_check` | 8 | 156 |

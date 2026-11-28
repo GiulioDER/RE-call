@@ -16,7 +16,10 @@ from typing import TYPE_CHECKING
 from recall.lite import is_lite_dsn, lite_dsn_path
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
+
     from recall.semantic_graph import GraphReadiness
+    from recall.types import Chunk
 
 
 def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
@@ -143,6 +146,7 @@ def _compile(args: argparse.Namespace) -> None:
     import os
 
     from recall.cli_commands._shared import _make_embedder
+    from recall.compiled_graph.artifact import CompiledGraphArtifactError
     from recall.compiled_graph.provider import CompiledGraphConfigError
     from recall.compiled_graph.service import (
         MODE_BY_TENANT_ENV,
@@ -154,6 +158,13 @@ def _compile(args: argparse.Namespace) -> None:
         ensure_for_store,
         estimate_compile,
     )
+
+    def dry_run(chunks: Iterable[Chunk]) -> None:
+        # An unreadable source policy or clearance stops the dry run as it stops the build.
+        try:
+            print(estimate_compile(args.tenant, chunks, env, retry_rejected=args.retry_rejected))
+        except (CompiledGraphArtifactError, ValueError) as exc:
+            raise SystemExit(f"recall graph compile: {exc}") from None
 
     env = dict(os.environ)
     try:
@@ -174,7 +185,7 @@ def _compile(args: argparse.Namespace) -> None:
 
         with LiteStore.from_dsn(args.dsn, dim=embedder.dim, tenant=args.tenant) as store:
             if args.dry_run:
-                print(estimate_compile(args.tenant, store.iter_chunks(), env, retry_rejected=args.retry_rejected))
+                dry_run(store.iter_chunks())
                 return
             # The write lane, so a forget cannot run while this build reads the corpus.
             with write_session(store, "graph compile"):
@@ -189,7 +200,7 @@ def _compile(args: argparse.Namespace) -> None:
             serving = active_binding(generations)
             generations.set_fixed_generation(args.generation or generations.active_generation_id())
             if args.dry_run:
-                print(estimate_compile(args.tenant, generations.iter_chunks(), env, retry_rejected=args.retry_rejected))
+                dry_run(generations.iter_chunks())
                 return
             message = ensure_for_store(
                 generations, embedder, env, force=args.force, retry_rejected=args.retry_rejected,

@@ -350,3 +350,49 @@ def test_a_trusted_search_on_lite_reports_the_graph_step(built, monkeypatch: pyt
     assert [hit.chunk.id for hit in shadow.hits] == [hit.chunk.id for hit in off.hits]
     assert [hit.chunk.id for hit in active.hits][:8] == [hit.chunk.id for hit in off.hits][:8]
     assert [hit.chunk.id for hit in active.hits][8:10] != [hit.chunk.id for hit in off.hits][8:10]
+
+
+def test_a_lite_store_compiles_only_policy_admitted_sources(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """SEC-001 on a real Lite store: the digest the indexer stamps reaches the compile filter, and
+    only the memo whose rule lists ``compile`` is sent.
+
+    Red proof, recorded 2026-11-28: with ``recall.compiled_graph.service._admitted`` mutated to
+    return every chunk, it fails on the withheld-count assertion (55 calls, every memo
+    compiled).
+    """
+    from recall.calibration_v2 import CalibrationStatus
+    from recall.index import Indexer
+    from recall.lite import LiteStore
+    from recall.lite.calibration import ensure_calibrated
+    from recall.security_policy import AccessContext, load_source_policy
+    from tests.test_lite_atomic_rescue import _corpus
+    from tests.test_lite_calibration import DIM, ContentWordEmbedder
+
+    monkeypatch.setattr(service, "urllib_transport", _cite_first_anchor)
+    memos = _corpus(tmp_path)
+    names = sorted(path.relative_to(memos).as_posix() for path in memos.rglob("*.md"))
+    admitted = names[0]
+    rules = [
+        {"prefix": name, "principals": [], "redactions": [],
+         "purposes": ["retrieval", "compile"] if name == admitted else ["retrieval"]}
+        for name in names
+    ]
+    policy_file = tmp_path / "policy.json"
+    policy_file.write_text(json.dumps({"default_deny": True, "rules": rules}), encoding="utf-8")
+    env = {**_compile_env(tmp_path / "compiled"), "RECALL_SOURCE_POLICY_FILE": str(policy_file)}
+    policy = load_source_policy(env)
+    assert policy is not None
+    store = LiteStore(tmp_path / "memory.db", dim=DIM)
+    try:
+        embedder = ContentWordEmbedder()
+        context = AccessContext(principal="cli", tenant=store.tenant)
+        Indexer(store, embedder, env={}, security_policy=policy, security_context=context).index_path(memos)
+        assert ensure_calibrated(store, embedder).status is CalibrationStatus.CERTIFIED
+        message = service.ensure_for_store(store, embedder, env)
+        assert message.startswith("compiled graph built for "), message
+        assert f"{len(names) - 1} source(s) withheld by the source policy for purpose compile" in message, message
+        built = _artifacts(tmp_path / "compiled")
+        assert len(built) == 1, built
+        assert {Path(source).name for source in _sources(built[0])} == {Path(admitted).name}
+    finally:
+        store.close()

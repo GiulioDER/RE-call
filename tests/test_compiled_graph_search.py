@@ -26,10 +26,17 @@ Red proof, recorded 2026-11-26 (production symbols in ``recall.compiled_graph.se
   the raised error.
 - ``test_retriever_applies_the_graph_after_fusion_and_records_the_stage``: the
   ``graph_transform`` call removed from ``HybridRetriever.search`` fails on the hit order.
+- ``test_an_unreadable_policy_skips_the_graph_at_search`` (recorded 2026-11-28, SEC-001): before
+  the policy digest joined ``serving_lineage`` it failed on ``step is None`` (the artifact loaded
+  with the policy unreadable).
+- ``test_an_invalid_clearance_skips_the_graph_at_search`` (recorded 2026-11-28): before the
+  operator context joined the lineage it failed on ``step is None``; with ``_compile_context``
+  catching ``KeyError`` instead of ``ValueError`` it fails with the raw ``ValueError``.
 """
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any, cast
 
@@ -254,3 +261,26 @@ def test_every_skip_reason_is_documented() -> None:
     assert described is not None and documented is not None
     assert {reason.strip() for reason in described.group(1).split(",")} == emitted
     assert {reason.strip(" `") for reason in documented.group(1).split(",")} == emitted
+
+
+def test_an_unreadable_policy_skips_the_graph_at_search(tmp_path: Path) -> None:
+    policy = tmp_path / "policy.json"
+    rule = {"prefix": "a.md", "principals": [], "purposes": ["retrieval", "compile"], "redactions": []}
+    policy.write_text(json.dumps({"default_deny": True, "rules": [rule]}), encoding="utf-8")
+    env = {**_env(tmp_path), "RECALL_SOURCE_POLICY_FILE": str(policy)}
+    _write(tmp_path, env)
+    step, _ = compiled_graph_step(Store(), FakeEmbedder(), env, scope_is_empty=True)
+    assert step is not None
+    gone = {**env, "RECALL_SOURCE_POLICY_FILE": str(tmp_path / "missing.json")}
+    step, outcome = compiled_graph_step(Store(), FakeEmbedder(), gone, scope_is_empty=True)
+    assert step is None and outcome.note == "skipped:unconfigured"
+
+
+def test_an_invalid_clearance_skips_the_graph_at_search(tmp_path: Path) -> None:
+    policy = tmp_path / "policy.json"
+    rule = {"prefix": "a.md", "principals": [], "purposes": ["retrieval", "compile"], "redactions": []}
+    policy.write_text(json.dumps({"default_deny": True, "rules": [rule]}), encoding="utf-8")
+    env = {**_env(tmp_path), "RECALL_SOURCE_POLICY_FILE": str(policy)}
+    _write(tmp_path, env)
+    step, outcome = compiled_graph_step(Store(), FakeEmbedder(), {**env, "RECALL_CLEARANCE": "bogus"}, scope_is_empty=True)
+    assert step is None and outcome.note == "skipped:unconfigured"
