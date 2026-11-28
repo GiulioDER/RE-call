@@ -266,6 +266,8 @@ ENVIRONMENT_SCHEMA: tuple[EnvironmentSpec, ...] = (
     EnvironmentSpec("RECALL_PAGED_EVIDENCE", "Retrieval", "off, or on to return the profile's paged evidence depth for PDF and PPTX results when k is unset", "off"),
     EnvironmentSpec("RECALL_JIRA_EXACT_ID_BASE_URL", "Retrieval", "Canonical HTTPS base of the Jira connector for opt-in exact issue routing"),
     EnvironmentSpec("RECALL_JIRA_EXACT_ID_SOURCE_PREFIX", "Retrieval", "Optional file or S3 URI prefix for Jira issue exports named KEY.md"),
+    EnvironmentSpec("RECALL_JIRA_LINK_FOLLOW", "Retrieval", "Enable Voyage ranked native Jira related evidence for this connector", "off"),
+    EnvironmentSpec("RECALL_JIRA_NATIVE_LINKS_FILE", "Retrieval", "Generation-bound native Jira issue link export, required when link following is on"),
     EnvironmentSpec("RECALL_ATOMIC_RESCUE_ARTIFACT", "Retrieval", "generation bound atomic rescue artifact manifest"),
     EnvironmentSpec("RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT", "Retrieval", "active generation atomic rescue artifact registry"),
     EnvironmentSpec("RECALL_ATOMIC_RESCUE_PLACEMENT", "Retrieval", "dense rank six before fusion, or fused rank six after it", "dense"),
@@ -431,6 +433,10 @@ def _validate_runtime_options(source: Mapping[str, str]) -> None:
     jira_prefix = jira_exact_id_source_prefix(source.get("RECALL_JIRA_EXACT_ID_SOURCE_PREFIX", ""))
     if jira_prefix and not jira_base:
         raise ValueError("RECALL_JIRA_EXACT_ID_SOURCE_PREFIX needs RECALL_JIRA_EXACT_ID_BASE_URL")
+    if source.get("RECALL_JIRA_LINK_FOLLOW", "off").strip().lower() == "on" and not source.get(
+        "RECALL_JIRA_NATIVE_LINKS_FILE", ""
+    ).strip():
+        raise ValueError("RECALL_JIRA_LINK_FOLLOW=on requires RECALL_JIRA_NATIVE_LINKS_FILE")
     from recall_mcp.semantic_graph_cache import validate_graph_precision_environment
 
     validate_graph_precision_environment(source)
