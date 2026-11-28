@@ -88,7 +88,7 @@ def test_a_generation_compiles_only_policy_admitted_sources(  # type: ignore[no-
     assert policy is not None
     manifest = IndexManifestV1(manager.tenant_id, "policy-v1", tuple(entries))
     stats = build_generation(
-        manager, manifest, LocalObjectReader([corpus]), _Embedder(), BuildRequest(),
+        manager, manifest, LocalObjectReader([corpus]), _Embedder(), BuildRequest(revision="fixture"),
         security_policy=policy, security_context=AccessContext("cli", manager.tenant_id),
     )
     message = service.ensure_for_generation(TEST_DSN, manager.tenant_id, stats.generation_id, _Embedder, env)
