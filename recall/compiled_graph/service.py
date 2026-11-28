@@ -57,7 +57,12 @@ from recall._env import modes_by_tenant
 from recall.compiled_graph.records import prompt_digest
 from recall.embedding_core import Embedder
 from recall.errors import RecallError
-from recall.security_policy import SourceSecurityPolicy, access_context_from_environment, load_source_policy
+from recall.security_policy import (
+    AccessContext,
+    SourceSecurityPolicy,
+    access_context_from_environment,
+    load_source_policy,
+)
 from recall.types import Chunk
 
 _log = logging.getLogger("recall.compiled_graph")
@@ -241,7 +246,11 @@ def serving_lineage(
     }
     policy = _source_policy(env)
     if policy is not None:
+        context = _compile_context(tenant, env)
         lineage["policy"] = policy.digest
+        # What else decides `_admitted`, so changing it builds again instead of finding the
+        # artifact of the old decisions in force.
+        lineage["compile_context"] = f"{context.principal}|{context.clearance}|{int(context.egress_allowed)}"
     return lineage
 
 
@@ -298,6 +307,15 @@ def _source_policy(env: Mapping[str, str]) -> SourceSecurityPolicy | None:
     return policy
 
 
+def _compile_context(tenant: str, env: Mapping[str, str]) -> AccessContext:
+    """The operator context a source is admitted for compile under; an invalid one is
+    ``ArtifactUnconfigured``, as an unreadable policy is."""
+    try:
+        return access_context_from_environment(tenant, dict(env), purpose="compile")
+    except ValueError as exc:
+        raise ArtifactUnconfigured(f"the compile access context is invalid: {exc}") from exc
+
+
 def _admitted(chunks: Iterable[Chunk], tenant: str, env: Mapping[str, str]) -> tuple[list[Chunk], int]:
     """The chunks of the sources the policy admits for purpose ``compile``, and how many sources
     it withheld. A source is withheld whole when any one of its chunks is refused, a chunk stored
@@ -305,7 +323,7 @@ def _admitted(chunks: Iterable[Chunk], tenant: str, env: Mapping[str, str]) -> t
     policy = _source_policy(env)
     if policy is None:
         return list(chunks), 0
-    context = access_context_from_environment(tenant, dict(env), purpose="compile")
+    context = _compile_context(tenant, env)
     by_source: dict[str, list[Chunk]] = defaultdict(list)
     refused: set[str] = set()
     for chunk in chunks:
@@ -364,6 +382,9 @@ def ensure_compiled_graph(
         root = artifact_root(env)
         if root is None:
             return f"compiled graph not built: {ROOT_ENV} is not set"
+        # A build decides what leaves the host, so it reads the policy file itself: the memo keys
+        # on mtime and size, which a same-size rewrite within one mtime tick leaves unchanged.
+        _POLICY_MEMO.clear()
         lineage = serving_lineage(tenant, binding, embedder, env)
         if lineage is None:
             return f"compiled graph not built: {ENV_PREFIX}_MODEL and a generation are required"
@@ -608,6 +629,7 @@ def estimate_compile(
     root = artifact_root(env)
     if root is None:
         return f"compiled graph: {ROOT_ENV} is not set"
+    _POLICY_MEMO.clear()
     config = ProviderConfig.from_env(env)
     budget = Budget.from_env(env)
     cache = CompileCache(tenant_folder(root, tenant) / CACHE_NAME)

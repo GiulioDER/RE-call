@@ -270,8 +270,9 @@ With a source policy configured, a source is compiled only when all of these hol
   an older policy is not sent until it is re-indexed.
 
 A source that fails any of these is withheld whole, and the build summary and `recall graph
-compile --dry-run` say how many were. The artifact is bound to the policy's digest, so a policy
-change builds a new one, and a search under a different or unreadable policy uses none.
+compile --dry-run` say how many were. The artifact is bound to the policy's digest and to that
+operator context, so changing either builds a new one, and a search under a different or
+unreadable policy, or an invalid context, uses none.
 
 Adding `compile` to a rule changes the policy digest, like any policy edit, so the tenant is
 re-indexed before it serves or compiles again. Without a source policy the tenant's mode

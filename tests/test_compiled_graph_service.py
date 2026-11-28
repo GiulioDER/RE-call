@@ -81,6 +81,12 @@ same assertions:
 - ``test_the_policy_is_parsed_once_per_file_version``: before the fix it failed on ``0 == 1`` (the
   lineage never read the policy); with the memo lookup mutated to ``policy = None`` it fails on
   ``2 == 1``. ``test_without_a_policy_the_lineage_is_unchanged`` is the control and passed both.
+- ``test_a_compile_context_change_rebuilds_the_artifact`` (final review I1): before the operator
+  context joined the lineage, and with that line mutated away, it fails on the second build
+  returning ``compiled graph in force for g1``.
+- ``test_a_build_reads_the_policy_file_not_the_memo`` (final review M1): before a build cleared
+  the memo, and with ``_POLICY_MEMO.clear()`` in ``ensure_compiled_graph`` mutated to ``pass``, it
+  fails on ``assert 1 == 0`` (the stale admitting policy was used).
 """
 
 from __future__ import annotations
@@ -564,3 +570,26 @@ def test_the_policy_is_parsed_once_per_file_version(tmp_path: Path, monkeypatch:
     _policy_env(tmp_path, [COMPILE, {**RETRIEVAL_ONLY, "prefix": "b.md"}])
     serving_lineage("t1", BINDING, FakeEmbedder(), env)
     assert len(reads) == 2
+
+
+def test_a_compile_context_change_rebuilds_the_artifact(tmp_path: Path) -> None:
+    env, policy = _policy_env(tmp_path, [{**COMPILE, "principals": ["local"]}])
+    chunks = _stamped(_chunks(), policy.digest)
+    assert WITHHELD in _build(env, chunks, Transport())
+    transport = Transport()
+    message = _build({**env, "RECALL_PRINCIPAL": "local"}, chunks, transport)
+    assert message.startswith("compiled graph built for "), message
+    assert "withheld" not in message, message
+    assert transport.calls >= 1, message
+
+
+def test_a_build_reads_the_policy_file_not_the_memo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    env, _ = _policy_env(tmp_path, [RETRIEVAL_ONLY])
+    path = env["RECALL_SOURCE_POLICY_FILE"]
+    stat = Path(path).stat()
+    # A rewrite that kept the size within one mtime tick: the memo still holds the old policy.
+    _, admitting = _policy_env(tmp_path / "old", [COMPILE])
+    monkeypatch.setattr(service, "_POLICY_MEMO", {(path, stat.st_mtime_ns, stat.st_size): admitting})
+    transport = Transport()
+    message = _build(env, _stamped(_chunks(), admitting.digest), transport)
+    assert transport.calls == 0, message
