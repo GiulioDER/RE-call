@@ -79,8 +79,9 @@ def openrouter_transport(api_key: str) -> Transport:
                 "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
                 "usage": {"include": True}, "reasoning": {"enabled": True}}
         req = request.Request(ENDPOINT, data=json.dumps(body).encode("utf-8"), method="POST",
-                              headers={"Authorization": f"Bearer {api_key}",
-                                       "Content-Type": "application/json"})
+                              headers={"Content-Type": "application/json"})
+        # Unredirected as well as sent through the no-redirect opener: a 30x never carries the key.
+        req.add_unredirected_header("Authorization", f"Bearer {api_key}")
         with _OPENER.open(req, timeout=TIMEOUT_SECONDS) as response:
             data = json.loads(response.read().decode("utf-8"))
         return str(data["choices"][0]["message"].get("content") or "")
@@ -106,7 +107,7 @@ def judge_query_support(query: str, evidence: list[dict], transport: Transport) 
     for _ in range(ATTEMPTS):
         try:
             text = transport(JUDGE_SYSTEM, user)
-        except Exception as exc:  # BROAD-CATCH: any transport fault is reported as `failed`, never as a verdict
+        except Exception as exc:  # BROAD-CATCH: error-translation, a transport fault becomes `failed`, never a verdict
             _log.warning("Answerability judge call failed (%s)", type(exc).__name__)
             return QuerySupport(status="failed", method="llm_judge", model=MODEL)
         try:
