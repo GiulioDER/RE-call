@@ -12,16 +12,49 @@ Red proof, recorded 2026-11-26 (production symbols in ``recall.compiled_graph.bu
 - ``test_overrun_exhausts_the_budget``: a reply over its reservation not marking the budget
   exhausted fails on the next ``reserve``.
 - ``test_from_env_requires_cap_and_prices``: a default price fails on ``pytest.raises``.
+
+Red proof for the stated reserve, recorded 2026-11-28. Baseline: ``budget.py`` at ``8fe4d168``,
+before ``extra_input_tokens`` and ``output_tokens`` existed, so ``from_env`` ignored the two
+``RESERVE`` variables.
+
+- ``test_stated_reserve_lets_a_reasoning_model_build``: fails at the baseline on ``assert 1 == 3``
+  (the first reply overruns and the second attempt raises ``BudgetExhausted``), and with
+  ``worst_case`` not adding ``extra_input_tokens`` likewise.
+- ``test_stated_reserve_is_the_worst_case``: fails at the baseline and with that mutation on
+  ``math.isclose``.
+- ``test_unusable_stated_reserve_is_refused``: every case fails at the baseline with DID NOT
+  RAISE; the ``2399`` case fails so with the ``output_tokens < MAX_OUTPUT_TOKENS`` check removed.
+- ``test_without_stated_reserve_a_reasoning_model_stops_the_build`` is the control that the stub
+  overruns the default reservation; it passes at the baseline by design.
 """
 
 from __future__ import annotations
 
+import json
 import math
+from collections.abc import Mapping
 
 import pytest
 
 from recall.compiled_graph.budget import Budget
-from recall.compiled_graph.provider import CompiledGraphConfigError, CompileReply
+from recall.compiled_graph.provider import (
+    BudgetExhausted,
+    CompiledGraphConfigError,
+    CompileReply,
+    ProviderConfig,
+    compile_source,
+)
+
+PRICES = {
+    "RECALL_COMPILED_GRAPH_MAX_USD": "1",
+    "RECALL_COMPILED_GRAPH_COST_PER_1K_INPUT": "0.002",
+    "RECALL_COMPILED_GRAPH_COST_PER_1K_OUTPUT": "0.008",
+}
+#: Figures that cover the reasoning model below: 2,344 extra prompt tokens, 3,076 output tokens.
+STATED_RESERVE = {
+    "RECALL_COMPILED_GRAPH_RESERVE_EXTRA_INPUT_TOKENS": "2500",
+    "RECALL_COMPILED_GRAPH_RESERVE_OUTPUT_TOKENS": "3200",
+}
 
 def _budget(max_usd: float) -> Budget:
     return Budget(max_usd=max_usd, cost_in_per_1k=0.002, cost_out_per_1k=0.008)
@@ -117,7 +150,7 @@ def test_from_env_rejects_unusable_cap(value: str) -> None:
 
 
 def test_output_cap_is_not_a_budget_setting() -> None:
-    """The output reserved is the cap the request sends; no caller can set a smaller one.
+    """The output reserved is at least the cap the request sends; no caller can set a smaller one.
 
     Red proof, 2026-11-26: before the fix ``Budget`` took ``max_tokens`` as a field that
     ``compile_source`` never sent, so a ``Budget(max_tokens=100)`` under-reserved every call; this
@@ -136,3 +169,58 @@ def test_negative_price_message_allows_zero() -> None:
     }
     with pytest.raises(CompiledGraphConfigError, match="zero or above"):
         Budget.from_env(env)
+
+
+def _reasoning_model(
+    url: str, body: bytes, headers: Mapping[str, str], timeout: float
+) -> tuple[int, Mapping[str, str], bytes]:
+    """A stub of ``openai/gpt-6-luna-pro`` through OpenRouter, from the largest figures measured
+    on 2026-11-27: 2,344 prompt tokens beyond the request's bytes, 3,076 completion tokens."""
+    reply = {
+        "choices": [{"message": {"content": json.dumps({"records": []})}, "finish_reason": "stop"}],
+        "usage": {"prompt_tokens": len(body) + 2_344, "completion_tokens": 3_076},
+    }
+    return 200, {}, json.dumps(reply).encode()
+
+
+def _replies_before_stop(budget: Budget, calls: int) -> int:
+    config = ProviderConfig(api_key="sk-test-not-a-real-key", model="openai/gpt-6-luna-pro")
+    payload = {"source": "notes/a.md", "anchors": [{"id": "a000_x", "excerpt": "text"}]}
+    for done in range(calls):
+        try:
+            compile_source(config, _reasoning_model, payload, budget, sleep=lambda _: None)
+        except BudgetExhausted:
+            return done
+    return calls
+
+
+def test_without_stated_reserve_a_reasoning_model_stops_the_build() -> None:
+    """Control: the stub overruns the default reservation, as the real model did."""
+    budget = Budget.from_env(PRICES)
+    assert _replies_before_stop(budget, 3) == 1
+    assert budget.exhausted
+
+
+def test_stated_reserve_lets_a_reasoning_model_build() -> None:
+    budget = Budget.from_env({**PRICES, **STATED_RESERVE})
+    assert _replies_before_stop(budget, 3) == 3
+    assert not budget.exhausted
+
+
+def test_stated_reserve_is_the_worst_case() -> None:
+    budget = Budget.from_env({**PRICES, **STATED_RESERVE})
+    assert math.isclose(budget.worst_case(1_000), 3.5 * 0.002 + 3.2 * 0.008)
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("RECALL_COMPILED_GRAPH_RESERVE_OUTPUT_TOKENS", "2399"),
+        ("RECALL_COMPILED_GRAPH_RESERVE_OUTPUT_TOKENS", "3k"),
+        ("RECALL_COMPILED_GRAPH_RESERVE_EXTRA_INPUT_TOKENS", "-1"),
+        ("RECALL_COMPILED_GRAPH_RESERVE_EXTRA_INPUT_TOKENS", "1.5"),
+    ],
+)
+def test_unusable_stated_reserve_is_refused(name: str, value: str) -> None:
+    with pytest.raises(CompiledGraphConfigError, match=name):
+        Budget.from_env({**PRICES, name: value})

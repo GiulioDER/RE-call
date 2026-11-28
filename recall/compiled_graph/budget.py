@@ -5,6 +5,13 @@ byte of the request, which a byte-level tokenizer cannot exceed; the AML service
 data at about one character per token, so a characters-per-token guess is not a bound. Output is
 reserved at the request's ``max_tokens``. After the call the reservation is replaced by the
 reported usage, or kept when the provider reports none.
+
+Some models bill tokens the request does not carry, so the operator states them per model, as with
+the prices: extra input tokens per call, and output tokens reserved at or above ``max_tokens``.
+Measured 2026-11-27 for ``openai/gpt-6-luna-pro`` through OpenRouter, over three sources: up to
+2,344 prompt tokens beyond the request's bytes, and up to 3,076 completion tokens against
+``max_tokens`` 2,400 (its reasoning tokens are billed past the cap). A reply over its reservation
+still stops the build, since then even the stated figures were not a bound.
 """
 
 from __future__ import annotations
@@ -35,6 +42,17 @@ def _positive_float(env: Mapping[str, str], name: str, *, allow_zero: bool) -> f
     return value
 
 
+def _tokens(env: Mapping[str, str], name: str, default: int) -> int:
+    variable = f"{ENV_PREFIX}_{name}"
+    text = env.get(variable, "").strip()
+    if not text:
+        return default
+    try:
+        return int(text)
+    except ValueError as exc:
+        raise CompiledGraphConfigError(f"{variable} must be a whole number of tokens") from exc
+
+
 @dataclass
 class Budget:
     """One build's spend: ``reserve`` before each attempt, then ``settle`` it exactly once.
@@ -47,6 +65,8 @@ class Budget:
     max_usd: float
     cost_in_per_1k: float
     cost_out_per_1k: float
+    extra_input_tokens: int = 0
+    output_tokens: int = MAX_OUTPUT_TOKENS
     spent_usd: float = 0.0
     exhausted: bool = False
     _reserved_usd: float | None = field(default=None, repr=False)
@@ -57,14 +77,25 @@ class Budget:
             max_usd=_positive_float(env, "MAX_USD", allow_zero=False),
             cost_in_per_1k=_positive_float(env, "COST_PER_1K_INPUT", allow_zero=True),
             cost_out_per_1k=_positive_float(env, "COST_PER_1K_OUTPUT", allow_zero=True),
+            extra_input_tokens=_tokens(env, "RESERVE_EXTRA_INPUT_TOKENS", 0),
+            output_tokens=_tokens(env, "RESERVE_OUTPUT_TOKENS", MAX_OUTPUT_TOKENS),
         )
+
+    def __post_init__(self) -> None:
+        if self.extra_input_tokens < 0:
+            raise CompiledGraphConfigError(f"{ENV_PREFIX}_RESERVE_EXTRA_INPUT_TOKENS must be zero or above")
+        # Below the request's max_tokens the reservation would not cover a reply the cap allows.
+        if self.output_tokens < MAX_OUTPUT_TOKENS:
+            raise CompiledGraphConfigError(
+                f"{ENV_PREFIX}_RESERVE_OUTPUT_TOKENS must be at least {MAX_OUTPUT_TOKENS}, the request's max_tokens"
+            )
 
     def _cost(self, tokens_in: int, tokens_out: int) -> float:
         return tokens_in / 1000 * self.cost_in_per_1k + tokens_out / 1000 * self.cost_out_per_1k
 
     def worst_case(self, input_token_bound: int) -> float:
-        """The USD one call is reserved at, given a bound on its input tokens."""
-        return self._cost(input_token_bound, MAX_OUTPUT_TOKENS)
+        """The USD one call is reserved at, given a bound on its request's input tokens."""
+        return self._cost(input_token_bound + self.extra_input_tokens, self.output_tokens)
 
     def reserve(self, input_token_bound: int) -> bool:
         """Hold the worst case of one call; False when it does not fit what is left."""
