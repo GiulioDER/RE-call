@@ -73,8 +73,9 @@ class BuildReport:
 def without_offsets(source: SourceInput) -> bool:
     """True when ``source`` has chunks but its body is empty because no chunk carries usable
     character offsets. Judged from the body ``body_from_chunks`` built, so the count follows the
-    rule that skipped the source. Both builds record ``text_start`` and ``text_end`` only for
-    Markdown sources; a generation build's ``code`` chunker records ``text_spans`` instead."""
+    rule that skipped the source. Every indexing path (a Lite write, ``recall index`` and a
+    generation build) records ``text_start`` and ``text_end`` only for Markdown sources; a
+    generation build's ``code`` chunker records ``text_spans`` instead."""
     return bool(source.chunks) and not source.body
 
 

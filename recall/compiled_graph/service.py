@@ -260,7 +260,7 @@ def _skipped_without_offsets(count: int) -> str:
     empty when none was."""
     if not count:
         return ""
-    return f", {count} source(s) skipped because no chunk carries character offsets"
+    return f", {count} source(s) skipped because no chunk carries usable character offsets"
 
 
 def _sources(chunks: Iterable[Chunk]) -> list[SourceInput]:

@@ -20,9 +20,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ### Fixed
 
-* The compiled graph skips a source none of whose chunks carries character offsets (Lite
-  and PostgreSQL generation builds record `text_start` and `text_end` for Markdown only, and a
-  code file has offsets only as the `text_spans` the `code` chunker records from version 4), and
+* The compiled graph skips a source none of whose chunks carries usable character offsets
+  (every indexing path, a Lite write, `recall index` and a PostgreSQL generation build, records
+  `text_start` and `text_end` for Markdown only, and a code file has offsets only as the
+  `text_spans` a generation build's `code` chunker records from version 4), and
   the build summary and `recall graph compile --dry-run` now say how many were skipped and
   why. They were skipped without a word, so a code tenant's dry run read `0 source(s) to
   compile`.

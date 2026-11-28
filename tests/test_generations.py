@@ -2739,6 +2739,60 @@ def test_a_finished_build_leaves_the_planner_able_to_see_the_new_generation(mana
 
 
 @requires_db
+def test_a_finished_build_leaves_the_planner_able_to_see_the_new_graph_entities(manager) -> None:
+    """A build refreshes the graph tables' statistics too, not only the chunks'.
+
+    Invariant: after `GenerationManager.build`, the planner's estimate of the new generation's
+    rows in `recall_graph_entities_v1` is within a factor of two of the real count, although the
+    generation is too small to trigger autovacuum. On the serving host on 2026-11-27 the estimate was 1 for
+    generations of 4,538 and 3,144 entities, and the dashboard's corpus graph timed out.
+
+    Red proof, 2026-11-27, the testbench: with `GRAPH_STATISTICS_SQL` in `recall/generations.py` mutated
+    to `()`, it failed in the estimate assertion below with `the planner estimates 1 entity rows
+    for a 20-entity generation built after the last ANALYZE`. Green with the refresh in place.
+    """
+    def headings(prefix: str, count: int) -> bytes:
+        return b"---\nstatus: current\n---\n" + "\n".join(
+            f"# {prefix} heading {index}" for index in range(count)
+        ).encode()
+
+    first_data = headings("large", 400)
+    first_manifest = _manifest(manager.tenant_id, first_data, corpus_version="graph-big")
+    first = manager.create(first_manifest, _pipeline("model-a"))
+    manager.build(
+        first.generation_id, _reader(first_manifest, first_data), _Embedder(1),
+        lambda text: [line for line in text.splitlines() if line.startswith("# large")],
+    )
+    # Statistics that predate the new generation, exactly the production condition.
+    with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+        conn.execute("ANALYZE recall_graph_entities_v1")
+
+    second_data = headings("small", 20)
+    second_manifest = _manifest(manager.tenant_id, second_data, corpus_version="graph-small")
+    second = manager.create(second_manifest, _pipeline("model-a"))
+    manager.build(
+        second.generation_id, _reader(second_manifest, second_data), _Embedder(2),
+        lambda text: [line for line in text.splitlines() if line.startswith("# small")],
+    )
+
+    with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+        actual = conn.execute(
+            "SELECT count(*) FROM recall_graph_entities_v1 WHERE generation_id = %s AND entity_kind = 'concept'",
+            (second.generation_id,),
+        ).fetchone()[0]
+        plan = conn.execute(
+            "EXPLAIN (FORMAT JSON) SELECT 1 FROM recall_graph_entities_v1 WHERE generation_id = %s",
+            (second.generation_id,),
+        ).fetchone()[0]
+    estimate = float(plan[0]["Plan"]["Plan Rows"])
+    assert actual == 20, f"the fixture built {actual} concept entities, not 20"
+    assert estimate >= 10, (
+        f"the planner estimates {estimate:.0f} entity rows for a {actual}-entity generation built "
+        "after the last ANALYZE; the build did not refresh the graph statistics"
+    )
+
+
+@requires_db
 def test_a_failed_statistics_refresh_never_fails_a_correct_build(
     manager, monkeypatch, caplog
 ) -> None:
