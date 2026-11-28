@@ -91,6 +91,8 @@ def test_a_generation_compiles_only_policy_admitted_sources(  # type: ignore[no-
         manager, manifest, LocalObjectReader([corpus]), _Embedder(), BuildRequest(revision="fixture"),
         security_policy=policy, security_context=AccessContext("cli", manager.tenant_id),
     )
+    # As a promotion does: build, validate, then the compiled graph, then promote.
+    manager.validate(stats.generation_id)
     message = service.ensure_for_generation(TEST_DSN, manager.tenant_id, stats.generation_id, _Embedder, env)
     assert message.startswith("compiled graph built for "), message
     assert "1 source(s) withheld by the source policy for purpose compile" in message, message
