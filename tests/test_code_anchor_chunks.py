@@ -61,9 +61,6 @@ from typing import TYPE_CHECKING
 import psycopg
 import pytest
 
-if TYPE_CHECKING:
-    from recall.generations import GenerationManager
-
 from recall.anchors import code_sha, normalize, resolve_symbols, symbol_sha
 from recall.generation_build import BuildRequest, chunker_for
 from recall.index import (
@@ -83,6 +80,9 @@ from recall.lineage import (
 )
 from recall.types import TEXT_SPANS_KEY
 from tests.conftest import TEST_DSN, _db_available, db_unreachable_reason, requires_db
+
+if TYPE_CHECKING:
+    from recall.generations import GenerationManager
 
 VECTORS = json.loads(
     (Path(__file__).parent / "fixtures" / "audit_memory" / "anchor_vectors.json").read_text(
@@ -223,7 +223,8 @@ _SPAN_CASES = [
     pytest.param(SOURCE, "pkg/pool.py", True, id="python"),
     pytest.param("\ufeffdef first():  \r\n    return 1\r\n\r\n\r\nclass C:\r\n    x = 1\r\n"
                  "    def m(self):\r\n        pass\r\n    y = 2\r\n", "c.py", True, id="crlf-bom"),
-    pytest.param("def big():\n" + "".join(f"    value_{i} = compute({i})  # pad\n" for i in range(40))
+    pytest.param("def big():\n"
+                 + "".join(f"    value_{i} = compute({i})  # pad\n" for i in range(40))
                  + "    " + "x" * 700 + " " + "y" * 700 + "\n", "big.py", True, id="oversized"),
     pytest.param(SOURCE, "lib.js", False, id="not-python"),
     pytest.param("def broken(:\n    pass\n\n\nclass Fine:\n    x = 1\n", "broken.py", False,

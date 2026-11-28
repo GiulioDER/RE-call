@@ -45,6 +45,7 @@ from recall.compiled_graph.artifact import (
 from recall.compiled_graph.budget import Budget
 from recall.compiled_graph.build import SourceInput, build_compiled_graph
 from recall.compiled_graph.cache import CompileCache
+from recall.compiled_graph.promotion import placements
 from recall.compiled_graph.provider import (
     ENV_PREFIX,
     CompiledGraphConfigError,
@@ -53,7 +54,6 @@ from recall.compiled_graph.provider import (
     urllib_transport,
 )
 from recall._env import modes_by_tenant
-from recall.compiled_graph.promotion import placements
 from recall.compiled_graph.records import prompt_digest
 from recall.embedding_core import Embedder
 from recall.errors import RecallError

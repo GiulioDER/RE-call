@@ -12,11 +12,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 * The `code` chunker (version 4) records `text_spans` on every chunk: where each run of the file
   the chunk holds starts and ends, and where it sits in the chunk text. The compiled graph reads
-  them, so a code tenant now compiles. The chunk text is unchanged, but the version is part of the
-  pipeline fingerprint, so the next build of a code tenant re-chunks every source and embeds
-  whatever the embedding cache does not already hold. Every code chunk id changes with the
-  fingerprint, and a calibration cannot be carried forward across a pipeline change, so the
-  rebuilt generation must be calibrated afresh before it is promoted.
+  them, so a code tenant built by a generation build, MCP ingest on the generation route included,
+  now compiles; code indexed by `recall index`, or by MCP ingest on the legacy route, still records
+  no offsets and is skipped. The chunk text is unchanged, but the version is part of the pipeline
+  fingerprint, so the next build of a code tenant re-chunks every source and embeds whatever the
+  embedding cache does not already hold. Every code chunk id changes with the fingerprint, and a
+  calibration cannot be carried forward across a pipeline change, so the rebuilt generation must
+  be calibrated afresh before it is promoted.
 
 ### Fixed
 

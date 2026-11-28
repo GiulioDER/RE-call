@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
+from typing import TypeGuard
 
 from recall.compiled_graph.records import CompiledRecord
 from recall.types import TEXT_SPANS_KEY, Chunk, ScoredChunk
@@ -28,7 +29,7 @@ MAX_PROMOTIONS = 2
 RRF_K = 60
 
 
-def _offset(value: object) -> bool:
+def _is_offset(value: object) -> TypeGuard[int]:
     return isinstance(value, int) and not isinstance(value, bool) and value >= 0
 
 
@@ -36,16 +37,23 @@ def placements(chunk: Chunk) -> list[tuple[int, int, int]]:
     """Where ``chunk``'s text sits in its source, as ``(source_start, source_end, text_offset)``.
 
     One per run `TEXT_SPANS_KEY` records, which the code chunker writes; otherwise the one
-    ``text_start``/``text_end`` span at text offset 0. Empty when the chunk records neither.
+    ``text_start``/``text_end`` span at text offset 0. Empty when the chunk records neither. A run
+    that is not three non-negative integers with its end past its start is dropped, so malformed
+    stored metadata leaves a chunk unplaced rather than failing the build.
     """
     runs = chunk.metadata.get(TEXT_SPANS_KEY)
     if runs is None:
         runs = [[chunk.metadata.get("text_start"), chunk.metadata.get("text_end"), 0]]
-    return [
-        (start, end, offset)
-        for start, end, offset in runs
-        if _offset(start) and _offset(end) and _offset(offset) and end > start
-    ]
+    if not isinstance(runs, list):
+        return []
+    placed: list[tuple[int, int, int]] = []
+    for run in runs:
+        if not isinstance(run, (list, tuple)) or len(run) != 3:
+            continue
+        start, end, offset = run
+        if _is_offset(start) and _is_offset(end) and _is_offset(offset) and end > start:
+            placed.append((start, end, offset))
+    return placed
 
 
 def record_edges(record: CompiledRecord, chunks: Sequence[Chunk]) -> tuple[str, ...]:

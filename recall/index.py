@@ -394,17 +394,20 @@ def _code_anchor(repo: str | None, file: str, symbol: str | None, sha: str) -> d
     return {"repo": repo, "file": file, "symbol": symbol, "code_sha": sha}
 
 
+_LINE_SEP = "\n"
+
+
 def _line_spans(lines: list[tuple[int, str]], starts: list[int]) -> list[list[int]]:
-    """`TEXT_SPANS_KEY` entries for lines joined by one newline: one per run of consecutive line
+    """`TEXT_SPANS_KEY` entries for lines joined by `_LINE_SEP`: one per run of consecutive line
     indices, since a run is a slice of the text whose line ``i`` begins at ``starts[i]``."""
     spans: list[list[int]] = []
-    previous = -2
+    previous: int | None = None
     for index, line in lines:
         end = starts[index] + len(line)
-        if index == previous + 1:
+        if previous is not None and index == previous + 1:
             spans[-1][1] = end
         else:
-            offset = spans[-1][2] + spans[-1][1] - spans[-1][0] + 1 if spans else 0
+            offset = spans[-1][2] + spans[-1][1] - spans[-1][0] + len(_LINE_SEP) if spans else 0
             spans.append([starts[index], end, offset])
         previous = index
     return spans
@@ -432,7 +435,7 @@ def _pack_lines(
         while buf and not buf[-1][1]:
             buf.pop()
         if buf:
-            text = "\n".join(line for _, line in buf)
+            text = _LINE_SEP.join(line for _, line in buf)
             pieces.append((buf[0][0], text, _line_spans(buf, starts)))
         buf.clear()
         size = 0
@@ -445,12 +448,13 @@ def _pack_lines(
             cursor = 0
             for part in _split_oversized(line, max_chars, 0):
                 at = line.index(part, cursor)
-                pieces.append((index, part, [[starts[index] + at, starts[index] + at + len(part), 0]]))
+                begin = starts[index] + at
+                pieces.append((index, part, [[begin, begin + len(part), 0]]))
                 cursor = at + len(part)
             continue
-        if buf and size + 1 + len(line) > max_chars:
+        if buf and size + len(_LINE_SEP) + len(line) > max_chars:
             flush()
-        size += len(line) + (1 if buf else 0)
+        size += len(line) + (len(_LINE_SEP) if buf else 0)
         buf.append((index, line))
     flush()
     return pieces

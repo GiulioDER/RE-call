@@ -9,6 +9,11 @@ Red proof, recorded 2026-11-26 (production symbols in ``recall.compiled_graph.pr
 - ``test_edges_follow_each_span_of_a_code_chunk`` (recorded 2026-11-27): ``placements`` ignoring
   ``TEXT_SPANS_KEY`` fails on ``() == ("C.m",)``; and with ``recall.index._line_spans`` making each
   piece one run, the class chunk covers its method and the test fails on ``("C", "C.m")``.
+- ``test_malformed_text_spans_place_nothing`` (recorded 2026-11-28, CCA run 20261128T105336Z): the
+  pre-fix ``placements`` (one comprehension unpacking every run as ``start, end, offset``, no
+  shape check) fails inside ``placements`` with ``ValueError: not enough values to unpack``
+  (``promotion.py:46``) on the first malformed value, which is the defect itself, a crash where an
+  unplaced chunk belongs; the fixed code passes.
 - ``test_top_eight_never_move``: protecting only ``pool[:PROTECTED_PREFIX - 1]`` lets rank 8 be
   promoted again and fails on membership (a duplicate id).
 - ``test_at_most_two_promoted_into_ranks_nine_and_ten``: ``MAX_PROMOTIONS = 3`` fails on
@@ -42,12 +47,13 @@ from recall.compiled_graph.promotion import (
     MAX_PROMOTIONS,
     PROTECTED_PREFIX,
     SEED_K,
+    placements,
     promote,
     record_edges,
 )
 from recall.compiled_graph.records import CompiledRecord
 from recall.index import CODE_ANCHOR_KEY, code_pieces
-from recall.types import Chunk, ScoredChunk
+from recall.types import TEXT_SPANS_KEY, Chunk, ScoredChunk
 
 
 def _chunk(chunk_id: str, start: int | None = None, end: int | None = None) -> Chunk:
@@ -93,6 +99,17 @@ def test_edges_follow_each_span_of_a_code_chunk() -> None:
     after = source.index("    y = 2")
     assert record_edges(_record((method, method + 5)), chunks) == ("C.m",)
     assert record_edges(_record((after, after + 5)), chunks) == ("C",)
+
+
+def test_malformed_text_spans_place_nothing() -> None:
+    """A stored ``text_spans`` value of the wrong shape leaves the chunk unplaced, as a missing one
+    does, and a well-formed run beside a malformed one is still placed."""
+    for runs in ("abc", 5, [[1, 2]], [None], [[0, 3, 0, 1]]):
+        chunk = Chunk(id="m", source="m.py", text="abc", metadata={TEXT_SPANS_KEY: runs})
+        assert placements(chunk) == [], runs
+        assert record_edges(_record((0, 3)), [chunk]) == (), runs
+    mixed = Chunk(id="m", source="m.py", text="abc", metadata={TEXT_SPANS_KEY: [[0, 3, 0], [1, 2]]})
+    assert placements(mixed) == [(0, 3, 0)]
 
 
 def test_top_eight_never_move() -> None:

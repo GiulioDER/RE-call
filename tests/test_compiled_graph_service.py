@@ -42,6 +42,10 @@ in ``recall.compiled_graph.service``):
   the build-message assertion. Its first assertion requires the success line (CCA FA-1-1): with
   ``ensure_compiled_graph``'s publish step mutated to ``if True:``, so the build returns ``not
   built: a source was forgotten``, it fails on that assertion, where ``"built" in message`` passed.
+- ``test_the_offset_docs_name_the_mcp_ingest_route`` (recorded 2026-11-28, CCA FA-1-1..3 of run
+  20261128T105336Z): against the pass-1 wording of ``CHANGELOG.md`` and
+  ``docs/COMPILED_GRAPH.md`` (the fix-audit pass-1 snapshot), which said code indexed "by MCP
+  ingest" records no offsets, it fails on ``assert not unqualified``, naming both passages.
 - ``test_off_or_rootless_builds_nothing``: the mode check removed fails on the call count.
 - ``test_build_writes_an_artifact_the_loader_serves``: the loader lineage built without the model
   fails with ``ArtifactMissing``.
@@ -66,6 +70,7 @@ in ``recall.compiled_graph.service``):
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -279,13 +284,32 @@ def test_body_from_chunks_places_each_code_span() -> None:
     body = body_from_chunks(chunks)
     for chunk in chunks:
         for start, end, offset in chunk.metadata[TEXT_SPANS_KEY]:
-            assert body[start:end] == chunk.text[offset : offset + end - start] == CODE_SOURCE[start:end]
+            assert body[start:end] == chunk.text[offset : offset + end - start]
+            assert body[start:end] == CODE_SOURCE[start:end]
 
 
 def test_a_dry_run_counts_a_code_source_as_one_to_compile(tmp_path: Path) -> None:
     estimate = estimate_compile("t1", _code_chunks(), _env(tmp_path))
     assert "1 source(s) to compile" in estimate, estimate
     assert "skipped because" not in estimate, estimate
+
+
+def test_the_offset_docs_name_the_mcp_ingest_route() -> None:
+    """Whether MCP ingest records offsets depends on its route: the generation route chunks with
+    ``CodeChunker`` and records ``text_spans`` (``recall_mcp/server_ingest.py``, the
+    ``route.uses_generation`` branch), the legacy route with ``chunk_code`` and records none. So
+    the guide and the Unreleased changelog may name MCP ingest only together with its route. This
+    pins prose, not behaviour."""
+    root = Path(__file__).resolve().parents[1]
+    guide = (root / "docs/COMPILED_GRAPH.md").read_text(encoding="utf-8")
+    unreleased = (root / "CHANGELOG.md").read_text(encoding="utf-8").split("\n## [")[1]
+    texts = {"CHANGELOG.md": unreleased, "docs/COMPILED_GRAPH.md": guide}
+    unqualified = [
+        (name, flat[max(0, match.start() - 60) : match.end() + 60])
+        for name, flat in ((name, " ".join(text.split())) for name, text in texts.items())
+        for match in re.finditer(r"MCP ingest\b(?! on the (?:legacy|generation) route)", flat)
+    ]
+    assert not unqualified, unqualified
 
 
 def test_off_or_rootless_builds_nothing(tmp_path: Path) -> None:
