@@ -59,6 +59,11 @@ A build needs every one of these; there is no default model and no default price
 `RECALL_COMPILED_GRAPH_MODEL` the artifact was built with; without either it reports
 `skipped:unconfigured`.
 
+The build sends source text to the hosted model, in `shadow` as well as `active`. With a source
+policy (`RECALL_SOURCE_POLICY_FILE`), only sources whose rule lists the `compile` purpose are
+sent; [the security model](SECURITY_MODEL.md#the-compiled-graph-provider-is-a-second-egress-boundary)
+says which checks apply and what a policy change costs.
+
 | Variable | Meaning |
 |---|---|
 | `RECALL_COMPILED_GRAPH_ARTIFACT_ROOT` | absolute folder for artifacts and the compile cache |

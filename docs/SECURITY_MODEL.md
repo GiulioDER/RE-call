@@ -16,8 +16,9 @@ Pre-1.0, only the current `0.x` line gets fixes. There is no LTS branch.
 
 ## Source policy operation purposes
 
-Rules may restrict `retrieval`, `indexing`, or `erasure` independently through their `purposes`
-array. The policy is enforced by legacy and generation CLI paths as well as MCP search, related,
+Rules may restrict `retrieval`, `indexing`, `erasure`, or `compile` independently through their
+`purposes` array; `compile` admits a source to the compiled graph's hosted model (see "The compiled
+graph provider is a second egress boundary" below). The policy is enforced by legacy and generation CLI paths as well as MCP search, related,
 reasoning, inventory, indexing, ingest, and forget operations. Enterprise operators must set the
 policy before serving; malformed booleans and non string arrays are refused at load time.
 
@@ -249,6 +250,34 @@ the key-free path is the one that never leaves the host.
 backend, not a vulnerability to report. What we do want reported: any place a cloud path is reached
 *without* the caller having asked for it (an implicit fallback, a default that silently prefers the
 cloud embedder over the local one, etc.).
+
+## The compiled graph provider is a second egress boundary
+
+When the compiled graph is on for a tenant (`shadow` or `active`; `shadow` sends as well, it only
+withholds the result from search), each build sends the full text of every source it compiles,
+rebuilt from the stored and already redacted chunks, to the configured hosted model
+(`RECALL_COMPILED_GRAPH_BASE_URL`, OpenRouter by default). That is a destination of its own, with
+its own retention terms, separate from the embedder.
+
+With a source policy configured, a source is compiled only when all of these hold:
+
+- its rule lists `compile` in `purposes`, so no source is sent until a rule names this use;
+- the rule's principal, clearance and egress checks pass for the operator context, which is read
+  from `RECALL_PRINCIPAL` (default `cli`), `RECALL_CLEARANCE` and `RECALL_EGRESS_ALLOWED`; a rule
+  that restricts `principals` must list that principal, and a rule with `allow_egress` needs
+  `RECALL_EGRESS_ALLOWED=1`;
+- every stored chunk of the source carries the current policy's digest, so a source indexed under
+  an older policy is not sent until it is re-indexed.
+
+A source that fails any of these is withheld whole, and the build summary and `recall graph
+compile --dry-run` say how many were. The artifact is bound to the policy's digest and to that
+operator context, so changing either builds a new one, and a search under a different or
+unreadable policy, or an invalid context, uses none.
+
+Adding `compile` to a rule changes the policy digest, like any policy edit, so the tenant is
+re-indexed before it serves or compiles again. Without a source policy the tenant's mode
+(`RECALL_COMPILED_GRAPH_MODE`, `RECALL_COMPILED_GRAPH_MODE_BY_TENANT`) is the only control, as the
+choice of backend is for the embedder.
 
 ## Credentials
 

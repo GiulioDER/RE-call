@@ -117,7 +117,12 @@ def admit_llm_mentions(
     if compiled_graph_mode(env, tenant) != "active":
         return semantic, frozenset()
     binding = binding_reader()
-    lineage = serving_lineage(tenant, binding, embedder, env)
+    try:
+        lineage = serving_lineage(tenant, binding, embedder, env)
+    except CompiledGraphArtifactError as exc:
+        # An unreadable source policy: walk the authored graph alone, as a failed load does below.
+        _log.info("compiled graph mentions not admitted for tenant %r: %s", tenant, exc)
+        return semantic, frozenset()
     if lineage is None:
         return semantic, frozenset()
     # An artifact is never rewritten at its lineage, only removed whole (by a forget, or by hand),

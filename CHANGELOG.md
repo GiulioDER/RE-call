@@ -8,6 +8,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ## [Unreleased]
 
+### Security
+
+* With a source policy configured, the compiled graph sends a source to its hosted model only when
+  the source's rule lists the new `compile` purpose, the operator context passes the rule's
+  principal, clearance and egress checks, and every stored chunk carries the current policy
+  digest. The build ignored the policy before, so a source the current policy refuses could
+  still be sent. The artifact is now bound to the policy digest and that context, and withheld sources are counted
+  in the build summary and the dry run.
+
 ### Fixed
 
 * The compiled graph skips a source none of whose chunks carries usable character offsets
