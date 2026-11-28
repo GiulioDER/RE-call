@@ -119,8 +119,10 @@ class HistoricalSearchEvidence(BaseModel):
 class SearchResult(BaseModel):
     query_support: QuerySupport = Field(
         default_factory=QuerySupport,
-        description="Whether the returned evidence was checked to state the answer: always "
-        "not_checked in this release (retrieval eligibility does not establish answerability).",
+        description="Whether a judge checked that the returned evidence states the answer: "
+        "not_checked unless the server runs the opt-in answerability judge, whose verdict is "
+        "stated or not_stated (failed or unparsed when it gave none). Advisory only: retrieval "
+        "eligibility does not establish answerability, and no verdict checks a claim.",
     )
     calibration_coverage: CalibrationCoverage = Field(
         default_factory=CalibrationCoverage,
@@ -319,8 +321,10 @@ class EvidenceResult(BaseModel):
 
     query_support: QuerySupport = Field(
         default_factory=QuerySupport,
-        description="Whether the returned evidence was checked to state the answer: always "
-        "not_checked in this release (retrieval eligibility does not establish answerability).",
+        description="Whether a judge checked that the returned evidence states the answer: "
+        "not_checked unless the server runs the opt-in answerability judge, whose verdict is "
+        "stated or not_stated (failed or unparsed when it gave none). Advisory only: retrieval "
+        "eligibility does not establish answerability, and no verdict checks a claim.",
     )
     calibration_coverage: CalibrationCoverage = Field(
         default_factory=CalibrationCoverage,

@@ -19,8 +19,9 @@ MIN_PROBES = 10
 CLASSES = ("unknown_entity", "in_vocabulary")
 #: The vocabularies of the support and coverage diagnostics, read by the dataclasses below, the
 #: report validator and the reasoning response decoder, so a new state cannot reach one of them only.
-#: `stated` and `not_stated` are a judge's verdict; `failed` (the call raised) and `unparsed` (no
-#: reply passed the strict parser) mean the judge ran and gave none, never that support holds.
+#: `stated` and `not_stated` are a judge's verdict; `failed` (the call raised, the deadline passed
+#: or the judge's own limits refused it) and `unparsed` (no reply passed the strict parser) mean
+#: the judge gave none, never that support holds.
 SupportStatus = Literal["not_checked", "stated", "not_stated", "failed", "unparsed"]
 SupportScope = Literal["returned_evidence"]
 SupportMethod = Literal["llm_judge"]
@@ -57,8 +58,9 @@ def latest_calibration_event(
 
 ELIGIBILITY_NOTE = (
     " Citable passages passed retrieval trust checks; this does not establish that they "
-    "answer the question. Unless query_support is stated, establish that each cited passage "
-    "supports the claim before answering. Retrieval confidence is not answer correctness."
+    "answer the question. Whatever query_support says, establish that each cited passage "
+    "supports the claim before answering: a judge's verdict is advisory and checks no claim. "
+    "Retrieval confidence is not answer correctness."
 )
 
 

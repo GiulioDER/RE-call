@@ -573,9 +573,15 @@ their behavior. `supported`, `answer` and a citable chunk mean that retrieval tr
 evidence; they do not establish that the requested detail is stated or that a generated claim is
 correct. Callers must establish support for each claim from the eligible passages.
 
-`query_support` is `{ "status": "not_checked", "scope": "returned_evidence", "method": null }`.
-No answerability verifier runs. It remains not checked on certified, degraded and empty results.
-`validate_answer` still checks structure and citation identity only.
+`query_support` is `{ "status": ..., "scope": "returned_evidence", "method": ..., "model": ... }`.
+With the opt-in answerability judge off (the default) it is `not_checked` with `method` and `model`
+null, on certified, degraded and empty results alike. With `RECALL_ANSWERABILITY_JUDGE=1` the
+judge reads the passages the response cites and `status` is its verdict, `stated` or `not_stated`,
+or `failed` (the call raised, timed out or was refused by the judge's limits) or `unparsed` (no
+reply passed the strict parser) when it gave none; `method` is `llm_judge` and `model` names the
+judge's model exactly when `status` is not `not_checked`. A verdict is advisory: it never changes
+verdicts, abstention or what is citable, and it checks no claim, so callers establish support for
+each claim whatever it says. `validate_answer` still checks structure and citation identity only.
 
 `calibration_coverage` contains the selected `calibration_id`, a `status`, a `method` and a
 `report`. When available, `method` is `synthetic_corpus_probes` and `report` preserves the stored

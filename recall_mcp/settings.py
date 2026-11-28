@@ -19,6 +19,7 @@ from typing import Any, Literal, Protocol
 from urllib.parse import unquote, urlsplit
 
 from recall.answer_provider import DEFAULT_ANSWER_CALLS_PER_MIN
+from recall.answerability import DEFAULT_CALLS_PER_MIN as DEFAULT_JUDGE_CALLS_PER_MIN
 from recall.answerability import resolve_answerability_judge
 from recall.multimodal import MultimodalTenantConfig
 from recall.ops.secrets import aws_region
@@ -214,7 +215,8 @@ ENVIRONMENT_SCHEMA: tuple[EnvironmentSpec, ...] = (
     EnvironmentSpec("RECALL_REASONING_ANSWER_REASONING_EFFORT", "Answer provider", "OpenRouter reasoning effort", "none"),
     EnvironmentSpec("RECALL_REASONING_ANSWER_THINKING", "Answer provider", "answer provider thinking mode", "0"),
     EnvironmentSpec("RECALL_REASONING_ANSWER_REVISION", "Answer provider", "answer provider revision", "unpinned"),
-    EnvironmentSpec("RECALL_ANSWERABILITY_JUDGE", "Answerability judge", "fill query_support with a hosted judge's verdict; needs OPENROUTER_API_KEY", "0"),
+    EnvironmentSpec("RECALL_ANSWERABILITY_JUDGE", "Answerability judge", "send cited passages to OpenRouter for a judge's query_support verdict; needs OPENROUTER_API_KEY", "0"),
+    EnvironmentSpec("RECALL_ANSWERABILITY_JUDGE_MAX_CALLS_PER_MIN", "Answerability judge", "judge call budget", f"{DEFAULT_JUDGE_CALLS_PER_MIN:g}"),
     EnvironmentSpec("RECALL_REASONING_PROOF_ENABLED", "Proof provider", "enable evidence proof mode", "0"),
     EnvironmentSpec("RECALL_REASONING_PROOF_PROVIDER", "Proof provider", "proof provider; only openrouter", "openrouter"),
     EnvironmentSpec("RECALL_REASONING_PROOF_MODEL", "Proof provider", "proof model; required when enabled"),

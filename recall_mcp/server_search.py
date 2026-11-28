@@ -313,8 +313,9 @@ def _register_search_tools(mcp: ToolRegistrar, deps: _ToolDeps) -> None:
         Citable passages passed retrieval trust checks; this does not establish that they
         answer the question. `query_support` reports semantic checking separately: it is
         `not_checked` unless the server runs the opt-in answerability judge, whose verdict is
-        `stated` or `not_stated` (`failed` or `unparsed` when it gave none). Unless it is
-        `stated`, establish support for each claim before answering.
+        `stated` or `not_stated` (`failed` or `unparsed` when it gave none). A verdict is one
+        model's advisory view of all the evidence, not a check of any claim: whatever it says,
+        establish support for each claim before answering.
         `calibration_coverage` reports synthetic near-miss diagnostics for the served
         calibration; missing measurements are unmeasured, not a successful check.
 
@@ -426,8 +427,9 @@ def _register_search_tools(mcp: ToolRegistrar, deps: _ToolDeps) -> None:
         Citable passages passed retrieval trust checks; this does not establish that they
         answer the question. `query_support` reports semantic checking separately: it is
         `not_checked` unless the server runs the opt-in answerability judge, whose verdict is
-        `stated` or `not_stated` (`failed` or `unparsed` when it gave none). Unless it is
-        `stated`, establish support for each claim before answering.
+        `stated` or `not_stated` (`failed` or `unparsed` when it gave none). A verdict is one
+        model's advisory view of all the evidence, not a check of any claim: whatever it says,
+        establish support for each claim before answering.
         `calibration_coverage` reports synthetic near-miss diagnostics for the served
         calibration; missing measurements are unmeasured, not a successful check.
 

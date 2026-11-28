@@ -41,8 +41,9 @@ RECALL_SEARCH_DESCRIPTION = (
     "Citable passages passed retrieval trust checks; this does not establish that they\n"
     "answer the question. `query_support` reports semantic checking separately: it is\n"
     "`not_checked` unless the server runs the opt-in answerability judge, whose verdict is\n"
-    "`stated` or `not_stated` (`failed` or `unparsed` when it gave none). Unless it is\n"
-    "`stated`, establish support for each claim before answering.\n"
+    "`stated` or `not_stated` (`failed` or `unparsed` when it gave none). A verdict is one\n"
+    "model's advisory view of all the evidence, not a check of any claim: whatever it says,\n"
+    "establish support for each claim before answering.\n"
     "`calibration_coverage` reports synthetic near-miss diagnostics for the served\n"
     "calibration; missing measurements are unmeasured, not a successful check."
 )
@@ -67,8 +68,9 @@ RECALL_EVIDENCE_DESCRIPTION = (
     "Citable passages passed retrieval trust checks; this does not establish that they\n"
     "answer the question. `query_support` reports semantic checking separately: it is\n"
     "`not_checked` unless the server runs the opt-in answerability judge, whose verdict is\n"
-    "`stated` or `not_stated` (`failed` or `unparsed` when it gave none). Unless it is\n"
-    "`stated`, establish support for each claim before answering.\n"
+    "`stated` or `not_stated` (`failed` or `unparsed` when it gave none). A verdict is one\n"
+    "model's advisory view of all the evidence, not a check of any claim: whatever it says,\n"
+    "establish support for each claim before answering.\n"
     "`calibration_coverage` reports synthetic near-miss diagnostics for the served\n"
     "calibration; missing measurements are unmeasured, not a successful check."
 )
