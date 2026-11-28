@@ -44,7 +44,7 @@ def placements(chunk: Chunk) -> list[tuple[int, int, int]]:
     runs = chunk.metadata.get(TEXT_SPANS_KEY)
     if runs is None:
         runs = [[chunk.metadata.get("text_start"), chunk.metadata.get("text_end"), 0]]
-    if not isinstance(runs, list):
+    if not isinstance(runs, (list, tuple)):
         return []
     placed: list[tuple[int, int, int]] = []
     for run in runs:

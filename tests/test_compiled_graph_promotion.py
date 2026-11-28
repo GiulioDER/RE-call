@@ -14,6 +14,9 @@ Red proof, recorded 2026-11-26 (production symbols in ``recall.compiled_graph.pr
   shape check) fails inside ``placements`` with ``ValueError: not enough values to unpack``
   (``promotion.py:46``) on the first malformed value, which is the defect itself, a crash where an
   unplaced chunk belongs; the fixed code passes.
+- ``test_text_spans_held_in_a_tuple_are_placed`` (recorded 2026-11-28, CCA FA-1-5): with
+  ``placements``'s container check back to ``isinstance(runs, list)`` (commit 7206f0d5f), it fails
+  on ``assert [] == [(0, 3, 0), (5, 7, 3)]``: a tuple of valid runs placed nothing.
 - ``test_top_eight_never_move``: protecting only ``pool[:PROTECTED_PREFIX - 1]`` lets rank 8 be
   promoted again and fails on membership (a duplicate id).
 - ``test_at_most_two_promoted_into_ranks_nine_and_ten``: ``MAX_PROMOTIONS = 3`` fails on
@@ -110,6 +113,15 @@ def test_malformed_text_spans_place_nothing() -> None:
         assert record_edges(_record((0, 3)), [chunk]) == (), runs
     mixed = Chunk(id="m", source="m.py", text="abc", metadata={TEXT_SPANS_KEY: [[0, 3, 0], [1, 2]]})
     assert placements(mixed) == [(0, 3, 0)]
+
+
+def test_text_spans_held_in_a_tuple_are_placed() -> None:
+    """A ``text_spans`` value held as a tuple of runs is placed as the same runs in a list are:
+    the shape check accepts a tuple for the container as it does for each run."""
+    runs = [(0, 3, 0), (5, 7, 3)]
+    as_list = Chunk(id="m", source="m.py", text="abcde", metadata={TEXT_SPANS_KEY: runs})
+    as_tuple = Chunk(id="m", source="m.py", text="abcde", metadata={TEXT_SPANS_KEY: tuple(runs)})
+    assert placements(as_tuple) == placements(as_list) == runs
 
 
 def test_top_eight_never_move() -> None:

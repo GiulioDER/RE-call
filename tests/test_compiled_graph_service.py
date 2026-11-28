@@ -43,9 +43,12 @@ in ``recall.compiled_graph.service``):
   ``ensure_compiled_graph``'s publish step mutated to ``if True:``, so the build returns ``not
   built: a source was forgotten``, it fails on that assertion, where ``"built" in message`` passed.
 - ``test_the_offset_docs_name_the_mcp_ingest_route`` (recorded 2026-11-28, CCA FA-1-1..3 of run
-  20261128T105336Z): against the pass-1 wording of ``CHANGELOG.md`` and
-  ``docs/COMPILED_GRAPH.md`` (the fix-audit pass-1 snapshot), which said code indexed "by MCP
-  ingest" records no offsets, it fails on ``assert not unqualified``, naming both passages.
+  20261128T105336Z; re-proved 2026-11-28 for FA-3-3, since the wording that first failed it was
+  never committed): with " on the legacy route" deleted from ``docs/COMPILED_GRAPH.md``'s "a code
+  file indexed by `recall index` or by MCP ingest on the legacy route", it fails on ``assert not
+  unqualified``, naming that passage. It fails the same way with "MCP ingest" in that mutated
+  phrase replaced by "the MCP write path", and again by "`recall_ingest`", so each name of the
+  route is checked (FA-3-4).
 - ``test_off_or_rootless_builds_nothing``: the mode check removed fails on the call count.
 - ``test_build_writes_an_artifact_the_loader_serves``: the loader lineage built without the model
   fails with ``ArtifactMissing``.
@@ -332,16 +335,22 @@ def test_the_offset_docs_name_the_mcp_ingest_route() -> None:
     ``CodeChunker`` and records ``text_spans`` (``recall_mcp/server_ingest.py``, the
     ``route.uses_generation`` branch), the legacy route with ``chunk_code`` and records none. So
     the guide and the Unreleased changelog may name MCP ingest only together with its route. This
-    pins prose, not behaviour."""
+    pins prose, not behaviour, and knows the route by three names: MCP ingest, the MCP write path
+    and the ``recall_ingest`` tool."""
     root = Path(__file__).resolve().parents[1]
-    guide = (root / "docs/COMPILED_GRAPH.md").read_text(encoding="utf-8")
-    unreleased = (root / "CHANGELOG.md").read_text(encoding="utf-8").split("\n## [")[1]
-    texts = {"CHANGELOG.md": unreleased, "docs/COMPILED_GRAPH.md": guide}
-    unqualified = [
-        (name, flat[max(0, match.start() - 60) : match.end() + 60])
-        for name, flat in ((name, " ".join(text.split())) for name, text in texts.items())
-        for match in re.finditer(r"MCP ingest\b(?! on the (?:legacy|generation) route)", flat)
-    ]
+    changelog = (root / "CHANGELOG.md").read_text(encoding="utf-8")
+    unreleased = re.search(r"^## \[Unreleased\]\n(.*?)(?=^## \[)", changelog, re.M | re.S)
+    assert unreleased is not None
+    texts = {
+        "CHANGELOG.md": unreleased.group(1),
+        "docs/COMPILED_GRAPH.md": (root / "docs/COMPILED_GRAPH.md").read_text(encoding="utf-8"),
+    }
+    route_names = r"(?:MCP ingest|MCP write path|recall_ingest`?)"
+    unqualified = []
+    for name, text in texts.items():
+        flat = " ".join(text.split())
+        for match in re.finditer(route_names + r"(?! on the (?:legacy|generation) route)", flat):
+            unqualified.append((name, flat[max(0, match.start() - 60) : match.end() + 60]))
     assert not unqualified, unqualified
 
 
